@@ -2,6 +2,7 @@
 
 use std::{
     cell::RefCell,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -52,7 +53,7 @@ use windows::{
 };
 
 use crate::{
-    clipboard,
+    clipboard, config_file,
     conpty::{ConPty, SpawnOptions},
     context_menu::{self, MenuCommand},
     dump::{DUMP_INTERVAL, ScreenDump},
@@ -69,8 +70,17 @@ const WINDOW_TITLE: &str = "fantermo";
 /// 読むためのスレッドなどが、窓のスレッドを起こすときに送るメッセージ。
 const WM_APP_WAKE: u32 = WM_APP + 1;
 
+/// 設定ファイルを監視するスレッドが、書き換えを知らせるメッセージ。
+const WM_APP_CONFIG_CHANGED: u32 = WM_APP + 2;
+
 /// 画面の書き出しに使うタイマー。
 const DUMP_TIMER_ID: usize = 1;
+
+/// 設定ファイルの書き換えを知らされてから読み直すまでのタイマー。
+const CONFIG_TIMER_ID: usize = 2;
+
+/// 設定ファイルの書き換えを知らされてから読み直すまでの間。この間に届いた知らせはまとめる。
+const CONFIG_RELOAD_DELAY: Duration = Duration::from_millis(200);
 
 /// キーボードから開いた WM_CONTEXTMENU が `lparam` に入れてくる位置。
 const KEYBOARD_CONTEXT_MENU_POSITION: (i32, i32) = (-1, -1);
@@ -87,7 +97,12 @@ const TERM: &str = "xterm-256color";
 const DPI_ENV: &str = "FANTERMO_DPI";
 
 /// 窓を開き、子プロセスを起動して、窓が閉じるまでメッセージを処理する。子プロセスの終了コードを返す。
-pub fn run(command_line: &str, config: Config) -> Result<u32, Box<dyn std::error::Error>> {
+/// `config_path` は設定ファイルの場所で、`config` はそこから読んだ設定。
+pub fn run(
+    command_line: &str,
+    config_path: Option<PathBuf>,
+    config: Config,
+) -> Result<u32, Box<dyn std::error::Error>> {
     let dwrite = font::create_factory()?;
     // SAFETY: 引数のない問い合わせ。
     let system_dpi = unsafe { GetDpiForSystem() };
@@ -95,7 +110,15 @@ pub fn run(command_line: &str, config: Config) -> Result<u32, Box<dyn std::error
     log_font(&font, system_dpi);
 
     let hwnd = create_window(&font, system_dpi)?;
-    let app = App::new(hwnd, dwrite, font, system_dpi, config.font, command_line)?;
+    let app = App::new(
+        hwnd,
+        dwrite,
+        font,
+        system_dpi,
+        config_path,
+        config.font,
+        command_line,
+    )?;
     let app = Box::into_raw(Box::new(RefCell::new(app)));
     // SAFETY: hwnd はこのスレッドが作った窓。ポインタは WM_NCDESTROY で取り戻して解放する。
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, app as isize) };
@@ -153,7 +176,8 @@ fn dpi_from_env() -> Option<u32> {
     }
 }
 
-/// 窓の左上を動かさずに、DPI が `dpi` に変わったときの処理をさせる。桁数と行数は保つ。
+/// 窓の左上を動かさずに、DPI が `dpi` に変わったときの処理（フォントとアトラスの作り直し）をさせる。
+/// 桁数と行数は保つ。DPI が変わらず、フォントの設定が変わったときにも使う。
 fn change_dpi_in_place(hwnd: HWND, dpi: u32) {
     let Some(app) = app_of(hwnd) else {
         return;
@@ -289,6 +313,8 @@ struct App {
     font: Font,
     /// いまの窓の DPI。
     dpi: u32,
+    /// 設定ファイルの場所。
+    config_path: Option<PathBuf>,
     /// `font` を探したときの設定。
     font_config: FontConfig,
     vt: Vt,
@@ -318,6 +344,7 @@ impl App {
         dwrite: IDWriteFactory,
         font: Font,
         dpi: u32,
+        config_path: Option<PathBuf>,
         font_config: FontConfig,
         command_line: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -326,27 +353,17 @@ impl App {
         let renderer = Renderer::new(hwnd, width, height, &dwrite, &font)?;
         let vt = Vt::new(size, TERM)?;
 
-        // HWND はスレッドをまたいで渡せないので、値だけを持たせる。PostMessageW はどのスレッドからでも呼べる。
-        let hwnd_value = hwnd.0 as isize;
-        let wake = Arc::new(move || {
-            // SAFETY: 窓がすでに壊れていれば失敗するだけで、害はない。
-            unsafe {
-                _ = PostMessageW(
-                    Some(HWND(hwnd_value as *mut _)),
-                    WM_APP_WAKE,
-                    WPARAM(0),
-                    LPARAM(0),
-                );
-            }
-        });
         let backend = ConPty::spawn(
             &SpawnOptions {
                 command_line,
                 env: &[("TERM", TERM)],
                 size,
             },
-            wake,
+            Arc::new(poster(hwnd, WM_APP_WAKE)),
         )?;
+        if let Some(path) = &config_path {
+            config_file::watch(path, poster(hwnd, WM_APP_CONFIG_CHANGED));
+        }
 
         let dump = ScreenDump::from_env();
         if dump.is_some() {
@@ -366,6 +383,7 @@ impl App {
             dwrite,
             font,
             dpi,
+            config_path,
             font_config,
             vt,
             backend,
@@ -849,6 +867,22 @@ impl App {
         self.invalidate();
     }
 
+    /// 設定ファイルを読み直す。フォントの設定が変わっていて、そのフォントを測れたら設定を入れ替え、
+    /// 作り直しに使う DPI を返す。作り直しは借用を手放してから [`change_dpi_in_place`] で行う。
+    /// `shell` は次に起動したときから使う。
+    fn reload_config(&mut self) -> Option<u32> {
+        let config = config_file::load(self.config_path.as_deref());
+        if config.font == self.font_config {
+            return None;
+        }
+        if let Err(e) = load_font(&self.dwrite, &config.font, self.dpi) {
+            tracing::warn!("keeping the current font: {e}");
+            return None;
+        }
+        self.font_config = config.font;
+        Some(self.dpi)
+    }
+
     /// DPI が `dpi` に変わったときに、いまの桁数と行数がそのまま収まるクライアント領域の大きさ。
     fn scaled_client_size(&self, dpi: u32) -> windows::core::Result<SIZE> {
         let font = load_font(&self.dwrite, &self.font_config, dpi)?;
@@ -901,6 +935,23 @@ fn grid_size(font: &Font, width: u32, height: u32) -> GridSize {
         rows: (height / font.cell_height_px).clamp(1, u32::from(u16::MAX)) as u16,
         cell_width_px: font.cell_width_px,
         cell_height_px: font.cell_height_px,
+    }
+}
+
+/// ほかのスレッドから呼んで、`hwnd` に `message` を積むもの。
+fn poster(hwnd: HWND, message: u32) -> impl Fn() + Send + Sync + 'static {
+    // HWND はスレッドをまたいで渡せないので、値だけを持たせる。PostMessageW はどのスレッドからでも呼べる。
+    let hwnd_value = hwnd.0 as isize;
+    move || {
+        // SAFETY: 窓がすでに壊れていれば失敗するだけで、害はない。
+        unsafe {
+            _ = PostMessageW(
+                Some(HWND(hwnd_value as *mut _)),
+                message,
+                WPARAM(0),
+                LPARAM(0),
+            );
+        }
     }
 }
 
@@ -1095,6 +1146,38 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             with_app(&mut |app| app.write_dump());
             LRESULT(0)
         }
+        // 知らせが続けて届くたびにタイマーを掛け直し、止んでから一度だけ読み直す。
+        WM_APP_CONFIG_CHANGED => {
+            // SAFETY: hwnd は有効な窓。同じ番号のタイマーは掛け直しになる。
+            if unsafe {
+                SetTimer(
+                    Some(hwnd),
+                    CONFIG_TIMER_ID,
+                    CONFIG_RELOAD_DELAY.as_millis() as u32,
+                    None,
+                )
+            } == 0
+            {
+                tracing::warn!(
+                    "failed to schedule reloading the settings: {}",
+                    windows::core::Error::from_thread()
+                );
+            }
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == CONFIG_TIMER_ID => {
+            // SAFETY: hwnd は有効な窓。
+            if let Err(e) = unsafe { KillTimer(Some(hwnd), CONFIG_TIMER_ID) } {
+                tracing::warn!("failed to stop the settings timer: {e}");
+            }
+            let mut rebuild_dpi = None;
+            with_app(&mut |app| rebuild_dpi = app.reload_config());
+            // WM_DPICHANGED をこの場で送るので、借用を手放してから呼ぶ。
+            if let Some(dpi) = rebuild_dpi {
+                change_dpi_in_place(hwnd, dpi);
+            }
+            LRESULT(0)
+        }
         WM_KEYDOWN | WM_SYSKEYDOWN => {
             let virtual_key = wparam.0 as u16;
             // IME が処理中のキーと、Alt+F4・Alt+Space（閉じる・システムメニュー）は Windows に任せる。
@@ -1215,7 +1298,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         WM_DESTROY => {
             // SAFETY: hwnd は有効な窓。
-            unsafe { _ = KillTimer(Some(hwnd), DUMP_TIMER_ID) };
+            unsafe {
+                _ = KillTimer(Some(hwnd), DUMP_TIMER_ID);
+                _ = KillTimer(Some(hwnd), CONFIG_TIMER_ID);
+            };
             let mut code = 0;
             with_app(&mut |app| code = app.exit.map_or(0, |code| code.0));
             // SAFETY: このスレッドのメッセージループに終了を伝えるだけ。

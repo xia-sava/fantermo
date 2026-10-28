@@ -58,7 +58,7 @@ fn main() {
     let command_line = child_command_line()
         .or_else(|| config.shell.clone())
         .unwrap_or_else(|| DEFAULT_COMMAND_LINE.to_owned());
-    match window::run(&command_line, config) {
+    match window::run(&command_line, config_path, config) {
         Ok(code) => std::process::exit(code as i32),
         Err(e) => {
             tracing::error!("{e}");
