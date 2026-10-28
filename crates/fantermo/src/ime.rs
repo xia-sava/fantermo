@@ -4,7 +4,6 @@
 
 use windows::Win32::{
     Foundation::{HWND, POINT, RECT},
-    Graphics::Gdi::{DEFAULT_CHARSET, LOGFONTW},
     UI::Input::Ime::{
         CANDIDATEFORM, CFS_EXCLUDE, CFS_POINT, COMPOSITIONFORM, ImmGetContext, ImmReleaseContext,
         ImmSetCandidateWindow, ImmSetCompositionFontW, ImmSetCompositionWindow,
@@ -30,7 +29,7 @@ pub fn place_windows(hwnd: HWND, cursor: CursorRect, font: &Font) {
         return;
     }
 
-    let logfont = composition_font(font);
+    let logfont = font.logfont();
     let composition = COMPOSITIONFORM {
         dwStyle: CFS_POINT,
         ptCurrentPos: POINT {
@@ -65,60 +64,5 @@ pub fn place_windows(hwnd: HWND, cursor: CursorRect, font: &Font) {
             tracing::debug!("the IME did not accept the candidate position");
         }
         _ = ImmReleaseContext(hwnd, context);
-    }
-}
-
-/// 端末の文字と同じ書体と大きさの LOGFONTW。
-fn composition_font(font: &Font) -> LOGFONTW {
-    let mut logfont = LOGFONTW {
-        // 負の値は、行の間隔を含まない文字の高さ（ピクセル）。
-        lfHeight: -(font.size_px.round() as i32),
-        lfCharSet: DEFAULT_CHARSET,
-        ..Default::default()
-    };
-    // 書体名は終端の NUL を含めて配列に収まるところまで。
-    let capacity = logfont.lfFaceName.len() - 1;
-    for (slot, unit) in logfont
-        .lfFaceName
-        .iter_mut()
-        .zip(font.family.encode_utf16().take(capacity))
-    {
-        *slot = unit;
-    }
-    logfont
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn font(family: &str) -> Font {
-        Font {
-            family: family.to_owned(),
-            size_px: 31.6,
-            cell_width_px: 16,
-            cell_height_px: 32,
-        }
-    }
-
-    #[test]
-    fn composition_font_uses_the_terminal_face_and_size() {
-        let logfont = composition_font(&font("Bizin Gothic"));
-        assert_eq!(logfont.lfHeight, -32);
-        let name_len = logfont
-            .lfFaceName
-            .iter()
-            .position(|&unit| unit == 0)
-            .unwrap();
-        assert_eq!(
-            String::from_utf16(&logfont.lfFaceName[..name_len]).unwrap(),
-            "Bizin Gothic"
-        );
-    }
-
-    #[test]
-    fn long_face_names_keep_the_terminator() {
-        let logfont = composition_font(&font(&"x".repeat(100)));
-        assert_eq!(logfont.lfFaceName.last(), Some(&0));
     }
 }

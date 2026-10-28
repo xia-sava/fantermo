@@ -8,7 +8,7 @@ use std::{
 
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize},
-    vt::{Key, KeyAction, KeyInput, Mods, PointerPosition, Vt},
+    vt::{Key, KeyAction, KeyInput, Mods, PasteOutcome, PointerPosition, Vt},
 };
 use windows::{
     Win32::{
@@ -48,6 +48,7 @@ use crate::{
     font::{self, Font},
     ime::{self, CursorRect},
     keyboard::{self, KeyPosition, Utf16Assembler},
+    paste_editor,
     renderer::Renderer,
 };
 
@@ -162,6 +163,12 @@ fn message_loop() -> u32 {
     msg.wParam.0 as u32
 }
 
+/// キーの処理のあとで、窓の借用を手放してからすること。
+enum AfterKey {
+    /// 改行を含む貼り付けの内容を、編集のダイアログで確かめる。
+    EditPaste { text: String, font: Font },
+}
+
 struct App {
     hwnd: HWND,
     _dwrite: IDWriteFactory,
@@ -257,17 +264,21 @@ impl App {
         position: KeyPosition,
         action: KeyAction,
         chars: &[char],
-    ) {
+    ) -> Option<AfterKey> {
         let mods = keyboard::current_mods();
         let key = keyboard::key_from_position(position);
-        // コピーに使ったキーは、離したときもシェルに送らない。
+        // コピーや貼り付けに使ったキーは、離したときもシェルに送らない。
         if action == KeyAction::Release && self.suppressed_release == Some(key) {
             self.suppressed_release = None;
-            return;
+            return None;
         }
         if action != KeyAction::Release && is_copy_shortcut(key, mods) && self.copy_selection() {
             self.suppressed_release = Some(key);
-            return;
+            return None;
+        }
+        if action == KeyAction::Press && is_paste_shortcut(key, mods) {
+            self.suppressed_release = Some(key);
+            return self.paste_clipboard();
         }
 
         let text = keyboard::printable_text(chars);
@@ -283,6 +294,40 @@ impl App {
             Ok(encoded) => self.send(&encoded),
             Err(e) => tracing::warn!("failed to encode {:?}: {e}", input.key),
         }
+        None
+    }
+
+    /// クリップボードの文字列を貼り付ける。改行を含んで確かめが要るときは、編集のダイアログを開くよう返す。
+    fn paste_clipboard(&mut self) -> Option<AfterKey> {
+        let text = match clipboard::text(self.hwnd) {
+            Ok(Some(text)) => paste_editor::from_crlf(&text),
+            Ok(None) => return None,
+            Err(e) => {
+                tracing::warn!("failed to read the clipboard: {e}");
+                return None;
+            }
+        };
+        match self.paste(&text, false) {
+            Some(PasteOutcome::Unsafe) => Some(AfterKey::EditPaste {
+                text,
+                font: self.font.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// `text` を貼り付ける。`allow_unsafe` でなければ、コマンドとして走りうる文字列は送らない。
+    fn paste(&mut self, text: &str, allow_unsafe: bool) -> Option<PasteOutcome> {
+        let outcome = match self.vt.paste(text, allow_unsafe) {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                tracing::warn!("failed to paste: {e}");
+                return None;
+            }
+        };
+        let encoded = self.vt.take_replies();
+        self.send(&encoded);
+        Some(outcome)
     }
 
     /// 選んでいる範囲をクリップボードにコピーし、選択を外す。選んでいなければ何もせず `false`。
@@ -521,8 +566,17 @@ fn client_size(hwnd: HWND) -> (u32, u32) {
 
 /// 選んでいればコピーにするキー。Ctrl+C と Ctrl+Insert（ほかの修飾キーなし）。
 fn is_copy_shortcut(key: Key, mods: Mods) -> bool {
-    let held = mods & (Mods::CTRL | Mods::SHIFT | Mods::ALT | Mods::SUPER);
-    held == Mods::CTRL && matches!(key, Key::C | Key::Insert)
+    held_mods(mods) == Mods::CTRL && matches!(key, Key::C | Key::Insert)
+}
+
+/// 貼り付けにするキー。Shift+Insert（ほかの修飾キーなし）。
+fn is_paste_shortcut(key: Key, mods: Mods) -> bool {
+    held_mods(mods) == Mods::SHIFT && key == Key::Insert
+}
+
+/// 押されている修飾キーだけ。ロックの状態は除く。
+fn held_mods(mods: Mods) -> Mods {
+    mods & (Mods::CTRL | Mods::SHIFT | Mods::ALT | Mods::SUPER)
 }
 
 /// 前回の端数 `remainder` に回転量 `delta` を足し、動かす行数と新しい端数を返す。
@@ -643,7 +697,16 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             } else {
                 KeyAction::Press
             };
-            with_app(&mut |app| app.on_key(virtual_key, position, action, &chars));
+            let mut after = None;
+            with_app(&mut |app| after = app.on_key(virtual_key, position, action, &chars));
+            // ダイアログは自分でメッセージを回すので、借用を手放してから開く。
+            if let Some(AfterKey::EditPaste { text, font }) = after
+                && let Some(edited) = paste_editor::edit(hwnd, &text, &font)
+            {
+                with_app(&mut |app| {
+                    app.paste(&edited, true);
+                });
+            }
             LRESULT(0)
         }
         WM_KEYUP | WM_SYSKEYUP => {
@@ -653,7 +716,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
             }
             let position = KeyPosition::from_lparam(lparam.0);
-            with_app(&mut |app| app.on_key(virtual_key, position, KeyAction::Release, &[]));
+            with_app(&mut |app| {
+                app.on_key(virtual_key, position, KeyAction::Release, &[]);
+            });
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
@@ -742,6 +807,15 @@ mod tests {
         assert!(!is_copy_shortcut(Key::C, Mods::CTRL | Mods::SHIFT));
         assert!(!is_copy_shortcut(Key::C, Mods::empty()));
         assert!(!is_copy_shortcut(Key::V, Mods::CTRL));
+    }
+
+    #[test]
+    fn paste_shortcut_is_shift_insert_alone() {
+        assert!(is_paste_shortcut(Key::Insert, Mods::SHIFT));
+        assert!(is_paste_shortcut(Key::Insert, Mods::SHIFT | Mods::NUM_LOCK));
+        assert!(!is_paste_shortcut(Key::Insert, Mods::CTRL));
+        assert!(!is_paste_shortcut(Key::Insert, Mods::SHIFT | Mods::CTRL));
+        assert!(!is_paste_shortcut(Key::V, Mods::CTRL));
     }
 
     #[test]

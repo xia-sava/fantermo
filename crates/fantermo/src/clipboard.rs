@@ -3,8 +3,10 @@
 use windows::Win32::{
     Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND},
     System::{
-        DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
-        Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
+        DataExchange::{
+            CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
+        },
+        Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
         Ole::CF_UNICODETEXT,
     },
 };
@@ -62,6 +64,31 @@ pub fn set_text(owner: HWND, text: &str) -> windows::core::Result<()> {
         free(memory);
     }
     result
+}
+
+/// クリップボードの文字列。文字列がなければ `None`。
+pub fn text(owner: HWND) -> windows::core::Result<Option<String>> {
+    let _clipboard = OpenedClipboard::open(owner)?;
+    // SAFETY: クリップボードは開いている。返るハンドルはクリップボードが持ち、閉じるまで有効。
+    let Ok(handle) = (unsafe { GetClipboardData(u32::from(CF_UNICODETEXT.0)) }) else {
+        return Ok(None);
+    };
+    let memory = HGLOBAL(handle.0);
+    // SAFETY: memory はクリップボードの文字列の領域。
+    let locked = unsafe { GlobalLock(memory) };
+    if locked.is_null() {
+        return Ok(None);
+    }
+    // SAFETY: Lock できたので、GlobalSize バイトを読める。読み終えたら Unlock する。
+    let text = unsafe {
+        let capacity = GlobalSize(memory) / size_of::<u16>();
+        let units = std::slice::from_raw_parts(locked.cast::<u16>(), capacity);
+        let length = units.iter().position(|&unit| unit == 0).unwrap_or(capacity);
+        let text = String::from_utf16_lossy(&units[..length]);
+        _ = GlobalUnlock(memory);
+        text
+    };
+    Ok(Some(text))
 }
 
 fn free(memory: HGLOBAL) {

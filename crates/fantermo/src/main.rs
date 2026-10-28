@@ -11,6 +11,7 @@ mod dump;
 mod font;
 mod ime;
 mod keyboard;
+mod paste_editor;
 mod pipeline;
 mod renderer;
 mod shader;

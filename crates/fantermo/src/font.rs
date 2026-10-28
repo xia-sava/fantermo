@@ -1,10 +1,13 @@
 //! DirectWrite でフォントを探し、セルの寸法を測る。
 
 use windows::{
-    Win32::Graphics::DirectWrite::{
-        DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_METRICS, DWRITE_FONT_STRETCH_NORMAL,
-        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_GLYPH_METRICS,
-        DWriteCreateFactory, IDWriteFactory, IDWriteFontFace,
+    Win32::Graphics::{
+        DirectWrite::{
+            DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_METRICS, DWRITE_FONT_STRETCH_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_GLYPH_METRICS,
+            DWriteCreateFactory, IDWriteFactory, IDWriteFontFace,
+        },
+        Gdi::{DEFAULT_CHARSET, LOGFONTW},
     },
     core::{BOOL, HSTRING},
 };
@@ -16,12 +19,35 @@ const POINTS_PER_INCH: f32 = 72.0;
 const CELL_WIDTH_REFERENCE: char = 'M';
 
 /// 見つかったフォントと、その大きさで描くときのセルの寸法。
+#[derive(Clone, Debug)]
 pub struct Font {
     pub family: String,
     /// フォントの大きさ（ピクセル）。
     pub size_px: f32,
     pub cell_width_px: u32,
     pub cell_height_px: u32,
+}
+
+impl Font {
+    /// 同じ書体と大きさの LOGFONTW（GDI や IME に渡すため）。
+    pub fn logfont(&self) -> LOGFONTW {
+        let mut logfont = LOGFONTW {
+            // 負の値は、行の間隔を含まない文字の高さ（ピクセル）。
+            lfHeight: -(self.size_px.round() as i32),
+            lfCharSet: DEFAULT_CHARSET,
+            ..Default::default()
+        };
+        // 書体名は終端の NUL を含めて配列に収まるところまで。
+        let capacity = logfont.lfFaceName.len() - 1;
+        for (slot, unit) in logfont
+            .lfFaceName
+            .iter_mut()
+            .zip(self.family.encode_utf16().take(capacity))
+        {
+            *slot = unit;
+        }
+        logfont
+    }
 }
 
 /// `families` を順に探し、最初に見つかったフォントを `size_pt` ポイント、`dpi` で測る。
@@ -110,4 +136,39 @@ fn reference_advance(face: &IDWriteFontFace) -> Option<u32> {
             .ok()?
     };
     Some(glyph_metrics.advanceWidth)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn font(family: &str) -> Font {
+        Font {
+            family: family.to_owned(),
+            size_px: 31.6,
+            cell_width_px: 16,
+            cell_height_px: 32,
+        }
+    }
+
+    #[test]
+    fn logfont_uses_the_same_face_and_size() {
+        let logfont = font("Bizin Gothic").logfont();
+        assert_eq!(logfont.lfHeight, -32);
+        let name_len = logfont
+            .lfFaceName
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap();
+        assert_eq!(
+            String::from_utf16(&logfont.lfFaceName[..name_len]).unwrap(),
+            "Bizin Gothic"
+        );
+    }
+
+    #[test]
+    fn long_face_names_keep_the_terminator() {
+        let logfont = font(&"x".repeat(100)).logfont();
+        assert_eq!(logfont.lfFaceName.last(), Some(&0));
+    }
 }

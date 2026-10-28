@@ -9,6 +9,7 @@ use libghostty_vt::{
     Terminal,
     fmt::{Format, Formatter, FormatterOptions},
     key,
+    paste::Options as PasteOptions,
     render::{CellIterator, RenderState, RowIterator},
     screen::CellWide,
     selection::{
@@ -17,8 +18,8 @@ use libghostty_vt::{
     },
     style::RgbColor,
     terminal::{
-        ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType, Point,
-        PointCoordinate, PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes,
+        ClipboardMime, ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType,
+        Point, PointCoordinate, PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes,
         SizeReportSize,
     },
 };
@@ -33,6 +34,19 @@ pub use libghostty_vt::{
     Error as VtError,
     key::{Action as KeyAction, Key, Mods},
 };
+
+/// 貼り付けた文字列の種類。
+const PLAIN_TEXT_MIME: &str = "text/plain";
+
+/// 貼り付けの結果。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PasteOutcome {
+    Pasted,
+    /// 貼り付けるものがなかった。
+    Empty,
+    /// コマンドとして走りうるので送らなかった。
+    Unsafe,
+}
 
 /// マウスの位置。表示している範囲の中のセルと、窓の中のピクセル。
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -200,6 +214,22 @@ impl Vt {
         Ok(text
             .map(|text| String::from_utf8_lossy(&text).into_owned())
             .filter(|text| !text.is_empty()))
+    }
+
+    /// `text` を貼り付ける。シェルへ送るバイト列は `take_replies` で取り出す。
+    ///
+    /// 改行を含む文字列は、アプリが bracketed paste に対応していなければコマンドとして走りうるので、
+    /// `allow_unsafe` でなければ送らずに [`PasteOutcome::Unsafe`] を返す。
+    pub fn paste(&mut self, text: &str, allow_unsafe: bool) -> Result<PasteOutcome, VtError> {
+        let mimes = [ClipboardMime::new(PLAIN_TEXT_MIME)];
+        let options = PasteOptions::new().with_allow_unsafe(allow_unsafe);
+        let read = |_mime: &str, out: &mut dyn std::io::Write| out.write_all(text.as_bytes());
+        match self.terminal.paste(options, &mimes, read) {
+            Ok(true) => Ok(PasteOutcome::Pasted),
+            Ok(false) => Ok(PasteOutcome::Empty),
+            Err(VtError::Rejected) => Ok(PasteOutcome::Unsafe),
+            Err(e) => Err(e),
+        }
     }
 
     pub fn clear_selection(&mut self) -> Result<(), VtError> {
@@ -535,6 +565,31 @@ mod tests {
             .unwrap();
         vt.selection_release(at).unwrap();
         assert_eq!(vt.selected_text().unwrap().as_deref(), Some("world"));
+    }
+
+    #[test]
+    fn pasting_one_line_sends_it_as_is() {
+        let mut vt = new_vt();
+        assert_eq!(vt.paste("echo hi", false).unwrap(), PasteOutcome::Pasted);
+        assert_eq!(vt.take_replies(), b"echo hi");
+    }
+
+    #[test]
+    fn pasting_lines_without_bracketed_paste_needs_permission() {
+        let mut vt = new_vt();
+        assert_eq!(vt.paste("a\nb", false).unwrap(), PasteOutcome::Unsafe);
+        assert!(vt.take_replies().is_empty());
+        assert_eq!(vt.paste("a\nb", true).unwrap(), PasteOutcome::Pasted);
+        // 改行は CR にして送る。
+        assert_eq!(vt.take_replies(), b"a\rb");
+    }
+
+    #[test]
+    fn pasting_lines_with_bracketed_paste_is_safe() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b[?2004h");
+        assert_eq!(vt.paste("a\nb", false).unwrap(), PasteOutcome::Pasted);
+        assert_eq!(vt.take_replies(), b"\x1b[200~a\nb\x1b[201~");
     }
 
     #[test]
