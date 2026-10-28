@@ -16,6 +16,12 @@
 //! # セルの数は変えない。"shrink" は横に縮める、"clip" は縮めずにセルの左に置いてはみ出しを切る、
 //! # "overflow" は縮めずに右のセルへはみ出して描く。
 //! wide_glyph = "shrink"
+//!
+//! [paste]
+//! # 貼り付ける前に、内容を編集できるダイアログで確かめるとき。"unsafe" はアプリが bracketed paste を
+//! # 有効にしていないなど、改行を含む文字列がコマンドとして走りうるとき、"multiline" は bracketed
+//! # paste に関わらず改行を含むとき。"never" は確かめずに改行ごと送る。
+//! confirm = "unsafe"
 //! ```
 
 use std::ops::RangeInclusive;
@@ -38,6 +44,28 @@ pub struct Config {
     pub font: FontConfig,
     /// 起動するコマンドライン。`None` なら fantermo の既定。
     pub shell: Option<String>,
+    pub paste: PasteConfig,
+}
+
+/// `[paste]` の設定。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PasteConfig {
+    /// 貼り付ける前に、編集のダイアログで確かめるとき。
+    pub confirm: PasteConfirm,
+}
+
+/// 貼り付ける前に、内容を編集のダイアログで確かめるとき（`paste.confirm`）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PasteConfirm {
+    /// コマンドとして走りうるとき。改行を含む文字列でアプリが bracketed paste を有効にしていない
+    /// ときと、bracketed paste の終わりの印を含むとき。
+    #[default]
+    Unsafe,
+    /// bracketed paste に関わらず、改行か bracketed paste の終わりの印を含むとき。
+    Multiline,
+    /// 確かめない。bracketed paste でなければ、改行は CR にして送る。
+    Never,
 }
 
 /// `[font]` の設定。
@@ -120,6 +148,13 @@ pub fn parse(text: &str) -> Parsed {
         } else {
             config.shell = Some(shell);
         }
+    }
+    if let Some(mut paste) = take::<Table>(&mut root, None, "paste", &mut warnings) {
+        const SECTION: Option<&str> = Some("paste");
+        if let Some(confirm) = take::<PasteConfirm>(&mut paste, SECTION, "confirm", &mut warnings) {
+            config.paste.confirm = confirm;
+        }
+        warn_unknown(&paste, SECTION, &mut warnings);
     }
     warn_unknown(&root, None, &mut warnings);
     Parsed { config, warnings }
@@ -234,6 +269,8 @@ mod tests {
             family = ["Cascadia Mono", "Consolas"]
             size = 10.5
             wide_glyph = "overflow"
+            [paste]
+            confirm = "never"
             "#,
         );
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
@@ -246,6 +283,9 @@ mod tests {
                     wide_glyph: WideGlyph::Overflow,
                 },
                 shell: Some(r"C:\cygwin64\bin\zsh.exe -l".to_owned()),
+                paste: PasteConfig {
+                    confirm: PasteConfirm::Never,
+                },
             }
         );
     }
@@ -321,6 +361,40 @@ mod tests {
                 .all(|name| warning.contains(name)),
             "{warning}"
         );
+    }
+
+    #[test]
+    fn paste_confirm_takes_each_name() {
+        assert_eq!(parse("").config.paste.confirm, PasteConfirm::Unsafe);
+        for (name, confirm) in [
+            ("unsafe", PasteConfirm::Unsafe),
+            ("multiline", PasteConfirm::Multiline),
+            ("never", PasteConfirm::Never),
+        ] {
+            let parsed = parse(&format!("[paste]\nconfirm = '{name}'\n"));
+            assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+            assert_eq!(parsed.config.paste.confirm, confirm);
+        }
+    }
+
+    #[test]
+    fn unknown_paste_settings_are_reported() {
+        let parsed = parse("[paste]\nconfirm = 'ask'\ntrim = true\n");
+        assert_eq!(parsed.config.paste, PasteConfig::default());
+        let mut warnings = parsed.warnings;
+        warnings.sort();
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("ignoring paste.confirm:"),
+            "{warnings:?}"
+        );
+        assert!(
+            ["unsafe", "multiline", "never"]
+                .iter()
+                .all(|name| warnings[0].contains(name)),
+            "{warnings:?}"
+        );
+        assert_eq!(warnings[1], "ignoring unknown setting paste.trim");
     }
 
     #[test]

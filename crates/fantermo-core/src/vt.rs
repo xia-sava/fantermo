@@ -63,6 +63,12 @@ pub enum PasteOutcome {
     Unsafe,
 }
 
+/// `text` が、端末のモードに関わらずコマンドとして走りえない。改行（LF、CR）と bracketed paste の
+/// 終わりの印（`ESC [ 201 ~`）を含めば `false`。
+pub fn is_safe_to_paste(text: &str) -> bool {
+    libghostty_vt::paste::is_safe(text)
+}
+
 /// マウスの位置。表示している範囲の中のセルと、窓の中のピクセル。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PointerPosition {
@@ -990,6 +996,38 @@ mod tests {
         vt.feed(b"\x1b[?2004h");
         assert_eq!(vt.paste("a\nb", false).unwrap(), PasteOutcome::Pasted);
         assert_eq!(vt.take_replies(), b"\x1b[200~a\nb\x1b[201~");
+    }
+
+    #[test]
+    fn pasting_the_end_of_bracketed_paste_needs_permission() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b[?2004h");
+        assert_eq!(
+            vt.paste("a\x1b[201~b", false).unwrap(),
+            PasteOutcome::Unsafe
+        );
+        assert!(vt.take_replies().is_empty());
+        // 許しても、ESC は空白に変えて送るので、貼り付けの途中で終わらない。
+        assert_eq!(vt.paste("a\x1b[201~b", true).unwrap(), PasteOutcome::Pasted);
+        assert_eq!(vt.take_replies(), b"\x1b[200~a [201~b\x1b[201~");
+    }
+
+    #[test]
+    fn control_characters_are_pasted_as_spaces() {
+        let mut vt = new_vt();
+        assert_eq!(vt.paste("a\x1bb\x7fc", true).unwrap(), PasteOutcome::Pasted);
+        assert_eq!(vt.take_replies(), b"a b c");
+        // CR は改行と同じく、そのまま送る。
+        assert_eq!(vt.paste("a\rb\r\n", true).unwrap(), PasteOutcome::Pasted);
+        assert_eq!(vt.take_replies(), b"a\rb\r\r");
+    }
+
+    #[test]
+    fn safety_of_text_does_not_depend_on_the_mode() {
+        assert!(is_safe_to_paste("echo hi"));
+        assert!(!is_safe_to_paste("a\nb"));
+        assert!(!is_safe_to_paste("a\rb"));
+        assert!(!is_safe_to_paste("a\x1b[201~b"));
     }
 
     #[test]

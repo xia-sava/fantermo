@@ -9,9 +9,9 @@ use std::{
 
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize},
-    config::{Config, DEFAULT_FONT_FAMILIES, FontConfig, WideGlyph},
+    config::{Config, DEFAULT_FONT_FAMILIES, FontConfig, PasteConfirm, WideGlyph},
     vt::{
-        Key, KeyAction, KeyInput, Mods, MouseAction, MouseButton, MouseInput, PasteOutcome,
+        self, Key, KeyAction, KeyInput, Mods, MouseAction, MouseButton, MouseInput, PasteOutcome,
         PointerPosition, Vt,
     },
 };
@@ -116,7 +116,7 @@ pub fn run(
         font,
         system_dpi,
         config_path,
-        config.font,
+        config,
         command_line,
     )?;
     let app = Box::into_raw(Box::new(RefCell::new(app)));
@@ -317,6 +317,8 @@ struct App {
     config_path: Option<PathBuf>,
     /// `font` を探したときの設定。
     font_config: FontConfig,
+    /// 貼り付ける前に、編集のダイアログで確かめるとき。
+    paste_confirm: PasteConfirm,
     vt: Vt,
     backend: ConPty,
     renderer: Renderer,
@@ -345,9 +347,10 @@ impl App {
         font: Font,
         dpi: u32,
         config_path: Option<PathBuf>,
-        font_config: FontConfig,
+        config: Config,
         command_line: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let font_config = config.font;
         let (width, height) = client_size(hwnd);
         let size = grid_size(&font, width, height);
         let renderer = Renderer::new(hwnd, width, height, &dwrite, &font, font_config.wide_glyph)?;
@@ -385,6 +388,7 @@ impl App {
             dpi,
             config_path,
             font_config,
+            paste_confirm: config.paste.confirm,
             vt,
             backend,
             renderer,
@@ -449,7 +453,8 @@ impl App {
         None
     }
 
-    /// クリップボードの文字列を貼り付ける。改行を含んで確かめが要るときは、編集のダイアログを開くよう返す。
+    /// クリップボードの文字列を貼り付ける。設定の `paste.confirm` に従って確かめが要るときは、
+    /// 編集のダイアログを開くよう返す。
     fn paste_clipboard(&mut self) -> Option<Deferred> {
         let text = match clipboard::text(self.hwnd) {
             Ok(Some(text)) => paste_editor::from_crlf(&text),
@@ -459,13 +464,16 @@ impl App {
                 return None;
             }
         };
-        match self.paste(&text, false) {
-            Some(PasteOutcome::Unsafe) => Some(Deferred::EditPaste {
-                text,
-                font: self.font.clone(),
-            }),
-            _ => None,
-        }
+        let needs_confirmation = match paste_action(self.paste_confirm, &text) {
+            PasteAction::Confirm => true,
+            PasteAction::Paste { allow_unsafe } => {
+                self.paste(&text, allow_unsafe) == Some(PasteOutcome::Unsafe)
+            }
+        };
+        needs_confirmation.then(|| Deferred::EditPaste {
+            text,
+            font: self.font.clone(),
+        })
     }
 
     /// `text` を貼り付ける。`allow_unsafe` でなければ、コマンドとして走りうる文字列は送らない。
@@ -873,9 +881,10 @@ impl App {
     /// 設定ファイルを読み直す。フォントの設定が変わっていて、そのフォントを測れたら設定を入れ替え、
     /// 作り直しに使う DPI を返す。作り直しは借用を手放してから [`change_dpi_in_place`] で行う。
     /// グリフの描き方だけが変わったときは、セルの寸法は変わらないので、この場でアトラスだけを作り直す。
-    /// `shell` は次に起動したときから使う。
+    /// 貼り付けの設定はすぐに入れ替える。`shell` は次に起動したときから使う。
     fn reload_config(&mut self) -> Option<u32> {
         let config = config_file::load(self.config_path.as_deref());
+        self.paste_confirm = config.paste.confirm;
         if config.font == self.font_config {
             return None;
         }
@@ -1054,6 +1063,29 @@ fn is_copy_shortcut(key: Key, mods: Mods) -> bool {
 /// 貼り付けにするキー。Shift+Insert（ほかの修飾キーなし）。
 fn is_paste_shortcut(key: Key, mods: Mods) -> bool {
     held_mods(mods) == Mods::SHIFT && key == Key::Insert
+}
+
+/// 貼り付けるときにすること。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PasteAction {
+    /// 送らずに、編集のダイアログで確かめる。
+    Confirm,
+    /// 端末に渡す。`allow_unsafe` でなければ、コマンドとして走りうる文字列は端末が送らずに返す。
+    Paste { allow_unsafe: bool },
+}
+
+/// 確かめ方の設定が `confirm` のときに、`text` を貼り付けるためにすること。
+fn paste_action(confirm: PasteConfirm, text: &str) -> PasteAction {
+    match confirm {
+        PasteConfirm::Unsafe => PasteAction::Paste {
+            allow_unsafe: false,
+        },
+        PasteConfirm::Multiline if !vt::is_safe_to_paste(text) => PasteAction::Confirm,
+        PasteConfirm::Multiline => PasteAction::Paste {
+            allow_unsafe: false,
+        },
+        PasteConfirm::Never => PasteAction::Paste { allow_unsafe: true },
+    }
 }
 
 /// コンテキストメニューを出すキー。メニューキー（修飾キーなし）と Shift+F10（ほかの修飾キーなし）。
@@ -1388,6 +1420,27 @@ mod tests {
         assert!(!is_paste_shortcut(Key::Insert, Mods::CTRL));
         assert!(!is_paste_shortcut(Key::Insert, Mods::SHIFT | Mods::CTRL));
         assert!(!is_paste_shortcut(Key::V, Mods::CTRL));
+    }
+
+    #[test]
+    fn paste_confirmation_follows_the_setting() {
+        let as_is = PasteAction::Paste {
+            allow_unsafe: false,
+        };
+        let unchecked = PasteAction::Paste { allow_unsafe: true };
+        // 既定は、端末が bracketed paste のモードを見て断ったときだけ確かめる。
+        assert_eq!(paste_action(PasteConfirm::Unsafe, "a\nb"), as_is);
+        assert_eq!(
+            paste_action(PasteConfirm::Multiline, "a\nb"),
+            PasteAction::Confirm
+        );
+        assert_eq!(
+            paste_action(PasteConfirm::Multiline, "a\rb"),
+            PasteAction::Confirm
+        );
+        assert_eq!(paste_action(PasteConfirm::Multiline, "echo hi"), as_is);
+        assert_eq!(paste_action(PasteConfirm::Never, "a\nb"), unchecked);
+        assert_eq!(paste_action(PasteConfirm::Never, "echo hi"), unchecked);
     }
 
     #[test]
