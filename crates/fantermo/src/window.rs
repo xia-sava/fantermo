@@ -957,8 +957,8 @@ impl App {
             .is_some_and(|code| self.on_session_ended(code))
     }
 
-    /// 端末の子プロセスが `code` で終わった。最後の端末なので、その終了コードを覚えて、窓を閉じるよう
-    /// `true` を返す。
+    /// 端末の子プロセスが `code` で終わった。窓の端末は一つなので、それを窓の終了コードにし、窓を
+    /// 閉じるよう `true` を返す。
     fn on_session_ended(&mut self, code: ExitCode) -> bool {
         self.exit = Some(code);
         true
