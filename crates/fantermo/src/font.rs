@@ -18,6 +18,8 @@ const CELL_WIDTH_REFERENCE: char = 'M';
 /// 見つかったフォントと、その大きさで描くときのセルの寸法。
 pub struct Font {
     pub family: String,
+    /// フォントの大きさ（ピクセル）。
+    pub size_px: f32,
     pub cell_width_px: u32,
     pub cell_height_px: u32,
 }
@@ -89,6 +91,7 @@ fn measure(family: &str, face: IDWriteFontFace, size_pt: f32, dpi: u32) -> Font 
 
     Font {
         family: family.to_owned(),
+        size_px,
         cell_width_px: (advance_units as f32 * size_px / units_per_em).ceil() as u32,
         cell_height_px: (line_units * size_px / units_per_em).ceil() as u32,
     }

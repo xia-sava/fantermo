@@ -3,10 +3,13 @@
 //! 引数がなければ PowerShell を起動する。引数があれば、それを子プロセスのコマンドラインにする
 //! （例: `fantermo.exe C:\app\cygwin\bin\zsh.exe -l`）。
 
+mod atlas;
 mod conpty;
 mod dump;
 mod font;
+mod pipeline;
 mod renderer;
+mod shader;
 mod window;
 
 use tracing_subscriber::EnvFilter;

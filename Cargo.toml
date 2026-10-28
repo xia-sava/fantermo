@@ -17,6 +17,7 @@ png = "0.18.1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 windows = "0.62.2"
+windows-numerics = "0.3.1"
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "warn"

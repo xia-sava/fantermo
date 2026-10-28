@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use fantermo_core::frame::{Frame, Rgb};
 use windows::Win32::{
     Foundation::{HMODULE, HWND},
     Graphics::{
@@ -12,6 +13,7 @@ use windows::Win32::{
             D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView,
             ID3D11Texture2D,
         },
+        DirectWrite::IDWriteFactory,
         Dxgi::{
             Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC},
             CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_PRESENT, DXGI_SCALING_NONE,
@@ -19,6 +21,12 @@ use windows::Win32::{
             DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIFactory2, IDXGISwapChain1,
         },
     },
+};
+
+use crate::{
+    atlas::{AtlasFull, GlyphAtlas},
+    font::Font,
+    pipeline::{CellPipeline, Instance, InstanceKind},
 };
 
 /// スワップチェーンのバッファの数。
@@ -37,10 +45,20 @@ pub struct Renderer {
     target: Option<ID3D11RenderTargetView>,
     width: u32,
     height: u32,
+    atlas: GlyphAtlas,
+    pipeline: CellPipeline,
+    cell_width: u32,
+    cell_height: u32,
 }
 
 impl Renderer {
-    pub fn new(hwnd: HWND, width: u32, height: u32) -> windows::core::Result<Self> {
+    pub fn new(
+        hwnd: HWND,
+        width: u32,
+        height: u32,
+        dwrite: &IDWriteFactory,
+        font: &Font,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let (device, context) = create_device()?;
         // SAFETY: フラグなしでファクトリを作るだけ。
         let factory: IDXGIFactory2 = unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))? };
@@ -62,6 +80,8 @@ impl Renderer {
         let swap_chain =
             unsafe { factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None)? };
 
+        let atlas = GlyphAtlas::new(&device, dwrite, font)?;
+        let pipeline = CellPipeline::new(&device)?;
         let mut renderer = Self {
             device,
             context,
@@ -69,6 +89,10 @@ impl Renderer {
             target: None,
             width: desc.Width,
             height: desc.Height,
+            atlas,
+            pipeline,
+            cell_width: font.cell_width_px,
+            cell_height: font.cell_height_px,
         };
         renderer.create_target()?;
         Ok(renderer)
@@ -98,14 +122,33 @@ impl Renderer {
     }
 
     /// 1 フレームを描いて表示する。`capture` を渡すと、表示する前のバックバッファを PNG で書き出す。
-    pub fn render(
-        &mut self,
-        background: Rgba,
-        capture: Option<&Path>,
-    ) -> windows::core::Result<()> {
+    pub fn render(&mut self, frame: &Frame, capture: Option<&Path>) -> windows::core::Result<()> {
+        let instances = match self.instances(frame) {
+            Ok(instances) => instances,
+            Err(AtlasFull) => {
+                // 描きかけのフレームの場所は捨てたアトラスを指すので、空にしてから組み直す。
+                self.atlas.clear()?;
+                self.instances(frame).unwrap_or_else(|AtlasFull| {
+                    tracing::warn!("the glyph atlas cannot hold one frame");
+                    Vec::new()
+                })
+            }
+        };
         if let Some(target) = &self.target {
             // SAFETY: target は現在のバックバッファのビュー。
-            unsafe { self.context.ClearRenderTargetView(target, &background) };
+            unsafe {
+                self.context
+                    .ClearRenderTargetView(target, &rgba(frame.background))
+            };
+            self.pipeline.draw(
+                &self.device,
+                &self.context,
+                target,
+                (self.width, self.height),
+                self.atlas.view(),
+                self.atlas.size(),
+                &instances,
+            )?;
         }
         if let Some(path) = capture
             && let Err(e) = self.capture_png(path)
@@ -118,6 +161,61 @@ impl Renderer {
                 .Present(PRESENT_SYNC_INTERVAL, DXGI_PRESENT(0))
                 .ok()
         }
+    }
+
+    /// 背景、カーソル、グリフの順に四角形を並べる。カーソルの上の文字は背景色で描く。
+    fn instances(&mut self, frame: &Frame) -> Result<Vec<Instance>, AtlasFull> {
+        let mut backgrounds = Vec::new();
+        let mut glyphs = Vec::new();
+        let cursor = frame.cursor;
+        for cell in &frame.cells {
+            let rect = self.cell_rect(cell.col, cell.row, cell.width);
+            if let Some(bg) = cell.bg {
+                backgrounds.push(solid(rect, bg));
+            }
+            if cell.text.is_empty() || cell.text == " " {
+                continue;
+            }
+            let slot = self
+                .atlas
+                .slot(&cell.text, cell.bold, cell.italic, cell.width)?;
+            let under_cursor =
+                cursor.is_some_and(|cursor| cursor.col == cell.col && cursor.row == cell.row);
+            let color = if under_cursor {
+                cell.bg.unwrap_or(frame.background)
+            } else {
+                cell.fg
+            };
+            glyphs.push(Instance {
+                rect,
+                uv: [
+                    slot.x as f32,
+                    slot.y as f32,
+                    slot.width as f32,
+                    slot.height as f32,
+                ],
+                color: rgba(color),
+                kind: InstanceKind::Glyph,
+                _padding: [0; 3],
+            });
+        }
+        if let Some(cursor) = cursor {
+            backgrounds.push(solid(
+                self.cell_rect(cursor.col, cursor.row, cursor.width),
+                cursor.color,
+            ));
+        }
+        backgrounds.append(&mut glyphs);
+        Ok(backgrounds)
+    }
+
+    fn cell_rect(&self, col: u16, row: u16, width: u8) -> [f32; 4] {
+        [
+            (u32::from(col) * self.cell_width) as f32,
+            (u32::from(row) * self.cell_height) as f32,
+            (u32::from(width) * self.cell_width) as f32,
+            self.cell_height as f32,
+        ]
     }
 
     fn create_target(&mut self) -> windows::core::Result<()> {
@@ -179,6 +277,25 @@ impl Renderer {
         unsafe { self.context.Unmap(&staging, 0) };
 
         write_png(path, desc.Width, desc.Height, &rgba)
+    }
+}
+
+fn rgba(color: Rgb) -> Rgba {
+    [
+        f32::from(color.r) / 255.0,
+        f32::from(color.g) / 255.0,
+        f32::from(color.b) / 255.0,
+        1.0,
+    ]
+}
+
+fn solid(rect: [f32; 4], color: Rgb) -> Instance {
+    Instance {
+        rect,
+        uv: [0.0; 4],
+        color: rgba(color),
+        kind: InstanceKind::Solid,
+        _padding: [0; 3],
     }
 }
 

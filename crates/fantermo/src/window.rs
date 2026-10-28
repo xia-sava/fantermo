@@ -34,7 +34,7 @@ use crate::{
     conpty::{ConPty, SpawnOptions},
     dump::{DUMP_INTERVAL, ScreenDump},
     font::{self, Font},
-    renderer::{Renderer, Rgba},
+    renderer::Renderer,
 };
 
 const WINDOW_CLASS: PCWSTR = w!("fantermo");
@@ -53,8 +53,6 @@ const INITIAL_ROWS: u16 = 30;
 /// 順に探すフォント。開発中は Bizin Gothic を既定にする。
 const FONT_FAMILIES: &[&str] = &["Bizin Gothic", "Consolas"];
 const FONT_SIZE_PT: f32 = 12.0;
-
-const BACKGROUND: Rgba = [0.0, 0.0, 0.0, 1.0];
 
 /// 子プロセスの `TERM` と、端末が名乗る terminfo の名前。
 const TERM: &str = "xterm-256color";
@@ -170,7 +168,7 @@ impl App {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (width, height) = client_size(hwnd);
         let size = grid_size(&font, width, height);
-        let renderer = Renderer::new(hwnd, width, height)?;
+        let renderer = Renderer::new(hwnd, width, height, &dwrite, &font)?;
         let vt = Vt::new(size, TERM)?;
 
         // HWND はスレッドをまたいで渡せないので、値だけを持たせる。PostMessageW はどのスレッドからでも呼べる。
@@ -258,9 +256,7 @@ impl App {
     }
 
     fn render(&mut self) {
-        if let Err(e) = self.renderer.render(BACKGROUND, None) {
-            tracing::warn!("failed to render: {e}");
-        }
+        self.render_to(None);
     }
 
     fn write_dump(&mut self) {
@@ -268,7 +264,20 @@ impl App {
             return;
         };
         dump.write_screen(&self.vt, &self.font.family);
-        if let Err(e) = self.renderer.render(BACKGROUND, Some(&dump.frame_path())) {
+        let frame_path = dump.frame_path();
+        self.render_to(Some(&frame_path));
+    }
+
+    /// 描いて表示する。`capture` を渡すと、表示する前の画面を PNG で書き出す。
+    fn render_to(&mut self, capture: Option<&std::path::Path>) {
+        let frame = match self.vt.frame() {
+            Ok(frame) => frame,
+            Err(e) => {
+                tracing::warn!("failed to read the screen: {e}");
+                return;
+            }
+        };
+        if let Err(e) = self.renderer.render(&frame, capture) {
             tracing::warn!("failed to render: {e}");
         }
     }
