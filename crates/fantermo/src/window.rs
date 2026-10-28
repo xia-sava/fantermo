@@ -31,7 +31,8 @@ use windows::{
             },
             WindowsAndMessaging::{
                 CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
-                DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW,
+                DestroyWindow, DispatchMessageW, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO,
+                FlashWindowEx, GWLP_USERDATA, GetClientRect, GetForegroundWindow, GetMessageW,
                 GetWindowLongPtrW, IDC_ARROW, KillTimer, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
                 PostMessageW, PostQuitMessage, RegisterClassW, SPI_GETWHEELSCROLLLINES,
                 SW_SHOWDEFAULT, SWP_NOACTIVATE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
@@ -647,6 +648,9 @@ impl App {
             tracing::warn!("failed to write replies to the child: {e}");
         }
         self.update_title();
+        if self.vt.take_bell() {
+            self.ring_bell();
+        }
         self.invalidate();
 
         let exit = self.backend.poll_exit();
@@ -676,6 +680,25 @@ impl App {
         if let Err(e) = unsafe { SetWindowTextW(self.hwnd, &HSTRING::from(title)) } {
             tracing::warn!("failed to set the window title: {e}");
         }
+    }
+
+    /// ベル。窓が前面になければ、前面に来るまでタスクバーのボタンを点滅させる。音は鳴らさない。
+    fn ring_bell(&self) {
+        // SAFETY: 引数のない問い合わせ。
+        if unsafe { GetForegroundWindow() } == self.hwnd {
+            return;
+        }
+        let flash = FLASHWINFO {
+            cbSize: size_of::<FLASHWINFO>() as u32,
+            hwnd: self.hwnd,
+            dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG,
+            // FLASHW_TIMERNOFG で、回数ではなく前面に来るまで点滅を続ける。
+            uCount: 0,
+            // 0 でカーソルの点滅の間隔を使う。
+            dwTimeout: 0,
+        };
+        // SAFETY: flash は初期化済みで、self.hwnd は有効な窓。戻り値は前の点滅の状態で、失敗ではない。
+        unsafe { _ = FlashWindowEx(&flash) };
     }
 
     fn on_resize(&mut self, width: u32, height: u32) {

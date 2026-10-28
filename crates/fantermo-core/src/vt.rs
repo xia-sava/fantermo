@@ -101,6 +101,8 @@ pub struct Vt {
     size: Rc<Cell<GridSize>>,
     /// `take_title_change` が最後に返したタイトル。
     last_title: Vec<u8>,
+    /// ベル（BEL）を受けた。`take_bell` で下ろす。
+    bell_rang: Rc<Cell<bool>>,
     /// 画面を取り出すときに使い回す、描画用の状態と行・セルの反復子。
     render_state: RenderState<'static>,
     row_iter: RowIterator<'static>,
@@ -123,6 +125,7 @@ impl Vt {
     pub fn new(size: GridSize, terminfo_name: &str) -> Result<Self, VtError> {
         let replies = Rc::new(RefCell::new(Vec::new()));
         let size_cell = Rc::new(Cell::new(size));
+        let bell_rang = Rc::new(Cell::new(false));
 
         let mut terminal = Terminal::new(size.cols, size.rows)?;
         terminal
@@ -154,13 +157,18 @@ impl Vt {
                 }
             })?
             .on_device_attributes(|_terminal| Some(device_attributes()))?
-            .on_xtversion(|_terminal| Some(XTVERSION_NAME))?;
+            .on_xtversion(|_terminal| Some(XTVERSION_NAME))?
+            .on_bell({
+                let bell_rang = Rc::clone(&bell_rang);
+                move |_terminal| bell_rang.set(true)
+            })?;
 
         Ok(Self {
             terminal,
             replies,
             size: size_cell,
             last_title: Vec::new(),
+            bell_rang,
             render_state: RenderState::new()?,
             row_iter: RowIterator::new()?,
             cell_iter: CellIterator::new()?,
@@ -338,6 +346,11 @@ impl Vt {
         }
         self.last_title = title.to_vec();
         Ok(Some(String::from_utf8_lossy(&self.last_title).into_owned()))
+    }
+
+    /// 前に呼んだときからベル（BEL）を受けていれば `true`。何度受けても一度だけ返す。
+    pub fn take_bell(&mut self) -> bool {
+        self.bell_rang.replace(false)
     }
 
     /// 溜まっているシェルへの応答を取り出す。
@@ -599,6 +612,24 @@ mod tests {
         vt.take_title_change().unwrap();
         vt.feed(b"\x1b]2;vim\x07");
         assert_eq!(vt.take_title_change().unwrap(), None);
+    }
+
+    #[test]
+    fn bel_rings_the_bell_once() {
+        let mut vt = new_vt();
+        assert!(!vt.take_bell());
+        vt.feed(b"a\x07b\x07");
+        assert!(vt.take_bell());
+        assert!(!vt.take_bell());
+        // BEL は画面に何も出さない。
+        assert_eq!(vt.plain_text().unwrap(), "ab");
+    }
+
+    #[test]
+    fn bel_ending_an_osc_is_not_a_bell() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b]2;vim\x07");
+        assert!(!vt.take_bell());
     }
 
     #[test]
