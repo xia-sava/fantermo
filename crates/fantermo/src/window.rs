@@ -8,16 +8,22 @@ use std::{
 
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize},
-    vt::{Key, KeyAction, KeyInput, Mods, PasteOutcome, PointerPosition, Vt},
+    vt::{
+        Key, KeyAction, KeyInput, Mods, MouseAction, MouseButton, MouseInput, PasteOutcome,
+        PointerPosition, Vt,
+    },
 };
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::{
             DirectWrite::IDWriteFactory,
-            Gdi::{InvalidateRect, ValidateRect},
+            Gdi::{InvalidateRect, ScreenToClient, ValidateRect},
         },
-        System::LibraryLoader::GetModuleHandleW,
+        System::{
+            LibraryLoader::GetModuleHandleW,
+            SystemServices::{MK_LBUTTON, MK_MBUTTON, MK_RBUTTON},
+        },
         UI::{
             HiDpi::{AdjustWindowRectExForDpi, GetDpiForSystem},
             Input::KeyboardAndMouse::{
@@ -32,9 +38,10 @@ use windows::{
                 SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW,
                 TranslateMessage, WHEEL_DELTA, WINDOW_EX_STYLE, WM_APP, WM_CHAR, WM_DEADCHAR,
                 WM_DESTROY, WM_DPICHANGED, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
-                WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY,
-                WM_PAINT, WM_SIZE, WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP,
-                WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+                WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
+                WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE,
+                WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW,
+                WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -184,6 +191,8 @@ struct App {
     wheel_lines_per_notch: u32,
     /// 高精度のホイールで、まだ 1 行に満たない回転量。
     wheel_remainder: i32,
+    /// アプリへホイールを送るときの、まだ 1 ノッチに満たない回転量。
+    wheel_report_remainder: i32,
     /// ダブルクリックの判定に使う時計。
     clock: Instant,
     /// 左ボタンで選んでいる最中。
@@ -251,6 +260,7 @@ impl App {
             text_input: Utf16Assembler::default(),
             wheel_lines_per_notch: wheel_lines_per_notch(),
             wheel_remainder: 0,
+            wheel_report_remainder: 0,
             clock: Instant::now(),
             selecting: false,
             suppressed_release: None,
@@ -354,10 +364,8 @@ impl App {
         self.invalidate();
     }
 
-    /// 窓の中の位置（`lparam` の x と y）を、表示している範囲のセルに直す。窓の外は端のセルにする。
-    fn pointer(&self, lparam: LPARAM) -> PointerPosition {
-        let x = i32::from((lparam.0 & 0xffff) as u16 as i16);
-        let y = i32::from(((lparam.0 >> 16) & 0xffff) as u16 as i16);
+    /// 窓のクライアント領域の中の位置を、表示している範囲のセルに直す。窓の外は端のセルにする。
+    fn pointer(&self, x: i32, y: i32) -> PointerPosition {
         let size = self.vt.size();
         let cell = |pixel: i32, cell_px: u32, count: u16| -> u16 {
             let index = pixel.max(0) as u32 / cell_px;
@@ -371,11 +379,20 @@ impl App {
         }
     }
 
-    fn on_left_down(&mut self, lparam: LPARAM) {
+    /// マウスのボタンを押した。アプリがマウスを求めていればアプリへ送り、そうでなければ左ボタンで
+    /// 選択を始める。Shift を押していれば、アプリが求めていても選択にする。
+    fn on_button_down(&mut self, button: MouseButton, lparam: LPARAM, wparam: WPARAM) {
         // 窓の外までドラッグしても離したことが届くように、マウスを捕まえる。
         // SAFETY: self.hwnd はこのスレッドの有効な窓。
         unsafe { SetCapture(self.hwnd) };
-        let at = self.pointer(lparam);
+        let (x, y) = client_position(lparam);
+        if self.report_mouse(MouseAction::Press, Some(button), x, y, wparam) {
+            return;
+        }
+        if button != MouseButton::Left {
+            return;
+        }
+        let at = self.pointer(x, y);
         // SAFETY: 引数のない問い合わせ。
         let repeat_interval = Duration::from_millis(u64::from(unsafe { GetDoubleClickTime() }));
         if let Err(e) = self
@@ -388,11 +405,13 @@ impl App {
         self.invalidate();
     }
 
-    fn on_mouse_move(&mut self, lparam: LPARAM) {
+    fn on_mouse_move(&mut self, lparam: LPARAM, wparam: WPARAM) {
+        let (x, y) = client_position(lparam);
         if !self.selecting {
+            self.report_mouse(MouseAction::Motion, held_button(wparam), x, y, wparam);
             return;
         }
-        let at = self.pointer(lparam);
+        let at = self.pointer(x, y);
         // Alt を押しながらなら矩形で選ぶ。
         let rectangle = keyboard::current_mods().contains(Mods::ALT);
         if let Err(e) = self.vt.selection_drag(at, rectangle) {
@@ -401,20 +420,74 @@ impl App {
         self.invalidate();
     }
 
-    fn on_left_up(&mut self, lparam: LPARAM) {
-        if !self.selecting {
-            return;
+    fn on_button_up(&mut self, button: MouseButton, lparam: LPARAM, wparam: WPARAM) {
+        let (x, y) = client_position(lparam);
+        if button == MouseButton::Left && self.selecting {
+            self.selecting = false;
+            if let Err(e) = self.vt.selection_release(self.pointer(x, y)) {
+                tracing::warn!("failed to finish the selection: {e}");
+            }
+            self.invalidate();
+        } else {
+            self.report_mouse(MouseAction::Release, Some(button), x, y, wparam);
         }
-        self.selecting = false;
-        let at = self.pointer(lparam);
-        if let Err(e) = self.vt.selection_release(at) {
-            tracing::warn!("failed to finish the selection: {e}");
+        if held_button(wparam).is_none() {
+            // SAFETY: このスレッドが捕まえたマウスを放す。
+            if let Err(e) = unsafe { ReleaseCapture() } {
+                tracing::warn!("failed to release the mouse capture: {e}");
+            }
         }
-        // SAFETY: このスレッドが捕まえたマウスを放す。
-        if let Err(e) = unsafe { ReleaseCapture() } {
-            tracing::warn!("failed to release the mouse capture: {e}");
+    }
+
+    /// マウスの操作をアプリへ送るか。アプリが求めていて、Shift を押していないとき。
+    fn reports_mouse(&self) -> bool {
+        if keyboard::current_mods().contains(Mods::SHIFT) {
+            return false;
         }
-        self.invalidate();
+        self.vt.is_mouse_tracking().unwrap_or_else(|e| {
+            tracing::warn!("failed to read the mouse mode: {e}");
+            false
+        })
+    }
+
+    /// 画面での位置（WM_MOUSEWHEEL の `lparam`）を、窓のクライアント領域の中の位置にする。
+    fn screen_to_client(&self, lparam: LPARAM) -> (i32, i32) {
+        let (x, y) = client_position(lparam);
+        let mut point = POINT { x, y };
+        // SAFETY: self.hwnd は有効な窓で、point は書き込める。
+        if !unsafe { ScreenToClient(self.hwnd, &mut point) }.as_bool() {
+            tracing::warn!("failed to convert the wheel position");
+        }
+        (point.x, point.y)
+    }
+
+    /// アプリがマウスを求めていて Shift を押していなければ、操作をアプリへ送って `true` を返す。
+    /// `x` と `y` は窓のクライアント領域の中の位置（ピクセル）。
+    fn report_mouse(
+        &mut self,
+        action: MouseAction,
+        button: Option<MouseButton>,
+        x: i32,
+        y: i32,
+        wparam: WPARAM,
+    ) -> bool {
+        if !self.reports_mouse() {
+            return false;
+        }
+        let mods = keyboard::current_mods();
+        let input = MouseInput {
+            action,
+            button,
+            mods,
+            x: x as f32,
+            y: y as f32,
+            any_button_pressed: held_button(wparam).is_some(),
+        };
+        match self.vt.encode_mouse(&input) {
+            Ok(encoded) => self.send(&encoded),
+            Err(e) => tracing::warn!("failed to encode the mouse: {e}"),
+        }
+        true
     }
 
     /// キーを伴わずに届いた文字の 1 単位（IME の確定など）。
@@ -460,7 +533,29 @@ impl App {
     }
 
     /// マウスのホイールが回った。`delta` は WM_MOUSEWHEEL の回転量（奥へ回すと正）。
-    fn on_wheel(&mut self, delta: i32) {
+    /// マウスのホイールが回った。アプリがマウスを求めていれば、1 ノッチごとにボタン 4（奥）か
+    /// 5（手前）の押し離しとして送る。そうでなければスクロールバックを動かす。
+    /// `lparam` は WM_MOUSEWHEEL のとおり画面での位置。
+    fn on_wheel(&mut self, delta: i32, lparam: LPARAM, wparam: WPARAM) {
+        if !self.reports_mouse() {
+            self.scroll_by_wheel(delta);
+            return;
+        }
+        let (x, y) = self.screen_to_client(lparam);
+        let button = if delta > 0 {
+            MouseButton::Four
+        } else {
+            MouseButton::Five
+        };
+        let (notches, remainder) = wheel_lines(self.wheel_report_remainder, delta, 1);
+        self.wheel_report_remainder = remainder;
+        for _ in 0..notches.unsigned_abs() {
+            self.report_mouse(MouseAction::Press, Some(button), x, y, wparam);
+            self.report_mouse(MouseAction::Release, Some(button), x, y, wparam);
+        }
+    }
+
+    fn scroll_by_wheel(&mut self, delta: i32) {
         let (lines, remainder) =
             wheel_lines(self.wheel_remainder, delta, self.wheel_lines_per_notch);
         self.wheel_remainder = remainder;
@@ -562,6 +657,35 @@ fn client_size(hwnd: HWND) -> (u32, u32) {
         (rect.right - rect.left).max(0) as u32,
         (rect.bottom - rect.top).max(0) as u32,
     )
+}
+
+/// マウスのメッセージの `lparam` の x と y（符号付きの 16 ビット）。
+fn client_position(lparam: LPARAM) -> (i32, i32) {
+    let x = i32::from((lparam.0 & 0xffff) as u16 as i16);
+    let y = i32::from(((lparam.0 >> 16) & 0xffff) as u16 as i16);
+    (x, y)
+}
+
+/// マウスのメッセージの `wparam` で押されているボタンのうち、一つ（左、中、右の順）。
+fn held_button(wparam: WPARAM) -> Option<MouseButton> {
+    let held = wparam.0 as u32;
+    [
+        (MK_LBUTTON, MouseButton::Left),
+        (MK_MBUTTON, MouseButton::Middle),
+        (MK_RBUTTON, MouseButton::Right),
+    ]
+    .into_iter()
+    .find(|(flag, _)| held & flag.0 != 0)
+    .map(|(_, button)| button)
+}
+
+/// ボタンを押した・離したメッセージの、そのボタン。
+fn message_button(msg: u32) -> MouseButton {
+    match msg {
+        WM_MBUTTONDOWN | WM_MBUTTONUP => MouseButton::Middle,
+        WM_RBUTTONDOWN | WM_RBUTTONUP => MouseButton::Right,
+        _ => MouseButton::Left,
+    }
 }
 
 /// 選んでいればコピーにするキー。Ctrl+C と Ctrl+Insert（ほかの修飾キーなし）。
@@ -721,21 +845,23 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             });
             LRESULT(0)
         }
-        WM_LBUTTONDOWN => {
-            with_app(&mut |app| app.on_left_down(lparam));
+        WM_LBUTTONDOWN | WM_MBUTTONDOWN | WM_RBUTTONDOWN => {
+            let button = message_button(msg);
+            with_app(&mut |app| app.on_button_down(button, lparam, wparam));
+            LRESULT(0)
+        }
+        WM_LBUTTONUP | WM_MBUTTONUP | WM_RBUTTONUP => {
+            let button = message_button(msg);
+            with_app(&mut |app| app.on_button_up(button, lparam, wparam));
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
-            with_app(&mut |app| app.on_mouse_move(lparam));
-            LRESULT(0)
-        }
-        WM_LBUTTONUP => {
-            with_app(&mut |app| app.on_left_up(lparam));
+            with_app(&mut |app| app.on_mouse_move(lparam, wparam));
             LRESULT(0)
         }
         WM_MOUSEWHEEL => {
             let delta = i32::from(((wparam.0 >> 16) & 0xffff) as u16 as i16);
-            with_app(&mut |app| app.on_wheel(delta));
+            with_app(&mut |app| app.on_wheel(delta, lparam, wparam));
             LRESULT(0)
         }
         WM_CHAR | WM_SYSCHAR => {
@@ -807,6 +933,27 @@ mod tests {
         assert!(!is_copy_shortcut(Key::C, Mods::CTRL | Mods::SHIFT));
         assert!(!is_copy_shortcut(Key::C, Mods::empty()));
         assert!(!is_copy_shortcut(Key::V, Mods::CTRL));
+    }
+
+    #[test]
+    fn mouse_positions_keep_their_sign() {
+        // 窓の外（左上）へドラッグすると、負の位置で届く。
+        let lparam = LPARAM((((-5i16 as u16) as isize) << 16) | ((-3i16 as u16) as isize));
+        assert_eq!(client_position(lparam), (-3, -5));
+    }
+
+    #[test]
+    fn held_buttons_are_read_from_wparam() {
+        assert_eq!(held_button(WPARAM(0)), None);
+        assert_eq!(
+            held_button(WPARAM(MK_RBUTTON.0 as usize)),
+            Some(MouseButton::Right)
+        );
+        assert_eq!(
+            held_button(WPARAM((MK_LBUTTON.0 | MK_RBUTTON.0) as usize)),
+            Some(MouseButton::Left)
+        );
+        assert_eq!(message_button(WM_MBUTTONUP), MouseButton::Middle);
     }
 
     #[test]

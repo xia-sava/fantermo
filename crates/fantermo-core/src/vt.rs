@@ -8,7 +8,7 @@ use std::{
 use libghostty_vt::{
     Terminal,
     fmt::{Format, Formatter, FormatterOptions},
-    key,
+    key, mouse,
     paste::Options as PasteOptions,
     render::{CellIterator, RenderState, RowIterator},
     screen::CellWide,
@@ -33,7 +33,22 @@ use crate::{
 pub use libghostty_vt::{
     Error as VtError,
     key::{Action as KeyAction, Key, Mods},
+    mouse::{Action as MouseAction, Button as MouseButton},
 };
+
+/// アプリへ報告するマウスの操作一つ。
+#[derive(Clone, Copy, Debug)]
+pub struct MouseInput {
+    pub action: MouseAction,
+    /// 押した・離したボタン。動かしただけなら、押しているボタン（なければ `None`）。
+    pub button: Option<MouseButton>,
+    pub mods: Mods,
+    /// 窓の中の位置（ピクセル）。
+    pub x: f32,
+    pub y: f32,
+    /// どれかのボタンを押している。ドラッグとただの移動を区別するのに使う。
+    pub any_button_pressed: bool,
+}
 
 /// 貼り付けた文字列の種類。
 const PLAIN_TEXT_MIME: &str = "text/plain";
@@ -91,6 +106,9 @@ pub struct Vt {
     /// キーを変換するときに使い回す、変換器とキーの情報。
     key_encoder: key::Encoder<'static>,
     key_event: key::Event<'static>,
+    /// アプリへマウスを報告するときに使い回す、変換器とマウスの情報。
+    mouse_encoder: mouse::Encoder<'static>,
+    mouse_event: mouse::Event<'static>,
     /// マウスでの選択。ダブルクリックやトリプルクリックの判定も持つ。
     selection_gesture: Gesture<'static>,
     selection_press: PressEvent<'static>,
@@ -145,11 +163,50 @@ impl Vt {
             cell_iter: CellIterator::new()?,
             key_encoder: key::Encoder::new()?,
             key_event: key::Event::new()?,
+            mouse_encoder: mouse::Encoder::new()?,
+            mouse_event: mouse::Event::new()?,
             selection_gesture: Gesture::new()?,
             selection_press: PressEvent::new()?,
             selection_drag: DragEvent::new()?,
             selection_release: ReleaseEvent::new()?,
         })
+    }
+
+    /// アプリがマウスの報告を求めている（vim の `mouse=a` など）。
+    pub fn is_mouse_tracking(&self) -> Result<bool, VtError> {
+        self.terminal.is_mouse_tracking()
+    }
+
+    /// マウスの操作を、アプリが求めている報告の形式（X10、SGR など）でバイト列に変える。
+    /// アプリが求めていない種類の操作なら空を返す。
+    pub fn encode_mouse(&mut self, input: &MouseInput) -> Result<Vec<u8>, VtError> {
+        let size = self.size.get();
+        self.mouse_event
+            .set_action(input.action)
+            .set_button(input.button)
+            .set_mods(input.mods)
+            .set_position(mouse::Position {
+                x: input.x,
+                y: input.y,
+            });
+        let mut encoded = Vec::new();
+        self.mouse_encoder
+            .set_options_from_terminal(&self.terminal)
+            .set_size(mouse::EncoderSize {
+                screen_width: u32::from(size.cols) * size.cell_width_px,
+                screen_height: u32::from(size.rows) * size.cell_height_px,
+                cell_width: size.cell_width_px,
+                cell_height: size.cell_height_px,
+                padding_top: 0,
+                padding_bottom: 0,
+                padding_right: 0,
+                padding_left: 0,
+            })
+            .set_any_button_pressed(input.any_button_pressed)
+            // 同じセルの中での移動は、繰り返して報告しない。
+            .set_track_last_cell(true)
+            .encode_to_vec(&self.mouse_event, &mut encoded)?;
+        Ok(encoded)
     }
 
     /// 左ボタンを押した。続けて押す間隔が `repeat_interval` 以内なら、ダブルクリック（単語）や
@@ -565,6 +622,38 @@ mod tests {
             .unwrap();
         vt.selection_release(at).unwrap();
         assert_eq!(vt.selected_text().unwrap().as_deref(), Some("world"));
+    }
+
+    fn mouse(action: MouseAction, col: u16, row: u16) -> MouseInput {
+        let at = pointer(col, row);
+        MouseInput {
+            action,
+            button: Some(MouseButton::Left),
+            mods: Mods::empty(),
+            x: at.x as f32,
+            y: at.y as f32,
+            any_button_pressed: action == MouseAction::Press,
+        }
+    }
+
+    #[test]
+    fn mouse_is_not_reported_unless_requested() {
+        let mut vt = new_vt();
+        assert!(!vt.is_mouse_tracking().unwrap());
+        let encoded = vt.encode_mouse(&mouse(MouseAction::Press, 2, 3)).unwrap();
+        assert!(encoded.is_empty());
+    }
+
+    #[test]
+    fn mouse_clicks_are_reported_in_sgr_format() {
+        let mut vt = new_vt();
+        // ボタンの押し離しを報告させ、形式は SGR にする。
+        vt.feed(b"\x1b[?1000h\x1b[?1006h");
+        assert!(vt.is_mouse_tracking().unwrap());
+        let press = vt.encode_mouse(&mouse(MouseAction::Press, 2, 3)).unwrap();
+        assert_eq!(press, b"\x1b[<0;3;4M");
+        let release = vt.encode_mouse(&mouse(MouseAction::Release, 2, 3)).unwrap();
+        assert_eq!(release, b"\x1b[<0;3;4m");
     }
 
     #[test]
