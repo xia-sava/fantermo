@@ -12,7 +12,12 @@ use crate::conpty::{ConPty, SpawnOptions, Wake};
 /// 子プロセスの `TERM` と、端末が名乗る terminfo の名前。
 const TERM: &str = "xterm-256color";
 
+/// 窓の中で端末を見分ける番号。出力や終了の知らせがどの端末からのものかを、この番号で区別する。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionId(pub usize);
+
 pub struct Session {
+    id: SessionId,
     pub vt: Vt,
     backend: ConPty,
     /// アプリが付けたタイトル。消されたか、付けていなければ空。
@@ -46,6 +51,7 @@ impl Session {
     /// `size` の端末を作り、`command_line` を子プロセスとして起動する。`wake` は出力が届いたときと
     /// 子プロセスが終了したときに、別のスレッドから呼ばれる。
     pub fn spawn(
+        id: SessionId,
         command_line: &str,
         size: GridSize,
         wake: Wake,
@@ -60,6 +66,7 @@ impl Session {
             wake,
         )?;
         Ok(Self {
+            id,
             vt,
             backend,
             title: String::new(),
@@ -70,6 +77,10 @@ impl Session {
             pressed_link: None,
             suppressed_release: None,
         })
+    }
+
+    pub fn id(&self) -> SessionId {
+        self.id
     }
 
     /// アプリが付けたタイトル。消されたか、付けていなければ空。

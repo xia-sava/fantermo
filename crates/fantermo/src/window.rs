@@ -65,14 +65,18 @@ use crate::{
     keyboard::{self, KeyPosition, Utf16Assembler},
     link_opener, paste_editor,
     renderer::Renderer,
-    session::Session,
+    session::{Session, SessionId},
 };
 
 const WINDOW_CLASS: PCWSTR = w!("fantermo");
 const WINDOW_TITLE: &str = "fantermo";
 
-/// 読むためのスレッドなどが、窓のスレッドを起こすときに送るメッセージ。
+/// 端末の出力が届いたときと子プロセスが終了したときに、読むためのスレッドなどが窓のスレッドを
+/// 起こすメッセージ。`wparam` はその端末の [`SessionId`]。
 const WM_APP_WAKE: u32 = WM_APP + 1;
+
+/// 起動したときに開く端末の番号。
+const FIRST_SESSION_ID: SessionId = SessionId(0);
 
 /// 設定ファイルを監視するスレッドが、書き換えを知らせるメッセージ。
 const WM_APP_CONFIG_CHANGED: u32 = WM_APP + 2;
@@ -352,9 +356,14 @@ impl App {
         let (width, height) = client_size(hwnd);
         let size = grid_size(&font, width, height);
         let renderer = Renderer::new(hwnd, width, height, &dwrite, &font, font_config.wide_glyph)?;
-        let session = Session::spawn(command_line, size, Arc::new(poster(hwnd, WM_APP_WAKE)))?;
+        let session = Session::spawn(
+            FIRST_SESSION_ID,
+            command_line,
+            size,
+            Arc::new(poster(hwnd, WM_APP_WAKE, WPARAM(FIRST_SESSION_ID.0))),
+        )?;
         if let Some(path) = &config_path {
-            config_file::watch(path, poster(hwnd, WM_APP_CONFIG_CHANGED));
+            config_file::watch(path, poster(hwnd, WM_APP_CONFIG_CHANGED, WPARAM(0)));
         }
 
         let dump = ScreenDump::from_env();
@@ -876,9 +885,13 @@ impl App {
         self.invalidate();
     }
 
-    /// 端末に出力が届いたか、子プロセスが終わった。出力を流し込み、タイトルとベルを反映する。
+    /// 端末 `id` に出力が届いたか、子プロセスが終わった。出力を流し込み、タイトルとベルを反映する。
     /// 窓を閉じるときは `true` を返す。
-    fn on_wake(&mut self) -> bool {
+    fn on_wake(&mut self, id: SessionId) -> bool {
+        if id != self.session.id() {
+            tracing::debug!("ignoring a wake for an unknown terminal {id:?}");
+            return false;
+        }
         let events = self.session.on_output();
         if events.title_changed {
             self.update_window_title();
@@ -1062,19 +1075,14 @@ fn grid_size(font: &Font, width: u32, height: u32) -> GridSize {
     }
 }
 
-/// ほかのスレッドから呼んで、`hwnd` に `message` を積むもの。
-fn poster(hwnd: HWND, message: u32) -> impl Fn() + Send + Sync + 'static {
+/// ほかのスレッドから呼んで、`hwnd` に `message` を `wparam` を添えて積むもの。
+fn poster(hwnd: HWND, message: u32, wparam: WPARAM) -> impl Fn() + Send + Sync + 'static {
     // HWND はスレッドをまたいで渡せないので、値だけを持たせる。PostMessageW はどのスレッドからでも呼べる。
     let hwnd_value = hwnd.0 as isize;
     move || {
         // SAFETY: 窓がすでに壊れていれば失敗するだけで、害はない。
         unsafe {
-            _ = PostMessageW(
-                Some(HWND(hwnd_value as *mut _)),
-                message,
-                WPARAM(0),
-                LPARAM(0),
-            );
+            _ = PostMessageW(Some(HWND(hwnd_value as *mut _)), message, wparam, LPARAM(0));
         }
     }
 }
@@ -1301,7 +1309,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
     match msg {
         WM_APP_WAKE => {
             let mut close = false;
-            with_app(&mut |app| close = app.on_wake());
+            let id = SessionId(wparam.0);
+            with_app(&mut |app| close = app.on_wake(id));
             if close {
                 // DestroyWindow はこの場で WM_DESTROY を送るので、借用を手放してから呼ぶ。
                 // SAFETY: hwnd は有効な窓。
