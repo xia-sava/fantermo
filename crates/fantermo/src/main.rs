@@ -4,6 +4,7 @@
 //! （例: `fantermo.exe C:\app\cygwin\bin\zsh.exe -l`）。
 
 mod atlas;
+mod boxdraw;
 mod conpty;
 mod dump;
 mod font;
