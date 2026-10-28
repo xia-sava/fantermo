@@ -64,7 +64,7 @@ use crate::{
     ime::{self, CursorRect},
     keyboard::{self, KeyPosition, Utf16Assembler},
     link_opener, paste_editor,
-    renderer::Renderer,
+    renderer::{Area, Renderer},
     session::{Session, SessionId},
 };
 
@@ -228,6 +228,23 @@ fn grid_pixels(font: &Font, cols: u16, rows: u16) -> SIZE {
     }
 }
 
+/// 大きさが `width` × `height` のクライアント領域のうち、表示している端末を描く領域。クライアント領域の
+/// 全体に描く。
+fn terminal_area_in_client(width: u32, height: u32) -> Area {
+    Area {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    }
+}
+
+/// 端末を描く領域の大きさが `terminal` になるクライアント領域の大きさ。[`terminal_area_in_client`] と
+/// 対になる。
+fn client_size_for_terminal(terminal: SIZE) -> SIZE {
+    terminal
+}
+
 /// クライアント領域の大きさが `client` になる、DPI が `dpi` の窓の大きさ（枠を含む）。
 fn window_size(client: SIZE, dpi: u32) -> windows::core::Result<SIZE> {
     let mut rect = RECT {
@@ -269,7 +286,10 @@ fn create_window(font: &Font, dpi: u32) -> windows::core::Result<HWND> {
         return Err(windows::core::Error::from_thread());
     }
 
-    let size = window_size(grid_pixels(font, INITIAL_COLS, INITIAL_ROWS), dpi)?;
+    let size = window_size(
+        client_size_for_terminal(grid_pixels(font, INITIAL_COLS, INITIAL_ROWS)),
+        dpi,
+    )?;
 
     // SAFETY: クラスは登録済みで、文字列はこの呼び出しの間は生きている。
     unsafe {
@@ -326,6 +346,8 @@ struct App {
     paste_confirm: PasteConfirm,
     /// 表示している端末。
     session: Session,
+    /// 窓のクライアント領域のうち、表示している端末を描く領域。
+    terminal_area: Area,
     renderer: Renderer,
     dump: Option<ScreenDump>,
     /// 窓のタイトルに出している文字列。
@@ -354,7 +376,8 @@ impl App {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let font_config = config.font;
         let (width, height) = client_size(hwnd);
-        let size = grid_size(&font, width, height);
+        let terminal_area = terminal_area_in_client(width, height);
+        let size = grid_size(&font, terminal_area);
         let renderer = Renderer::new(hwnd, width, height, &dwrite, &font, font_config.wide_glyph)?;
         let session = Session::spawn(
             FIRST_SESSION_ID,
@@ -388,6 +411,7 @@ impl App {
             font_config,
             paste_confirm: config.paste.confirm,
             session,
+            terminal_area,
             renderer,
             dump,
             window_title: WINDOW_TITLE.to_owned(),
@@ -514,8 +538,26 @@ impl App {
         self.invalidate();
     }
 
-    /// 窓のクライアント領域の中の位置を、表示している範囲のセルに直す。窓の外は端のセルにする。
+    /// 窓のクライアント領域の中の位置を、端末を描く領域の左上からの位置にする。
+    fn client_to_terminal(&self, x: i32, y: i32) -> (i32, i32) {
+        (
+            x - self.terminal_area.x as i32,
+            y - self.terminal_area.y as i32,
+        )
+    }
+
+    /// 端末を描く領域の左上からの位置を、窓のクライアント領域の中の位置にする。
+    fn terminal_to_client(&self, x: i32, y: i32) -> (i32, i32) {
+        (
+            x + self.terminal_area.x as i32,
+            y + self.terminal_area.y as i32,
+        )
+    }
+
+    /// 窓のクライアント領域の中の位置を、表示している範囲のセルに直す。端末を描く領域の外は端のセルに
+    /// する。
     fn pointer(&self, x: i32, y: i32) -> PointerPosition {
+        let (x, y) = self.client_to_terminal(x, y);
         let size = self.session.vt.size();
         let cell = |pixel: i32, cell_px: u32, count: u16| -> u16 {
             let index = pixel.max(0) as u32 / cell_px;
@@ -531,6 +573,7 @@ impl App {
 
     /// 窓のクライアント領域の中の位置にあるリンク。
     fn link_at(&self, x: i32, y: i32) -> Option<Link> {
+        let (x, y) = self.client_to_terminal(x, y);
         if x < 0 || y < 0 {
             return None;
         }
@@ -725,8 +768,10 @@ impl App {
             tracing::warn!("failed to read the cursor position: {e}");
             (0, 0)
         });
-        let x = (u32::from(col) * self.font.cell_width_px) as i32;
-        let y = ((u32::from(row) + 1) * self.font.cell_height_px) as i32;
+        let (x, y) = self.terminal_to_client(
+            (u32::from(col) * self.font.cell_width_px) as i32,
+            ((u32::from(row) + 1) * self.font.cell_height_px) as i32,
+        );
         self.context_menu(x, y)
     }
 
@@ -790,6 +835,7 @@ impl App {
             return false;
         }
         let mods = keyboard::current_mods();
+        let (x, y) = self.client_to_terminal(x, y);
         let input = MouseInput {
             action,
             button,
@@ -826,9 +872,13 @@ impl App {
                 return;
             }
         };
+        let (x, y) = self.terminal_to_client(
+            (u32::from(col) * self.font.cell_width_px) as i32,
+            (u32::from(row) * self.font.cell_height_px) as i32,
+        );
         let cursor = CursorRect {
-            x: (u32::from(col) * self.font.cell_width_px) as i32,
-            y: (u32::from(row) * self.font.cell_height_px) as i32,
+            x,
+            y,
             width: self.font.cell_width_px as i32,
             height: self.font.cell_height_px as i32,
         };
@@ -951,12 +1001,16 @@ impl App {
         unsafe { _ = FlashWindowEx(&flash) };
     }
 
-    /// 窓のクライアント領域の大きさが変わった。端末の大きさを合わせる。
+    /// 窓のクライアント領域の大きさが変わった。端末を描く領域と、端末の大きさを合わせる。
     fn on_resize(&mut self, width: u32, height: u32) {
         if let Err(e) = self.renderer.resize(width, height) {
             tracing::warn!("failed to resize the swap chain: {e}");
         }
-        if !self.session.resize(grid_size(&self.font, width, height)) {
+        self.terminal_area = terminal_area_in_client(width, height);
+        if !self
+            .session
+            .resize(grid_size(&self.font, self.terminal_area))
+        {
             return;
         }
         self.refresh_hovered_link_now();
@@ -1024,7 +1078,9 @@ impl App {
     fn scaled_client_size(&self, dpi: u32) -> windows::core::Result<SIZE> {
         let font = load_font(&self.dwrite, &self.font_config, dpi)?;
         let size = self.session.vt.size();
-        Ok(grid_pixels(&font, size.cols, size.rows))
+        Ok(client_size_for_terminal(grid_pixels(
+            &font, size.cols, size.rows,
+        )))
     }
 
     /// DPI が `dpi` に変わったときに、いまの桁数と行数がそのまま収まる窓の大きさ（枠を含む）。
@@ -1045,7 +1101,8 @@ impl App {
         self.render_to(Some(&frame_path));
     }
 
-    /// 描いて表示する。`capture` を渡すと、表示する前の画面を PNG で書き出す。
+    /// 表示している端末を、端末を描く領域に描いて表示する。`capture` を渡すと、表示する前の画面を
+    /// PNG で書き出す。
     fn render_to(&mut self, capture: Option<&std::path::Path>) {
         let frame = match self.session.vt.frame() {
             Ok(frame) => frame,
@@ -1054,7 +1111,7 @@ impl App {
                 return;
             }
         };
-        if let Err(e) = self.renderer.render(&frame, capture) {
+        if let Err(e) = self.renderer.render(&frame, self.terminal_area, capture) {
             tracing::warn!("failed to render: {e}");
         }
     }
@@ -1065,11 +1122,11 @@ impl App {
     }
 }
 
-/// 窓のクライアント領域に収まる大きさ。少なくとも 1 セル。
-fn grid_size(font: &Font, width: u32, height: u32) -> GridSize {
+/// 端末を描く領域 `area` に収まる大きさ。少なくとも 1 セル。
+fn grid_size(font: &Font, area: Area) -> GridSize {
     GridSize {
-        cols: (width / font.cell_width_px).clamp(1, u32::from(u16::MAX)) as u16,
-        rows: (height / font.cell_height_px).clamp(1, u32::from(u16::MAX)) as u16,
+        cols: (area.width / font.cell_width_px).clamp(1, u32::from(u16::MAX)) as u16,
+        rows: (area.height / font.cell_height_px).clamp(1, u32::from(u16::MAX)) as u16,
         cell_width_px: font.cell_width_px,
         cell_height_px: font.cell_height_px,
     }

@@ -42,6 +42,15 @@ const PRESENT_SYNC_INTERVAL: u32 = 1;
 /// 0.0〜1.0 の RGBA。
 pub type Rgba = [f32; 4];
 
+/// バックバッファ（窓のクライアント領域）の中の矩形。単位はピクセル。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Area {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
 pub struct Renderer {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
@@ -140,14 +149,20 @@ impl Renderer {
         self.create_target()
     }
 
-    /// 1 フレームを描いて表示する。`capture` を渡すと、表示する前のバックバッファを PNG で書き出す。
-    pub fn render(&mut self, frame: &Frame, capture: Option<&Path>) -> windows::core::Result<()> {
-        let instances = match self.instances(frame) {
+    /// 端末の画面 `frame` を、左上のセルが `area` の左上に来るように描いて表示する。`area` の外は
+    /// 画面の背景色で塗る。`capture` を渡すと、表示する前のバックバッファを PNG で書き出す。
+    pub fn render(
+        &mut self,
+        frame: &Frame,
+        area: Area,
+        capture: Option<&Path>,
+    ) -> windows::core::Result<()> {
+        let instances = match self.instances(frame, area) {
             Ok(instances) => instances,
             Err(AtlasFull) => {
                 // 描きかけのフレームの場所は捨てたアトラスを指すので、空にしてから組み直す。
                 self.atlas.clear()?;
-                self.instances(frame).unwrap_or_else(|AtlasFull| {
+                self.instances(frame, area).unwrap_or_else(|AtlasFull| {
                     tracing::warn!("the glyph atlas cannot hold one frame");
                     Vec::new()
                 })
@@ -184,13 +199,13 @@ impl Renderer {
 
     /// 背景、カーソル、グリフ、装飾の順に四角形を並べる。カーソルの上の文字は背景色で描く。
     /// 取り消し線と上線は文字と同じ色、下線は指定された色（なければ文字と同じ色）で描く。
-    fn instances(&mut self, frame: &Frame) -> Result<Vec<Instance>, AtlasFull> {
+    fn instances(&mut self, frame: &Frame, area: Area) -> Result<Vec<Instance>, AtlasFull> {
         let mut backgrounds = Vec::new();
         let mut glyphs = Vec::new();
         let mut decorations = Vec::new();
         let cursor = frame.cursor;
         for cell in &frame.cells {
-            let rect = self.cell_rect(cell.col, cell.row, cell.width);
+            let rect = self.cell_rect(area, cell.col, cell.row, cell.width);
             if let Some(bg) = cell.bg {
                 backgrounds.push(solid(rect, bg));
             }
@@ -230,7 +245,7 @@ impl Renderer {
         }
         if let Some(cursor) = cursor {
             backgrounds.push(solid(
-                self.cell_rect(cursor.col, cursor.row, cursor.width),
+                self.cell_rect(area, cursor.col, cursor.row, cursor.width),
                 cursor.color,
             ));
         }
@@ -239,10 +254,11 @@ impl Renderer {
         Ok(backgrounds)
     }
 
-    fn cell_rect(&self, col: u16, row: u16, width: u8) -> [f32; 4] {
+    /// `area` に描く端末の、(`col`, `row`) から `width` セル分の矩形。
+    fn cell_rect(&self, area: Area, col: u16, row: u16, width: u8) -> [f32; 4] {
         [
-            (u32::from(col) * self.cell_width) as f32,
-            (u32::from(row) * self.cell_height) as f32,
+            (area.x + u32::from(col) * self.cell_width) as f32,
+            (area.y + u32::from(row) * self.cell_height) as f32,
             (u32::from(width) * self.cell_width) as f32,
             self.cell_height as f32,
         ]
