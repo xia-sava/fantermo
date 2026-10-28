@@ -25,6 +25,7 @@ mod logging;
 mod paste_editor;
 mod pipeline;
 mod renderer;
+mod session;
 mod shader;
 mod window;
 
