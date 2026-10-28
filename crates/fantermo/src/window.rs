@@ -1,10 +1,14 @@
 //! 端末の窓。Win32 のメッセージを受け、端末の状態・バックエンド・描画をつなぐ。
 
-use std::{cell::RefCell, sync::Arc};
+use std::{
+    cell::RefCell,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize},
-    vt::{KeyAction, KeyInput, Vt},
+    vt::{Key, KeyAction, KeyInput, Mods, PointerPosition, Vt},
 };
 use windows::{
     Win32::{
@@ -16,7 +20,9 @@ use windows::{
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             HiDpi::{AdjustWindowRectExForDpi, GetDpiForSystem},
-            Input::KeyboardAndMouse::{VK_F4, VK_PROCESSKEY, VK_SPACE},
+            Input::KeyboardAndMouse::{
+                GetDoubleClickTime, ReleaseCapture, SetCapture, VK_F4, VK_PROCESSKEY, VK_SPACE,
+            },
             WindowsAndMessaging::{
                 CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
                 DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW,
@@ -26,9 +32,9 @@ use windows::{
                 SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW,
                 TranslateMessage, WHEEL_DELTA, WINDOW_EX_STYLE, WM_APP, WM_CHAR, WM_DEADCHAR,
                 WM_DESTROY, WM_DPICHANGED, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
-                WM_KEYUP, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_SIZE, WM_SYSCHAR,
-                WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW,
-                WS_OVERLAPPEDWINDOW,
+                WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY,
+                WM_PAINT, WM_SIZE, WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP,
+                WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -36,6 +42,7 @@ use windows::{
 };
 
 use crate::{
+    clipboard,
     conpty::{ConPty, SpawnOptions},
     dump::{DUMP_INTERVAL, ScreenDump},
     font::{self, Font},
@@ -170,6 +177,12 @@ struct App {
     wheel_lines_per_notch: u32,
     /// 高精度のホイールで、まだ 1 行に満たない回転量。
     wheel_remainder: i32,
+    /// ダブルクリックの判定に使う時計。
+    clock: Instant,
+    /// 左ボタンで選んでいる最中。
+    selecting: bool,
+    /// コピーに使ったので、離したときにもシェルへ送らないキー。
+    suppressed_release: Option<Key>,
 }
 
 impl App {
@@ -231,6 +244,9 @@ impl App {
             text_input: Utf16Assembler::default(),
             wheel_lines_per_notch: wheel_lines_per_notch(),
             wheel_remainder: 0,
+            clock: Instant::now(),
+            selecting: false,
+            suppressed_release: None,
         })
     }
 
@@ -243,9 +259,20 @@ impl App {
         chars: &[char],
     ) {
         let mods = keyboard::current_mods();
+        let key = keyboard::key_from_position(position);
+        // コピーに使ったキーは、離したときもシェルに送らない。
+        if action == KeyAction::Release && self.suppressed_release == Some(key) {
+            self.suppressed_release = None;
+            return;
+        }
+        if action != KeyAction::Release && is_copy_shortcut(key, mods) && self.copy_selection() {
+            self.suppressed_release = Some(key);
+            return;
+        }
+
         let text = keyboard::printable_text(chars);
         let input = KeyInput {
-            key: keyboard::key_from_position(position),
+            key,
             action,
             mods,
             consumed_mods: keyboard::consumed_mods(mods, text.is_some()),
@@ -256,6 +283,93 @@ impl App {
             Ok(encoded) => self.send(&encoded),
             Err(e) => tracing::warn!("failed to encode {:?}: {e}", input.key),
         }
+    }
+
+    /// 選んでいる範囲をクリップボードにコピーし、選択を外す。選んでいなければ何もせず `false`。
+    fn copy_selection(&mut self) -> bool {
+        let text = match self.vt.selected_text() {
+            Ok(Some(text)) => text,
+            Ok(None) => return false,
+            Err(e) => {
+                tracing::warn!("failed to read the selection: {e}");
+                return false;
+            }
+        };
+        if let Err(e) = clipboard::set_text(self.hwnd, &text) {
+            tracing::warn!("failed to copy to the clipboard: {e}");
+        }
+        self.clear_selection();
+        true
+    }
+
+    fn clear_selection(&mut self) {
+        if let Err(e) = self.vt.clear_selection() {
+            tracing::warn!("failed to clear the selection: {e}");
+        }
+        self.invalidate();
+    }
+
+    /// 窓の中の位置（`lparam` の x と y）を、表示している範囲のセルに直す。窓の外は端のセルにする。
+    fn pointer(&self, lparam: LPARAM) -> PointerPosition {
+        let x = i32::from((lparam.0 & 0xffff) as u16 as i16);
+        let y = i32::from(((lparam.0 >> 16) & 0xffff) as u16 as i16);
+        let size = self.vt.size();
+        let cell = |pixel: i32, cell_px: u32, count: u16| -> u16 {
+            let index = pixel.max(0) as u32 / cell_px;
+            index.min(u32::from(count.saturating_sub(1))) as u16
+        };
+        PointerPosition {
+            col: cell(x, size.cell_width_px, size.cols),
+            row: cell(y, size.cell_height_px, size.rows),
+            x: f64::from(x),
+            y: f64::from(y),
+        }
+    }
+
+    fn on_left_down(&mut self, lparam: LPARAM) {
+        // 窓の外までドラッグしても離したことが届くように、マウスを捕まえる。
+        // SAFETY: self.hwnd はこのスレッドの有効な窓。
+        unsafe { SetCapture(self.hwnd) };
+        let at = self.pointer(lparam);
+        // SAFETY: 引数のない問い合わせ。
+        let repeat_interval = Duration::from_millis(u64::from(unsafe { GetDoubleClickTime() }));
+        if let Err(e) = self
+            .vt
+            .selection_press(at, self.clock.elapsed(), repeat_interval)
+        {
+            tracing::warn!("failed to start a selection: {e}");
+        }
+        self.selecting = true;
+        self.invalidate();
+    }
+
+    fn on_mouse_move(&mut self, lparam: LPARAM) {
+        if !self.selecting {
+            return;
+        }
+        let at = self.pointer(lparam);
+        // Alt を押しながらなら矩形で選ぶ。
+        let rectangle = keyboard::current_mods().contains(Mods::ALT);
+        if let Err(e) = self.vt.selection_drag(at, rectangle) {
+            tracing::warn!("failed to extend the selection: {e}");
+        }
+        self.invalidate();
+    }
+
+    fn on_left_up(&mut self, lparam: LPARAM) {
+        if !self.selecting {
+            return;
+        }
+        self.selecting = false;
+        let at = self.pointer(lparam);
+        if let Err(e) = self.vt.selection_release(at) {
+            tracing::warn!("failed to finish the selection: {e}");
+        }
+        // SAFETY: このスレッドが捕まえたマウスを放す。
+        if let Err(e) = unsafe { ReleaseCapture() } {
+            tracing::warn!("failed to release the mouse capture: {e}");
+        }
+        self.invalidate();
     }
 
     /// キーを伴わずに届いた文字の 1 単位（IME の確定など）。
@@ -294,7 +408,7 @@ impl App {
             return;
         }
         self.vt.scroll_to_bottom();
-        self.invalidate();
+        self.clear_selection();
         if let Err(e) = self.backend.write(data) {
             tracing::warn!("failed to write input to the child: {e}");
         }
@@ -403,6 +517,12 @@ fn client_size(hwnd: HWND) -> (u32, u32) {
         (rect.right - rect.left).max(0) as u32,
         (rect.bottom - rect.top).max(0) as u32,
     )
+}
+
+/// 選んでいればコピーにするキー。Ctrl+C と Ctrl+Insert（ほかの修飾キーなし）。
+fn is_copy_shortcut(key: Key, mods: Mods) -> bool {
+    let held = mods & (Mods::CTRL | Mods::SHIFT | Mods::ALT | Mods::SUPER);
+    held == Mods::CTRL && matches!(key, Key::C | Key::Insert)
 }
 
 /// 前回の端数 `remainder` に回転量 `delta` を足し、動かす行数と新しい端数を返す。
@@ -536,6 +656,18 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             with_app(&mut |app| app.on_key(virtual_key, position, KeyAction::Release, &[]));
             LRESULT(0)
         }
+        WM_LBUTTONDOWN => {
+            with_app(&mut |app| app.on_left_down(lparam));
+            LRESULT(0)
+        }
+        WM_MOUSEMOVE => {
+            with_app(&mut |app| app.on_mouse_move(lparam));
+            LRESULT(0)
+        }
+        WM_LBUTTONUP => {
+            with_app(&mut |app| app.on_left_up(lparam));
+            LRESULT(0)
+        }
         WM_MOUSEWHEEL => {
             let delta = i32::from(((wparam.0 >> 16) & 0xffff) as u16 as i16);
             with_app(&mut |app| app.on_wheel(delta));
@@ -600,6 +732,17 @@ mod tests {
     use super::*;
 
     const NOTCH: i32 = WHEEL_DELTA as i32;
+
+    #[test]
+    fn copy_shortcuts_need_ctrl_alone() {
+        assert!(is_copy_shortcut(Key::C, Mods::CTRL));
+        assert!(is_copy_shortcut(Key::Insert, Mods::CTRL));
+        // ロックの状態は関係しない。
+        assert!(is_copy_shortcut(Key::C, Mods::CTRL | Mods::CAPS_LOCK));
+        assert!(!is_copy_shortcut(Key::C, Mods::CTRL | Mods::SHIFT));
+        assert!(!is_copy_shortcut(Key::C, Mods::empty()));
+        assert!(!is_copy_shortcut(Key::V, Mods::CTRL));
+    }
 
     #[test]
     fn one_notch_moves_the_configured_lines() {

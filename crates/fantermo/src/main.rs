@@ -5,6 +5,7 @@
 
 mod atlas;
 mod boxdraw;
+mod clipboard;
 mod conpty;
 mod dump;
 mod font;

@@ -11,12 +11,18 @@ use libghostty_vt::{
     key,
     render::{CellIterator, RenderState, RowIterator},
     screen::CellWide,
+    selection::{
+        FormatOptions as SelectionFormatOptions,
+        gesture::{DragEvent, Geometry, Gesture, PressEvent, ReleaseEvent},
+    },
     style::RgbColor,
     terminal::{
-        ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType,
-        PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes, SizeReportSize,
+        ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType, Point,
+        PointCoordinate, PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes,
+        SizeReportSize,
     },
 };
+use std::time::Duration;
 
 use crate::{
     backend::GridSize,
@@ -27,6 +33,15 @@ pub use libghostty_vt::{
     Error as VtError,
     key::{Action as KeyAction, Key, Mods},
 };
+
+/// マウスの位置。表示している範囲の中のセルと、窓の中のピクセル。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PointerPosition {
+    pub col: u16,
+    pub row: u16,
+    pub x: f64,
+    pub y: f64,
+}
 
 /// 押された・離されたキー一つ。
 #[derive(Clone, Copy, Debug)]
@@ -62,6 +77,11 @@ pub struct Vt {
     /// キーを変換するときに使い回す、変換器とキーの情報。
     key_encoder: key::Encoder<'static>,
     key_event: key::Event<'static>,
+    /// マウスでの選択。ダブルクリックやトリプルクリックの判定も持つ。
+    selection_gesture: Gesture<'static>,
+    selection_press: PressEvent<'static>,
+    selection_drag: DragEvent<'static>,
+    selection_release: ReleaseEvent<'static>,
 }
 
 impl Vt {
@@ -111,7 +131,80 @@ impl Vt {
             cell_iter: CellIterator::new()?,
             key_encoder: key::Encoder::new()?,
             key_event: key::Event::new()?,
+            selection_gesture: Gesture::new()?,
+            selection_press: PressEvent::new()?,
+            selection_drag: DragEvent::new()?,
+            selection_release: ReleaseEvent::new()?,
         })
+    }
+
+    /// 左ボタンを押した。続けて押す間隔が `repeat_interval` 以内なら、ダブルクリック（単語）や
+    /// トリプルクリック（行）として選ぶ。`time` は同じ時計で測った、押した時刻。
+    pub fn selection_press(
+        &mut self,
+        at: PointerPosition,
+        time: Duration,
+        repeat_interval: Duration,
+    ) -> Result<(), VtError> {
+        let size = self.size.get();
+        let grid_ref = self.terminal.grid_ref(viewport_point(at))?;
+        let selection = self
+            .selection_press
+            .set_repeat_interval(repeat_interval)?
+            .set_repeat_distance(f64::from(size.cell_width_px))?
+            .set_time(time)?
+            .set_position(at.x, at.y)?
+            .apply(&mut self.selection_gesture, &self.terminal, grid_ref)?;
+        self.terminal.set_selection(selection.as_ref())?;
+        Ok(())
+    }
+
+    /// 左ボタンを押したまま動かした。`rectangle` なら矩形で選ぶ。
+    pub fn selection_drag(&mut self, at: PointerPosition, rectangle: bool) -> Result<(), VtError> {
+        let size = self.size.get();
+        let geometry = Geometry {
+            columns: u32::from(size.cols),
+            cell_width: size.cell_width_px,
+            padding_left: 0,
+            screen_height: u32::from(size.rows) * size.cell_height_px,
+        };
+        let grid_ref = self.terminal.grid_ref(viewport_point(at))?;
+        let selection = self
+            .selection_drag
+            .set_rectangle(rectangle)?
+            .set_position(at.x, at.y)?
+            .apply(
+                &mut self.selection_gesture,
+                &self.terminal,
+                grid_ref,
+                geometry,
+            )?;
+        self.terminal.set_selection(selection.as_ref())?;
+        Ok(())
+    }
+
+    /// 左ボタンを離した。
+    pub fn selection_release(&mut self, at: PointerPosition) -> Result<(), VtError> {
+        let grid_ref = self.terminal.grid_ref(viewport_point(at)).ok();
+        self.selection_release
+            .apply(&mut self.selection_gesture, &self.terminal, grid_ref)
+    }
+
+    /// 選んでいる範囲の文字列。折り返した行はつなげ、行末の空白は除く。選んでいなければ `None`。
+    pub fn selected_text(&self) -> Result<Option<String>, VtError> {
+        let options = SelectionFormatOptions::new()
+            .with_emit_format(Format::Plain)
+            .with_unwrap(true)
+            .with_trim(true);
+        let text = self.terminal.format_selection_alloc(None, options)?;
+        Ok(text
+            .map(|text| String::from_utf8_lossy(&text).into_owned())
+            .filter(|text| !text.is_empty()))
+    }
+
+    pub fn clear_selection(&mut self) -> Result<(), VtError> {
+        self.terminal.set_selection(None)?;
+        Ok(())
     }
 
     /// キーを、端末のいまのモード（カーソルキーのモード、kitty keyboard protocol など）に合わせて
@@ -206,6 +299,12 @@ impl Vt {
                     bold = style.bold;
                     italic = style.italic;
                 }
+                // 選んでいる範囲は、前景色と背景色を入れ替えて描く。
+                if cell.is_selected()? {
+                    let swapped_bg = fg;
+                    fg = bg.unwrap_or(colors.background);
+                    bg = Some(swapped_bg);
+                }
                 if !text.is_empty() || bg.is_some() {
                     cells.push(CellView {
                         col,
@@ -259,6 +358,13 @@ impl Vt {
         let text = Formatter::new(&self.terminal, options)?.format_alloc(None)?;
         Ok(String::from_utf8_lossy(&text).into_owned())
     }
+}
+
+fn viewport_point(at: PointerPosition) -> Point {
+    Point::Viewport(PointCoordinate {
+        x: at.col,
+        y: u32::from(at.row),
+    })
 }
 
 fn rgb(color: RgbColor) -> Rgb {
@@ -378,6 +484,57 @@ mod tests {
         assert!(vt.frame().unwrap().cursor.is_none());
         vt.scroll_to_bottom();
         assert_eq!(first_row_text(&mut vt), "line16");
+    }
+
+    /// `col` 桁目・`row` 行目のセルの、左から `fraction` の割合の位置を指す。
+    fn pointer_at(col: u16, row: u16, fraction: f64) -> PointerPosition {
+        PointerPosition {
+            col,
+            row,
+            x: (f64::from(col) + fraction) * f64::from(SIZE.cell_width_px),
+            y: (f64::from(row) + 0.5) * f64::from(SIZE.cell_height_px),
+        }
+    }
+
+    fn pointer(col: u16, row: u16) -> PointerPosition {
+        pointer_at(col, row, 0.5)
+    }
+
+    const DOUBLE_CLICK: Duration = Duration::from_millis(500);
+
+    #[test]
+    fn dragging_selects_text_and_marks_cells() {
+        let mut vt = new_vt();
+        vt.feed(b"hello world");
+        vt.selection_press(pointer_at(0, 0, 0.1), Duration::ZERO, DOUBLE_CLICK)
+            .unwrap();
+        // セルの半分を越えたところまで動かすと、そのセルまで選ばれる。
+        let end = pointer_at(4, 0, 0.9);
+        vt.selection_drag(end, false).unwrap();
+        vt.selection_release(end).unwrap();
+        assert_eq!(vt.selected_text().unwrap().as_deref(), Some("hello"));
+
+        let frame = vt.frame().unwrap();
+        // 選んだセルは色が入れ替わり、背景色を持つ。
+        assert_eq!(frame.cells[0].bg, Some(frame.foreground));
+        assert_eq!(frame.cells[6].bg, None);
+
+        vt.clear_selection().unwrap();
+        assert_eq!(vt.selected_text().unwrap(), None);
+    }
+
+    #[test]
+    fn double_click_selects_a_word() {
+        let mut vt = new_vt();
+        vt.feed(b"hello world");
+        let at = pointer(7, 0);
+        vt.selection_press(at, Duration::ZERO, DOUBLE_CLICK)
+            .unwrap();
+        vt.selection_release(at).unwrap();
+        vt.selection_press(at, Duration::from_millis(100), DOUBLE_CLICK)
+            .unwrap();
+        vt.selection_release(at).unwrap();
+        assert_eq!(vt.selected_text().unwrap().as_deref(), Some("world"));
     }
 
     #[test]
