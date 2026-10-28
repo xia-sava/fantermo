@@ -15,7 +15,7 @@ use fantermo_core::{
 };
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM},
         Graphics::{
             DirectWrite::IDWriteFactory,
             Gdi::{ClientToScreen, InvalidateRect, ScreenToClient, ValidateRect},
@@ -25,7 +25,7 @@ use windows::{
             SystemServices::{MK_LBUTTON, MK_MBUTTON, MK_RBUTTON},
         },
         UI::{
-            HiDpi::{AdjustWindowRectExForDpi, GetDpiForSystem},
+            HiDpi::{AdjustWindowRectExForDpi, GetDpiForSystem, GetDpiForWindow},
             Input::KeyboardAndMouse::{
                 GetDoubleClickTime, ReleaseCapture, SetCapture, VK_F4, VK_PROCESSKEY, VK_SPACE,
             },
@@ -33,17 +33,17 @@ use windows::{
                 CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
                 DestroyWindow, DispatchMessageW, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO,
                 FlashWindowEx, GWLP_USERDATA, GetClientRect, GetForegroundWindow, GetMessageW,
-                GetWindowLongPtrW, IDC_ARROW, KillTimer, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
-                PostMessageW, PostQuitMessage, RegisterClassW, SPI_GETWHEELSCROLLLINES,
-                SW_SHOWDEFAULT, SWP_NOACTIVATE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-                SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-                SystemParametersInfoW, TranslateMessage, WHEEL_DELTA, WINDOW_EX_STYLE, WM_APP,
-                WM_CHAR, WM_CONTEXTMENU, WM_DEADCHAR, WM_DESTROY, WM_DPICHANGED,
-                WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-                WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-                WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_SYSCHAR,
-                WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW,
-                WS_OVERLAPPEDWINDOW,
+                GetWindowLongPtrW, GetWindowRect, IDC_ARROW, KillTimer, LoadCursorW, MSG,
+                PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassW,
+                SPI_GETWHEELSCROLLLINES, SW_SHOWDEFAULT, SWP_NOACTIVATE, SWP_NOZORDER,
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetTimer, SetWindowLongPtrW,
+                SetWindowPos, SetWindowTextW, ShowWindow, SystemParametersInfoW, TranslateMessage,
+                WHEEL_DELTA, WINDOW_EX_STYLE, WM_APP, WM_CHAR, WM_CONTEXTMENU, WM_DEADCHAR,
+                WM_DESTROY, WM_DPICHANGED, WM_GETDPISCALEDSIZE, WM_IME_COMPOSITION,
+                WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+                WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT,
+                WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN,
+                WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -85,19 +85,17 @@ const FONT_SIZE_PT: f32 = 12.0;
 /// 子プロセスの `TERM` と、端末が名乗る terminfo の名前。
 const TERM: &str = "xterm-256color";
 
+/// 開発用。起動したときの窓の DPI を、この環境変数の値とみなす。倍率の違うモニタへ移したときの
+/// 作り直しを、モニタを使わずに確かめるために使う。
+const DPI_ENV: &str = "FANTERMO_DPI";
+
 /// 窓を開き、子プロセスを起動して、窓が閉じるまでメッセージを処理する。子プロセスの終了コードを返す。
 pub fn run(command_line: &str) -> Result<u32, Box<dyn std::error::Error>> {
     let dwrite = font::create_factory()?;
     // SAFETY: 引数のない問い合わせ。
     let system_dpi = unsafe { GetDpiForSystem() };
-    let font = font::find(&dwrite, FONT_FAMILIES, FONT_SIZE_PT, system_dpi)?;
-    tracing::info!(
-        "font {} {}pt: cell {}x{} px",
-        font.family,
-        FONT_SIZE_PT,
-        font.cell_width_px,
-        font.cell_height_px
-    );
+    let font = load_font(&dwrite, system_dpi)?;
+    log_font(&font, system_dpi);
 
     let hwnd = create_window(&font, system_dpi)?;
     let app = App::new(hwnd, dwrite, font, command_line)?;
@@ -105,9 +103,115 @@ pub fn run(command_line: &str) -> Result<u32, Box<dyn std::error::Error>> {
     // SAFETY: hwnd はこのスレッドが作った窓。ポインタは WM_NCDESTROY で取り戻して解放する。
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, app as isize) };
 
+    // 窓を置いたモニタの DPI がシステムの DPI と違えば、DPI が変わったときと同じように作り直す。
+    let window_dpi = dpi_from_env().unwrap_or_else(|| {
+        // SAFETY: hwnd は有効な窓。
+        unsafe { GetDpiForWindow(hwnd) }
+    });
+    if window_dpi != system_dpi {
+        change_dpi_in_place(hwnd, window_dpi);
+    }
+
     // SAFETY: hwnd は有効な窓。
     unsafe { _ = ShowWindow(hwnd, SW_SHOWDEFAULT) };
     Ok(message_loop())
+}
+
+/// 既定のフォントを探し、`dpi` で測る。
+fn load_font(dwrite: &IDWriteFactory, dpi: u32) -> windows::core::Result<Font> {
+    font::find(dwrite, FONT_FAMILIES, FONT_SIZE_PT, dpi)
+}
+
+fn log_font(font: &Font, dpi: u32) {
+    tracing::info!(
+        "font {} {}pt at {dpi} DPI: cell {}x{} px",
+        font.family,
+        FONT_SIZE_PT,
+        font.cell_width_px,
+        font.cell_height_px
+    );
+}
+
+/// [`DPI_ENV`] で指定された DPI。指定がないか、正の整数でなければ `None`。
+fn dpi_from_env() -> Option<u32> {
+    let value = std::env::var(DPI_ENV).ok()?;
+    match value.parse::<u32>() {
+        Ok(dpi) if dpi > 0 => Some(dpi),
+        _ => {
+            tracing::warn!("ignoring {DPI_ENV}={value:?}: not a positive integer");
+            None
+        }
+    }
+}
+
+/// 窓の左上を動かさずに、DPI が `dpi` に変わったときの処理をさせる。桁数と行数は保つ。
+fn change_dpi_in_place(hwnd: HWND, dpi: u32) {
+    let Some(app) = app_of(hwnd) else {
+        return;
+    };
+    let client = app.borrow().scaled_client_size(dpi);
+    let client = match client {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::warn!("failed to compute the window size for {dpi} DPI: {e}");
+            return;
+        }
+    };
+    let mut rect = RECT::default();
+    // SAFETY: hwnd は有効な窓で、rect は書き込める。
+    if let Err(e) = unsafe { GetWindowRect(hwnd, &mut rect) } {
+        tracing::warn!("failed to get the window position: {e}");
+    }
+    // 枠の大きさは、いまの窓の枠から取る。DPI_ENV で DPI を差し替えたときも、枠は窓の実際の
+    // DPI で付くため。
+    let (current_width, current_height) = client_size(hwnd);
+    let frame_width = (rect.right - rect.left) - current_width as i32;
+    let frame_height = (rect.bottom - rect.top) - current_height as i32;
+    rect.right = rect.left + client.cx + frame_width;
+    rect.bottom = rect.top + client.cy + frame_height;
+    // WM_DPICHANGED の wparam は、下位に横の DPI、上位に縦の DPI。
+    let wparam = WPARAM((dpi | (dpi << 16)) as usize);
+    // SAFETY: hwnd は有効な窓。rect は処理が終わるまで生きている。借用は持っていない。
+    unsafe {
+        SendMessageW(
+            hwnd,
+            WM_DPICHANGED,
+            Some(wparam),
+            Some(LPARAM(&raw const rect as isize)),
+        )
+    };
+}
+
+/// `font` で `cols` × `rows` のセルを並べた大きさ（ピクセル）。
+fn grid_pixels(font: &Font, cols: u16, rows: u16) -> SIZE {
+    SIZE {
+        cx: (u32::from(cols) * font.cell_width_px) as i32,
+        cy: (u32::from(rows) * font.cell_height_px) as i32,
+    }
+}
+
+/// クライアント領域の大きさが `client` になる、DPI が `dpi` の窓の大きさ（枠を含む）。
+fn window_size(client: SIZE, dpi: u32) -> windows::core::Result<SIZE> {
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: client.cx,
+        bottom: client.cy,
+    };
+    // SAFETY: rect は書き込める。
+    unsafe {
+        AdjustWindowRectExForDpi(
+            &mut rect,
+            WS_OVERLAPPEDWINDOW,
+            false,
+            WINDOW_EX_STYLE(0),
+            dpi,
+        )?
+    };
+    Ok(SIZE {
+        cx: rect.right - rect.left,
+        cy: rect.bottom - rect.top,
+    })
 }
 
 fn create_window(font: &Font, dpi: u32) -> windows::core::Result<HWND> {
@@ -127,22 +231,7 @@ fn create_window(font: &Font, dpi: u32) -> windows::core::Result<HWND> {
         return Err(windows::core::Error::from_thread());
     }
 
-    let mut rect = RECT {
-        left: 0,
-        top: 0,
-        right: (u32::from(INITIAL_COLS) * font.cell_width_px) as i32,
-        bottom: (u32::from(INITIAL_ROWS) * font.cell_height_px) as i32,
-    };
-    // SAFETY: rect は書き込める。
-    unsafe {
-        AdjustWindowRectExForDpi(
-            &mut rect,
-            WS_OVERLAPPEDWINDOW,
-            false,
-            WINDOW_EX_STYLE(0),
-            dpi,
-        )?
-    };
+    let size = window_size(grid_pixels(font, INITIAL_COLS, INITIAL_ROWS), dpi)?;
 
     // SAFETY: クラスは登録済みで、文字列はこの呼び出しの間は生きている。
     unsafe {
@@ -153,8 +242,8 @@ fn create_window(font: &Font, dpi: u32) -> windows::core::Result<HWND> {
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            rect.right - rect.left,
-            rect.bottom - rect.top,
+            size.cx,
+            size.cy,
             None,
             None,
             Some(instance.into()),
@@ -187,7 +276,7 @@ enum Deferred {
 
 struct App {
     hwnd: HWND,
-    _dwrite: IDWriteFactory,
+    dwrite: IDWriteFactory,
     font: Font,
     vt: Vt,
     backend: ConPty,
@@ -259,7 +348,7 @@ impl App {
 
         Ok(Self {
             hwnd,
-            _dwrite: dwrite,
+            dwrite,
             font,
             vt,
             backend,
@@ -701,21 +790,57 @@ impl App {
         unsafe { _ = FlashWindowEx(&flash) };
     }
 
+    /// 窓のクライアント領域の大きさが変わった。端末の大きさを合わせる。ConPTY に伝えるのは、
+    /// 桁数か行数が変わったときだけ（セルのピクセル寸法は ConPTY に渡らない）。
     fn on_resize(&mut self, width: u32, height: u32) {
         if let Err(e) = self.renderer.resize(width, height) {
             tracing::warn!("failed to resize the swap chain: {e}");
         }
         let size = grid_size(&self.font, width, height);
-        if size == self.vt.size() {
+        let current = self.vt.size();
+        if size == current {
             return;
         }
         if let Err(e) = self.vt.resize(size) {
             tracing::warn!("failed to resize the terminal: {e}");
         }
-        if let Err(e) = self.backend.resize(size) {
+        if (size.cols, size.rows) != (current.cols, current.rows)
+            && let Err(e) = self.backend.resize(size)
+        {
             tracing::warn!("failed to resize the pseudo console: {e}");
         }
         self.invalidate();
+    }
+
+    /// DPI が `dpi` に変わった。フォントを測り直し、グリフアトラスを作り直す。端末の大きさは、
+    /// このあと届く WM_SIZE（[`App::on_resize`]）で合わせる。失敗したら前のフォントのまま描く。
+    fn apply_dpi(&mut self, dpi: u32) {
+        let font = match load_font(&self.dwrite, dpi) {
+            Ok(font) => font,
+            Err(e) => {
+                tracing::warn!("failed to measure the font for {dpi} DPI: {e}");
+                return;
+            }
+        };
+        if let Err(e) = self.renderer.set_font(&self.dwrite, &font) {
+            tracing::warn!("failed to rebuild the glyph atlas for {dpi} DPI: {e}");
+            return;
+        }
+        log_font(&font, dpi);
+        self.font = font;
+        self.invalidate();
+    }
+
+    /// DPI が `dpi` に変わったときに、いまの桁数と行数がそのまま収まるクライアント領域の大きさ。
+    fn scaled_client_size(&self, dpi: u32) -> windows::core::Result<SIZE> {
+        let font = load_font(&self.dwrite, dpi)?;
+        let size = self.vt.size();
+        Ok(grid_pixels(&font, size.cols, size.rows))
+    }
+
+    /// DPI が `dpi` に変わったときに、いまの桁数と行数がそのまま収まる窓の大きさ（枠を含む）。
+    fn scaled_window_size(&self, dpi: u32) -> windows::core::Result<SIZE> {
+        window_size(self.scaled_client_size(dpi)?, dpi)
     }
 
     fn render(&mut self) {
@@ -1028,8 +1153,27 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
+        // DPI が変わる前に、変わった後の窓の大きさを問われる。いまの桁数と行数が収まる大きさを返す。
+        WM_GETDPISCALEDSIZE => {
+            let dpi = wparam.0 as u32;
+            let mut scaled = None;
+            with_app(&mut |app| match app.scaled_window_size(dpi) {
+                Ok(size) => scaled = Some(size),
+                Err(e) => tracing::warn!("failed to compute the window size for {dpi} DPI: {e}"),
+            });
+            let Some(scaled) = scaled else {
+                // 0 を返すと、Windows が窓の大きさを DPI の比で拡大する。
+                return LRESULT(0);
+            };
+            // SAFETY: WM_GETDPISCALEDSIZE の lparam は、新しい大きさを書き込む SIZE を指す。
+            unsafe { *(lparam.0 as *mut SIZE) = scaled };
+            LRESULT(1)
+        }
         WM_DPICHANGED => {
-            // 推奨された位置と大きさに移す。フォントの測り直しは描画の段で足す。
+            // フォントとアトラスを作り直してから、推奨された位置と大きさに移す。移すとこの場で
+            // WM_SIZE が届き、新しいセルの寸法で桁数と行数を計算し直す。
+            let dpi = (wparam.0 & 0xffff) as u32;
+            with_app(&mut |app| app.apply_dpi(dpi));
             // SAFETY: WM_DPICHANGED の lparam は推奨された矩形を指す。
             let suggested = unsafe { &*(lparam.0 as *const RECT) };
             // SAFETY: hwnd は有効な窓。WM_SIZE がこの場で届くが、借用は持っていない。
@@ -1046,6 +1190,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             } {
                 tracing::warn!("failed to apply the DPI change: {e}");
             }
+            // クライアント領域の大きさが変わらず WM_SIZE が届かなかったときも、セルの寸法を合わせる。
+            let (width, height) = client_size(hwnd);
+            with_app(&mut |app| app.on_resize(width, height));
             LRESULT(0)
         }
         WM_DESTROY => {

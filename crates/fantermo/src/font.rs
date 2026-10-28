@@ -196,6 +196,21 @@ mod tests {
     }
 
     #[test]
+    fn doubling_the_dpi_doubles_the_measurements() {
+        const BASE_DPI: u32 = 96;
+        let factory = create_factory().unwrap();
+        let base = find(&factory, &["Consolas"], 12.0, BASE_DPI).unwrap();
+        let doubled = find(&factory, &["Consolas"], 12.0, BASE_DPI * 2).unwrap();
+        assert_eq!(doubled.size_px, base.size_px * 2.0);
+        // セルの寸法は切り上げるので、2 倍との差は 1 ピクセルまで。
+        assert!(doubled.cell_width_px.abs_diff(base.cell_width_px * 2) <= 1);
+        assert!(doubled.cell_height_px.abs_diff(base.cell_height_px * 2) <= 1);
+        let lines = doubled.lines;
+        assert!((lines.underline_offset - base.lines.underline_offset * 2.0).abs() < 1e-3);
+        assert!((lines.underline_thickness - base.lines.underline_thickness * 2.0).abs() < 1e-3);
+    }
+
+    #[test]
     fn long_face_names_keep_the_terminator() {
         let logfont = font(&"x".repeat(100)).logfont();
         assert_eq!(logfont.lfFaceName.last(), Some(&0));

@@ -99,6 +99,14 @@ impl Renderer {
         Ok(renderer)
     }
 
+    /// `font` で描くようにする。DPI が変わったときに使う。グリフアトラスは作り直す。
+    pub fn set_font(&mut self, dwrite: &IDWriteFactory, font: &Font) -> windows::core::Result<()> {
+        self.atlas = GlyphAtlas::new(&self.device, dwrite, font)?;
+        self.cell_width = font.cell_width_px;
+        self.cell_height = font.cell_height_px;
+        Ok(())
+    }
+
     /// 窓のクライアント領域の大きさに合わせてバッファを作り直す。
     pub fn resize(&mut self, width: u32, height: u32) -> windows::core::Result<()> {
         let (width, height) = (width.max(1), height.max(1));
