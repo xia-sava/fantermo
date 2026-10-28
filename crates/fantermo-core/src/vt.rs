@@ -99,6 +99,8 @@ pub struct Vt {
     replies: Rc<RefCell<Vec<u8>>>,
     /// 大きさの問い合わせに答えるための、現在の大きさ。
     size: Rc<Cell<GridSize>>,
+    /// `take_title_change` が最後に返したタイトル。
+    last_title: Vec<u8>,
     /// 画面を取り出すときに使い回す、描画用の状態と行・セルの反復子。
     render_state: RenderState<'static>,
     row_iter: RowIterator<'static>,
@@ -158,6 +160,7 @@ impl Vt {
             terminal,
             replies,
             size: size_cell,
+            last_title: Vec::new(),
             render_state: RenderState::new()?,
             row_iter: RowIterator::new()?,
             cell_iter: CellIterator::new()?,
@@ -321,6 +324,20 @@ impl Vt {
     /// シェルの出力を流し込む。
     pub fn feed(&mut self, data: &[u8]) {
         self.terminal.vt_write(data);
+    }
+
+    /// 前に呼んだときからタイトル（OSC 0 / OSC 2 で設定されたもの）が変わっていれば、新しいタイトルを
+    /// 返す。消されたときは空の文字列。UTF-8 でないバイトは U+FFFD に置き換える。
+    ///
+    /// 端末のリセット（RIS）はタイトルを消すが、タイトルの変化のコールバックを呼ばない。
+    /// そのためコールバックではなく、前に返したタイトルと比べて決める。
+    pub fn take_title_change(&mut self) -> Result<Option<String>, VtError> {
+        let title = self.terminal.title()?;
+        if title == self.last_title.as_slice() {
+            return Ok(None);
+        }
+        self.last_title = title.to_vec();
+        Ok(Some(String::from_utf8_lossy(&self.last_title).into_owned()))
     }
 
     /// 溜まっているシェルへの応答を取り出す。
@@ -524,6 +541,64 @@ mod tests {
         vt.feed(b"ab\x1b[6n");
         assert_eq!(vt.take_replies(), b"\x1b[1;3R");
         assert!(vt.take_replies().is_empty());
+    }
+
+    #[test]
+    fn osc_0_and_2_set_the_title() {
+        let mut vt = new_vt();
+        assert_eq!(vt.take_title_change().unwrap(), None);
+        vt.feed("\x1b]0;日本語のタイトル\x07".as_bytes());
+        assert_eq!(
+            vt.take_title_change().unwrap().as_deref(),
+            Some("日本語のタイトル")
+        );
+        // 一度取り出したら、次に設定されるまでは返さない。
+        assert_eq!(vt.take_title_change().unwrap(), None);
+        vt.feed(b"\x1b]2;vim\x1b\\");
+        assert_eq!(vt.take_title_change().unwrap().as_deref(), Some("vim"));
+    }
+
+    #[test]
+    fn only_the_last_title_is_returned() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b]2;first\x07\x1b]2;second\x07");
+        assert_eq!(vt.take_title_change().unwrap().as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn empty_title_is_returned_as_cleared() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b]2;vim\x07");
+        vt.take_title_change().unwrap();
+        vt.feed(b"\x1b]2;\x07");
+        assert_eq!(vt.take_title_change().unwrap().as_deref(), Some(""));
+    }
+
+    #[test]
+    fn title_with_invalid_utf8_is_ignored() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b]2;vim\x07");
+        vt.take_title_change().unwrap();
+        vt.feed(b"\x1b]2;caf\xe9\x07");
+        assert_eq!(vt.take_title_change().unwrap(), None);
+    }
+
+    #[test]
+    fn reset_clears_the_title() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b]2;vim\x07");
+        vt.take_title_change().unwrap();
+        vt.feed(b"\x1bc");
+        assert_eq!(vt.take_title_change().unwrap().as_deref(), Some(""));
+    }
+
+    #[test]
+    fn setting_the_same_title_again_is_not_a_change() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b]2;vim\x07");
+        vt.take_title_change().unwrap();
+        vt.feed(b"\x1b]2;vim\x07");
+        assert_eq!(vt.take_title_change().unwrap(), None);
     }
 
     #[test]

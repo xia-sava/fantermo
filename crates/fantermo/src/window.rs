@@ -35,13 +35,14 @@ use windows::{
                 GetWindowLongPtrW, IDC_ARROW, KillTimer, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
                 PostMessageW, PostQuitMessage, RegisterClassW, SPI_GETWHEELSCROLLLINES,
                 SW_SHOWDEFAULT, SWP_NOACTIVATE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-                SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW,
-                TranslateMessage, WHEEL_DELTA, WINDOW_EX_STYLE, WM_APP, WM_CHAR, WM_CONTEXTMENU,
-                WM_DEADCHAR, WM_DESTROY, WM_DPICHANGED, WM_IME_COMPOSITION,
-                WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
-                WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT,
-                WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN,
-                WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+                SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+                SystemParametersInfoW, TranslateMessage, WHEEL_DELTA, WINDOW_EX_STYLE, WM_APP,
+                WM_CHAR, WM_CONTEXTMENU, WM_DEADCHAR, WM_DESTROY, WM_DPICHANGED,
+                WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
+                WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+                WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_SYSCHAR,
+                WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW,
+                WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -645,6 +646,7 @@ impl App {
         {
             tracing::warn!("failed to write replies to the child: {e}");
         }
+        self.update_title();
         self.invalidate();
 
         let exit = self.backend.poll_exit();
@@ -653,6 +655,27 @@ impl App {
             self.exit = exit;
         }
         exit
+    }
+
+    /// アプリがタイトルを変えていれば、窓のタイトルにする。消されたら既定のタイトルに戻す。
+    fn update_title(&mut self) {
+        let title = match self.vt.take_title_change() {
+            Ok(Some(title)) => title,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::warn!("failed to read the title: {e}");
+                return;
+            }
+        };
+        let title = if title.is_empty() {
+            WINDOW_TITLE
+        } else {
+            &title
+        };
+        // SAFETY: self.hwnd は有効な窓。文字列はこの呼び出しの間は生きている。
+        if let Err(e) = unsafe { SetWindowTextW(self.hwnd, &HSTRING::from(title)) } {
+            tracing::warn!("failed to set the window title: {e}");
+        }
     }
 
     fn on_resize(&mut self, width: u32, height: u32) {
