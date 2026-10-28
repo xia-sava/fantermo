@@ -36,12 +36,12 @@ use windows::{
                 PostMessageW, PostQuitMessage, RegisterClassW, SPI_GETWHEELSCROLLLINES,
                 SW_SHOWDEFAULT, SWP_NOACTIVATE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
                 SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW,
-                TranslateMessage, WHEEL_DELTA, WINDOW_EX_STYLE, WM_APP, WM_CHAR, WM_DEADCHAR,
-                WM_DESTROY, WM_DPICHANGED, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
-                WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
-                WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE,
-                WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW,
-                WS_OVERLAPPEDWINDOW,
+                TranslateMessage, WHEEL_DELTA, WINDOW_EX_STYLE, WM_APP, WM_CHAR, WM_CONTEXTMENU,
+                WM_DEADCHAR, WM_DESTROY, WM_DPICHANGED, WM_IME_COMPOSITION,
+                WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+                WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT,
+                WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN,
+                WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -68,6 +68,9 @@ const WM_APP_WAKE: u32 = WM_APP + 1;
 
 /// 画面の書き出しに使うタイマー。
 const DUMP_TIMER_ID: usize = 1;
+
+/// キーボードから開いた WM_CONTEXTMENU が `lparam` に入れてくる位置。
+const KEYBOARD_CONTEXT_MENU_POSITION: (i32, i32) = (-1, -1);
 
 /// 起動したときの大きさ（セルの数）。
 const INITIAL_COLS: u16 = 100;
@@ -294,6 +297,11 @@ impl App {
             self.suppressed_release = Some(key);
             return self.paste_clipboard();
         }
+        if action != KeyAction::Release && is_context_menu_shortcut(key, mods) {
+            // 押し続けたときの繰り返しはメニューを出し直さず、シェルにも送らない。
+            self.suppressed_release = Some(key);
+            return (action == KeyAction::Press).then(|| self.context_menu_at_cursor());
+        }
 
         let text = keyboard::printable_text(chars);
         let input = KeyInput {
@@ -442,12 +450,7 @@ impl App {
         } else if !self.report_mouse(MouseAction::Release, Some(button), x, y, wparam)
             && button == MouseButton::Right
         {
-            let (screen_x, screen_y) = self.client_to_screen(x, y);
-            deferred = Some(Deferred::ContextMenu {
-                x: screen_x,
-                y: screen_y,
-                can_copy: self.has_selection(),
-            });
+            deferred = Some(self.context_menu(x, y));
         }
         if held_button(wparam).is_none() {
             // SAFETY: このスレッドが捕まえたマウスを放す。
@@ -456,6 +459,27 @@ impl App {
             }
         }
         deferred
+    }
+
+    /// 窓のクライアント領域の中の (`x`, `y`) にコンテキストメニューを出すよう返す。
+    fn context_menu(&self, x: i32, y: i32) -> Deferred {
+        let (screen_x, screen_y) = self.client_to_screen(x, y);
+        Deferred::ContextMenu {
+            x: screen_x,
+            y: screen_y,
+            can_copy: self.has_selection(),
+        }
+    }
+
+    /// テキストカーソルのセルの左下にコンテキストメニューを出すよう返す。キーボードから開くときに使う。
+    fn context_menu_at_cursor(&self) -> Deferred {
+        let (col, row) = self.vt.cursor_cell().unwrap_or_else(|e| {
+            tracing::warn!("failed to read the cursor position: {e}");
+            (0, 0)
+        });
+        let x = (u32::from(col) * self.font.cell_width_px) as i32;
+        let y = ((u32::from(row) + 1) * self.font.cell_height_px) as i32;
+        self.context_menu(x, y)
     }
 
     fn has_selection(&self) -> bool {
@@ -768,6 +792,12 @@ fn is_paste_shortcut(key: Key, mods: Mods) -> bool {
     held_mods(mods) == Mods::SHIFT && key == Key::Insert
 }
 
+/// コンテキストメニューを出すキー。メニューキー（修飾キーなし）と Shift+F10（ほかの修飾キーなし）。
+fn is_context_menu_shortcut(key: Key, mods: Mods) -> bool {
+    let held = held_mods(mods);
+    (key == Key::ContextMenu && held.is_empty()) || (key == Key::F10 && held == Mods::SHIFT)
+}
+
 /// 押されている修飾キーだけ。ロックの状態は除く。
 fn held_mods(mods: Mods) -> Mods {
     mods & (Mods::CTRL | Mods::SHIFT | Mods::ALT | Mods::SUPER)
@@ -924,6 +954,15 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             with_app(&mut |app| app.on_mouse_move(lparam, wparam));
             LRESULT(0)
         }
+        // メニューキーと Shift+F10 は WM_KEYDOWN で扱い、既定の処理に渡さないので、ここへは来ない。
+        // 来るのは外から送られたときで、位置が (-1, -1) ならキーボードからとしてカーソルの位置に出す。
+        // 位置のあるもの（タイトルバーの右クリックなど）は、システムメニューを出す既定の処理に任せる。
+        WM_CONTEXTMENU if client_position(lparam) == KEYBOARD_CONTEXT_MENU_POSITION => {
+            let mut deferred = None;
+            with_app(&mut |app| deferred = Some(app.context_menu_at_cursor()));
+            run_deferred(hwnd, deferred, &with_app);
+            LRESULT(0)
+        }
         WM_MOUSEWHEEL => {
             let delta = i32::from(((wparam.0 >> 16) & 0xffff) as u16 as i16);
             with_app(&mut |app| app.on_wheel(delta, lparam, wparam));
@@ -1028,6 +1067,29 @@ mod tests {
         assert!(!is_paste_shortcut(Key::Insert, Mods::CTRL));
         assert!(!is_paste_shortcut(Key::Insert, Mods::SHIFT | Mods::CTRL));
         assert!(!is_paste_shortcut(Key::V, Mods::CTRL));
+    }
+
+    #[test]
+    fn context_menu_shortcuts_are_menu_key_and_shift_f10() {
+        assert!(is_context_menu_shortcut(Key::ContextMenu, Mods::empty()));
+        assert!(is_context_menu_shortcut(Key::ContextMenu, Mods::NUM_LOCK));
+        assert!(is_context_menu_shortcut(Key::F10, Mods::SHIFT));
+        assert!(!is_context_menu_shortcut(Key::F10, Mods::empty()));
+        assert!(!is_context_menu_shortcut(
+            Key::F10,
+            Mods::SHIFT | Mods::CTRL
+        ));
+        assert!(!is_context_menu_shortcut(Key::ContextMenu, Mods::CTRL));
+    }
+
+    #[test]
+    fn keyboard_context_menu_position_is_read_from_lparam() {
+        // MAKELPARAM(-1, -1) は 64 ビットでは 0xffffffff（正の値）で届く。
+        assert_eq!(
+            client_position(LPARAM(0xffff_ffff)),
+            KEYBOARD_CONTEXT_MENU_POSITION
+        );
+        assert_eq!(client_position(LPARAM(-1)), KEYBOARD_CONTEXT_MENU_POSITION);
     }
 
     #[test]
