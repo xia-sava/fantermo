@@ -1,0 +1,3 @@
+[net]
+# git の依存を git コマンドで取得する。利用者の git の設定（URL の書き換えや SSH の認証）がそのまま効く。
+git-fetch-with-cli = true
