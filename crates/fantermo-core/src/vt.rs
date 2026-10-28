@@ -156,6 +156,11 @@ impl Vt {
         self.size.get()
     }
 
+    /// カーソルのある桁と行（0 始まり）。
+    pub fn cursor_cell(&self) -> Result<(u16, u16), VtError> {
+        Ok((self.terminal.cursor_x()?, self.terminal.cursor_y()?))
+    }
+
     /// 描画のために画面の内容を取り出す。反転表示はここで前景色と背景色を入れ替えておく。
     pub fn frame(&mut self) -> Result<Frame, VtError> {
         let snapshot = self.render_state.update(&self.terminal)?;
@@ -337,6 +342,13 @@ mod tests {
         assert_eq!(frame.cells[0].bg, None);
         assert_eq!(frame.cells[1].fg, frame.background);
         assert_eq!(frame.cells[1].bg, Some(frame.foreground));
+    }
+
+    #[test]
+    fn cursor_cell_follows_text() {
+        let mut vt = new_vt();
+        vt.feed("ab\r\nあ".as_bytes());
+        assert_eq!(vt.cursor_cell().unwrap(), (2, 1));
     }
 
     #[test]

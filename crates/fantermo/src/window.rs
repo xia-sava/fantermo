@@ -24,9 +24,9 @@ use windows::{
                 PostMessageW, PostQuitMessage, RegisterClassW, SW_SHOWDEFAULT, SWP_NOACTIVATE,
                 SWP_NOZORDER, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
                 TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_CHAR, WM_DEADCHAR, WM_DESTROY,
-                WM_DPICHANGED, WM_KEYDOWN, WM_KEYUP, WM_NCDESTROY, WM_PAINT, WM_SIZE, WM_SYSCHAR,
-                WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW,
-                WS_OVERLAPPEDWINDOW,
+                WM_DPICHANGED, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP,
+                WM_NCDESTROY, WM_PAINT, WM_SIZE, WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN,
+                WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -37,6 +37,7 @@ use crate::{
     conpty::{ConPty, SpawnOptions},
     dump::{DUMP_INTERVAL, ScreenDump},
     font::{self, Font},
+    ime::{self, CursorRect},
     keyboard::{self, KeyPosition, Utf16Assembler},
     renderer::Renderer,
 };
@@ -261,6 +262,24 @@ impl App {
         self.send(c.encode_utf8(&mut buf).as_bytes());
     }
 
+    /// IME の変換中の窓と候補の窓を、いまのカーソルの位置に出させる。
+    fn place_ime_windows(&self) {
+        let (col, row) = match self.vt.cursor_cell() {
+            Ok(cell) => cell,
+            Err(e) => {
+                tracing::warn!("failed to read the cursor position: {e}");
+                return;
+            }
+        };
+        let cursor = CursorRect {
+            x: (u32::from(col) * self.font.cell_width_px) as i32,
+            y: (u32::from(row) * self.font.cell_height_px) as i32,
+            width: self.font.cell_width_px as i32,
+            height: self.font.cell_height_px as i32,
+        };
+        ime::place_windows(self.hwnd, cursor, &self.font);
+    }
+
     fn send(&mut self, data: &[u8]) {
         if data.is_empty() {
             return;
@@ -468,6 +487,12 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         WM_CHAR | WM_SYSCHAR => {
             with_app(&mut |app| app.on_text_unit(wparam.0 as u16));
             LRESULT(0)
+        }
+        WM_IME_STARTCOMPOSITION | WM_IME_COMPOSITION => {
+            with_app(&mut |app| app.place_ime_windows());
+            // 変換中の文字列は IME に描かせ、確定した文字列は既定の処理で WM_CHAR にしてもらう。
+            // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_DPICHANGED => {
             // 推奨された位置と大きさに移す。フォントの測り直しは描画の段で足す。

@@ -7,6 +7,7 @@ mod atlas;
 mod conpty;
 mod dump;
 mod font;
+mod ime;
 mod keyboard;
 mod pipeline;
 mod renderer;
