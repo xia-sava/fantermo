@@ -112,8 +112,8 @@ fn command_line_for(arguments: Option<&str>, shell: Option<&str>) -> String {
         .to_owned()
 }
 
-/// 窓を開き、子プロセスを起動して、窓が閉じるまでメッセージを処理する。最後に終わった端末の子プロセスの
-/// 終了コードを返す。`arguments` は fantermo の引数（子プロセスのコマンドライン）。`config_path` は
+/// 窓を開き、子プロセスを起動して、窓が閉じるまでメッセージを処理する。最後の端末の子プロセスが終わって
+/// 窓を閉じたときはその終了コードを、利用者が最後の端末を閉じたときは 0 を返す。`arguments` は fantermo の引数（子プロセスのコマンドライン）。`config_path` は
 /// 設定ファイルの場所で、`config` はそこから読んだ設定。
 pub fn run(
     arguments: Option<String>,
