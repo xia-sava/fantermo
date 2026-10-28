@@ -699,13 +699,12 @@ fn client_size(hwnd: HWND) -> (u32, u32) {
     )
 }
 
+/// 窓に結び付けた App を借りて `action` を呼ぶもの。借りられなければ呼ばない。
+type WithApp<'a> = dyn Fn(&mut dyn FnMut(&mut App)) + 'a;
+
 /// 窓の借用を手放した状態で、入力の処理が残したことをする。その結果さらに残ったことも続けてする
 /// （メニューで貼り付けを選び、それが編集のダイアログを要する場合など）。
-fn run_deferred(
-    hwnd: HWND,
-    deferred: Option<Deferred>,
-    with_app: &dyn Fn(&mut dyn FnMut(&mut App)),
-) {
+fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
     let mut next = deferred;
     while let Some(deferred) = next.take() {
         match deferred {
