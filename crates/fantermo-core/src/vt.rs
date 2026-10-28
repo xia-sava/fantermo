@@ -14,7 +14,7 @@ use libghostty_vt::{
     style::RgbColor,
     terminal::{
         ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType,
-        PrimaryDeviceAttributes, SecondaryDeviceAttributes, SizeReportSize,
+        PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes, SizeReportSize,
     },
 };
 
@@ -154,6 +154,16 @@ impl Vt {
 
     pub fn size(&self) -> GridSize {
         self.size.get()
+    }
+
+    /// 表示する範囲を `lines` 行動かす。負の値で過去（上）へ、正の値で新しい側（下）へ。
+    pub fn scroll(&mut self, lines: isize) {
+        self.terminal.scroll_viewport(ScrollViewport::Delta(lines));
+    }
+
+    /// 表示する範囲を、いちばん新しい行（カーソルのある画面）に戻す。
+    pub fn scroll_to_bottom(&mut self) {
+        self.terminal.scroll_viewport(ScrollViewport::Bottom);
     }
 
     /// カーソルのある桁と行（0 始まり）。
@@ -342,6 +352,32 @@ mod tests {
         assert_eq!(frame.cells[0].bg, None);
         assert_eq!(frame.cells[1].fg, frame.background);
         assert_eq!(frame.cells[1].bg, Some(frame.foreground));
+    }
+
+    fn first_row_text(vt: &mut Vt) -> String {
+        let frame = vt.frame().unwrap();
+        frame
+            .cells
+            .iter()
+            .filter(|cell| cell.row == 0)
+            .map(|cell| cell.text.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn scrolling_shows_older_lines_and_returns_to_the_bottom() {
+        let mut vt = new_vt();
+        for line in 0..20 {
+            vt.feed(format!("line{line:02}\r\n").as_bytes());
+        }
+        // 5 行の画面の先頭は line16（最後の行は空のプロンプトの行）。
+        assert_eq!(first_row_text(&mut vt), "line16");
+        vt.scroll(-10);
+        assert_eq!(first_row_text(&mut vt), "line06");
+        // 過去を表示している間は、カーソルは画面の外。
+        assert!(vt.frame().unwrap().cursor.is_none());
+        vt.scroll_to_bottom();
+        assert_eq!(first_row_text(&mut vt), "line16");
     }
 
     #[test]

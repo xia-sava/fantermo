@@ -21,12 +21,14 @@ use windows::{
                 CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
                 DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW,
                 GetWindowLongPtrW, IDC_ARROW, KillTimer, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
-                PostMessageW, PostQuitMessage, RegisterClassW, SW_SHOWDEFAULT, SWP_NOACTIVATE,
-                SWP_NOZORDER, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-                TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_CHAR, WM_DEADCHAR, WM_DESTROY,
-                WM_DPICHANGED, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP,
-                WM_NCDESTROY, WM_PAINT, WM_SIZE, WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN,
-                WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+                PostMessageW, PostQuitMessage, RegisterClassW, SPI_GETWHEELSCROLLLINES,
+                SW_SHOWDEFAULT, SWP_NOACTIVATE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+                SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW,
+                TranslateMessage, WHEEL_DELTA, WINDOW_EX_STYLE, WM_APP, WM_CHAR, WM_DEADCHAR,
+                WM_DESTROY, WM_DPICHANGED, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
+                WM_KEYUP, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_SIZE, WM_SYSCHAR,
+                WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW,
+                WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -164,6 +166,10 @@ struct App {
     exit: Option<ExitCode>,
     /// キーを伴わずに届く文字（IME の確定など）を組み立てる。
     text_input: Utf16Assembler,
+    /// ホイール 1 ノッチで動かす行数（Windows の設定）。
+    wheel_lines_per_notch: u32,
+    /// 高精度のホイールで、まだ 1 行に満たない回転量。
+    wheel_remainder: i32,
 }
 
 impl App {
@@ -223,6 +229,8 @@ impl App {
             dump,
             exit: None,
             text_input: Utf16Assembler::default(),
+            wheel_lines_per_notch: wheel_lines_per_notch(),
+            wheel_remainder: 0,
         })
     }
 
@@ -280,13 +288,29 @@ impl App {
         ime::place_windows(self.hwnd, cursor, &self.font);
     }
 
+    /// 利用者の入力を子プロセスへ送る。過去を表示していたら、いちばん新しい行に戻す。
     fn send(&mut self, data: &[u8]) {
         if data.is_empty() {
             return;
         }
+        self.vt.scroll_to_bottom();
+        self.invalidate();
         if let Err(e) = self.backend.write(data) {
             tracing::warn!("failed to write input to the child: {e}");
         }
+    }
+
+    /// マウスのホイールが回った。`delta` は WM_MOUSEWHEEL の回転量（奥へ回すと正）。
+    fn on_wheel(&mut self, delta: i32) {
+        let (lines, remainder) =
+            wheel_lines(self.wheel_remainder, delta, self.wheel_lines_per_notch);
+        self.wheel_remainder = remainder;
+        if lines == 0 {
+            return;
+        }
+        // 奥へ回すと過去（上）へ。
+        self.vt.scroll(-(lines as isize));
+        self.invalidate();
     }
 
     /// 出力を端末に流し込み、応答を返し、子プロセスが終わっていればその終了コードを返す。
@@ -379,6 +403,34 @@ fn client_size(hwnd: HWND) -> (u32, u32) {
         (rect.right - rect.left).max(0) as u32,
         (rect.bottom - rect.top).max(0) as u32,
     )
+}
+
+/// 前回の端数 `remainder` に回転量 `delta` を足し、動かす行数と新しい端数を返す。
+/// 高精度のホイールは 1 ノッチ（`WHEEL_DELTA`）より細かい回転量で届くので、端数を持ち越す。
+fn wheel_lines(remainder: i32, delta: i32, lines_per_notch: u32) -> (i32, i32) {
+    let total = remainder + delta * lines_per_notch as i32;
+    let lines = total / WHEEL_DELTA as i32;
+    (lines, total - lines * WHEEL_DELTA as i32)
+}
+
+/// ホイール 1 ノッチで動かす行数の、Windows の設定。読めなければ既定の 3 行。
+fn wheel_lines_per_notch() -> u32 {
+    const DEFAULT_LINES: u32 = 3;
+    let mut lines = DEFAULT_LINES;
+    // SAFETY: lines は u32 を書き込める領域を指す。
+    let read = unsafe {
+        SystemParametersInfoW(
+            SPI_GETWHEELSCROLLLINES,
+            0,
+            Some((&raw mut lines).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    if let Err(e) = read {
+        tracing::warn!("failed to read the wheel scroll lines: {e}");
+        return DEFAULT_LINES;
+    }
+    lines
 }
 
 /// WM_KEYDOWN の処理中に、そのキーから TranslateMessage が積んだ文字のメッセージを取り出す。
@@ -484,6 +536,11 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             with_app(&mut |app| app.on_key(virtual_key, position, KeyAction::Release, &[]));
             LRESULT(0)
         }
+        WM_MOUSEWHEEL => {
+            let delta = i32::from(((wparam.0 >> 16) & 0xffff) as u16 as i16);
+            with_app(&mut |app| app.on_wheel(delta));
+            LRESULT(0)
+        }
         WM_CHAR | WM_SYSCHAR => {
             with_app(&mut |app| app.on_text_unit(wparam.0 as u16));
             LRESULT(0)
@@ -535,5 +592,29 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOTCH: i32 = WHEEL_DELTA as i32;
+
+    #[test]
+    fn one_notch_moves_the_configured_lines() {
+        assert_eq!(wheel_lines(0, NOTCH, 3), (3, 0));
+        assert_eq!(wheel_lines(0, -NOTCH, 3), (-3, 0));
+    }
+
+    #[test]
+    fn fine_wheel_steps_carry_the_remainder() {
+        // 1/4 ノッチずつ届くと、3 行の設定では 1 回目は端数だけが残る。
+        let (lines, remainder) = wheel_lines(0, NOTCH / 4, 3);
+        assert_eq!(lines, 0);
+        let (lines, remainder) = wheel_lines(remainder, NOTCH / 4, 3);
+        assert_eq!(lines, 1);
+        let (lines, _) = wheel_lines(remainder, NOTCH / 2, 3);
+        assert_eq!(lines, 2);
     }
 }
