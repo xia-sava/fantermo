@@ -203,6 +203,7 @@ pub fn frame(
             underline_color: None,
             strikethrough: false,
             overline: false,
+            blink: false,
         };
         let end = span.col + span.cols;
         let mut text_cols = span.cols.saturating_sub(TAB_PADDING_COLS * 2);

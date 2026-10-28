@@ -40,12 +40,22 @@ pub struct CellView {
     pub underline_color: Option<Rgb>,
     pub strikethrough: bool,
     pub overline: bool,
+    /// 点滅（SGR 5 と SGR 6）。
+    pub blink: bool,
 }
 
 impl CellView {
     /// 下線・取り消し線・上線のどれかを持つ。
     pub fn has_decoration(&self) -> bool {
         self.underline != Underline::None || self.strikethrough || self.overline
+    }
+
+    /// 文字と装飾を除き、背景だけを残す。
+    pub fn clear_text_and_decoration(&mut self) {
+        self.text.clear();
+        self.underline = Underline::None;
+        self.strikethrough = false;
+        self.overline = false;
     }
 }
 
@@ -70,4 +80,89 @@ pub struct Frame {
     pub cells: Vec<CellView>,
     /// 表示中で、画面の中にあるときだけ持つ。
     pub cursor: Option<CursorView>,
+}
+
+impl Frame {
+    /// 点滅させると見た目が変わるセルを持つ。点滅の属性を持っていても、空白だけで装飾もないセルは数えない。
+    pub fn has_blink(&self) -> bool {
+        self.cells
+            .iter()
+            .any(|cell| cell.blink && (!cell.text.trim().is_empty() || cell.has_decoration()))
+    }
+
+    /// 点滅の文字を隠す。点滅するセルの文字と装飾を除き、背景だけを残す。
+    pub fn hide_blinking_text(&mut self) {
+        for cell in self.cells.iter_mut().filter(|cell| cell.blink) {
+            cell.clear_text_and_decoration();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WHITE: Rgb = Rgb {
+        r: 255,
+        g: 255,
+        b: 255,
+    };
+    const BLUE: Rgb = Rgb { r: 0, g: 0, b: 255 };
+
+    fn cell(col: u16, text: &str, blink: bool) -> CellView {
+        CellView {
+            col,
+            row: 0,
+            text: text.to_owned(),
+            width: 1,
+            fg: WHITE,
+            bg: Some(BLUE),
+            bold: false,
+            italic: false,
+            underline: Underline::Curly,
+            underline_color: None,
+            strikethrough: true,
+            overline: true,
+            blink,
+        }
+    }
+
+    fn frame(cells: Vec<CellView>) -> Frame {
+        Frame {
+            cols: 10,
+            rows: 1,
+            background: Rgb { r: 0, g: 0, b: 0 },
+            foreground: WHITE,
+            cells,
+            cursor: None,
+        }
+    }
+
+    #[test]
+    fn hiding_blinking_text_keeps_the_background_and_other_cells() {
+        let mut frame = frame(vec![cell(0, "a", true), cell(1, "b", false)]);
+        assert!(frame.has_blink());
+        frame.hide_blinking_text();
+        let hidden = &frame.cells[0];
+        assert_eq!(hidden.text, "");
+        assert!(!hidden.has_decoration());
+        assert_eq!(hidden.bg, Some(BLUE));
+        assert_eq!(frame.cells[1], cell(1, "b", false));
+    }
+
+    #[test]
+    fn frames_without_blinking_cells_have_no_blink() {
+        assert!(!frame(vec![cell(0, "a", false)]).has_blink());
+        assert!(!frame(Vec::new()).has_blink());
+        // 空白だけで装飾もない点滅のセルは、隠しても見た目が変わらない。
+        let mut space = CellView {
+            underline: Underline::None,
+            strikethrough: false,
+            overline: false,
+            ..cell(0, " ", true)
+        };
+        assert!(!frame(vec![space.clone()]).has_blink());
+        space.underline = Underline::Single;
+        assert!(frame(vec![space]).has_blink());
+    }
 }

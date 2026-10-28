@@ -44,13 +44,13 @@ use windows::{
                 RegisterClassW, SPI_GETWHEELSCROLLLINES, SW_SHOWDEFAULT, SWP_NOACTIVATE,
                 SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetCursor,
                 SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-                SystemParametersInfoW, TranslateMessage, WHEEL_DELTA, WINDOW_EX_STYLE, WM_APP,
-                WM_CHAR, WM_CONTEXTMENU, WM_DEADCHAR, WM_DESTROY, WM_DPICHANGED,
-                WM_GETDPISCALEDSIZE, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
-                WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-                WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP,
-                WM_SETCURSOR, WM_SIZE, WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP,
-                WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+                SystemParametersInfoW, TranslateMessage, WA_INACTIVE, WHEEL_DELTA, WINDOW_EX_STYLE,
+                WM_ACTIVATE, WM_APP, WM_CHAR, WM_CONTEXTMENU, WM_DEADCHAR, WM_DESTROY,
+                WM_DPICHANGED, WM_GETDPISCALEDSIZE, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION,
+                WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+                WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN,
+                WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN,
+                WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -88,6 +88,12 @@ const CONFIG_TIMER_ID: usize = 2;
 
 /// 設定ファイルの書き換えを知らされてから読み直すまでの間。この間に届いた知らせはまとめる。
 const CONFIG_RELOAD_DELAY: Duration = Duration::from_millis(200);
+
+/// 点滅（SGR 5、6）の文字を見せる・隠すを切り替えるタイマー。
+const BLINK_TIMER_ID: usize = 3;
+
+/// 点滅の文字を見せる間と隠す間の、それぞれの長さ。
+const BLINK_INTERVAL: Duration = Duration::from_millis(500);
 
 /// キーボードから開いた WM_CONTEXTMENU が `lparam` に入れてくる位置。
 const KEYBOARD_CONTEXT_MENU_POSITION: (i32, i32) = (-1, -1);
@@ -408,6 +414,12 @@ struct App {
     /// タブバーの上で押したマウスのボタンと、そのときマウスの下にあったタブの番号。離すまで、マウスの
     /// 操作を端末へ送らない。
     tab_bar_press: Option<(MouseButton, Option<usize>)>,
+    /// 窓がアクティブ（前面）。WM_ACTIVATE で決める。
+    window_active: bool,
+    /// 点滅の文字を見せている。点滅させていないときは `true`。
+    blink_visible: bool,
+    /// 点滅のタイマーを動かしている。
+    blink_timer_running: bool,
 }
 
 impl App {
@@ -474,6 +486,9 @@ impl App {
             pointer_in_window: None,
             suppressed_release: None,
             tab_bar_press: None,
+            window_active: false,
+            blink_visible: true,
+            blink_timer_running: false,
         })
     }
 
@@ -1379,13 +1394,17 @@ impl App {
     /// 表示している端末を端末を描く領域に、端末が二つ以上ならタブバーをその上に描いて表示する。
     /// `capture` を渡すと、表示する前の画面を PNG で書き出す。
     fn render_to(&mut self, capture: Option<&std::path::Path>) {
-        let frame = match self.session_mut().vt.frame() {
+        let mut frame = match self.session_mut().vt.frame() {
             Ok(frame) => frame,
             Err(e) => {
                 tracing::warn!("failed to read the screen: {e}");
                 return;
             }
         };
+        self.set_blinking(self.window_active && frame.has_blink());
+        if !self.blink_visible {
+            frame.hide_blinking_text();
+        }
         let tab_bar = self.tab_bar_frame(frame.background, frame.foreground);
         let mut layers = vec![(&frame, self.terminal_area)];
         if let Some((tab_bar, area)) = &tab_bar {
@@ -1431,6 +1450,59 @@ impl App {
     /// タブバーの幅（セル）。
     fn tab_bar_cols(&self) -> u16 {
         (self.terminal_area.width / self.font.cell_width_px).min(u32::from(u16::MAX)) as u16
+    }
+
+    /// 点滅のタイマーを動かす・止める。止めたら点滅の文字を見せた状態に戻す。動かし始めも見せた状態から。
+    fn set_blinking(&mut self, blinking: bool) {
+        if blinking == self.blink_timer_running {
+            return;
+        }
+        self.blink_visible = true;
+        if blinking {
+            // SAFETY: self.hwnd は有効な窓。
+            let started = unsafe {
+                SetTimer(
+                    Some(self.hwnd),
+                    BLINK_TIMER_ID,
+                    BLINK_INTERVAL.as_millis() as u32,
+                    None,
+                )
+            } != 0;
+            if !started {
+                tracing::warn!(
+                    "failed to start the blink timer: {}",
+                    windows::core::Error::from_thread()
+                );
+                return;
+            }
+        } else {
+            // SAFETY: self.hwnd は有効な窓。
+            if let Err(e) = unsafe { KillTimer(Some(self.hwnd), BLINK_TIMER_ID) } {
+                tracing::warn!("failed to stop the blink timer: {e}");
+            }
+        }
+        self.blink_timer_running = blinking;
+        tracing::debug!("blink timer running: {blinking}");
+    }
+
+    /// 点滅のタイマーが来た。見せる・隠すを切り替えて描き直す。
+    fn on_blink_timer(&mut self) {
+        self.blink_visible = !self.blink_visible;
+        self.invalidate();
+    }
+
+    /// 窓がアクティブになった・でなくなった。アクティブでない間は点滅を止め、文字を見せておく。
+    /// 点滅を始めるかどうかは、次に描くときに画面に点滅の文字があるかで決める。
+    fn on_activate(&mut self, active: bool) {
+        self.window_active = active;
+        if !active {
+            let was_hidden = !self.blink_visible;
+            self.set_blinking(false);
+            if !was_hidden {
+                return;
+            }
+        }
+        self.invalidate();
     }
 
     fn invalidate(&self) {
@@ -1775,6 +1847,17 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == BLINK_TIMER_ID => {
+            with_app(&mut |app| app.on_blink_timer());
+            LRESULT(0)
+        }
+        // 下位の語が WA_INACTIVE なら、アクティブでなくなった。
+        WM_ACTIVATE => {
+            let active = (wparam.0 & 0xffff) as u32 != WA_INACTIVE;
+            with_app(&mut |app| app.on_activate(active));
+            // SAFETY: 受け取った引数をそのまま既定の処理に渡す（フォーカスを窓に移してもらう）。
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
         WM_TIMER if wparam.0 == CONFIG_TIMER_ID => {
             // SAFETY: hwnd は有効な窓。
             if let Err(e) = unsafe { KillTimer(Some(hwnd), CONFIG_TIMER_ID) } {
@@ -1936,6 +2019,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             unsafe {
                 _ = KillTimer(Some(hwnd), DUMP_TIMER_ID);
                 _ = KillTimer(Some(hwnd), CONFIG_TIMER_ID);
+                _ = KillTimer(Some(hwnd), BLINK_TIMER_ID);
             };
             let mut code = 0;
             with_app(&mut |app| code = app.exit.map_or(0, |code| code.0));

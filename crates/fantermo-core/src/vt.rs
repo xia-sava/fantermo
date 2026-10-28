@@ -539,7 +539,8 @@ impl Vt {
     }
 
     /// 描画のために画面の内容を取り出す。反転表示はここで前景色と背景色を入れ替え、薄くした文字は
-    /// 前景色を背景色に寄せ、不可視の文字は文字と装飾を除いておく。[`Vt::set_link_underline`] で
+    /// 前景色を背景色に寄せ、不可視の文字は文字と装飾を除いておく。点滅は印を付けて渡すだけで、
+    /// 隠すのは描く側（[`Frame::hide_blinking_text`]）。[`Vt::set_link_underline`] で
     /// 決めた範囲には下線を付ける。
     pub fn frame(&mut self) -> Result<Frame, VtError> {
         let snapshot = self.render_state.update(&self.terminal)?;
@@ -596,13 +597,12 @@ impl Vt {
                     underline_color: style_color(style.underline_color, &colors.palette),
                     strikethrough: style.strikethrough,
                     overline: style.overline,
+                    blink: style.blink,
                 };
                 // 不可視の文字は、背景だけを描く。
                 if style.invisible {
-                    view.text.clear();
-                    view.underline = Underline::None;
-                    view.strikethrough = false;
-                    view.overline = false;
+                    view.clear_text_and_decoration();
+                    view.blink = false;
                 }
                 // マウスの下のリンクには下線を引く。下線を持つ文字はその下線のまま描く。
                 if view.underline == Underline::None
@@ -1037,6 +1037,17 @@ mod tests {
                 b: expected(fg.b, bg.b)
             }
         );
+    }
+
+    #[test]
+    fn frame_passes_blink() {
+        // 速い点滅（SGR 6）も同じ点滅として渡る。
+        assert!(styled_cell("5", "a").blink);
+        assert!(styled_cell("6", "a").blink);
+        assert!(!styled_cell("5;25", "a").blink);
+        assert!(!styled_cell("1", "a").blink);
+        // 不可視の文字は点滅させない。
+        assert!(!styled_cell("5;8;48;2;1;2;3", "a").blink);
     }
 
     #[test]
