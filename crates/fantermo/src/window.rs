@@ -75,9 +75,6 @@ const WINDOW_TITLE: &str = "fantermo";
 /// 起こすメッセージ。`wparam` はその端末の [`SessionId`]。
 const WM_APP_WAKE: u32 = WM_APP + 1;
 
-/// 起動したときに開く端末の番号。
-const FIRST_SESSION_ID: SessionId = SessionId(0);
-
 /// 設定ファイルを監視するスレッドが、書き換えを知らせるメッセージ。
 const WM_APP_CONFIG_CHANGED: u32 = WM_APP + 2;
 
@@ -101,10 +98,23 @@ const INITIAL_ROWS: u16 = 30;
 /// 作り直しを、モニタを使わずに確かめるために使う。
 const DPI_ENV: &str = "FANTERMO_DPI";
 
-/// 窓を開き、子プロセスを起動して、窓が閉じるまでメッセージを処理する。子プロセスの終了コードを返す。
-/// `config_path` は設定ファイルの場所で、`config` はそこから読んだ設定。
+/// 引数も設定ファイルの `shell` もないときに起動するコマンドライン。
+const DEFAULT_COMMAND_LINE: &str = "powershell.exe -NoLogo";
+
+/// 端末を開くときに起動するコマンドライン。fantermo の引数 `arguments` があればそれ、なければ設定の
+/// `shell`、それもなければ既定のシェル。
+fn command_line_for(arguments: Option<&str>, shell: Option<&str>) -> String {
+    arguments
+        .or(shell)
+        .unwrap_or(DEFAULT_COMMAND_LINE)
+        .to_owned()
+}
+
+/// 窓を開き、子プロセスを起動して、窓が閉じるまでメッセージを処理する。最後に終わった端末の子プロセスの
+/// 終了コードを返す。`arguments` は fantermo の引数（子プロセスのコマンドライン）。`config_path` は
+/// 設定ファイルの場所で、`config` はそこから読んだ設定。
 pub fn run(
-    command_line: &str,
+    arguments: Option<String>,
     config_path: Option<PathBuf>,
     config: Config,
 ) -> Result<u32, Box<dyn std::error::Error>> {
@@ -122,7 +132,7 @@ pub fn run(
         system_dpi,
         config_path,
         config,
-        command_line,
+        arguments,
     )?;
     let app = Box::into_raw(Box::new(RefCell::new(app)));
     // SAFETY: hwnd はこのスレッドが作った窓。ポインタは WM_NCDESTROY で取り戻して解放する。
@@ -330,6 +340,21 @@ enum Deferred {
     EditPaste { text: String, font: Font },
     /// 画面の (`x`, `y`) にコンテキストメニューを出す。
     ContextMenu { x: i32, y: i32, can_copy: bool },
+    /// 窓を閉じる。最後の端末を閉じたときに使う。
+    CloseWindow,
+}
+
+/// タブの操作。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabCommand {
+    /// 新しい端末を開いて表示する。
+    New,
+    /// 表示している端末を閉じる。
+    Close,
+    /// 右隣の端末を表示する。右端なら左端へ。
+    Next,
+    /// 左隣の端末を表示する。左端なら右端へ。
+    Previous,
 }
 
 struct App {
@@ -344,8 +369,16 @@ struct App {
     font_config: FontConfig,
     /// 貼り付ける前に、編集のダイアログで確かめるとき。
     paste_confirm: PasteConfirm,
-    /// 表示している端末。
-    session: Session,
+    /// fantermo の引数（子プロセスのコマンドライン）。
+    arguments: Option<String>,
+    /// 設定の `shell`。
+    shell: Option<String>,
+    /// 窓が持つ端末。タブの並びの順。少なくとも一つある。
+    sessions: Vec<Session>,
+    /// 表示している端末の、`sessions` の中の位置。
+    active: usize,
+    /// 次に開く端末の番号。閉じた端末の番号は使い直さない（閉じたあとに届く知らせを捨てるため）。
+    next_session_id: usize,
     /// 窓のクライアント領域のうち、表示している端末を描く領域。
     terminal_area: Area,
     renderer: Renderer,
@@ -362,6 +395,9 @@ struct App {
     clock: Instant,
     /// マウスの、窓のクライアント領域の中の位置。窓の外へ出たら `None`。
     pointer_in_window: Option<(i32, i32)>,
+    /// コピーやタブの操作に使ったので、離したときにも端末へ送らないキー。タブを切り替えたあとに
+    /// 離したことが届くので、端末ごとではなく窓に持つ。
+    suppressed_release: Option<Key>,
 }
 
 impl App {
@@ -372,18 +408,19 @@ impl App {
         dpi: u32,
         config_path: Option<PathBuf>,
         config: Config,
-        command_line: &str,
+        arguments: Option<String>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let font_config = config.font;
         let (width, height) = client_size(hwnd);
         let terminal_area = terminal_area_in_client(width, height);
         let size = grid_size(&font, terminal_area);
         let renderer = Renderer::new(hwnd, width, height, &dwrite, &font, font_config.wide_glyph)?;
+        let first_id = SessionId(0);
         let session = Session::spawn(
-            FIRST_SESSION_ID,
-            command_line,
+            first_id,
+            &command_line_for(arguments.as_deref(), config.shell.as_deref()),
             size,
-            Arc::new(poster(hwnd, WM_APP_WAKE, WPARAM(FIRST_SESSION_ID.0))),
+            Arc::new(poster(hwnd, WM_APP_WAKE, WPARAM(first_id.0))),
         )?;
         if let Some(path) = &config_path {
             config_file::watch(path, poster(hwnd, WM_APP_CONFIG_CHANGED, WPARAM(0)));
@@ -410,7 +447,11 @@ impl App {
             config_path,
             font_config,
             paste_confirm: config.paste.confirm,
-            session,
+            arguments,
+            shell: config.shell,
+            sessions: vec![session],
+            active: 0,
+            next_session_id: first_id.0 + 1,
             terminal_area,
             renderer,
             dump,
@@ -420,7 +461,17 @@ impl App {
             wheel_lines_per_notch: wheel_lines_per_notch(),
             clock: Instant::now(),
             pointer_in_window: None,
+            suppressed_release: None,
         })
+    }
+
+    /// 表示している端末。
+    fn session(&self) -> &Session {
+        &self.sessions[self.active]
+    }
+
+    fn session_mut(&mut self) -> &mut Session {
+        &mut self.sessions[self.active]
     }
 
     /// キーを押した・離した。`chars` は同じキーから TranslateMessage が作った文字。
@@ -439,25 +490,35 @@ impl App {
             self.refresh_hovered_link(is_link_modifier(mods));
         }
         // メニューやダイアログが離した側を受け取ると、止める印が残る。押し直したなら印は古い。
-        if action == KeyAction::Press && self.session.suppressed_release == Some(key) {
-            self.session.suppressed_release = None;
+        if action == KeyAction::Press && self.suppressed_release == Some(key) {
+            self.suppressed_release = None;
         }
         // コピーや貼り付けに使ったキーは、離したときもシェルに送らない。
-        if action == KeyAction::Release && self.session.suppressed_release == Some(key) {
-            self.session.suppressed_release = None;
+        if action == KeyAction::Release && self.suppressed_release == Some(key) {
+            self.suppressed_release = None;
             return None;
         }
+        if action != KeyAction::Release
+            && let Some(command) = tab_shortcut(key, mods)
+        {
+            // 開く・閉じるは、押し続けたときの繰り返しでは繰り返さない。シェルにも送らない。
+            self.suppressed_release = Some(key);
+            let repeats = matches!(command, TabCommand::Next | TabCommand::Previous);
+            return (action == KeyAction::Press || repeats)
+                .then(|| self.run_tab_command(command))
+                .flatten();
+        }
         if action != KeyAction::Release && is_copy_shortcut(key, mods) && self.copy_selection() {
-            self.session.suppressed_release = Some(key);
+            self.suppressed_release = Some(key);
             return None;
         }
         if action == KeyAction::Press && is_paste_shortcut(key, mods) {
-            self.session.suppressed_release = Some(key);
+            self.suppressed_release = Some(key);
             return self.paste_clipboard();
         }
         if action != KeyAction::Release && is_context_menu_shortcut(key, mods) {
             // 押し続けたときの繰り返しはメニューを出し直さず、シェルにも送らない。
-            self.session.suppressed_release = Some(key);
+            self.suppressed_release = Some(key);
             return (action == KeyAction::Press).then(|| self.context_menu_at_cursor());
         }
 
@@ -470,11 +531,101 @@ impl App {
             unshifted: keyboard::unshifted_codepoint(virtual_key),
             text: text.as_deref(),
         };
-        match self.session.vt.encode_key(&input) {
+        match self.session_mut().vt.encode_key(&input) {
             Ok(encoded) => self.send(&encoded),
             Err(e) => tracing::warn!("failed to encode {:?}: {e}", input.key),
         }
         None
+    }
+
+    /// タブの操作をする。最後の端末を閉じたときは、窓を閉じるよう返す。
+    fn run_tab_command(&mut self, command: TabCommand) -> Option<Deferred> {
+        let count = self.sessions.len();
+        match command {
+            TabCommand::New => self.open_session(),
+            TabCommand::Close => {
+                if self.close_session(self.active) {
+                    return Some(Deferred::CloseWindow);
+                }
+            }
+            TabCommand::Next => self.activate((self.active + 1) % count),
+            TabCommand::Previous => self.activate((self.active + count - 1) % count),
+        }
+        None
+    }
+
+    /// 新しい端末を開き、タブの並びの最後に足して表示する。起動できなければ警告を残して何もしない。
+    fn open_session(&mut self) {
+        let id = SessionId(self.next_session_id);
+        let command_line = command_line_for(self.arguments.as_deref(), self.shell.as_deref());
+        let size = grid_size(&self.font, self.terminal_area);
+        let session = match Session::spawn(
+            id,
+            &command_line,
+            size,
+            Arc::new(poster(self.hwnd, WM_APP_WAKE, WPARAM(id.0))),
+        ) {
+            Ok(session) => session,
+            Err(e) => {
+                tracing::warn!("failed to open a terminal with {command_line:?}: {e}");
+                return;
+            }
+        };
+        self.next_session_id += 1;
+        self.sessions.push(session);
+        self.activate(self.sessions.len() - 1);
+    }
+
+    /// `sessions` の `index` の端末を閉じる（子プロセスは疑似コンソールを閉じて終わらせる）。最後の
+    /// 端末なら閉じずに `true` を返す（窓を閉じると一緒に閉じる）。
+    fn close_session(&mut self, index: usize) -> bool {
+        if self.sessions.len() == 1 {
+            return true;
+        }
+        let was_active = index == self.active;
+        if was_active {
+            self.leave_active();
+        }
+        drop(self.sessions.remove(index));
+        self.active = active_after_close(self.active, index, self.sessions.len());
+        if was_active {
+            self.on_activated();
+        }
+        false
+    }
+
+    /// `sessions` の `index` の端末を表示する。
+    fn activate(&mut self, index: usize) {
+        if index == self.active {
+            return;
+        }
+        self.leave_active();
+        self.active = index;
+        self.on_activated();
+    }
+
+    /// 表示している端末を表示から外す前に、マウスの操作の途中の状態を終える。
+    fn leave_active(&mut self) {
+        if self.session().selecting {
+            // SAFETY: このスレッドが捕まえたマウスを放す。捕まえていなければ何もしない。
+            if let Err(e) = unsafe { ReleaseCapture() } {
+                tracing::warn!("failed to release the mouse capture: {e}");
+            }
+        }
+        self.session_mut().release_pointer();
+    }
+
+    /// 表示する端末が替わった。窓のタイトルとマウスの下のリンクを合わせ、描き直す。
+    fn on_activated(&mut self) {
+        tracing::debug!(
+            "showing terminal {:?} ({} of {})",
+            self.session().id(),
+            self.active + 1,
+            self.sessions.len()
+        );
+        self.update_window_title();
+        self.refresh_hovered_link_now();
+        self.invalidate();
     }
 
     /// クリップボードの文字列を貼り付ける。設定の `paste.confirm` に従って確かめが要るときは、
@@ -502,21 +653,21 @@ impl App {
 
     /// `text` を貼り付ける。`allow_unsafe` でなければ、コマンドとして走りうる文字列は送らない。
     fn paste(&mut self, text: &str, allow_unsafe: bool) -> Option<PasteOutcome> {
-        let outcome = match self.session.vt.paste(text, allow_unsafe) {
+        let outcome = match self.session_mut().vt.paste(text, allow_unsafe) {
             Ok(outcome) => outcome,
             Err(e) => {
                 tracing::warn!("failed to paste: {e}");
                 return None;
             }
         };
-        let encoded = self.session.vt.take_replies();
+        let encoded = self.session_mut().vt.take_replies();
         self.send(&encoded);
         Some(outcome)
     }
 
     /// 選んでいる範囲をクリップボードにコピーし、選択を外す。選んでいなければ何もせず `false`。
     fn copy_selection(&mut self) -> bool {
-        let text = match self.session.vt.selected_text() {
+        let text = match self.session().vt.selected_text() {
             Ok(Some(text)) => text,
             Ok(None) => return false,
             Err(e) => {
@@ -532,7 +683,7 @@ impl App {
     }
 
     fn clear_selection(&mut self) {
-        if let Err(e) = self.session.vt.clear_selection() {
+        if let Err(e) = self.session_mut().vt.clear_selection() {
             tracing::warn!("failed to clear the selection: {e}");
         }
         self.invalidate();
@@ -558,7 +709,7 @@ impl App {
     /// する。
     fn pointer(&self, x: i32, y: i32) -> PointerPosition {
         let (x, y) = self.client_to_terminal(x, y);
-        let size = self.session.vt.size();
+        let size = self.session().vt.size();
         let cell = |pixel: i32, cell_px: u32, count: u16| -> u16 {
             let index = pixel.max(0) as u32 / cell_px;
             index.min(u32::from(count.saturating_sub(1))) as u16
@@ -577,10 +728,10 @@ impl App {
         if x < 0 || y < 0 {
             return None;
         }
-        let size = self.session.vt.size();
+        let size = self.session().vt.size();
         let col = (x as u32 / size.cell_width_px).min(u32::from(u16::MAX)) as u16;
         let row = (y as u32 / size.cell_height_px).min(u32::from(u16::MAX)) as u16;
-        self.session.vt.link_at(col, row).unwrap_or_else(|e| {
+        self.session().vt.link_at(col, row).unwrap_or_else(|e| {
             tracing::warn!("failed to look for a link: {e}");
             None
         })
@@ -590,10 +741,10 @@ impl App {
     /// 変わったら、下線を引き直し、カーソルの形を変える。
     fn refresh_hovered_link(&mut self, modifier_held: bool) {
         let link = match self.pointer_in_window {
-            Some((x, y)) if modifier_held && !self.session.selecting => self.link_at(x, y),
+            Some((x, y)) if modifier_held && !self.session().selecting => self.link_at(x, y),
             _ => None,
         };
-        if link == self.session.hovered_link {
+        if link == self.session().hovered_link {
             return;
         }
         match &link {
@@ -602,11 +753,12 @@ impl App {
             }
             None => tracing::debug!("no link under the pointer"),
         }
-        self.session.vt.set_link_underline(
+        let session = self.session_mut();
+        session.vt.set_link_underline(
             link.as_ref()
                 .map_or_else(Vec::new, |link| link.spans.clone()),
         );
-        self.session.hovered_link = link;
+        session.hovered_link = link;
         self.invalidate();
         if self.pointer_in_window.is_some() {
             self.set_cursor_shape();
@@ -616,7 +768,7 @@ impl App {
     /// 修飾キーをいま押しているかで、マウスの下のリンクを探し直す。画面の中身や表示している範囲が
     /// 変わったときに使う。
     fn refresh_hovered_link_now(&mut self) {
-        if self.pointer_in_window.is_none() && self.session.hovered_link.is_none() {
+        if self.pointer_in_window.is_none() && self.session().hovered_link.is_none() {
             return;
         }
         self.refresh_hovered_link(is_link_modifier(keyboard::current_mods()));
@@ -624,7 +776,7 @@ impl App {
 
     /// マウスのカーソルを、リンクの上なら手の形、そうでなければ矢印にする。
     fn set_cursor_shape(&self) {
-        let shape = if self.session.hovered_link.is_some() {
+        let shape = if self.session().hovered_link.is_some() {
             IDC_HAND
         } else {
             IDC_ARROW
@@ -672,7 +824,7 @@ impl App {
             && is_link_modifier(mouse_mods(wparam))
             && let Some(link) = self.link_at(x, y)
         {
-            self.session.pressed_link = Some(link.uri);
+            self.session_mut().pressed_link = Some(link.uri);
             return;
         }
         if self.report_mouse(MouseAction::Press, Some(button), x, y, wparam) {
@@ -684,14 +836,12 @@ impl App {
         let at = self.pointer(x, y);
         // SAFETY: 引数のない問い合わせ。
         let repeat_interval = Duration::from_millis(u64::from(unsafe { GetDoubleClickTime() }));
-        if let Err(e) = self
-            .session
-            .vt
-            .selection_press(at, self.clock.elapsed(), repeat_interval)
-        {
+        let elapsed = self.clock.elapsed();
+        let session = self.session_mut();
+        if let Err(e) = session.vt.selection_press(at, elapsed, repeat_interval) {
             tracing::warn!("failed to start a selection: {e}");
         }
-        self.session.selecting = true;
+        session.selecting = true;
         self.invalidate();
     }
 
@@ -700,17 +850,17 @@ impl App {
         self.track_pointer(x, y);
         self.refresh_hovered_link(is_link_modifier(mouse_mods(wparam)));
         // リンクを押している間の動きは、アプリへ送らない。
-        if self.session.pressed_link.is_some() {
+        if self.session().pressed_link.is_some() {
             return;
         }
-        if !self.session.selecting {
+        if !self.session().selecting {
             self.report_mouse(MouseAction::Motion, held_button(wparam), x, y, wparam);
             return;
         }
         let at = self.pointer(x, y);
         // Alt を押しながらなら矩形で選ぶ。
         let rectangle = keyboard::current_mods().contains(Mods::ALT);
-        if let Err(e) = self.session.vt.selection_drag(at, rectangle) {
+        if let Err(e) = self.session_mut().vt.selection_drag(at, rectangle) {
             tracing::warn!("failed to extend the selection: {e}");
         }
         self.invalidate();
@@ -727,14 +877,16 @@ impl App {
         let (x, y) = client_position(lparam);
         let mut deferred = None;
         if button == MouseButton::Left
-            && let Some(uri) = self.session.pressed_link.take()
+            && let Some(uri) = self.session_mut().pressed_link.take()
         {
             if self.link_at(x, y).is_some_and(|link| link.uri == uri) {
                 link_opener::open(&uri);
             }
-        } else if button == MouseButton::Left && self.session.selecting {
-            self.session.selecting = false;
-            if let Err(e) = self.session.vt.selection_release(self.pointer(x, y)) {
+        } else if button == MouseButton::Left && self.session().selecting {
+            let at = self.pointer(x, y);
+            let session = self.session_mut();
+            session.selecting = false;
+            if let Err(e) = session.vt.selection_release(at) {
                 tracing::warn!("failed to finish the selection: {e}");
             }
             self.invalidate();
@@ -764,7 +916,7 @@ impl App {
 
     /// テキストカーソルのセルの左下にコンテキストメニューを出すよう返す。キーボードから開くときに使う。
     fn context_menu_at_cursor(&self) -> Deferred {
-        let (col, row) = self.session.vt.cursor_cell().unwrap_or_else(|e| {
+        let (col, row) = self.session().vt.cursor_cell().unwrap_or_else(|e| {
             tracing::warn!("failed to read the cursor position: {e}");
             (0, 0)
         });
@@ -776,14 +928,14 @@ impl App {
     }
 
     fn has_selection(&self) -> bool {
-        self.session
+        self.session()
             .vt
             .selected_text()
             .is_ok_and(|text| text.is_some())
     }
 
     fn select_all(&mut self) {
-        if let Err(e) = self.session.vt.select_all() {
+        if let Err(e) = self.session_mut().vt.select_all() {
             tracing::warn!("failed to select all: {e}");
         }
         self.invalidate();
@@ -804,7 +956,7 @@ impl App {
         if keyboard::current_mods().contains(Mods::SHIFT) {
             return false;
         }
-        self.session.vt.is_mouse_tracking().unwrap_or_else(|e| {
+        self.session().vt.is_mouse_tracking().unwrap_or_else(|e| {
             tracing::warn!("failed to read the mouse mode: {e}");
             false
         })
@@ -844,7 +996,7 @@ impl App {
             y: y as f32,
             any_button_pressed: held_button(wparam).is_some(),
         };
-        match self.session.vt.encode_mouse(&input) {
+        match self.session_mut().vt.encode_mouse(&input) {
             Ok(encoded) => self.send(&encoded),
             Err(e) => tracing::warn!("failed to encode the mouse: {e}"),
         }
@@ -865,7 +1017,7 @@ impl App {
 
     /// IME の変換中の窓と候補の窓を、いまのカーソルの位置に出させる。
     fn place_ime_windows(&self) {
-        let (col, row) = match self.session.vt.cursor_cell() {
+        let (col, row) = match self.session().vt.cursor_cell() {
             Ok(cell) => cell,
             Err(e) => {
                 tracing::warn!("failed to read the cursor position: {e}");
@@ -890,10 +1042,10 @@ impl App {
         if data.is_empty() {
             return;
         }
-        self.session.vt.scroll_to_bottom();
+        self.session_mut().vt.scroll_to_bottom();
         self.refresh_hovered_link_now();
         self.clear_selection();
-        self.session.write(data);
+        self.session_mut().write(data);
     }
 
     /// マウスのホイールが回った。`delta` は WM_MOUSEWHEEL の回転量（奥へ回すと正）。
@@ -911,8 +1063,8 @@ impl App {
         } else {
             MouseButton::Five
         };
-        let (notches, remainder) = wheel_lines(self.session.wheel_report_remainder, delta, 1);
-        self.session.wheel_report_remainder = remainder;
+        let (notches, remainder) = wheel_lines(self.session().wheel_report_remainder, delta, 1);
+        self.session_mut().wheel_report_remainder = remainder;
         for _ in 0..notches.unsigned_abs() {
             self.report_mouse(MouseAction::Press, Some(button), x, y, wparam);
             self.report_mouse(MouseAction::Release, Some(button), x, y, wparam);
@@ -921,45 +1073,52 @@ impl App {
 
     fn scroll_by_wheel(&mut self, delta: i32) {
         let (lines, remainder) = wheel_lines(
-            self.session.wheel_remainder,
+            self.session().wheel_remainder,
             delta,
             self.wheel_lines_per_notch,
         );
-        self.session.wheel_remainder = remainder;
+        self.session_mut().wheel_remainder = remainder;
         if lines == 0 {
             return;
         }
         // 奥へ回すと過去（上）へ。
-        self.session.vt.scroll(-(lines as isize));
+        self.session_mut().vt.scroll(-(lines as isize));
         self.refresh_hovered_link_now();
         self.invalidate();
     }
 
     /// 端末 `id` に出力が届いたか、子プロセスが終わった。出力を流し込み、タイトルとベルを反映する。
-    /// 窓を閉じるときは `true` を返す。
+    /// 表示していない端末の出力も流し込む（描くのは表示している端末だけ）。窓を閉じるときは `true` を
+    /// 返す。
     fn on_wake(&mut self, id: SessionId) -> bool {
-        if id != self.session.id() {
+        let Some(index) = self.sessions.iter().position(|session| session.id() == id) else {
             tracing::debug!("ignoring a wake for an unknown terminal {id:?}");
             return false;
-        }
-        let events = self.session.on_output();
-        if events.title_changed {
-            self.update_window_title();
-        }
+        };
+        let events = self.sessions[index].on_output();
+        let shown = index == self.active;
         if events.bell {
             self.ring_bell();
         }
-        // マウスの下の文字が変わったかもしれない。
-        self.refresh_hovered_link_now();
-        self.invalidate();
+        if shown {
+            if events.title_changed {
+                self.update_window_title();
+            }
+            // マウスの下の文字が変わったかもしれない。
+            self.refresh_hovered_link_now();
+            self.invalidate();
+        }
         events
             .exited
-            .is_some_and(|code| self.on_session_ended(code))
+            .is_some_and(|code| self.on_session_ended(index, code))
     }
 
-    /// 端末の子プロセスが `code` で終わった。窓の端末は一つなので、それを窓の終了コードにし、窓を
-    /// 閉じるよう `true` を返す。
-    fn on_session_ended(&mut self, code: ExitCode) -> bool {
+    /// `sessions` の `index` の端末の子プロセスが `code` で終わった。その端末を閉じる。最後の端末なら、
+    /// それを窓の終了コードにし、窓を閉じるよう `true` を返す。
+    fn on_session_ended(&mut self, index: usize, code: ExitCode) -> bool {
+        if !self.close_session(index) {
+            return false;
+        }
         self.exit = Some(code);
         true
     }
@@ -967,19 +1126,20 @@ impl App {
     /// 窓のタイトルを、表示している端末のタイトルにする。アプリが付けていなければ既定のタイトル。
     /// 変わったときだけ窓に設定する。
     fn update_window_title(&mut self) {
-        let title = match self.session.title() {
+        let title = match self.session().title() {
             "" => WINDOW_TITLE,
             title => title,
         };
         if title == self.window_title {
             return;
         }
+        let title = title.to_owned();
         // SAFETY: self.hwnd は有効な窓。文字列はこの呼び出しの間は生きている。
-        if let Err(e) = unsafe { SetWindowTextW(self.hwnd, &HSTRING::from(title)) } {
+        if let Err(e) = unsafe { SetWindowTextW(self.hwnd, &HSTRING::from(&title)) } {
             tracing::warn!("failed to set the window title: {e}");
             return;
         }
-        self.window_title = title.to_owned();
+        self.window_title = title;
     }
 
     /// ベル。窓が前面になければ、前面に来るまでタスクバーのボタンを点滅させる。音は鳴らさない。
@@ -1007,10 +1167,17 @@ impl App {
             tracing::warn!("failed to resize the swap chain: {e}");
         }
         self.terminal_area = terminal_area_in_client(width, height);
-        if !self
-            .session
-            .resize(grid_size(&self.font, self.terminal_area))
-        {
+        self.resize_sessions();
+    }
+
+    /// すべての端末の大きさを、端末を描く領域に合わせる。表示していない端末も同じ大きさにする。
+    fn resize_sessions(&mut self) {
+        let size = grid_size(&self.font, self.terminal_area);
+        let mut changed = false;
+        for session in &mut self.sessions {
+            changed |= session.resize(size);
+        }
+        if !changed {
             return;
         }
         self.refresh_hovered_link_now();
@@ -1043,10 +1210,11 @@ impl App {
     /// 設定ファイルを読み直す。フォントの設定が変わっていて、そのフォントを測れたら設定を入れ替え、
     /// 作り直しに使う DPI を返す。作り直しは借用を手放してから [`change_dpi_in_place`] で行う。
     /// グリフの描き方だけが変わったときは、セルの寸法は変わらないので、この場でアトラスだけを作り直す。
-    /// 貼り付けの設定はすぐに入れ替える。`shell` は次に起動したときから使う。
+    /// 貼り付けの設定はすぐに入れ替える。`shell` は次に開く端末から使う。
     fn reload_config(&mut self) -> Option<u32> {
         let config = config_file::load(self.config_path.as_deref());
         self.paste_confirm = config.paste.confirm;
+        self.shell = config.shell;
         if config.font == self.font_config {
             return None;
         }
@@ -1077,7 +1245,7 @@ impl App {
     /// DPI が `dpi` に変わったときに、いまの桁数と行数がそのまま収まるクライアント領域の大きさ。
     fn scaled_client_size(&self, dpi: u32) -> windows::core::Result<SIZE> {
         let font = load_font(&self.dwrite, &self.font_config, dpi)?;
-        let size = self.session.vt.size();
+        let size = self.session().vt.size();
         Ok(client_size_for_terminal(grid_pixels(
             &font, size.cols, size.rows,
         )))
@@ -1096,7 +1264,12 @@ impl App {
         let Some(dump) = &self.dump else {
             return;
         };
-        dump.write_screen(&self.session.vt, &self.font);
+        dump.write_screen(
+            &self.session().vt,
+            &self.font,
+            self.sessions.len(),
+            self.active,
+        );
         let frame_path = dump.frame_path();
         self.render_to(Some(&frame_path));
     }
@@ -1104,7 +1277,7 @@ impl App {
     /// 表示している端末を、端末を描く領域に描いて表示する。`capture` を渡すと、表示する前の画面を
     /// PNG で書き出す。
     fn render_to(&mut self, capture: Option<&std::path::Path>) {
-        let frame = match self.session.vt.frame() {
+        let frame = match self.session_mut().vt.frame() {
             Ok(frame) => frame,
             Err(e) => {
                 tracing::warn!("failed to read the screen: {e}");
@@ -1182,7 +1355,41 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
                     None => {}
                 }
             }
+            // DestroyWindow はこの場で WM_DESTROY を送るので、借用を手放してから呼ぶ。
+            Deferred::CloseWindow => destroy_window(hwnd),
         }
+    }
+}
+
+fn destroy_window(hwnd: HWND) {
+    // SAFETY: hwnd は有効な窓。借用は持っていない。
+    if let Err(e) = unsafe { DestroyWindow(hwnd) } {
+        tracing::warn!("failed to destroy the window: {e}");
+    }
+}
+
+/// タブを操作するキー。Ctrl+Shift+T で開く、Ctrl+Shift+W で閉じる、Ctrl+Tab と Ctrl+Shift+Tab で
+/// 次・前へ（ほかの修飾キーなし）。
+fn tab_shortcut(key: Key, mods: Mods) -> Option<TabCommand> {
+    const CTRL_SHIFT: Mods = Mods::CTRL.union(Mods::SHIFT);
+    match (held_mods(mods), key) {
+        (CTRL_SHIFT, Key::T) => Some(TabCommand::New),
+        (CTRL_SHIFT, Key::W) => Some(TabCommand::Close),
+        (Mods::CTRL, Key::Tab) => Some(TabCommand::Next),
+        (CTRL_SHIFT, Key::Tab) => Some(TabCommand::Previous),
+        _ => None,
+    }
+}
+
+/// `closed` の位置の端末を閉じて `remaining` 個になったあとの、表示する端末の位置。表示していた
+/// `active` を閉じたら、右隣（右端なら新しい右端）を表示する。
+fn active_after_close(active: usize, closed: usize, remaining: usize) -> usize {
+    if closed < active {
+        active - 1
+    } else if closed == active {
+        closed.min(remaining.saturating_sub(1))
+    } else {
+        active
     }
 }
 
@@ -1370,10 +1577,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             with_app(&mut |app| close = app.on_wake(id));
             if close {
                 // DestroyWindow はこの場で WM_DESTROY を送るので、借用を手放してから呼ぶ。
-                // SAFETY: hwnd は有効な窓。
-                if let Err(e) = unsafe { DestroyWindow(hwnd) } {
-                    tracing::warn!("failed to destroy the window: {e}");
-                }
+                destroy_window(hwnd);
             }
             LRESULT(0)
         }
@@ -1491,7 +1695,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         WM_SETCURSOR if (lparam.0 & 0xffff) as u32 == HTCLIENT => {
             let mut on_link = false;
             with_app(&mut |app| {
-                on_link = app.session.hovered_link.is_some();
+                on_link = app.session().hovered_link.is_some();
                 if on_link {
                     app.set_cursor_shape();
                 }
@@ -1684,6 +1888,46 @@ mod tests {
             KEYBOARD_CONTEXT_MENU_POSITION
         );
         assert_eq!(client_position(LPARAM(-1)), KEYBOARD_CONTEXT_MENU_POSITION);
+    }
+
+    #[test]
+    fn tab_shortcuts_need_ctrl_and_shift_as_listed() {
+        let ctrl_shift = Mods::CTRL | Mods::SHIFT;
+        assert_eq!(tab_shortcut(Key::T, ctrl_shift), Some(TabCommand::New));
+        assert_eq!(
+            tab_shortcut(Key::T, ctrl_shift | Mods::CAPS_LOCK),
+            Some(TabCommand::New)
+        );
+        assert_eq!(tab_shortcut(Key::W, ctrl_shift), Some(TabCommand::Close));
+        assert_eq!(tab_shortcut(Key::Tab, Mods::CTRL), Some(TabCommand::Next));
+        assert_eq!(
+            tab_shortcut(Key::Tab, ctrl_shift),
+            Some(TabCommand::Previous)
+        );
+        // Ctrl+T・Ctrl+W はシェルのキー（readline の入れ替え・単語の削除）として送る。
+        assert_eq!(tab_shortcut(Key::T, Mods::CTRL), None);
+        assert_eq!(tab_shortcut(Key::W, Mods::CTRL), None);
+        assert_eq!(tab_shortcut(Key::Tab, Mods::empty()), None);
+        assert_eq!(tab_shortcut(Key::Tab, Mods::CTRL | Mods::ALT), None);
+        assert_eq!(tab_shortcut(Key::T, ctrl_shift | Mods::ALT), None);
+    }
+
+    #[test]
+    fn closing_a_tab_shows_its_right_neighbour() {
+        // 表示しているタブを閉じたら、右隣が繰り上がる。右端なら新しい右端。
+        assert_eq!(active_after_close(1, 1, 3), 1);
+        assert_eq!(active_after_close(2, 2, 2), 1);
+        assert_eq!(active_after_close(0, 0, 1), 0);
+        // 表示していないタブを閉じても、表示しているタブはそのまま。
+        assert_eq!(active_after_close(2, 0, 3), 1);
+        assert_eq!(active_after_close(0, 2, 2), 0);
+    }
+
+    #[test]
+    fn command_line_prefers_arguments_then_the_shell_setting() {
+        assert_eq!(command_line_for(Some("zsh -l"), Some("cmd.exe")), "zsh -l");
+        assert_eq!(command_line_for(None, Some("cmd.exe")), "cmd.exe");
+        assert_eq!(command_line_for(None, None), DEFAULT_COMMAND_LINE);
     }
 
     #[test]

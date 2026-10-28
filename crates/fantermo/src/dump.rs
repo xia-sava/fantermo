@@ -39,8 +39,9 @@ impl ScreenDump {
         self.dir.join(FRAME_FILE)
     }
 
-    /// 画面の文字を、大きさとフォントの情報を先頭に付けて書き出す。
-    pub fn write_screen(&self, vt: &Vt, font: &Font) {
+    /// 表示している端末の画面の文字を、大きさ・フォント・タブの情報を先頭に付けて書き出す。`tabs` は
+    /// 窓が持つ端末の数、`active` は表示している端末の位置（0 から）。書き出すタブの番号は 1 から数える。
+    pub fn write_screen(&self, vt: &Vt, font: &Font, tabs: usize, active: usize) {
         let text = match vt.plain_text() {
             Ok(text) => text,
             Err(e) => {
@@ -50,13 +51,14 @@ impl ScreenDump {
         };
         let size = vt.size();
         let contents = format!(
-            "cols={} rows={} cell={}x{} font={} size={}pt\n{text}",
+            "cols={} rows={} cell={}x{} font={} size={}pt tabs={tabs} active={}\n{text}",
             size.cols,
             size.rows,
             size.cell_width_px,
             size.cell_height_px,
             font.family,
-            font.size_pt
+            font.size_pt,
+            active + 1
         );
         write_file(&self.dir.join(SCREEN_FILE), contents.as_bytes());
     }

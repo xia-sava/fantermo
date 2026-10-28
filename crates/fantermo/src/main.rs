@@ -1,8 +1,8 @@
 //! fantermo — libghostty-vt を端末エミュレーションに使う Windows 用の端末。
 //!
 //! 引数があれば、それを子プロセスのコマンドラインにする（例: `fantermo.exe C:\app\cygwin\bin\zsh.exe -l`）。
-//! 引数がなければ設定ファイルの `shell` を、それもなければ PowerShell を起動する。設定ファイルは
-//! `%APPDATA%\fantermo\config.toml`（`config_file`）。
+//! 引数がなければ設定ファイルの `shell` を、それもなければ PowerShell を起動する。新しいタブも同じ
+//! 決め方で起動する。設定ファイルは `%APPDATA%\fantermo\config.toml`（`config_file`）。
 //!
 //! リリースのビルドはコンソールの窓を持たない GUI のアプリにし、ログはファイルに出す（`logging`）。
 
@@ -42,9 +42,6 @@ use windows::{
     core::{HSTRING, w},
 };
 
-/// 引数も設定ファイルの `shell` もないときに起動するコマンドライン。
-const DEFAULT_COMMAND_LINE: &str = "powershell.exe -NoLogo";
-
 fn main() {
     let log_dir = logging::init();
 
@@ -57,10 +54,7 @@ fn main() {
 
     let config_path = config_file::path();
     let config = config_file::load(config_path.as_deref());
-    let command_line = child_command_line()
-        .or_else(|| config.shell.clone())
-        .unwrap_or_else(|| DEFAULT_COMMAND_LINE.to_owned());
-    match window::run(&command_line, config_path, config) {
+    match window::run(child_command_line(), config_path, config) {
         Ok(code) => std::process::exit(code as i32),
         Err(e) => {
             tracing::error!("{e}");

@@ -4,7 +4,7 @@
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize},
     link::Link,
-    vt::{Key, Vt},
+    vt::Vt,
 };
 
 use crate::conpty::{ConPty, SpawnOptions, Wake};
@@ -32,8 +32,6 @@ pub struct Session {
     pub hovered_link: Option<Link>,
     /// Ctrl を押しながら左ボタンを押したリンクの URI。同じリンクの上で離したら開く。
     pub pressed_link: Option<String>,
-    /// コピーに使ったので、離したときにもシェルへ送らないキー。
-    pub suppressed_release: Option<Key>,
 }
 
 /// 子プロセスの出力を流し込んだ結果。
@@ -75,7 +73,6 @@ impl Session {
             selecting: false,
             hovered_link: None,
             pressed_link: None,
-            suppressed_release: None,
         })
     }
 
@@ -86,6 +83,16 @@ impl Session {
     /// アプリが付けたタイトル。消されたか、付けていなければ空。
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    /// マウスの操作の途中の状態（選択のドラッグ、リンクの下線、押したリンク）を終える。表示から
+    /// 外すときに使う。選んだ範囲は残す。
+    pub fn release_pointer(&mut self) {
+        self.selecting = false;
+        self.pressed_link = None;
+        if self.hovered_link.take().is_some() {
+            self.vt.set_link_underline(Vec::new());
+        }
     }
 
     /// 子プロセスへ書き込む。
