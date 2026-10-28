@@ -2,6 +2,10 @@
 //!
 //! 引数がなければ PowerShell を起動する。引数があれば、それを子プロセスのコマンドラインにする
 //! （例: `fantermo.exe C:\app\cygwin\bin\zsh.exe -l`）。
+//!
+//! リリースのビルドはコンソールの窓を持たない GUI のアプリにし、ログはファイルに出す（`logging`）。
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod atlas;
 mod boxdraw;
@@ -13,31 +17,31 @@ mod dump;
 mod font;
 mod ime;
 mod keyboard;
+mod logging;
 mod paste_editor;
 mod pipeline;
 mod renderer;
 mod shader;
 mod window;
 
-use tracing_subscriber::EnvFilter;
-use windows::Win32::{
-    System::Environment::GetCommandLineW,
-    UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
+use std::path::Path;
+
+use windows::{
+    Win32::{
+        System::Environment::GetCommandLineW,
+        UI::{
+            HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
+            WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW},
+        },
+    },
+    core::{HSTRING, w},
 };
 
 /// 引数がないときに起動するコマンドライン。
 const DEFAULT_COMMAND_LINE: &str = "powershell.exe -NoLogo";
 
-/// ログの既定の水準。環境変数 `RUST_LOG` で変えられる。
-const DEFAULT_LOG_FILTER: &str = "info";
-
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER)),
-        )
-        .init();
+    let log_dir = logging::init();
 
     // SAFETY: 起動直後、窓を作る前に一度だけ呼ぶ。
     let dpi_awareness =
@@ -51,9 +55,35 @@ fn main() {
         Ok(code) => std::process::exit(code as i32),
         Err(e) => {
             tracing::error!("{e}");
+            // 開発中のビルドはコンソールに出たログで分かる。リリースのビルドにはコンソールがない。
+            if !cfg!(debug_assertions) {
+                show_startup_error(&e.to_string(), log_dir.as_deref());
+            }
             std::process::exit(1);
         }
     }
+}
+
+/// 起動に失敗したことをメッセージボックスで知らせる。
+fn show_startup_error(error: &str, log_dir: Option<&Path>) {
+    let text = startup_error_text(error, log_dir);
+    // SAFETY: 引数の文字列は呼び出しの間だけ生きていればよく、持ち主の窓はない。
+    unsafe {
+        MessageBoxW(
+            None,
+            &HSTRING::from(text),
+            w!("fantermo"),
+            MB_OK | MB_ICONERROR,
+        )
+    };
+}
+
+fn startup_error_text(error: &str, log_dir: Option<&Path>) -> String {
+    let mut text = format!("fantermo を起動できませんでした。\n\n{error}");
+    if let Some(dir) = log_dir {
+        text.push_str(&format!("\n\nログ: {}", dir.display()));
+    }
+    text
 }
 
 /// このプロセスのコマンドラインから、プログラム名を除いた残り。引用符はそのまま子プロセスに渡す。
@@ -77,7 +107,21 @@ fn skip_program_name(command_line: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::skip_program_name;
+    use std::path::Path;
+
+    use super::{skip_program_name, startup_error_text};
+
+    #[test]
+    fn startup_error_names_log_dir_when_logging_to_file() {
+        assert_eq!(
+            startup_error_text("no font", None),
+            "fantermo を起動できませんでした。\n\nno font"
+        );
+        assert_eq!(
+            startup_error_text("no font", Some(Path::new(r"C:\logs"))),
+            "fantermo を起動できませんでした。\n\nno font\n\nログ: C:\\logs"
+        );
+    }
 
     #[test]
     fn program_name_is_skipped() {
