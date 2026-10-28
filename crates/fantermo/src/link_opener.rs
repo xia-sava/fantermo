@@ -12,14 +12,16 @@ use windows::{
             COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
         },
         UI::{
-            Shell::{SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW},
+            Shell::{FOLDERID_Windows, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW},
             WindowsAndMessaging::SW_SHOWNORMAL,
         },
     },
     core::{HSTRING, PCWSTR, w},
 };
 
-/// エクスプローラーの実行ファイル。
+use crate::known_folder;
+
+/// エクスプローラーの実行ファイル。Windows のフォルダの中にある。
 const EXPLORER: &str = "explorer.exe";
 
 /// `uri` を開く。開いてよいリンクでなければ、警告を残して何もしない。
@@ -72,7 +74,11 @@ fn show_in_explorer(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         format!("/select,\"{path}\"")
     };
-    shell_execute(EXPLORER, Some(&parameters))?;
+    // 名前だけで渡すと作業フォルダから探されるので、Windows のフォルダの中のものを場所で指す。
+    let explorer = known_folder::path(&FOLDERID_Windows)
+        .ok_or("the Windows folder is unknown")?
+        .join(EXPLORER);
+    shell_execute(&explorer.to_string_lossy(), Some(&parameters))?;
     Ok(())
 }
 
