@@ -1,3 +1,9 @@
 [net]
 # git の依存を git コマンドで取得する。利用者の git の設定（URL の書き換えや SSH の認証）がそのまま効く。
 git-fetch-with-cli = true
+
+[env]
+# libghostty-vt（Zig）は、Cargo の dev プロファイルのままだと Zig の Debug でビルドされ、関数ごとのスタックが
+# 数百 KB になる。窓の大きさを変えている最中の処理でスタックがあふれるので、安全のための検査を残す
+# ReleaseSafe で常にビルドする。
+LIBGHOSTTY_VT_SYS_OPTIMIZE = "ReleaseSafe"
