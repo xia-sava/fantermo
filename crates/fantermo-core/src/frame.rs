@@ -8,7 +8,20 @@ pub struct Rgb {
     pub b: u8,
 }
 
-/// 文字か背景色を持つセル。
+/// 下線の種類（SGR 4 と 4:0〜4:5）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Underline {
+    #[default]
+    None,
+    Single,
+    Double,
+    /// 波線。
+    Curly,
+    Dotted,
+    Dashed,
+}
+
+/// 文字・背景色・装飾のどれかを持つセル。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CellView {
     pub col: u16,
@@ -22,6 +35,18 @@ pub struct CellView {
     pub bg: Option<Rgb>,
     pub bold: bool,
     pub italic: bool,
+    pub underline: Underline,
+    /// 下線の色（SGR 58）。`None` なら文字と同じ色で描く。
+    pub underline_color: Option<Rgb>,
+    pub strikethrough: bool,
+    pub overline: bool,
+}
+
+impl CellView {
+    /// 下線・取り消し線・上線のどれかを持つ。
+    pub fn has_decoration(&self) -> bool {
+        self.underline != Underline::None || self.strikethrough || self.overline
+    }
 }
 
 /// 画面に描くカーソル。
@@ -41,7 +66,7 @@ pub struct Frame {
     pub rows: u16,
     pub background: Rgb,
     pub foreground: Rgb,
-    /// 文字か背景色を持つセルだけを並べる。全角の文字の右半分は含めない。
+    /// 文字・背景色・装飾のどれかを持つセルだけを並べる。全角の文字の右半分は含めない。
     pub cells: Vec<CellView>,
     /// 表示中で、画面の中にあるときだけ持つ。
     pub cursor: Option<CursorView>,

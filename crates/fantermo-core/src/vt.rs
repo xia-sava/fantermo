@@ -16,7 +16,7 @@ use libghostty_vt::{
         FormatOptions as SelectionFormatOptions,
         gesture::{DragEvent, Geometry, Gesture, PressEvent, ReleaseEvent},
     },
-    style::RgbColor,
+    style::{PaletteIndex, RgbColor, Style, StyleColor, Underline as StyleUnderline},
     terminal::{
         ClipboardMime, ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType,
         Point, PointCoordinate, PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes,
@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use crate::{
     backend::GridSize,
-    frame::{CellView, CursorView, Frame, Rgb},
+    frame::{CellView, CursorView, Frame, Rgb, Underline},
 };
 
 pub use libghostty_vt::{
@@ -88,6 +88,9 @@ pub struct KeyInput<'a> {
 
 /// スクロールバックに残す行数。
 const SCROLLBACK_LINES: usize = 10_000;
+
+/// 薄く（SGR 2）した文字の色を、背景に重ねるときの不透明度。
+const FAINT_OPACITY: f32 = 0.5;
 
 /// XTVERSION の問い合わせに返す名前。
 const XTVERSION_NAME: &str = "fantermo";
@@ -388,7 +391,8 @@ impl Vt {
         Ok((self.terminal.cursor_x()?, self.terminal.cursor_y()?))
     }
 
-    /// 描画のために画面の内容を取り出す。反転表示はここで前景色と背景色を入れ替えておく。
+    /// 描画のために画面の内容を取り出す。反転表示はここで前景色と背景色を入れ替え、薄くした文字は
+    /// 前景色を背景色に寄せ、不可視の文字は文字と装飾を除いておく。
     pub fn frame(&mut self) -> Result<Frame, VtError> {
         let snapshot = self.render_state.update(&self.terminal)?;
         let colors = snapshot.colors()?;
@@ -412,16 +416,15 @@ impl Vt {
                 cell.graphemes_utf8(&mut text)?;
                 let mut fg = cell.fg_color()?.unwrap_or(colors.foreground);
                 let mut bg = cell.bg_color()?;
-                let (mut bold, mut italic) = (false, false);
-                if cell.has_styling()? {
-                    let style = cell.style()?;
-                    if style.inverse {
-                        let swapped_bg = fg;
-                        fg = bg.unwrap_or(colors.background);
-                        bg = Some(swapped_bg);
-                    }
-                    bold = style.bold;
-                    italic = style.italic;
+                let style = if cell.has_styling()? {
+                    cell.style()?
+                } else {
+                    Style::default()
+                };
+                if style.inverse {
+                    let swapped_bg = fg;
+                    fg = bg.unwrap_or(colors.background);
+                    bg = Some(swapped_bg);
                 }
                 // 選んでいる範囲は、前景色と背景色を入れ替えて描く。
                 if cell.is_selected()? {
@@ -429,17 +432,32 @@ impl Vt {
                     fg = bg.unwrap_or(colors.background);
                     bg = Some(swapped_bg);
                 }
-                if !text.is_empty() || bg.is_some() {
-                    cells.push(CellView {
-                        col,
-                        row: row_index,
-                        text: text.clone(),
-                        width,
-                        fg: rgb(fg),
-                        bg: bg.map(rgb),
-                        bold,
-                        italic,
-                    });
+                if style.faint {
+                    fg = blend(fg, bg.unwrap_or(colors.background), FAINT_OPACITY);
+                }
+                let mut view = CellView {
+                    col,
+                    row: row_index,
+                    text: text.clone(),
+                    width,
+                    fg: rgb(fg),
+                    bg: bg.map(rgb),
+                    bold: style.bold,
+                    italic: style.italic,
+                    underline: underline(style.underline),
+                    underline_color: style_color(style.underline_color, &colors.palette),
+                    strikethrough: style.strikethrough,
+                    overline: style.overline,
+                };
+                // 不可視の文字は、背景だけを描く。
+                if style.invisible {
+                    view.text.clear();
+                    view.underline = Underline::None;
+                    view.strikethrough = false;
+                    view.overline = false;
+                }
+                if !view.text.is_empty() || view.bg.is_some() || view.has_decoration() {
+                    cells.push(view);
                 }
                 col += 1;
             }
@@ -496,6 +514,40 @@ fn rgb(color: RgbColor) -> Rgb {
         r: color.r,
         g: color.g,
         b: color.b,
+    }
+}
+
+/// `color` を `opacity` の割合で `background` に重ねた色。
+fn blend(color: RgbColor, background: RgbColor, opacity: f32) -> RgbColor {
+    let mix = |front: u8, back: u8| {
+        (f32::from(front) * opacity + f32::from(back) * (1.0 - opacity)).round() as u8
+    };
+    RgbColor {
+        r: mix(color.r, background.r),
+        g: mix(color.g, background.g),
+        b: mix(color.b, background.b),
+    }
+}
+
+/// スタイルの色を、パレットの番号ならパレットで引いて RGB にする。指定がなければ `None`。
+fn style_color(color: StyleColor, palette: &[RgbColor; 256]) -> Option<Rgb> {
+    match color {
+        StyleColor::None => None,
+        StyleColor::Palette(PaletteIndex(index)) => Some(rgb(palette[usize::from(index)])),
+        StyleColor::Rgb(color) => Some(rgb(color)),
+    }
+}
+
+fn underline(underline: StyleUnderline) -> Underline {
+    match underline {
+        StyleUnderline::None => Underline::None,
+        StyleUnderline::Single => Underline::Single,
+        StyleUnderline::Double => Underline::Double,
+        StyleUnderline::Curly => Underline::Curly,
+        StyleUnderline::Dotted => Underline::Dotted,
+        StyleUnderline::Dashed => Underline::Dashed,
+        // ここにない種類は一重として描く。
+        _ => Underline::Single,
     }
 }
 
@@ -658,6 +710,140 @@ mod tests {
         assert_eq!(frame.cells[0].bg, None);
         assert_eq!(frame.cells[1].fg, frame.background);
         assert_eq!(frame.cells[1].bg, Some(frame.foreground));
+    }
+
+    /// `sgr` の SGR を付けた `text` を書き、最初のセルを返す。
+    fn styled_cell(sgr: &str, text: &str) -> CellView {
+        let mut vt = new_vt();
+        vt.feed(format!("\x1b[{sgr}m{text}\x1b[0m").as_bytes());
+        vt.frame().unwrap().cells.remove(0)
+    }
+
+    #[test]
+    fn frame_passes_underline_styles() {
+        for (sgr, expected) in [
+            ("4", Underline::Single),
+            ("4:1", Underline::Single),
+            ("21", Underline::Double),
+            ("4:2", Underline::Double),
+            ("4:3", Underline::Curly),
+            ("4:4", Underline::Dotted),
+            ("4:5", Underline::Dashed),
+        ] {
+            assert_eq!(styled_cell(sgr, "a").underline, expected, "SGR {sgr}");
+        }
+        assert_eq!(styled_cell("4;24", "a").underline, Underline::None);
+        assert_eq!(styled_cell("4:3;4:0", "a").underline, Underline::None);
+    }
+
+    #[test]
+    fn frame_keeps_decorated_blanks() {
+        let mut vt = new_vt();
+        // 下線を付けた空白は、文字がなくても下線を描くために並べる。
+        vt.feed(b"a\x1b[4m  \x1b[0m b");
+        let frame = vt.frame().unwrap();
+        let underlined: Vec<(u16, Underline)> = frame
+            .cells
+            .iter()
+            .map(|cell| (cell.col, cell.underline))
+            .collect();
+        assert_eq!(
+            underlined,
+            [
+                (0, Underline::None),
+                (1, Underline::Single),
+                (2, Underline::Single),
+                (3, Underline::None),
+                (4, Underline::None),
+            ]
+        );
+    }
+
+    #[test]
+    fn frame_resolves_the_underline_color() {
+        let mut vt = new_vt();
+        // 指定がなければ None（文字と同じ色）。
+        assert_eq!(styled_cell("4", "a").underline_color, None);
+        assert_eq!(
+            styled_cell("4;58:2::10:20:30", "a").underline_color,
+            Some(Rgb {
+                r: 10,
+                g: 20,
+                b: 30
+            })
+        );
+        assert_eq!(
+            styled_cell("4;58;2;10;20;30", "a").underline_color,
+            Some(Rgb {
+                r: 10,
+                g: 20,
+                b: 30
+            })
+        );
+        // パレットの番号はパレットで引く。
+        vt.feed(b"\x1b[4;58;5;196ma");
+        let palette_red = vt.frame().unwrap().cells[0].underline_color;
+        vt.feed(b"\x1b[0m\r\n\x1b[38;5;196mb");
+        let frame = vt.frame().unwrap();
+        assert_eq!(palette_red, Some(frame.cells[1].fg));
+        assert_eq!(styled_cell("4;58;2;10;20;30;59", "a").underline_color, None);
+    }
+
+    #[test]
+    fn frame_passes_strikethrough_and_overline() {
+        let cell = styled_cell("9", "a");
+        assert!(cell.strikethrough && !cell.overline);
+        let cell = styled_cell("53", "a");
+        assert!(cell.overline && !cell.strikethrough);
+        assert!(!styled_cell("9;29", "a").strikethrough);
+        assert!(!styled_cell("53;55", "a").overline);
+    }
+
+    #[test]
+    fn frame_passes_bold_and_italic() {
+        let cell = styled_cell("1;3", "a");
+        assert!(cell.bold && cell.italic);
+        let cell = styled_cell("1;3;22;23", "a");
+        assert!(!cell.bold && !cell.italic);
+    }
+
+    #[test]
+    fn faint_text_is_blended_into_the_background() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b[2;38;2;200;100;0;48;2;0;0;100ma\x1b[0m\x1b[2mb");
+        let frame = vt.frame().unwrap();
+        assert_eq!(
+            frame.cells[0].fg,
+            Rgb {
+                r: 100,
+                g: 50,
+                b: 50
+            }
+        );
+        // 背景色がなければ既定の背景色に寄せる。
+        let expected =
+            |front: u8, back: u8| ((u16::from(front) + u16::from(back)) as f32 / 2.0).round() as u8;
+        let (fg, bg) = (frame.foreground, frame.background);
+        assert_eq!(
+            frame.cells[1].fg,
+            Rgb {
+                r: expected(fg.r, bg.r),
+                g: expected(fg.g, bg.g),
+                b: expected(fg.b, bg.b)
+            }
+        );
+    }
+
+    #[test]
+    fn invisible_text_keeps_only_the_background() {
+        let cell = styled_cell("8;4;9;53;48;2;1;2;3", "a");
+        assert_eq!(cell.text, "");
+        assert_eq!(cell.bg, Some(Rgb { r: 1, g: 2, b: 3 }));
+        assert!(!cell.has_decoration());
+        // 背景色も装飾もない不可視の文字は並べない。
+        let mut vt = new_vt();
+        vt.feed(b"\x1b[8ma");
+        assert!(vt.frame().unwrap().cells.is_empty());
     }
 
     fn first_row_text(vt: &mut Vt) -> String {
