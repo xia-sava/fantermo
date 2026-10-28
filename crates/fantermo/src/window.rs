@@ -284,6 +284,10 @@ impl App {
     ) -> Option<Deferred> {
         let mods = keyboard::current_mods();
         let key = keyboard::key_from_position(position);
+        // メニューやダイアログが離した側を受け取ると、止める印が残る。押し直したなら印は古い。
+        if action == KeyAction::Press && self.suppressed_release == Some(key) {
+            self.suppressed_release = None;
+        }
         // コピーや貼り付けに使ったキーは、離したときもシェルに送らない。
         if action == KeyAction::Release && self.suppressed_release == Some(key) {
             self.suppressed_release = None;
