@@ -78,7 +78,8 @@ pub fn parse(text: &str) -> Parsed {
         Ok(root) => root,
         Err(e) => {
             warnings.push(format!(
-                "cannot parse the settings, using the defaults: {e}"
+                "cannot parse the settings, using the defaults: {}",
+                message(&e)
             ));
             return Parsed {
                 config: Config::default(),
@@ -143,7 +144,11 @@ fn take<T: DeserializeOwned>(
     match value.try_into::<T>() {
         Ok(value) => Some(value),
         Err(e) => {
-            warnings.push(format!("ignoring {}: {e}", key_path(section, key)));
+            warnings.push(format!(
+                "ignoring {}: {}",
+                key_path(section, key),
+                message(&e)
+            ));
             None
         }
     }
@@ -161,6 +166,11 @@ fn warn_unknown(table: &Table, section: Option<&str>, warnings: &mut Vec<String>
             key_path(section, key)
         ));
     }
+}
+
+/// toml のエラーの文。末尾の改行を除く。
+fn message(error: &toml::de::Error) -> String {
+    error.to_string().trim_end().to_owned()
 }
 
 fn key_path(section: Option<&str>, key: &str) -> String {
@@ -238,6 +248,8 @@ mod tests {
         assert_eq!(parsed.warnings.len(), 2, "{:?}", parsed.warnings);
         assert!(parsed.warnings.iter().any(|w| w.contains("font.size")));
         assert!(parsed.warnings.iter().any(|w| w.contains("shell")));
+        // ログの 1 行に収まるように、toml のエラーの末尾の改行は除く。
+        assert!(parsed.warnings.iter().all(|w| !w.ends_with('\n')));
     }
 
     #[test]
