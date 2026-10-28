@@ -427,8 +427,9 @@ impl App {
     ) -> Option<Deferred> {
         let mods = keyboard::current_mods();
         let key = keyboard::key_from_position(position);
-        // Ctrl を押した・離したときは、マウスが動かなくてもリンクの下線を出し入れする。
-        if is_modifier_key(key) {
+        // Ctrl を押した・離したときは、マウスが動かなくてもリンクの下線を出し入れする。押し続けたときの
+        // 繰り返しでは、状態が変わらないので探し直さない。
+        if is_modifier_key(key) && action != KeyAction::Repeat {
             self.refresh_hovered_link(is_link_modifier(mods));
         }
         // メニューやダイアログが離した側を受け取ると、止める印が残る。押し直したなら印は古い。
