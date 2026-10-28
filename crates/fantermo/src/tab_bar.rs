@@ -75,6 +75,13 @@ pub fn layout(tabs: usize, cols: u16) -> Vec<TabSpan> {
     spans
 }
 
+/// タブバーの `col` の桁にあるタブの番号。タブの間のすき間や右の空きなら `None`。
+pub fn tab_at(spans: &[TabSpan], col: u16) -> Option<usize> {
+    spans
+        .iter()
+        .position(|span| (span.col..span.col + span.cols).contains(&col))
+}
+
 /// `title` を幅 `cols` に収めた書記素クラスタの並び。収まらなければ末尾を [`ELLIPSIS`] にする。
 /// 幅のない書記素クラスタ（制御文字など）は除く。
 pub fn fit_title(title: &str, cols: u16) -> Vec<vt::Grapheme> {
@@ -255,6 +262,19 @@ mod tests {
         assert_eq!(layout(3, 3), vec![span(0, 1), span(2, 1)]);
         assert_eq!(layout(2, 0), vec![]);
         assert_eq!(layout(0, 10), vec![]);
+    }
+
+    #[test]
+    fn columns_map_to_tabs() {
+        let spans = layout(2, 100);
+        assert_eq!(tab_at(&spans, 0), Some(0));
+        assert_eq!(tab_at(&spans, 23), Some(0));
+        // すき間。
+        assert_eq!(tab_at(&spans, 24), None);
+        assert_eq!(tab_at(&spans, 25), Some(1));
+        assert_eq!(tab_at(&spans, 48), Some(1));
+        assert_eq!(tab_at(&spans, 49), None);
+        assert_eq!(tab_at(&spans, 99), None);
     }
 
     #[test]

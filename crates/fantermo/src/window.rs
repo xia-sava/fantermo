@@ -405,6 +405,9 @@ struct App {
     /// コピーやタブの操作に使ったので、離したときにも端末へ送らないキー。タブを切り替えたあとに
     /// 離したことが届くので、端末ごとではなく窓に持つ。
     suppressed_release: Option<Key>,
+    /// タブバーの上で押したマウスのボタンと、そのときマウスの下にあったタブの番号。離すまで、マウスの
+    /// 操作を端末へ送らない。
+    tab_bar_press: Option<(MouseButton, Option<usize>)>,
 }
 
 impl App {
@@ -470,6 +473,7 @@ impl App {
             clock: Instant::now(),
             pointer_in_window: None,
             suppressed_release: None,
+            tab_bar_press: None,
         })
     }
 
@@ -839,6 +843,15 @@ impl App {
         // SAFETY: self.hwnd はこのスレッドの有効な窓。
         unsafe { SetCapture(self.hwnd) };
         let (x, y) = client_position(lparam);
+        if let Some(tab) = self.tab_bar_hit(x, y) {
+            self.tab_bar_press = Some((button, tab));
+            if button == MouseButton::Left
+                && let Some(index) = tab
+            {
+                self.activate(index);
+            }
+            return;
+        }
         if button == MouseButton::Left
             && is_link_modifier(mouse_mods(wparam))
             && let Some(link) = self.link_at(x, y)
@@ -868,11 +881,14 @@ impl App {
         let (x, y) = client_position(lparam);
         self.track_pointer(x, y);
         self.refresh_hovered_link(is_link_modifier(mouse_mods(wparam)));
-        // リンクを押している間の動きは、アプリへ送らない。
-        if self.session().pressed_link.is_some() {
+        // リンクやタブバーを押している間の動きと、タブバーの上の動きは、アプリへ送らない。
+        if self.session().pressed_link.is_some() || self.tab_bar_press.is_some() {
             return;
         }
         if !self.session().selecting {
+            if self.tab_bar_hit(x, y).is_some() {
+                return;
+            }
             self.report_mouse(MouseAction::Motion, held_button(wparam), x, y, wparam);
             return;
         }
@@ -895,7 +911,12 @@ impl App {
     ) -> Option<Deferred> {
         let (x, y) = client_position(lparam);
         let mut deferred = None;
-        if button == MouseButton::Left
+        if let Some((pressed, tab)) = self.tab_bar_press
+            && pressed == button
+        {
+            self.tab_bar_press = None;
+            deferred = self.on_tab_bar_click(button, tab, x, y);
+        } else if button == MouseButton::Left
             && let Some(uri) = self.session_mut().pressed_link.take()
         {
             if self.link_at(x, y).is_some_and(|link| link.uri == uri) {
@@ -921,6 +942,42 @@ impl App {
             }
         }
         deferred
+    }
+
+    /// 窓のクライアント領域の中の (`x`, `y`) がタブバーの上なら、そこにあるタブの番号（タブの間のすき間や
+    /// 右の空きなら `None`）を `Some` で返す。タブバーの外なら `None`。
+    fn tab_bar_hit(&self, x: i32, y: i32) -> Option<Option<usize>> {
+        let area = self.tab_bar_area()?;
+        let inside = (0..area.width as i32).contains(&x) && (0..area.height as i32).contains(&y);
+        if !inside {
+            return None;
+        }
+        let col = (x as u32 / self.font.cell_width_px).min(u32::from(u16::MAX)) as u16;
+        let spans = tab_bar::layout(self.sessions.len(), self.tab_bar_cols());
+        Some(tab_bar::tab_at(&spans, col))
+    }
+
+    /// タブバーの上で押した `button` を (`x`, `y`) で離した。押したときのマウスの下のタブは `pressed_tab`。
+    /// 中ボタンを同じタブの上で離したらそのタブを閉じ、右ボタンならコンテキストメニューを出すよう返す。
+    /// 左ボタンは押したときに切り替えてある。
+    fn on_tab_bar_click(
+        &mut self,
+        button: MouseButton,
+        pressed_tab: Option<usize>,
+        x: i32,
+        y: i32,
+    ) -> Option<Deferred> {
+        match button {
+            MouseButton::Middle => {
+                let index = pressed_tab?;
+                if self.tab_bar_hit(x, y) != Some(Some(index)) {
+                    return None;
+                }
+                self.close_session(index).then_some(Deferred::CloseWindow)
+            }
+            MouseButton::Right => Some(self.context_menu(x, y)),
+            _ => None,
+        }
     }
 
     /// 窓のクライアント領域の中の (`x`, `y`) にコンテキストメニューを出すよう返す。
@@ -1072,11 +1129,15 @@ impl App {
     /// 5（手前）の押し離しとして送る。そうでなければスクロールバックを動かす。
     /// `lparam` は WM_MOUSEWHEEL のとおり画面での位置。
     fn on_wheel(&mut self, delta: i32, lparam: LPARAM, wparam: WPARAM) {
+        let (x, y) = self.screen_to_client(lparam);
+        // タブバーの上では何もしない。
+        if self.tab_bar_hit(x, y).is_some() {
+            return;
+        }
         if !self.reports_mouse() {
             self.scroll_by_wheel(delta);
             return;
         }
-        let (x, y) = self.screen_to_client(lparam);
         let button = if delta > 0 {
             MouseButton::Four
         } else {
