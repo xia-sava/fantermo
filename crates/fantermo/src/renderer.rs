@@ -2,7 +2,10 @@
 
 use std::path::Path;
 
-use fantermo_core::frame::{Frame, Rgb, Underline};
+use fantermo_core::{
+    config::WideGlyph,
+    frame::{Frame, Rgb, Underline},
+};
 use windows::Win32::{
     Foundation::{HMODULE, HWND},
     Graphics::{
@@ -59,6 +62,7 @@ impl Renderer {
         height: u32,
         dwrite: &IDWriteFactory,
         font: &Font,
+        wide_glyph: WideGlyph,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (device, context) = create_device()?;
         // SAFETY: フラグなしでファクトリを作るだけ。
@@ -81,7 +85,7 @@ impl Renderer {
         let swap_chain =
             unsafe { factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None)? };
 
-        let atlas = GlyphAtlas::new(&device, dwrite, font)?;
+        let atlas = GlyphAtlas::new(&device, dwrite, font, wide_glyph)?;
         let pipeline = CellPipeline::new(&device)?;
         let mut renderer = Self {
             device,
@@ -99,9 +103,15 @@ impl Renderer {
         Ok(renderer)
     }
 
-    /// `font` で描くようにする。DPI が変わったときに使う。グリフアトラスは作り直す。
-    pub fn set_font(&mut self, dwrite: &IDWriteFactory, font: &Font) -> windows::core::Result<()> {
-        self.atlas = GlyphAtlas::new(&self.device, dwrite, font)?;
+    /// `font` で、セルより広いグリフは `wide_glyph` のとおりに描くようにする。DPI やフォントの設定が
+    /// 変わったときに使う。グリフアトラスは作り直す。
+    pub fn set_font(
+        &mut self,
+        dwrite: &IDWriteFactory,
+        font: &Font,
+        wide_glyph: WideGlyph,
+    ) -> windows::core::Result<()> {
+        self.atlas = GlyphAtlas::new(&self.device, dwrite, font, wide_glyph)?;
         self.cell_width = font.cell_width_px;
         self.cell_height = font.cell_height_px;
         Ok(())
@@ -195,7 +205,9 @@ impl Renderer {
                 let slot = self
                     .atlas
                     .slot(&cell.text, cell.bold, cell.italic, cell.width)?;
-                glyphs.push(glyph(rect, slot, color));
+                // 右のセルへはみ出して描くグリフは、場所がセルより広い。
+                let [x, y, _, height] = rect;
+                glyphs.push(glyph([x, y, slot.width as f32, height], slot, color));
             }
             if cell.underline != Underline::None {
                 let slot = self

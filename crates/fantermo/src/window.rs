@@ -9,7 +9,7 @@ use std::{
 
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize},
-    config::{Config, DEFAULT_FONT_FAMILIES, FontConfig},
+    config::{Config, DEFAULT_FONT_FAMILIES, FontConfig, WideGlyph},
     vt::{
         Key, KeyAction, KeyInput, Mods, MouseAction, MouseButton, MouseInput, PasteOutcome,
         PointerPosition, Vt,
@@ -350,7 +350,7 @@ impl App {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (width, height) = client_size(hwnd);
         let size = grid_size(&font, width, height);
-        let renderer = Renderer::new(hwnd, width, height, &dwrite, &font)?;
+        let renderer = Renderer::new(hwnd, width, height, &dwrite, &font, font_config.wide_glyph)?;
         let vt = Vt::new(size, TERM)?;
 
         let backend = ConPty::spawn(
@@ -858,7 +858,10 @@ impl App {
                 return;
             }
         };
-        if let Err(e) = self.renderer.set_font(&self.dwrite, &font) {
+        if let Err(e) = self
+            .renderer
+            .set_font(&self.dwrite, &font, self.font_config.wide_glyph)
+        {
             tracing::warn!("failed to rebuild the glyph atlas for {dpi} DPI: {e}");
             return;
         }
@@ -869,10 +872,17 @@ impl App {
 
     /// 設定ファイルを読み直す。フォントの設定が変わっていて、そのフォントを測れたら設定を入れ替え、
     /// 作り直しに使う DPI を返す。作り直しは借用を手放してから [`change_dpi_in_place`] で行う。
+    /// グリフの描き方だけが変わったときは、セルの寸法は変わらないので、この場でアトラスだけを作り直す。
     /// `shell` は次に起動したときから使う。
     fn reload_config(&mut self) -> Option<u32> {
         let config = config_file::load(self.config_path.as_deref());
         if config.font == self.font_config {
+            return None;
+        }
+        let same_face = config.font.families == self.font_config.families
+            && config.font.size_pt == self.font_config.size_pt;
+        if same_face {
+            self.set_wide_glyph(config.font.wide_glyph);
             return None;
         }
         if let Err(e) = load_font(&self.dwrite, &config.font, self.dpi) {
@@ -881,6 +891,16 @@ impl App {
         }
         self.font_config = config.font;
         Some(self.dpi)
+    }
+
+    /// セルより広いグリフの描き方を変え、グリフアトラスを作り直す。失敗したら前の描き方のまま。
+    fn set_wide_glyph(&mut self, wide_glyph: WideGlyph) {
+        if let Err(e) = self.renderer.set_font(&self.dwrite, &self.font, wide_glyph) {
+            tracing::warn!("failed to rebuild the glyph atlas for {wide_glyph:?}: {e}");
+            return;
+        }
+        self.font_config.wide_glyph = wide_glyph;
+        self.invalidate();
     }
 
     /// DPI が `dpi` に変わったときに、いまの桁数と行数がそのまま収まるクライアント領域の大きさ。

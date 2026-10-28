@@ -12,6 +12,10 @@
 //! family = ["Bizin Gothic", "BIZ UDGothic", "Consolas"]
 //! # ポイント。
 //! size = 12
+//! # グリフがセルより広いとき（曖昧幅の ○ や ※ が全角の幅でデザインされているときなど）の描き方。
+//! # セルの数は変えない。"shrink" は横に縮める、"clip" は縮めずにセルの左に置いてはみ出しを切る、
+//! # "overflow" は縮めずに右のセルへはみ出して描く。
+//! wide_glyph = "shrink"
 //! ```
 
 use std::ops::RangeInclusive;
@@ -43,6 +47,8 @@ pub struct FontConfig {
     pub families: Vec<String>,
     /// 大きさ（ポイント）。
     pub size_pt: f32,
+    /// セルより広いグリフの描き方。
+    pub wide_glyph: WideGlyph,
 }
 
 impl Default for FontConfig {
@@ -50,8 +56,23 @@ impl Default for FontConfig {
         Self {
             families: DEFAULT_FONT_FAMILIES.map(str::to_owned).to_vec(),
             size_pt: DEFAULT_FONT_SIZE_PT,
+            wide_glyph: WideGlyph::default(),
         }
     }
+}
+
+/// フォントのグリフが、文字に割り当てたセルより広いときの描き方（`font.wide_glyph`）。
+/// 曖昧幅の文字を 1 セルで数えることは変えず、描き方だけを選ぶ。罫線などの形として描く文字には効かない。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WideGlyph {
+    /// セルに収まるように横に縮める。
+    #[default]
+    Shrink,
+    /// 縮めずにセルの左に置き、はみ出した分は描かない。
+    Clip,
+    /// 縮めずにセルの左に置き、右のセルへはみ出して描く。
+    Overflow,
 }
 
 /// 解釈した設定と、読めなかった項目についての警告。
@@ -129,6 +150,9 @@ fn read_font(table: &mut Table, font: &mut FontConfig, warnings: &mut Vec<String
                 FONT_SIZE_RANGE_PT.end()
             ));
         }
+    }
+    if let Some(wide_glyph) = take::<WideGlyph>(table, SECTION, "wide_glyph", warnings) {
+        font.wide_glyph = wide_glyph;
     }
 }
 
@@ -209,6 +233,7 @@ mod tests {
             [font]
             family = ["Cascadia Mono", "Consolas"]
             size = 10.5
+            wide_glyph = "overflow"
             "#,
         );
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
@@ -218,6 +243,7 @@ mod tests {
                 font: FontConfig {
                     families: families(&["Cascadia Mono", "Consolas"]),
                     size_pt: 10.5,
+                    wide_glyph: WideGlyph::Overflow,
                 },
                 shell: Some(r"C:\cygwin64\bin\zsh.exe -l".to_owned()),
             }
@@ -261,6 +287,39 @@ mod tests {
             parsed.warnings[0].contains("a string or an array of strings"),
             "{:?}",
             parsed.warnings
+        );
+    }
+
+    #[test]
+    fn wide_glyph_takes_each_name() {
+        assert_eq!(parse("").config.font.wide_glyph, WideGlyph::Shrink);
+        for (name, wide_glyph) in [
+            ("shrink", WideGlyph::Shrink),
+            ("clip", WideGlyph::Clip),
+            ("overflow", WideGlyph::Overflow),
+        ] {
+            let parsed = parse(&format!("[font]\nwide_glyph = '{name}'\n"));
+            assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+            assert_eq!(parsed.config.font.wide_glyph, wide_glyph);
+        }
+    }
+
+    #[test]
+    fn unknown_wide_glyph_names_the_accepted_values() {
+        let parsed = parse("[font]\nwide_glyph = 'Shrink'\nsize = 10\n");
+        assert_eq!(parsed.config.font.wide_glyph, WideGlyph::Shrink);
+        assert_eq!(parsed.config.font.size_pt, 10.0);
+        assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
+        let warning = &parsed.warnings[0];
+        assert!(
+            warning.starts_with("ignoring font.wide_glyph:"),
+            "{warning}"
+        );
+        assert!(
+            ["shrink", "clip", "overflow"]
+                .iter()
+                .all(|name| warning.contains(name)),
+            "{warning}"
         );
     }
 
