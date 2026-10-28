@@ -1125,10 +1125,9 @@ impl App {
         self.session_mut().write(data);
     }
 
-    /// マウスのホイールが回った。`delta` は WM_MOUSEWHEEL の回転量（奥へ回すと正）。
     /// マウスのホイールが回った。アプリがマウスを求めていれば、1 ノッチごとにボタン 4（奥）か
     /// 5（手前）の押し離しとして送る。そうでなければスクロールバックを動かす。
-    /// `lparam` は WM_MOUSEWHEEL のとおり画面での位置。
+    /// `delta` は WM_MOUSEWHEEL の回転量（奥へ回すと正）、`lparam` は WM_MOUSEWHEEL のとおり画面での位置。
     fn on_wheel(&mut self, delta: i32, lparam: LPARAM, wparam: WPARAM) {
         let (x, y) = self.screen_to_client(lparam);
         // タブバーの上では何もしない。
