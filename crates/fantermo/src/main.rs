@@ -8,6 +8,7 @@ mod boxdraw;
 mod clipboard;
 mod conpty;
 mod context_menu;
+mod decoration;
 mod dump;
 mod font;
 mod ime;

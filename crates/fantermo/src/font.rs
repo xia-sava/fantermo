@@ -26,6 +26,18 @@ pub struct Font {
     pub size_px: f32,
     pub cell_width_px: u32,
     pub cell_height_px: u32,
+    pub lines: LineMetrics,
+}
+
+/// 下線と取り消し線の位置と太さ（ピクセル）。フォントが決めた値で、丸めていない。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LineMetrics {
+    /// ベースラインから下線の上端までの距離。下向きが正。
+    pub underline_offset: f32,
+    pub underline_thickness: f32,
+    /// ベースラインから取り消し線の上端までの距離。上向きが正。
+    pub strikethrough_offset: f32,
+    pub strikethrough_thickness: f32,
 }
 
 impl Font {
@@ -114,12 +126,23 @@ fn measure(family: &str, face: IDWriteFontFace, size_pt: f32, dpi: u32) -> Font 
         f32::from(metrics.ascent) + f32::from(metrics.descent) + f32::from(metrics.lineGap);
 
     let advance_units = reference_advance(&face).unwrap_or(metrics.designUnitsPerEm.into());
+    let to_px = |units: f32| units * size_px / units_per_em;
+
+    // DirectWrite の下線の位置はベースラインからの上端で、下が負。取り消し線の位置も上端で、上が正。
+    let lines = LineMetrics {
+        underline_offset: to_px(-f32::from(metrics.underlinePosition)),
+        underline_thickness: to_px(f32::from(metrics.underlineThickness)),
+        strikethrough_offset: to_px(f32::from(metrics.strikethroughPosition)),
+        strikethrough_thickness: to_px(f32::from(metrics.strikethroughThickness)),
+    };
+    tracing::debug!("line metrics of {family:?}: {lines:?}");
 
     Font {
         family: family.to_owned(),
         size_px,
-        cell_width_px: (advance_units as f32 * size_px / units_per_em).ceil() as u32,
-        cell_height_px: (line_units * size_px / units_per_em).ceil() as u32,
+        cell_width_px: to_px(advance_units as f32).ceil() as u32,
+        cell_height_px: to_px(line_units).ceil() as u32,
+        lines,
     }
 }
 
@@ -148,6 +171,12 @@ mod tests {
             size_px: 31.6,
             cell_width_px: 16,
             cell_height_px: 32,
+            lines: LineMetrics {
+                underline_offset: 3.0,
+                underline_thickness: 1.5,
+                strikethrough_offset: 9.0,
+                strikethrough_thickness: 1.5,
+            },
         }
     }
 

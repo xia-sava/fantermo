@@ -28,6 +28,16 @@ pub enum Shape {
         radius: f32,
         width: f32,
     },
+    /// 太さ `width` の波線。`left` から `right` まで、高さ `center_y` を中心に振れ幅 `amplitude` で、
+    /// `period` ごとに同じ形を繰り返す。`left` では中心から上へ向かって始まる。
+    Wave {
+        left: f32,
+        right: f32,
+        center_y: f32,
+        amplitude: f32,
+        period: f32,
+        width: f32,
+    },
 }
 
 /// 罫線の腕一本の種類。

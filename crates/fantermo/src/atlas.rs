@@ -15,10 +15,10 @@ use windows::{
             D2D1_ANTIALIAS_MODE_ALIASED, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL,
             D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
             D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-            D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_SWEEP_DIRECTION_CLOCKWISE,
-            D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
-            D2D1CreateFactory, ID2D1DeviceContext, ID2D1Factory1, ID2D1PathGeometry1,
-            ID2D1SolidColorBrush,
+            D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_QUADRATIC_BEZIER_SEGMENT,
+            D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
+            D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, D2D1CreateFactory, ID2D1DeviceContext,
+            ID2D1Factory1, ID2D1PathGeometry1, ID2D1SolidColorBrush,
         },
         Direct3D11::{
             D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC,
@@ -27,8 +27,8 @@ use windows::{
         DirectWrite::{
             DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE, DWRITE_FONT_STYLE_ITALIC,
             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD,
-            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP,
-            IDWriteFactory, IDWriteTextFormat,
+            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_LINE_METRICS, DWRITE_TEXT_METRICS,
+            DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteFactory, IDWriteTextFormat,
         },
         Dxgi::{
             Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
@@ -41,6 +41,7 @@ use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::{
     boxdraw::{self, Shape},
+    decoration::{self, Decoration, Placement},
     font::Font,
 };
 
@@ -86,9 +87,13 @@ pub struct GlyphAtlas {
     cell_height: u32,
     /// 罫線の細線の太さ（ピクセル）。
     line_thickness: f32,
+    /// 装飾の線のセルの中での位置。
+    placement: Placement,
     next_x: u32,
     next_y: u32,
     slots: HashMap<GlyphKey, Slot>,
+    /// 装飾と、それを描いたセルの数ごとの場所。
+    decoration_slots: HashMap<(Decoration, u8), Slot>,
 }
 
 impl GlyphAtlas {
@@ -161,6 +166,11 @@ impl GlyphAtlas {
                 DWRITE_FONT_STYLE_ITALIC,
             )?,
         ];
+        let placement = Placement::new(
+            baseline(dwrite, &formats[0], font.cell_height_px as f32)?,
+            &font.lines,
+            font.cell_height_px as f32,
+        );
 
         let mut atlas = Self {
             view,
@@ -172,9 +182,11 @@ impl GlyphAtlas {
             cell_width: font.cell_width_px,
             cell_height: font.cell_height_px,
             line_thickness: line_thickness(font.cell_width_px),
+            placement,
             next_x: 0,
             next_y: 0,
             slots: HashMap::new(),
+            decoration_slots: HashMap::new(),
         };
         atlas.clear()?;
         Ok(atlas)
@@ -191,6 +203,7 @@ impl GlyphAtlas {
     /// 覚えている場所を捨て、テクスチャを空にする。
     pub fn clear(&mut self) -> windows::core::Result<()> {
         self.slots.clear();
+        self.decoration_slots.clear();
         self.next_x = 0;
         self.next_y = 0;
         // SAFETY: context の描画先はアトラスのテクスチャ。BeginDraw と EndDraw を対にする。
@@ -223,6 +236,30 @@ impl GlyphAtlas {
             tracing::warn!("failed to rasterize {text:?}: {e}");
         }
         self.slots.insert(key, slot);
+        Ok(slot)
+    }
+
+    /// `decoration` を `cells` セル分の幅で描いた場所を返す。まだ描いていなければ描く。
+    pub fn decoration_slot(
+        &mut self,
+        decoration: Decoration,
+        cells: u8,
+    ) -> Result<Slot, AtlasFull> {
+        if let Some(slot) = self.decoration_slots.get(&(decoration, cells)) {
+            return Ok(*slot);
+        }
+        let slot = self.allocate(self.cell_width * u32::from(cells))?;
+        let shapes = decoration::shapes(
+            decoration,
+            self.cell_width as f32,
+            cells,
+            slot.height as f32,
+            &self.placement,
+        );
+        if let Err(e) = self.draw_shapes(&shapes, slot) {
+            tracing::warn!("failed to rasterize {decoration:?}: {e}");
+        }
+        self.decoration_slots.insert((decoration, cells), slot);
         Ok(slot)
     }
 
@@ -308,8 +345,54 @@ impl GlyphAtlas {
                 // SAFETY: 描画中の context と、同じファクトリで作った図形。
                 unsafe { context.DrawGeometry(&geometry, &self.brush, width, None) };
             }
+            Shape::Wave {
+                left,
+                right,
+                center_y,
+                amplitude,
+                period,
+                width,
+            } => {
+                let geometry = self.wave(left, right, center_y, amplitude, period)?;
+                // SAFETY: 描画中の context と、同じファクトリで作った図形。
+                unsafe { context.DrawGeometry(&geometry, &self.brush, width, None) };
+            }
         }
         Ok(())
+    }
+
+    /// 半周期ごとに二次ベジェ曲線で山と谷をつないだ波線。`left` から上へ向かって始まる。
+    fn wave(
+        &self,
+        left: f32,
+        right: f32,
+        center_y: f32,
+        amplitude: f32,
+        period: f32,
+    ) -> windows::core::Result<ID2D1PathGeometry1> {
+        let half = period / 2.0;
+        // 二次ベジェ曲線の頂点は、制御点までの高さの半分になる。
+        let control = amplitude * 2.0;
+        // SAFETY: ファクトリは有効で、sink は作った図形にだけ書き、閉じてから図形を使う。
+        unsafe {
+            let geometry = self.factory.CreatePathGeometry()?;
+            let sink = geometry.Open()?;
+            sink.BeginFigure(point((left, center_y)), D2D1_FIGURE_BEGIN_HOLLOW);
+            let mut x = left;
+            let mut upward = true;
+            while x < right {
+                let direction = if upward { -1.0 } else { 1.0 };
+                sink.AddQuadraticBezier(&D2D1_QUADRATIC_BEZIER_SEGMENT {
+                    point1: point((x + half / 2.0, center_y + direction * control)),
+                    point2: point((x + half, center_y)),
+                });
+                x += half;
+                upward = !upward;
+            }
+            sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            sink.Close()?;
+            Ok(geometry)
+        }
     }
 
     /// `from` から `corner` へ向かい、半径 `radius` の四分円で曲がって `to` へ向かう線。
@@ -446,6 +529,23 @@ fn unit(from: (f32, f32), to: (f32, f32)) -> (f32, f32) {
 /// 罫線の細線の太さ（ピクセル）。セルの幅の 1/8 を、少なくとも 1 ピクセルにする。
 fn line_thickness(cell_width: u32) -> f32 {
     (cell_width as f32 / 8.0).round().max(1.0)
+}
+
+/// `format` で 1 行を組んだときの、行の上端からベースラインまでの距離（ピクセル）。
+/// [`GlyphAtlas::draw_text`] と同じ組み方で測る。
+fn baseline(
+    dwrite: &IDWriteFactory,
+    format: &IDWriteTextFormat,
+    height: f32,
+) -> windows::core::Result<f32> {
+    let text: Vec<u16> = "M".encode_utf16().collect();
+    // SAFETY: text と format はこの呼び出しの間は生きている。
+    let layout = unsafe { dwrite.CreateTextLayout(&text, format, f32::MAX, height)? };
+    let mut lines = [DWRITE_LINE_METRICS::default()];
+    let mut count = 0u32;
+    // SAFETY: lines は 1 行分の書き込める配列で、count は書き込める。
+    unsafe { layout.GetLineMetrics(Some(&mut lines), &mut count)? };
+    Ok(lines[0].baseline)
 }
 
 fn format_index(bold: bool, italic: bool) -> usize {

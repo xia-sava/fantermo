@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use fantermo_core::frame::{Frame, Rgb};
+use fantermo_core::frame::{Frame, Rgb, Underline};
 use windows::Win32::{
     Foundation::{HMODULE, HWND},
     Graphics::{
@@ -24,7 +24,8 @@ use windows::Win32::{
 };
 
 use crate::{
-    atlas::{AtlasFull, GlyphAtlas},
+    atlas::{AtlasFull, GlyphAtlas, Slot},
+    decoration::Decoration,
     font::Font,
     pipeline::{CellPipeline, Instance, InstanceKind},
 };
@@ -163,22 +164,18 @@ impl Renderer {
         }
     }
 
-    /// 背景、カーソル、グリフの順に四角形を並べる。カーソルの上の文字は背景色で描く。
+    /// 背景、カーソル、グリフ、装飾の順に四角形を並べる。カーソルの上の文字は背景色で描く。
+    /// 取り消し線と上線は文字と同じ色、下線は指定された色（なければ文字と同じ色）で描く。
     fn instances(&mut self, frame: &Frame) -> Result<Vec<Instance>, AtlasFull> {
         let mut backgrounds = Vec::new();
         let mut glyphs = Vec::new();
+        let mut decorations = Vec::new();
         let cursor = frame.cursor;
         for cell in &frame.cells {
             let rect = self.cell_rect(cell.col, cell.row, cell.width);
             if let Some(bg) = cell.bg {
                 backgrounds.push(solid(rect, bg));
             }
-            if cell.text.is_empty() || cell.text == " " {
-                continue;
-            }
-            let slot = self
-                .atlas
-                .slot(&cell.text, cell.bold, cell.italic, cell.width)?;
             let under_cursor =
                 cursor.is_some_and(|cursor| cursor.col == cell.col && cursor.row == cell.row);
             let color = if under_cursor {
@@ -186,18 +183,30 @@ impl Renderer {
             } else {
                 cell.fg
             };
-            glyphs.push(Instance {
-                rect,
-                uv: [
-                    slot.x as f32,
-                    slot.y as f32,
-                    slot.width as f32,
-                    slot.height as f32,
-                ],
-                color: rgba(color),
-                kind: InstanceKind::Glyph,
-                _padding: [0; 3],
-            });
+            if !cell.text.is_empty() && cell.text != " " {
+                let slot = self
+                    .atlas
+                    .slot(&cell.text, cell.bold, cell.italic, cell.width)?;
+                glyphs.push(glyph(rect, slot, color));
+            }
+            if cell.underline != Underline::None {
+                let slot = self
+                    .atlas
+                    .decoration_slot(Decoration::Underline(cell.underline), cell.width)?;
+                decorations.push(glyph(rect, slot, cell.underline_color.unwrap_or(color)));
+            }
+            if cell.strikethrough {
+                let slot = self
+                    .atlas
+                    .decoration_slot(Decoration::Strikethrough, cell.width)?;
+                decorations.push(glyph(rect, slot, color));
+            }
+            if cell.overline {
+                let slot = self
+                    .atlas
+                    .decoration_slot(Decoration::Overline, cell.width)?;
+                decorations.push(glyph(rect, slot, color));
+            }
         }
         if let Some(cursor) = cursor {
             backgrounds.push(solid(
@@ -206,6 +215,7 @@ impl Renderer {
             ));
         }
         backgrounds.append(&mut glyphs);
+        backgrounds.append(&mut decorations);
         Ok(backgrounds)
     }
 
@@ -287,6 +297,22 @@ fn rgba(color: Rgb) -> Rgba {
         f32::from(color.b) / 255.0,
         1.0,
     ]
+}
+
+/// アトラスの `slot` の形を、`color` で `rect` に描く。
+fn glyph(rect: [f32; 4], slot: Slot, color: Rgb) -> Instance {
+    Instance {
+        rect,
+        uv: [
+            slot.x as f32,
+            slot.y as f32,
+            slot.width as f32,
+            slot.height as f32,
+        ],
+        color: rgba(color),
+        kind: InstanceKind::Glyph,
+        _padding: [0; 3],
+    }
 }
 
 fn solid(rect: [f32; 4], color: Rgb) -> Instance {
