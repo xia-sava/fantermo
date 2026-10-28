@@ -19,7 +19,7 @@ const ROWS: f32 = 4.0;
 
 impl Cell {
     /// 点は正方形で、セルを 2 列 × 4 段に等分したそれぞれの真ん中に置く。区画の一辺の半分を点の
-    /// 一辺にするので、点の間とセルの縁をはさんだ隣の点との間は同じだけ空く。
+    /// 一辺にするので、点の間とセルの縁をはさんだ隣の点との間は、ピクセルへの丸めの差を除いて同じだけ空く。
     pub(super) fn braille(&self, c: char) -> Vec<Shape> {
         let column_width = self.width / COLUMNS;
         let row_height = self.height / ROWS;
