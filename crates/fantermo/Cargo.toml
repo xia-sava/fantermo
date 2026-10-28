@@ -8,6 +8,14 @@ publish.workspace = true
 
 [dependencies]
 fantermo-core.workspace = true
+tracing.workspace = true
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
 
 [lints]
 workspace = true

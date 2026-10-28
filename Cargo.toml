@@ -13,6 +13,8 @@ publish = false
 fantermo-core = { path = "crates/fantermo-core" }
 # `rev` を書き換えて上げる。そのコミットが求める Zig の版は tools/dev.bat の ZIG_REQUIRED と揃える。
 libghostty-vt = { git = "https://github.com/uzaaft/libghostty-rs", rev = "9ede35b8ea94a55ed3608408d67e102883129f1e" }
+tracing = "0.1.44"
+windows = "0.62.2"
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "warn"
