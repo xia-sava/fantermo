@@ -1,7 +1,8 @@
 //! グリフアトラス。DirectWrite で組んだ文字を Direct2D でテクスチャに描き、その場所を覚えておく。
 //!
 //! 文字は白で、乗算済みのアルファで描く。色はシェーダで付ける。場所は 1 セルの高さの棚に左から
-//! 詰めていき、いっぱいになったら全部を捨てて描き直す。
+//! 詰めていき、いっぱいになったら全部を捨てて描き直す。斜体のようにインクがセルの左右へはみ出す
+//! グリフは、はみ出す分だけ左右に余白を持たせた場所に描く。
 
 use std::collections::HashMap;
 
@@ -53,6 +54,12 @@ const ATLAS_SIZE: u32 = 2048;
 /// [`WideGlyph::Overflow`] で、文字に割り当てたセルの何倍の幅まで広げて描くか。
 const MAX_OVERFLOW_FACTOR: u8 = 2;
 
+/// インクがセルの左右へはみ出す分を描く余白の上限（セルの幅の何倍か）。
+const MAX_INK_MARGIN_FACTOR: f32 = 1.0;
+
+/// インクがセルの外へ出たとみなさない、計算の誤差の分（ピクセル）。
+const INK_EPSILON_PX: f32 = 1.0 / 64.0;
+
 /// Direct2D の座標をピクセルと同じにする DPI。
 const PIXEL_DPI: f32 = 96.0;
 
@@ -66,6 +73,9 @@ pub struct Slot {
     pub y: u32,
     pub width: u32,
     pub height: u32,
+    /// 場所の左端が、文字に割り当てたセルの左端より何ピクセル左にあるか。インクが左のセルへ
+    /// はみ出すグリフで正になる。
+    pub left: u32,
 }
 
 /// アトラスに空きがない。
@@ -224,7 +234,8 @@ impl GlyphAtlas {
     }
 
     /// `text` を `cells` セル分の幅で描いた場所を返す。まだ描いていなければ描く。
-    /// [`WideGlyph::Overflow`] で描いたグリフは、`cells` セルより広い場所になる。
+    /// [`WideGlyph::Overflow`] で描いたグリフと、インクがセルの左右へはみ出すグリフは、`cells`
+    /// セルより広い場所になる。
     pub fn slot(
         &mut self,
         text: &str,
@@ -300,6 +311,7 @@ impl GlyphAtlas {
             y: self.next_y,
             width,
             height: self.cell_height,
+            left: 0,
         };
         self.next_x += width;
         Ok(slot)
@@ -529,34 +541,24 @@ impl GlyphAtlas {
     /// 組めなければ、セルの幅の空の場所を返す。
     fn text_slot(&mut self, key: &GlyphKey) -> Result<Slot, AtlasFull> {
         let cell_width = self.cell_width as f32;
-        let (layout, text_width) = match self.text_layout(key) {
-            Ok(measured) => measured,
-            Err(e) => {
-                tracing::warn!("failed to lay out {:?}: {e}", key.text);
-                return self.allocate(self.cell_width * u32::from(key.cells));
-            }
+        let format = &self.formats[format_index(key.bold, key.italic)];
+        let (layout, extent) =
+            match text_layout(&self.dwrite, format, &key.text, self.cell_height as f32) {
+                Ok(measured) => measured,
+                Err(e) => {
+                    tracing::warn!("failed to lay out {:?}: {e}", key.text);
+                    return self.allocate(self.cell_width * u32::from(key.cells));
+                }
+            };
+        let placement = place_text(extent, key.cells, cell_width, self.wide_glyph);
+        let slot = Slot {
+            left: placement.left_margin,
+            ..self.allocate(placement.slot_width(self.cell_width))?
         };
-        let placement = place_text(text_width, key.cells, cell_width, self.wide_glyph);
-        let slot = self.allocate(self.cell_width * u32::from(placement.cells))?;
         if let Err(e) = self.draw_text(&layout, &placement, slot) {
             tracing::warn!("failed to rasterize {:?}: {e}", key.text);
         }
         Ok(slot)
-    }
-
-    /// `key` の文字を 1 行に組んだものと、その幅（ピクセル）。
-    fn text_layout(&self, key: &GlyphKey) -> windows::core::Result<(IDWriteTextLayout, f32)> {
-        let format = &self.formats[format_index(key.bold, key.italic)];
-        let text: Vec<u16> = key.text.encode_utf16().collect();
-        // SAFETY: text と format はこの呼び出しの間は生きている。
-        let layout = unsafe {
-            self.dwrite
-                .CreateTextLayout(&text, format, f32::MAX, self.cell_height as f32)?
-        };
-        let mut metrics = DWRITE_TEXT_METRICS::default();
-        // SAFETY: metrics は書き込める。
-        unsafe { layout.GetMetrics(&mut metrics)? };
-        Ok((layout, metrics.widthIncludingTrailingWhitespace.max(1.0)))
     }
 
     /// 組んだ文字を `placement` のとおりに `slot` に描く。
@@ -571,7 +573,7 @@ impl GlyphAtlas {
             M12: 0.0,
             M21: 0.0,
             M22: 1.0,
-            M31: slot.x as f32 + placement.offset,
+            M31: (slot.x + slot.left) as f32 + placement.offset,
             M32: slot.y as f32,
         };
         self.draw_in_slot(slot, &transform, |context| {
@@ -600,48 +602,119 @@ fn unit(from: (f32, f32), to: (f32, f32)) -> (f32, f32) {
     (dx / length, dy / length)
 }
 
+/// 1 行に組んだ文字の送り幅と、インクの左右の端（ピクセル）。インクの端は文字の左端からの距離で、
+/// 左へはみ出していれば `ink_left` が負、右へはみ出していれば `ink_right` が `advance` より大きい。
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TextExtent {
+    advance: f32,
+    ink_left: f32,
+    ink_right: f32,
+}
+
+/// `text` を `format` で 1 行に組んだものと、その送り幅とインクの範囲。送り幅が 0 の文字
+/// （結合文字だけのものなど）は 1 ピクセルとして扱う。
+fn text_layout(
+    dwrite: &IDWriteFactory,
+    format: &IDWriteTextFormat,
+    text: &str,
+    height: f32,
+) -> windows::core::Result<(IDWriteTextLayout, TextExtent)> {
+    let text: Vec<u16> = text.encode_utf16().collect();
+    // SAFETY: text と format はこの呼び出しの間は生きている。
+    let layout = unsafe { dwrite.CreateTextLayout(&text, format, f32::MAX, height)? };
+    let mut metrics = DWRITE_TEXT_METRICS::default();
+    // SAFETY: metrics は書き込める。
+    unsafe { layout.GetMetrics(&mut metrics)? };
+    let advance = metrics.widthIncludingTrailingWhitespace.max(1.0);
+    // はみ出しは組む枠からの距離なので、枠の幅を送り幅に合わせてから測る。左寄せで折り返さない
+    // ので、枠の幅を変えても文字の位置は変わらない。
+    // SAFETY: layout は有効。
+    let overhang = unsafe {
+        layout.SetMaxWidth(advance)?;
+        layout.GetOverhangMetrics()?
+    };
+    Ok((
+        layout,
+        TextExtent {
+            advance,
+            ink_left: -overhang.left,
+            ink_right: advance + overhang.right,
+        },
+    ))
+}
+
 /// 組んだ文字をアトラスの場所に置く方法。
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct TextPlacement {
-    /// 場所の幅（セルの数）。
+    /// 文字に割り当てた場所の幅（セルの数）。左右の余白は含まない。
     cells: u8,
     /// 横の倍率。
     scale: f32,
-    /// 場所の左端から文字の左端までの距離（ピクセル）。
+    /// セルの左端から文字の左端までの距離（ピクセル）。
     offset: f32,
+    /// インクが左のセルへはみ出す分の余白（ピクセル）。
+    left_margin: u32,
+    /// インクが右のセルへはみ出す分の余白（ピクセル）。
+    right_margin: u32,
 }
 
-/// 幅 `text_width` の文字を、`cells` セルの文字として置く方法を決める。収まる文字はセルの真ん中に
-/// 置く。収まらない文字は `wide_glyph` に従い、[`WideGlyph::Overflow`] なら場所を右へ広げる。
-/// 広げるのは [`MAX_OVERFLOW_FACTOR`] 倍までで、それでも収まらなければその幅に縮める。
-fn place_text(text_width: f32, cells: u8, cell_width: f32, wide_glyph: WideGlyph) -> TextPlacement {
-    let width = cell_width * f32::from(cells);
-    if text_width <= width {
-        return TextPlacement {
-            cells,
-            scale: 1.0,
-            offset: (width - text_width) / 2.0,
-        };
+impl TextPlacement {
+    /// 左右の余白を含めた場所の幅（ピクセル）。
+    fn slot_width(&self, cell_width: u32) -> u32 {
+        self.left_margin + cell_width * u32::from(self.cells) + self.right_margin
     }
-    let cells = match wide_glyph {
-        WideGlyph::Shrink => cells,
-        WideGlyph::Clip => {
-            return TextPlacement {
-                cells,
-                scale: 1.0,
-                offset: 0.0,
-            };
+}
+
+/// `extent` の文字を、`cells` セルの文字として置く方法を決める。縮めるか・広げるかは送り幅で決め、
+/// 左右の余白はインクの範囲で決める。
+///
+/// 送り幅が収まる文字はセルの真ん中に置く。収まらない文字は `wide_glyph` に従い、
+/// [`WideGlyph::Overflow`] なら場所を右へ広げる。広げるのは [`MAX_OVERFLOW_FACTOR`] 倍までで、
+/// それでも収まらなければその幅に縮める。置いた結果、インクが場所の左右へはみ出せば、その分の余白を
+/// 足す（セルの幅の [`MAX_INK_MARGIN_FACTOR`] 倍まで）。[`WideGlyph::Clip`] で切った文字には
+/// 余白を足さない。
+fn place_text(
+    extent: TextExtent,
+    cells: u8,
+    cell_width: f32,
+    wide_glyph: WideGlyph,
+) -> TextPlacement {
+    let width = cell_width * f32::from(cells);
+    let (cells, scale, offset) = if extent.advance <= width {
+        (cells, 1.0, (width - extent.advance) / 2.0)
+    } else {
+        match wide_glyph {
+            WideGlyph::Shrink => (cells, width / extent.advance, 0.0),
+            WideGlyph::Clip => {
+                return TextPlacement {
+                    cells,
+                    scale: 1.0,
+                    offset: 0.0,
+                    left_margin: 0,
+                    right_margin: 0,
+                };
+            }
+            WideGlyph::Overflow => {
+                let needed = (extent.advance / cell_width).ceil();
+                let limit = f32::from(cells.saturating_mul(MAX_OVERFLOW_FACTOR));
+                let cells = needed.min(limit) as u8;
+                let scale = (cell_width * f32::from(cells) / extent.advance).min(1.0);
+                (cells, scale, 0.0)
+            }
         }
-        WideGlyph::Overflow => {
-            let needed = (text_width / cell_width).ceil();
-            let limit = f32::from(cells.saturating_mul(MAX_OVERFLOW_FACTOR));
-            needed.min(limit) as u8
-        }
+    };
+    let width = cell_width * f32::from(cells);
+    let ink_left = offset + extent.ink_left * scale;
+    let ink_right = offset + extent.ink_right * scale;
+    let margin = |outside: f32| {
+        ((outside - INK_EPSILON_PX).ceil()).clamp(0.0, cell_width * MAX_INK_MARGIN_FACTOR) as u32
     };
     TextPlacement {
         cells,
-        scale: (cell_width * f32::from(cells) / text_width).min(1.0),
-        offset: 0.0,
+        scale,
+        offset,
+        left_margin: margin(-ink_left),
+        right_margin: margin(ink_right - width),
     }
 }
 
@@ -651,7 +724,7 @@ fn line_thickness(cell_width: u32) -> f32 {
 }
 
 /// `format` で 1 行を組んだときの、行の上端からベースラインまでの距離（ピクセル）。
-/// [`GlyphAtlas::text_layout`] と同じ組み方で測る。
+/// [`text_layout`] と同じ組み方で測る。
 fn baseline(
     dwrite: &IDWriteFactory,
     format: &IDWriteTextFormat,
@@ -734,25 +807,45 @@ fn create_d2d_context(
 mod tests {
     use super::*;
 
+    use windows::{
+        Win32::Graphics::DirectWrite::{DWRITE_GLYPH_METRICS, IDWriteFontFace},
+        core::BOOL,
+    };
+
+    use crate::font;
+
     const CELL_WIDTH: f32 = 16.0;
+
+    const ALL_MODES: [WideGlyph; 3] = [WideGlyph::Shrink, WideGlyph::Clip, WideGlyph::Overflow];
 
     fn placement(cells: u8, scale: f32, offset: f32) -> TextPlacement {
         TextPlacement {
             cells,
             scale,
             offset,
+            left_margin: 0,
+            right_margin: 0,
+        }
+    }
+
+    /// インクが送り幅にちょうど収まる文字。
+    fn upright(advance: f32) -> TextExtent {
+        TextExtent {
+            advance,
+            ink_left: 0.0,
+            ink_right: advance,
         }
     }
 
     #[test]
     fn narrow_glyphs_are_centered_in_every_mode() {
-        for wide_glyph in [WideGlyph::Shrink, WideGlyph::Clip, WideGlyph::Overflow] {
+        for wide_glyph in ALL_MODES {
             assert_eq!(
-                place_text(10.0, 1, CELL_WIDTH, wide_glyph),
+                place_text(upright(10.0), 1, CELL_WIDTH, wide_glyph),
                 placement(1, 1.0, 3.0)
             );
             assert_eq!(
-                place_text(32.0, 2, CELL_WIDTH, wide_glyph),
+                place_text(upright(32.0), 2, CELL_WIDTH, wide_glyph),
                 placement(2, 1.0, 0.0)
             );
         }
@@ -761,7 +854,7 @@ mod tests {
     #[test]
     fn wide_glyphs_shrink_into_their_cells() {
         assert_eq!(
-            place_text(32.0, 1, CELL_WIDTH, WideGlyph::Shrink),
+            place_text(upright(32.0), 1, CELL_WIDTH, WideGlyph::Shrink),
             placement(1, 0.5, 0.0)
         );
     }
@@ -769,7 +862,17 @@ mod tests {
     #[test]
     fn clipped_glyphs_keep_their_size_at_the_left() {
         assert_eq!(
-            place_text(32.0, 1, CELL_WIDTH, WideGlyph::Clip),
+            place_text(upright(32.0), 1, CELL_WIDTH, WideGlyph::Clip),
+            placement(1, 1.0, 0.0)
+        );
+        // 切る文字は、インクがはみ出しても余白を足さない。
+        let slanted = TextExtent {
+            advance: 32.0,
+            ink_left: -2.0,
+            ink_right: 35.0,
+        };
+        assert_eq!(
+            place_text(slanted, 1, CELL_WIDTH, WideGlyph::Clip),
             placement(1, 1.0, 0.0)
         );
     }
@@ -777,22 +880,165 @@ mod tests {
     #[test]
     fn overflowing_glyphs_widen_the_slot_up_to_a_limit() {
         assert_eq!(
-            place_text(32.0, 1, CELL_WIDTH, WideGlyph::Overflow),
+            place_text(upright(32.0), 1, CELL_WIDTH, WideGlyph::Overflow),
             placement(2, 1.0, 0.0)
         );
         // 少しでもはみ出せば、次のセルまで広げる。
         assert_eq!(
-            place_text(17.0, 1, CELL_WIDTH, WideGlyph::Overflow),
+            place_text(upright(17.0), 1, CELL_WIDTH, WideGlyph::Overflow),
             placement(2, 1.0, 0.0)
         );
         // 2 倍を超える分は縮める。
         assert_eq!(
-            place_text(64.0, 1, CELL_WIDTH, WideGlyph::Overflow),
+            place_text(upright(64.0), 1, CELL_WIDTH, WideGlyph::Overflow),
             placement(2, 0.5, 0.0)
         );
         assert_eq!(
-            place_text(48.0, 2, CELL_WIDTH, WideGlyph::Overflow),
+            place_text(upright(48.0), 2, CELL_WIDTH, WideGlyph::Overflow),
             placement(3, 1.0, 0.0)
         );
+    }
+
+    #[test]
+    fn ink_outside_the_cell_gets_margins_without_shrinking() {
+        // 送り幅はセルと同じで、インクが左へ 1.5、右へ 2.25 ピクセルはみ出す。
+        let slanted = TextExtent {
+            advance: 16.0,
+            ink_left: -1.5,
+            ink_right: 18.25,
+        };
+        for wide_glyph in ALL_MODES {
+            let placed = place_text(slanted, 1, CELL_WIDTH, wide_glyph);
+            assert_eq!(
+                placed,
+                TextPlacement {
+                    left_margin: 2,
+                    right_margin: 3,
+                    ..placement(1, 1.0, 0.0)
+                }
+            );
+            assert_eq!(placed.slot_width(CELL_WIDTH as u32), 21);
+        }
+    }
+
+    #[test]
+    fn ink_margins_are_measured_after_shrinking_and_limited() {
+        // 縮めたあとのインクで余白を決める。
+        let slanted = TextExtent {
+            advance: 32.0,
+            ink_left: 0.0,
+            ink_right: 36.0,
+        };
+        assert_eq!(
+            place_text(slanted, 1, CELL_WIDTH, WideGlyph::Shrink),
+            TextPlacement {
+                right_margin: 2,
+                ..placement(1, 0.5, 0.0)
+            }
+        );
+        // 余白はセルの幅まで。
+        let far = TextExtent {
+            advance: 0.0,
+            ink_left: -40.0,
+            ink_right: 0.0,
+        };
+        assert_eq!(
+            place_text(far, 1, CELL_WIDTH, WideGlyph::Shrink).left_margin,
+            16
+        );
+        // 計算の誤差ほどのはみ出しには余白を足さない。
+        let touching = TextExtent {
+            advance: 16.0,
+            ink_left: -0.001,
+            ink_right: 16.001,
+        };
+        assert_eq!(
+            place_text(touching, 1, CELL_WIDTH, WideGlyph::Shrink),
+            placement(1, 1.0, 0.0)
+        );
+    }
+
+    /// Consolas の斜体（太字なら太字斜体）の書体。
+    fn italic_face(factory: &IDWriteFactory, weight: DWRITE_FONT_WEIGHT) -> IDWriteFontFace {
+        let mut collection = None;
+        let mut index = 0u32;
+        let mut exists = BOOL::default();
+        // SAFETY: 引数はどれも書き込める。FindFamilyName が見つけた番号で書体を取り出す。
+        unsafe {
+            factory
+                .GetSystemFontCollection(&mut collection, false)
+                .unwrap();
+            let collection = collection.unwrap();
+            collection
+                .FindFamilyName(w!("Consolas"), &mut index, &mut exists)
+                .unwrap();
+            assert!(exists.as_bool());
+            collection
+                .GetFontFamily(index)
+                .unwrap()
+                .GetFirstMatchingFont(weight, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_ITALIC)
+                .unwrap()
+                .CreateFontFace()
+                .unwrap()
+        }
+    }
+
+    /// `face` の `c` のインクの左右の端（ピクセル）。フォントの設計上の左右のサイドベアリングから求める。
+    fn designed_ink(face: &IDWriteFontFace, c: char, size_px: f32) -> (f32, f32) {
+        let codepoint = u32::from(c);
+        let mut glyph = 0u16;
+        let mut glyph_metrics = DWRITE_GLYPH_METRICS::default();
+        let mut font_metrics = Default::default();
+        // SAFETY: 引数はどれも 1 要素の配列として読み書きできる。
+        unsafe {
+            face.GetGlyphIndices(&codepoint, 1, &mut glyph).unwrap();
+            face.GetDesignGlyphMetrics(&glyph, 1, &mut glyph_metrics, false)
+                .unwrap();
+            face.GetMetrics(&mut font_metrics);
+        }
+        let to_px = |units: f32| units * size_px / f32::from(font_metrics.designUnitsPerEm);
+        let advance = glyph_metrics.advanceWidth as f32;
+        (
+            to_px(glyph_metrics.leftSideBearing as f32),
+            to_px(advance - glyph_metrics.rightSideBearing as f32),
+        )
+    }
+
+    #[test]
+    fn italic_slots_contain_the_ink() {
+        const DPI: u32 = 192;
+        let factory = font::create_factory().unwrap();
+        let font = font::find(&factory, &["Consolas"], 12.0, DPI).unwrap();
+        let cell_width = font.cell_width_px as f32;
+        let mut overhangs = (false, false);
+        for weight in [DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_BOLD] {
+            let format = text_format(&factory, &font, weight, DWRITE_FONT_STYLE_ITALIC).unwrap();
+            let face = italic_face(&factory, weight);
+            for c in ['d', 'f', 'W'] {
+                let (_, extent) = text_layout(
+                    &factory,
+                    &format,
+                    &c.to_string(),
+                    font.cell_height_px as f32,
+                )
+                .unwrap();
+                let placed = place_text(extent, 1, cell_width, WideGlyph::Shrink);
+                assert_eq!(placed.scale, 1.0, "{c:?} is not shrunk");
+                // 場所の左端と右端を、セルの左端からの距離で表す。
+                let slot_left = -(placed.left_margin as f32);
+                let slot_right = cell_width + placed.right_margin as f32;
+                let (ink_left, ink_right) = designed_ink(&face, c, font.size_px);
+                let (ink_left, ink_right) = (placed.offset + ink_left, placed.offset + ink_right);
+                assert!(
+                    slot_left <= ink_left && ink_right <= slot_right,
+                    "{c:?} (weight {}): ink {ink_left}..{ink_right} is outside {slot_left}..{slot_right}",
+                    weight.0
+                );
+                overhangs.0 |= ink_left < 0.0;
+                overhangs.1 |= ink_right > cell_width;
+            }
+        }
+        // 確かめた文字のインクには、セルの左へも右へもはみ出すものがある。
+        assert_eq!(overhangs, (true, true));
     }
 }

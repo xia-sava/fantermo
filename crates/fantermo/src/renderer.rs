@@ -241,9 +241,13 @@ impl Renderer {
                 let slot = self
                     .atlas
                     .slot(&cell.text, cell.bold, cell.italic, cell.width)?;
-                // 右のセルへはみ出して描くグリフは、場所がセルより広い。
+                // 左右のセルへはみ出して描くグリフは、場所がセルより広い。
                 let [x, y, _, height] = rect;
-                glyphs.push(glyph([x, y, slot.width as f32, height], slot, color));
+                glyphs.push(glyph(
+                    [x - slot.left as f32, y, slot.width as f32, height],
+                    slot,
+                    color,
+                ));
             }
             if cell.underline != Underline::None {
                 let slot = self
