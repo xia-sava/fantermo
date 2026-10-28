@@ -4,7 +4,7 @@ use std::{cell::RefCell, sync::Arc};
 
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize},
-    vt::Vt,
+    vt::{KeyAction, KeyInput, Vt},
 };
 use windows::{
     Win32::{
@@ -16,14 +16,17 @@ use windows::{
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             HiDpi::{AdjustWindowRectExForDpi, GetDpiForSystem},
+            Input::KeyboardAndMouse::{VK_F4, VK_PROCESSKEY, VK_SPACE},
             WindowsAndMessaging::{
                 CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
                 DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW,
-                GetWindowLongPtrW, IDC_ARROW, KillTimer, LoadCursorW, MSG, PostMessageW,
-                PostQuitMessage, RegisterClassW, SW_SHOWDEFAULT, SWP_NOACTIVATE, SWP_NOZORDER,
-                SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage,
-                WINDOW_EX_STYLE, WM_APP, WM_DESTROY, WM_DPICHANGED, WM_NCDESTROY, WM_PAINT,
-                WM_SIZE, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+                GetWindowLongPtrW, IDC_ARROW, KillTimer, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
+                PostMessageW, PostQuitMessage, RegisterClassW, SW_SHOWDEFAULT, SWP_NOACTIVATE,
+                SWP_NOZORDER, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+                TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_CHAR, WM_DEADCHAR, WM_DESTROY,
+                WM_DPICHANGED, WM_KEYDOWN, WM_KEYUP, WM_NCDESTROY, WM_PAINT, WM_SIZE, WM_SYSCHAR,
+                WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW,
+                WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -34,6 +37,7 @@ use crate::{
     conpty::{ConPty, SpawnOptions},
     dump::{DUMP_INTERVAL, ScreenDump},
     font::{self, Font},
+    keyboard::{self, KeyPosition, Utf16Assembler},
     renderer::Renderer,
 };
 
@@ -157,6 +161,8 @@ struct App {
     renderer: Renderer,
     dump: Option<ScreenDump>,
     exit: Option<ExitCode>,
+    /// キーを伴わずに届く文字（IME の確定など）を組み立てる。
+    text_input: Utf16Assembler,
 }
 
 impl App {
@@ -215,7 +221,53 @@ impl App {
             renderer,
             dump,
             exit: None,
+            text_input: Utf16Assembler::default(),
         })
+    }
+
+    /// キーを押した・離した。`chars` は同じキーから TranslateMessage が作った文字。
+    fn on_key(
+        &mut self,
+        virtual_key: u16,
+        position: KeyPosition,
+        action: KeyAction,
+        chars: &[char],
+    ) {
+        let mods = keyboard::current_mods();
+        let text = keyboard::printable_text(chars);
+        let input = KeyInput {
+            key: keyboard::key_from_position(position),
+            action,
+            mods,
+            consumed_mods: keyboard::consumed_mods(mods, text.is_some()),
+            unshifted: keyboard::unshifted_codepoint(virtual_key),
+            text: text.as_deref(),
+        };
+        match self.vt.encode_key(&input) {
+            Ok(encoded) => self.send(&encoded),
+            Err(e) => tracing::warn!("failed to encode {:?}: {e}", input.key),
+        }
+    }
+
+    /// キーを伴わずに届いた文字の 1 単位（IME の確定など）。
+    fn on_text_unit(&mut self, unit: u16) {
+        let Some(c) = self.text_input.push(unit) else {
+            return;
+        };
+        if c.is_control() {
+            return;
+        }
+        let mut buf = [0u8; 4];
+        self.send(c.encode_utf8(&mut buf).as_bytes());
+    }
+
+    fn send(&mut self, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        if let Err(e) = self.backend.write(data) {
+            tracing::warn!("failed to write input to the child: {e}");
+        }
     }
 
     /// 出力を端末に流し込み、応答を返し、子プロセスが終わっていればその終了コードを返す。
@@ -310,6 +362,28 @@ fn client_size(hwnd: HWND) -> (u32, u32) {
     )
 }
 
+/// WM_KEYDOWN の処理中に、そのキーから TranslateMessage が積んだ文字のメッセージを取り出す。
+/// 死にキーだったときは `None`。
+fn take_translated_chars(hwnd: HWND) -> Option<Vec<char>> {
+    const CHAR_MESSAGES: [u32; 4] = [WM_CHAR, WM_SYSCHAR, WM_DEADCHAR, WM_SYSDEADCHAR];
+    let mut assembler = Utf16Assembler::default();
+    let mut chars = Vec::new();
+    let mut dead = false;
+    loop {
+        let mut msg = MSG::default();
+        // SAFETY: msg は書き込める。この窓の、指定した種類のメッセージだけを取り出す。
+        let found = CHAR_MESSAGES.into_iter().find(|&kind| unsafe {
+            PeekMessageW(&mut msg, Some(hwnd), kind, kind, PM_REMOVE).as_bool()
+        });
+        match found {
+            None => break,
+            Some(WM_DEADCHAR | WM_SYSDEADCHAR) => dead = true,
+            Some(_) => chars.extend(assembler.push(msg.wParam.0 as u16)),
+        }
+    }
+    (!dead).then_some(chars)
+}
+
 /// 窓に結び付けた App。WM_NCDESTROY で解放されるまで有効。
 fn app_of(hwnd: HWND) -> Option<&'static RefCell<App>> {
     // SAFETY: GWLP_USERDATA には run が入れた App のポインタか 0 が入っている。
@@ -357,6 +431,42 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         WM_TIMER if wparam.0 == DUMP_TIMER_ID => {
             with_app(&mut |app| app.write_dump());
+            LRESULT(0)
+        }
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
+            let virtual_key = wparam.0 as u16;
+            // IME が処理中のキーと、Alt+F4・Alt+Space（閉じる・システムメニュー）は Windows に任せる。
+            let left_to_windows = virtual_key == VK_PROCESSKEY.0
+                || (msg == WM_SYSKEYDOWN && (virtual_key == VK_F4.0 || virtual_key == VK_SPACE.0));
+            if left_to_windows {
+                // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
+                return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+            }
+            let position = KeyPosition::from_lparam(lparam.0);
+            let Some(chars) = take_translated_chars(hwnd) else {
+                // 死にキー。次のキーと合わせた文字が WM_CHAR で届く。
+                return LRESULT(0);
+            };
+            let action = if position.repeated {
+                KeyAction::Repeat
+            } else {
+                KeyAction::Press
+            };
+            with_app(&mut |app| app.on_key(virtual_key, position, action, &chars));
+            LRESULT(0)
+        }
+        WM_KEYUP | WM_SYSKEYUP => {
+            let virtual_key = wparam.0 as u16;
+            if virtual_key == VK_PROCESSKEY.0 {
+                // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
+                return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+            }
+            let position = KeyPosition::from_lparam(lparam.0);
+            with_app(&mut |app| app.on_key(virtual_key, position, KeyAction::Release, &[]));
+            LRESULT(0)
+        }
+        WM_CHAR | WM_SYSCHAR => {
+            with_app(&mut |app| app.on_text_unit(wparam.0 as u16));
             LRESULT(0)
         }
         WM_DPICHANGED => {

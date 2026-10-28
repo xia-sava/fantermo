@@ -8,6 +8,7 @@ use std::{
 use libghostty_vt::{
     Terminal,
     fmt::{Format, Formatter, FormatterOptions},
+    key,
     render::{CellIterator, RenderState, RowIterator},
     screen::CellWide,
     style::RgbColor,
@@ -22,7 +23,24 @@ use crate::{
     frame::{CellView, CursorView, Frame, Rgb},
 };
 
-pub use libghostty_vt::Error as VtError;
+pub use libghostty_vt::{
+    Error as VtError,
+    key::{Action as KeyAction, Key, Mods},
+};
+
+/// 押された・離されたキー一つ。
+#[derive(Clone, Copy, Debug)]
+pub struct KeyInput<'a> {
+    pub key: Key,
+    pub action: KeyAction,
+    pub mods: Mods,
+    /// `text` を作るのに使われた修飾キー（Shift で大文字になった、など）。
+    pub consumed_mods: Mods,
+    /// 修飾キーなしでこのキーが出す文字。なければ `'\0'`。
+    pub unshifted: char,
+    /// このキーで入力された文字。制御文字は入れないこと（Ctrl+C の U+0003 など）。
+    pub text: Option<&'a str>,
+}
 
 /// スクロールバックに残す行数。
 const SCROLLBACK_LINES: usize = 10_000;
@@ -41,6 +59,9 @@ pub struct Vt {
     render_state: RenderState<'static>,
     row_iter: RowIterator<'static>,
     cell_iter: CellIterator<'static>,
+    /// キーを変換するときに使い回す、変換器とキーの情報。
+    key_encoder: key::Encoder<'static>,
+    key_event: key::Event<'static>,
 }
 
 impl Vt {
@@ -88,7 +109,26 @@ impl Vt {
             render_state: RenderState::new()?,
             row_iter: RowIterator::new()?,
             cell_iter: CellIterator::new()?,
+            key_encoder: key::Encoder::new()?,
+            key_event: key::Event::new()?,
         })
+    }
+
+    /// キーを、端末のいまのモード（カーソルキーのモード、kitty keyboard protocol など）に合わせて
+    /// シェルへ送るバイト列に変える。送るものがなければ空を返す。
+    pub fn encode_key(&mut self, input: &KeyInput) -> Result<Vec<u8>, VtError> {
+        self.key_event
+            .set_action(input.action)
+            .set_key(input.key)
+            .set_mods(input.mods)
+            .set_consumed_mods(input.consumed_mods)
+            .set_unshifted_codepoint(input.unshifted)
+            .set_utf8(input.text);
+        let mut encoded = Vec::new();
+        self.key_encoder
+            .set_options_from_terminal(&self.terminal)
+            .encode_to_vec(&self.key_event, &mut encoded)?;
+        Ok(encoded)
     }
 
     /// シェルの出力を流し込む。
@@ -305,6 +345,56 @@ mod tests {
         vt.feed("ab\r\nあ".as_bytes());
         let cursor = vt.frame().unwrap().cursor.unwrap();
         assert_eq!((cursor.col, cursor.row, cursor.width), (2, 1, 1));
+    }
+
+    fn press(key: Key, mods: Mods, unshifted: char, text: Option<&str>) -> KeyInput<'_> {
+        KeyInput {
+            key,
+            action: KeyAction::Press,
+            mods,
+            consumed_mods: Mods::empty(),
+            unshifted,
+            text,
+        }
+    }
+
+    #[test]
+    fn keys_encode_in_legacy_mode() {
+        let mut vt = new_vt();
+        let mut encode = |input| vt.encode_key(&input).unwrap();
+        assert_eq!(encode(press(Key::A, Mods::empty(), 'a', Some("a"))), b"a");
+        assert_eq!(encode(press(Key::Enter, Mods::empty(), '\0', None)), b"\r");
+        assert_eq!(
+            encode(press(Key::Backspace, Mods::empty(), '\0', None)),
+            b"\x7f"
+        );
+        assert_eq!(
+            encode(press(Key::ArrowUp, Mods::empty(), '\0', None)),
+            b"\x1b[A"
+        );
+        assert_eq!(encode(press(Key::C, Mods::CTRL, 'c', None)), b"\x03");
+        assert_eq!(encode(press(Key::A, Mods::ALT, 'a', Some("a"))), b"\x1ba");
+    }
+
+    #[test]
+    fn application_cursor_mode_changes_arrow_keys() {
+        let mut vt = new_vt();
+        // DECCKM: カーソルキーをアプリケーションモードにする（vim などが使う）。
+        vt.feed(b"\x1b[?1h");
+        let encoded = vt
+            .encode_key(&press(Key::ArrowUp, Mods::empty(), '\0', None))
+            .unwrap();
+        assert_eq!(encoded, b"\x1bOA");
+    }
+
+    #[test]
+    fn key_release_sends_nothing_in_legacy_mode() {
+        let mut vt = new_vt();
+        let release = KeyInput {
+            action: KeyAction::Release,
+            ..press(Key::A, Mods::empty(), 'a', None)
+        };
+        assert!(vt.encode_key(&release).unwrap().is_empty());
     }
 
     #[test]
