@@ -8,6 +8,7 @@ use std::{
 
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize},
+    config::{Config, DEFAULT_FONT_FAMILIES, FontConfig},
     vt::{
         Key, KeyAction, KeyInput, Mods, MouseAction, MouseButton, MouseInput, PasteOutcome,
         PointerPosition, Vt,
@@ -78,10 +79,6 @@ const KEYBOARD_CONTEXT_MENU_POSITION: (i32, i32) = (-1, -1);
 const INITIAL_COLS: u16 = 100;
 const INITIAL_ROWS: u16 = 30;
 
-/// 順に探すフォント。開発中は Bizin Gothic を既定にする。
-const FONT_FAMILIES: &[&str] = &["Bizin Gothic", "Consolas"];
-const FONT_SIZE_PT: f32 = 12.0;
-
 /// 子プロセスの `TERM` と、端末が名乗る terminfo の名前。
 const TERM: &str = "xterm-256color";
 
@@ -90,15 +87,15 @@ const TERM: &str = "xterm-256color";
 const DPI_ENV: &str = "FANTERMO_DPI";
 
 /// 窓を開き、子プロセスを起動して、窓が閉じるまでメッセージを処理する。子プロセスの終了コードを返す。
-pub fn run(command_line: &str) -> Result<u32, Box<dyn std::error::Error>> {
+pub fn run(command_line: &str, config: Config) -> Result<u32, Box<dyn std::error::Error>> {
     let dwrite = font::create_factory()?;
     // SAFETY: 引数のない問い合わせ。
     let system_dpi = unsafe { GetDpiForSystem() };
-    let font = load_font(&dwrite, system_dpi)?;
+    let font = load_font(&dwrite, &config.font, system_dpi)?;
     log_font(&font, system_dpi);
 
     let hwnd = create_window(&font, system_dpi)?;
-    let app = App::new(hwnd, dwrite, font, command_line)?;
+    let app = App::new(hwnd, dwrite, font, system_dpi, config.font, command_line)?;
     let app = Box::into_raw(Box::new(RefCell::new(app)));
     // SAFETY: hwnd はこのスレッドが作った窓。ポインタは WM_NCDESTROY で取り戻して解放する。
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, app as isize) };
@@ -117,16 +114,28 @@ pub fn run(command_line: &str) -> Result<u32, Box<dyn std::error::Error>> {
     Ok(message_loop())
 }
 
-/// 既定のフォントを探し、`dpi` で測る。
-fn load_font(dwrite: &IDWriteFactory, dpi: u32) -> windows::core::Result<Font> {
-    font::find(dwrite, FONT_FAMILIES, FONT_SIZE_PT, dpi)
+/// 設定のフォントを先頭から探し、`dpi` で測る。どれも見つからなければ、既定のフォントから探す。
+fn load_font(
+    dwrite: &IDWriteFactory,
+    settings: &FontConfig,
+    dpi: u32,
+) -> windows::core::Result<Font> {
+    let families: Vec<&str> = settings.families.iter().map(String::as_str).collect();
+    match font::find(dwrite, &families, settings.size_pt, dpi) {
+        Ok(font) => Ok(font),
+        Err(e) if families != DEFAULT_FONT_FAMILIES => {
+            tracing::warn!("none of the fonts {families:?} is available, trying the defaults: {e}");
+            font::find(dwrite, &DEFAULT_FONT_FAMILIES, settings.size_pt, dpi)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 fn log_font(font: &Font, dpi: u32) {
     tracing::info!(
         "font {} {}pt at {dpi} DPI: cell {}x{} px",
         font.family,
-        FONT_SIZE_PT,
+        font.size_pt,
         font.cell_width_px,
         font.cell_height_px
     );
@@ -278,6 +287,10 @@ struct App {
     hwnd: HWND,
     dwrite: IDWriteFactory,
     font: Font,
+    /// いまの窓の DPI。
+    dpi: u32,
+    /// `font` を探したときの設定。
+    font_config: FontConfig,
     vt: Vt,
     backend: ConPty,
     renderer: Renderer,
@@ -304,6 +317,8 @@ impl App {
         hwnd: HWND,
         dwrite: IDWriteFactory,
         font: Font,
+        dpi: u32,
+        font_config: FontConfig,
         command_line: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (width, height) = client_size(hwnd);
@@ -350,6 +365,8 @@ impl App {
             hwnd,
             dwrite,
             font,
+            dpi,
+            font_config,
             vt,
             backend,
             renderer,
@@ -815,7 +832,8 @@ impl App {
     /// DPI が `dpi` に変わった。フォントを測り直し、グリフアトラスを作り直す。端末の大きさは、
     /// このあと届く WM_SIZE（[`App::on_resize`]）で合わせる。失敗したら前のフォントのまま描く。
     fn apply_dpi(&mut self, dpi: u32) {
-        let font = match load_font(&self.dwrite, dpi) {
+        self.dpi = dpi;
+        let font = match load_font(&self.dwrite, &self.font_config, dpi) {
             Ok(font) => font,
             Err(e) => {
                 tracing::warn!("failed to measure the font for {dpi} DPI: {e}");
@@ -833,7 +851,7 @@ impl App {
 
     /// DPI が `dpi` に変わったときに、いまの桁数と行数がそのまま収まるクライアント領域の大きさ。
     fn scaled_client_size(&self, dpi: u32) -> windows::core::Result<SIZE> {
-        let font = load_font(&self.dwrite, dpi)?;
+        let font = load_font(&self.dwrite, &self.font_config, dpi)?;
         let size = self.vt.size();
         Ok(grid_pixels(&font, size.cols, size.rows))
     }
@@ -851,7 +869,7 @@ impl App {
         let Some(dump) = &self.dump else {
             return;
         };
-        dump.write_screen(&self.vt, &self.font.family);
+        dump.write_screen(&self.vt, &self.font);
         let frame_path = dump.frame_path();
         self.render_to(Some(&frame_path));
     }

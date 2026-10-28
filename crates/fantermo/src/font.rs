@@ -22,6 +22,8 @@ const CELL_WIDTH_REFERENCE: char = 'M';
 #[derive(Clone, Debug)]
 pub struct Font {
     pub family: String,
+    /// フォントの大きさ（ポイント）。
+    pub size_pt: f32,
     /// フォントの大きさ（ピクセル）。
     pub size_px: f32,
     pub cell_width_px: u32,
@@ -139,6 +141,7 @@ fn measure(family: &str, face: IDWriteFontFace, size_pt: f32, dpi: u32) -> Font 
 
     Font {
         family: family.to_owned(),
+        size_pt,
         size_px,
         cell_width_px: to_px(advance_units as f32).ceil() as u32,
         cell_height_px: to_px(line_units).ceil() as u32,
@@ -168,6 +171,7 @@ mod tests {
     fn font(family: &str) -> Font {
         Font {
             family: family.to_owned(),
+            size_pt: 12.0,
             size_px: 31.6,
             cell_width_px: 16,
             cell_height_px: 32,

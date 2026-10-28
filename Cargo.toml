@@ -14,6 +14,8 @@ fantermo-core = { path = "crates/fantermo-core" }
 # `rev` を書き換えて上げる。そのコミットが求める Zig の版は tools/dev.bat の ZIG_REQUIRED と揃える。
 libghostty-vt = { git = "https://github.com/uzaaft/libghostty-rs", rev = "9ede35b8ea94a55ed3608408d67e102883129f1e" }
 png = "0.18.1"
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "1.1.2"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

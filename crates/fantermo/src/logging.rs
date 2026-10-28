@@ -4,14 +4,13 @@
 //! 持たないので、`%LOCALAPPDATA%\fantermo\logs\` の下に日付ごとのファイルで出す。どちらも環境変数
 //! `RUST_LOG` で水準を変えられる。
 
-use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
+use std::path::PathBuf;
 
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::EnvFilter;
-use windows::Win32::{
-    System::Com::CoTaskMemFree,
-    UI::Shell::{FOLDERID_LocalAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath},
-};
+use windows::Win32::UI::Shell::FOLDERID_LocalAppData;
+
+use crate::known_folder;
 
 /// ログの既定の水準。環境変数 `RUST_LOG` で変えられる。
 const DEFAULT_LOG_FILTER: &str = "info";
@@ -61,20 +60,9 @@ fn filter() -> EnvFilter {
 
 /// ログを置くフォルダ（`%LOCALAPPDATA%\fantermo\logs`）。
 fn log_dir() -> Option<PathBuf> {
-    let mut dir = local_app_data()?;
+    let mut dir = known_folder::path(&FOLDERID_LocalAppData)?;
     dir.extend(LOG_DIR_COMPONENTS);
     Some(dir)
-}
-
-fn local_app_data() -> Option<PathBuf> {
-    // SAFETY: 既知のフォルダの GUID を指すポインタを渡す問い合わせ。トークンを渡さないので今の利用者のもの。
-    let path =
-        unsafe { SHGetKnownFolderPath(&FOLDERID_LocalAppData, KF_FLAG_DEFAULT, None) }.ok()?;
-    // SAFETY: SHGetKnownFolderPath が成功したので、path は NUL で終わる文字列を指す。
-    let wide = OsString::from_wide(unsafe { path.as_wide() });
-    // SAFETY: SHGetKnownFolderPath が CoTaskMemAlloc で確保した文字列で、ほかからは使わない。
-    unsafe { CoTaskMemFree(Some(path.0 as *const _)) };
-    Some(PathBuf::from(wide))
 }
 
 /// パニックの内容をログに残す。コンソールがないと、標準エラー出力に出たパニックは見えない。

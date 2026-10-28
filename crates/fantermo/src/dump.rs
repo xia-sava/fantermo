@@ -9,6 +9,8 @@ use std::{
 
 use fantermo_core::vt::Vt;
 
+use crate::font::Font;
+
 /// 書き出し先のディレクトリを指定する環境変数。
 pub const DUMP_DIR_ENV: &str = "FANTERMO_DUMP";
 
@@ -38,7 +40,7 @@ impl ScreenDump {
     }
 
     /// 画面の文字を、大きさとフォントの情報を先頭に付けて書き出す。
-    pub fn write_screen(&self, vt: &Vt, font_family: &str) {
+    pub fn write_screen(&self, vt: &Vt, font: &Font) {
         let text = match vt.plain_text() {
             Ok(text) => text,
             Err(e) => {
@@ -48,8 +50,13 @@ impl ScreenDump {
         };
         let size = vt.size();
         let contents = format!(
-            "cols={} rows={} cell={}x{} font={font_family}\n{text}",
-            size.cols, size.rows, size.cell_width_px, size.cell_height_px
+            "cols={} rows={} cell={}x{} font={} size={}pt\n{text}",
+            size.cols,
+            size.rows,
+            size.cell_width_px,
+            size.cell_height_px,
+            font.family,
+            font.size_pt
         );
         write_file(&self.dir.join(SCREEN_FILE), contents.as_bytes());
     }
