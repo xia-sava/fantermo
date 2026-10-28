@@ -646,6 +646,7 @@ impl App {
             self.active + 1,
             self.sessions.len()
         );
+        self.session_mut().bell_marked = false;
         self.update_window_title();
         self.refresh_hovered_link_now();
         self.invalidate();
@@ -1187,8 +1188,11 @@ impl App {
             // マウスの下の文字が変わったかもしれない。
             self.refresh_hovered_link_now();
             self.invalidate();
-        } else if events.title_changed {
-            // タブバーのタイトルを描き直す。
+        } else if events.title_changed || events.bell {
+            // タブバーのタイトルとベルの印を描き直す。
+            if events.bell {
+                self.sessions[index].bell_marked = true;
+            }
             self.invalidate();
         }
         events
@@ -1402,6 +1406,7 @@ impl App {
             .iter()
             .map(|session| TabView {
                 title: tab_title(session),
+                bell: session.bell_marked,
             })
             .collect();
         let frame = tab_bar::frame(

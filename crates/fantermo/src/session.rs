@@ -32,6 +32,8 @@ pub struct Session {
     pub hovered_link: Option<Link>,
     /// Ctrl を押しながら左ボタンを押したリンクの URI。同じリンクの上で離したら開く。
     pub pressed_link: Option<String>,
+    /// 表示していない間にベルが鳴った。タブに印を付け、表示したら消す。
+    pub bell_marked: bool,
 }
 
 /// 子プロセスの出力を流し込んだ結果。
@@ -73,6 +75,7 @@ impl Session {
             selecting: false,
             hovered_link: None,
             pressed_link: None,
+            bell_marked: false,
         })
     }
 

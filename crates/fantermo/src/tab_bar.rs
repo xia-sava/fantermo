@@ -23,6 +23,23 @@ const TAB_PADDING_COLS: u16 = 1;
 /// 収まらないタイトルの末尾に付ける印。
 const ELLIPSIS: &str = "…";
 
+/// 表示していない間にベルが鳴ったタブの、タイトルの前の印。
+const BELL_MARK: &str = "●";
+
+/// [`BELL_MARK`] を描く幅（セル）。曖昧幅の文字だが、全角の幅でデザインしたフォントでも縮めずに丸く
+/// 描けるよう、2 セルを充てる。
+const BELL_MARK_WIDTH: u8 = 2;
+
+/// [`BELL_MARK`] と、タイトルとの間のすき間を合わせた幅（セル）。
+const BELL_MARK_COLS: u16 = BELL_MARK_WIDTH as u16 + 1;
+
+/// [`BELL_MARK`] の色。
+const BELL_COLOR: Rgb = Rgb {
+    r: 0xf0,
+    g: 0xb0,
+    b: 0x30,
+};
+
 /// タブバーの背景色を、端末の背景色から文字の色へ寄せる割合。
 const BAR_TINT: f32 = 0.10;
 
@@ -116,6 +133,8 @@ pub fn fit_title(title: &str, cols: u16) -> Vec<vt::Grapheme> {
 #[derive(Clone, Copy, Debug)]
 pub struct TabView<'a> {
     pub title: &'a str,
+    /// 表示していない間にベルが鳴った。タイトルの前に [`BELL_MARK`] を付ける。
+    pub bell: bool,
 }
 
 /// タブバーの色。端末の背景色と文字の色から決める。
@@ -186,11 +205,22 @@ pub fn frame(
             overline: false,
         };
         let end = span.col + span.cols;
-        let text_cols = span.cols.saturating_sub(TAB_PADDING_COLS * 2);
+        let mut text_cols = span.cols.saturating_sub(TAB_PADDING_COLS * 2);
         let mut col = span.col;
         while col < (span.col + TAB_PADDING_COLS).min(end) {
             cells.push(blank(col));
             col += 1;
+        }
+        if tab.bell && text_cols >= BELL_MARK_COLS {
+            cells.push(CellView {
+                text: BELL_MARK.to_owned(),
+                width: BELL_MARK_WIDTH,
+                fg: BELL_COLOR,
+                ..blank(col)
+            });
+            cells.push(blank(col + u16::from(BELL_MARK_WIDTH)));
+            col += BELL_MARK_COLS;
+            text_cols -= BELL_MARK_COLS;
         }
         for grapheme in fit_title(tab.title, text_cols) {
             cells.push(CellView {
@@ -301,8 +331,50 @@ mod tests {
     }
 
     #[test]
+    fn a_bell_puts_a_mark_before_the_title() {
+        let tabs = [
+            TabView {
+                title: "abcdefghijklmnopqrstuvwxyz",
+                bell: true,
+            },
+            TabView {
+                title: "b",
+                bell: false,
+            },
+        ];
+        let frame = frame(&tabs, 1, 100, BLACK, WHITE);
+        let titled: Vec<(u16, &str, Rgb)> = frame
+            .cells
+            .iter()
+            .filter(|cell| cell.col < 24 && !cell.text.is_empty())
+            .map(|cell| (cell.col, cell.text.as_str(), cell.fg))
+            .collect();
+        assert_eq!(titled[0], (1, BELL_MARK, BELL_COLOR));
+        // 印（2 セル）とすき間の 3 セルだけ、タイトルが短くなる。
+        assert_eq!(titled[1].0, 4);
+        let title: String = titled[1..].iter().map(|(_, text, _)| *text).collect();
+        assert_eq!(title, "abcdefghijklmnopqr…");
+        assert!(
+            frame
+                .cells
+                .iter()
+                .filter(|cell| cell.col >= 25)
+                .all(|cell| cell.text != BELL_MARK)
+        );
+    }
+
+    #[test]
     fn the_frame_fills_each_tab_and_marks_the_active_one() {
-        let tabs = [TabView { title: "one" }, TabView { title: "端末" }];
+        let tabs = [
+            TabView {
+                title: "one",
+                bell: false,
+            },
+            TabView {
+                title: "端末",
+                bell: false,
+            },
+        ];
         let frame = frame(&tabs, 1, 60, BLACK, WHITE);
         assert_eq!((frame.cols, frame.rows), (60, 1));
         assert_eq!(frame.cursor, None);
