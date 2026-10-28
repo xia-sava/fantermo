@@ -10,6 +10,7 @@ use std::{
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize},
     config::{Config, DEFAULT_FONT_FAMILIES, FontConfig, PasteConfirm, WideGlyph},
+    link::Link,
     vt::{
         self, Key, KeyAction, KeyInput, Mods, MouseAction, MouseButton, MouseInput, PasteOutcome,
         PointerPosition, Vt,
@@ -24,28 +25,31 @@ use windows::{
         },
         System::{
             LibraryLoader::GetModuleHandleW,
-            SystemServices::{MK_LBUTTON, MK_MBUTTON, MK_RBUTTON},
+            SystemServices::{MK_CONTROL, MK_LBUTTON, MK_MBUTTON, MK_RBUTTON, MK_SHIFT},
         },
         UI::{
+            Controls::WM_MOUSELEAVE,
             HiDpi::{AdjustWindowRectExForDpi, GetDpiForSystem, GetDpiForWindow},
             Input::KeyboardAndMouse::{
-                GetDoubleClickTime, ReleaseCapture, SetCapture, VK_F4, VK_PROCESSKEY, VK_SPACE,
+                GetDoubleClickTime, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT,
+                TrackMouseEvent, VK_F4, VK_PROCESSKEY, VK_SPACE,
             },
             WindowsAndMessaging::{
                 CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
                 DestroyWindow, DispatchMessageW, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO,
                 FlashWindowEx, GWLP_USERDATA, GetClientRect, GetForegroundWindow, GetMessageW,
-                GetWindowLongPtrW, GetWindowRect, IDC_ARROW, KillTimer, LoadCursorW, MSG,
-                PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassW,
-                SPI_GETWHEELSCROLLLINES, SW_SHOWDEFAULT, SWP_NOACTIVATE, SWP_NOZORDER,
-                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetTimer, SetWindowLongPtrW,
-                SetWindowPos, SetWindowTextW, ShowWindow, SystemParametersInfoW, TranslateMessage,
-                WHEEL_DELTA, WINDOW_EX_STYLE, WM_APP, WM_CHAR, WM_CONTEXTMENU, WM_DEADCHAR,
-                WM_DESTROY, WM_DPICHANGED, WM_GETDPISCALEDSIZE, WM_IME_COMPOSITION,
-                WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
-                WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT,
-                WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN,
-                WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+                GetWindowLongPtrW, GetWindowRect, HTCLIENT, IDC_ARROW, IDC_HAND, KillTimer,
+                LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage,
+                RegisterClassW, SPI_GETWHEELSCROLLLINES, SW_SHOWDEFAULT, SWP_NOACTIVATE,
+                SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetCursor,
+                SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+                SystemParametersInfoW, TranslateMessage, WHEEL_DELTA, WINDOW_EX_STYLE, WM_APP,
+                WM_CHAR, WM_CONTEXTMENU, WM_DEADCHAR, WM_DESTROY, WM_DPICHANGED,
+                WM_GETDPISCALEDSIZE, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
+                WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+                WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP,
+                WM_SETCURSOR, WM_SIZE, WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP,
+                WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -60,7 +64,7 @@ use crate::{
     font::{self, Font},
     ime::{self, CursorRect},
     keyboard::{self, KeyPosition, Utf16Assembler},
-    paste_editor,
+    link_opener, paste_editor,
     renderer::Renderer,
 };
 
@@ -336,6 +340,12 @@ struct App {
     clock: Instant,
     /// 左ボタンで選んでいる最中。
     selecting: bool,
+    /// マウスの、窓のクライアント領域の中の位置。窓の外へ出たら `None`。
+    pointer_in_window: Option<(i32, i32)>,
+    /// Ctrl を押している間の、マウスの下のリンク。下線を引き、カーソルを手の形にする。
+    hovered_link: Option<Link>,
+    /// Ctrl を押しながら左ボタンを押したリンクの URI。同じリンクの上で離したら開く。
+    pressed_link: Option<String>,
     /// コピーに使ったので、離したときにもシェルへ送らないキー。
     suppressed_release: Option<Key>,
 }
@@ -400,6 +410,9 @@ impl App {
             wheel_report_remainder: 0,
             clock: Instant::now(),
             selecting: false,
+            pointer_in_window: None,
+            hovered_link: None,
+            pressed_link: None,
             suppressed_release: None,
         })
     }
@@ -414,6 +427,10 @@ impl App {
     ) -> Option<Deferred> {
         let mods = keyboard::current_mods();
         let key = keyboard::key_from_position(position);
+        // Ctrl を押した・離したときは、マウスが動かなくてもリンクの下線を出し入れする。
+        if is_modifier_key(key) {
+            self.refresh_hovered_link(is_link_modifier(mods));
+        }
         // メニューやダイアログが離した側を受け取ると、止める印が残る。押し直したなら印は古い。
         if action == KeyAction::Press && self.suppressed_release == Some(key) {
             self.suppressed_release = None;
@@ -529,13 +546,109 @@ impl App {
         }
     }
 
-    /// マウスのボタンを押した。アプリがマウスを求めていればアプリへ送り、そうでなければ左ボタンで
-    /// 選択を始める。Shift を押していれば、アプリが求めていても選択にする。
+    /// 窓のクライアント領域の中の位置にあるリンク。
+    fn link_at(&self, x: i32, y: i32) -> Option<Link> {
+        if x < 0 || y < 0 {
+            return None;
+        }
+        let size = self.vt.size();
+        let col = (x as u32 / size.cell_width_px).min(u32::from(u16::MAX)) as u16;
+        let row = (y as u32 / size.cell_height_px).min(u32::from(u16::MAX)) as u16;
+        self.vt.link_at(col, row).unwrap_or_else(|e| {
+            tracing::warn!("failed to look for a link: {e}");
+            None
+        })
+    }
+
+    /// マウスの下のリンクを探し直す。`modifier_held` はリンクを開く修飾キー（Ctrl）を押しているか。
+    /// 変わったら、下線を引き直し、カーソルの形を変える。
+    fn refresh_hovered_link(&mut self, modifier_held: bool) {
+        let link = match self.pointer_in_window {
+            Some((x, y)) if modifier_held && !self.selecting => self.link_at(x, y),
+            _ => None,
+        };
+        if link == self.hovered_link {
+            return;
+        }
+        match &link {
+            Some(link) => {
+                tracing::debug!("link under the pointer: {:?} {:?}", link.uri, link.spans)
+            }
+            None => tracing::debug!("no link under the pointer"),
+        }
+        self.vt.set_link_underline(
+            link.as_ref()
+                .map_or_else(Vec::new, |link| link.spans.clone()),
+        );
+        self.hovered_link = link;
+        self.invalidate();
+        if self.pointer_in_window.is_some() {
+            self.set_cursor_shape();
+        }
+    }
+
+    /// 修飾キーをいま押しているかで、マウスの下のリンクを探し直す。画面の中身や表示している範囲が
+    /// 変わったときに使う。
+    fn refresh_hovered_link_now(&mut self) {
+        if self.pointer_in_window.is_none() && self.hovered_link.is_none() {
+            return;
+        }
+        self.refresh_hovered_link(is_link_modifier(keyboard::current_mods()));
+    }
+
+    /// マウスのカーソルを、リンクの上なら手の形、そうでなければ矢印にする。
+    fn set_cursor_shape(&self) {
+        let shape = if self.hovered_link.is_some() {
+            IDC_HAND
+        } else {
+            IDC_ARROW
+        };
+        // SAFETY: システムのカーソルを読むだけ。
+        match unsafe { LoadCursorW(None, shape) } {
+            // SAFETY: 読んだシステムのカーソルを設定する。
+            Ok(cursor) => unsafe { _ = SetCursor(Some(cursor)) },
+            Err(e) => tracing::warn!("failed to load the mouse cursor: {e}"),
+        }
+    }
+
+    /// マウスが窓のクライアント領域の中の (`x`, `y`) にある。窓の外へ出たことが届くようにする。
+    fn track_pointer(&mut self, x: i32, y: i32) {
+        if self.pointer_in_window.is_none() {
+            let mut track = TRACKMOUSEEVENT {
+                cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: self.hwnd,
+                dwHoverTime: 0,
+            };
+            // SAFETY: track は初期化済みで、self.hwnd はこのスレッドの有効な窓。
+            if let Err(e) = unsafe { TrackMouseEvent(&mut track) } {
+                tracing::warn!("failed to track the mouse leaving the window: {e}");
+            }
+        }
+        self.pointer_in_window = Some((x, y));
+    }
+
+    /// マウスが窓のクライアント領域の外へ出た。
+    fn on_mouse_leave(&mut self) {
+        self.pointer_in_window = None;
+        self.refresh_hovered_link(false);
+    }
+
+    /// マウスのボタンを押した。Ctrl を押しながらリンクの上で左ボタンを押したら、離すまで何もしない
+    /// （アプリへも送らず、選択も始めない）。そうでなければ、アプリがマウスを求めていればアプリへ送り、
+    /// 求めていなければ左ボタンで選択を始める。Shift を押していれば、アプリが求めていても選択にする。
     fn on_button_down(&mut self, button: MouseButton, lparam: LPARAM, wparam: WPARAM) {
         // 窓の外までドラッグしても離したことが届くように、マウスを捕まえる。
         // SAFETY: self.hwnd はこのスレッドの有効な窓。
         unsafe { SetCapture(self.hwnd) };
         let (x, y) = client_position(lparam);
+        if button == MouseButton::Left
+            && is_link_modifier(mouse_mods(wparam))
+            && let Some(link) = self.link_at(x, y)
+        {
+            self.pressed_link = Some(link.uri);
+            return;
+        }
         if self.report_mouse(MouseAction::Press, Some(button), x, y, wparam) {
             return;
         }
@@ -557,6 +670,12 @@ impl App {
 
     fn on_mouse_move(&mut self, lparam: LPARAM, wparam: WPARAM) {
         let (x, y) = client_position(lparam);
+        self.track_pointer(x, y);
+        self.refresh_hovered_link(is_link_modifier(mouse_mods(wparam)));
+        // リンクを押している間の動きは、アプリへ送らない。
+        if self.pressed_link.is_some() {
+            return;
+        }
         if !self.selecting {
             self.report_mouse(MouseAction::Motion, held_button(wparam), x, y, wparam);
             return;
@@ -570,7 +689,8 @@ impl App {
         self.invalidate();
     }
 
-    /// マウスのボタンを離した。アプリへ送らなかった右ボタンなら、コンテキストメニューを出すよう返す。
+    /// マウスのボタンを離した。リンクを押していて、同じリンクの上で離したら開く。アプリへ送らなかった
+    /// 右ボタンなら、コンテキストメニューを出すよう返す。
     fn on_button_up(
         &mut self,
         button: MouseButton,
@@ -579,7 +699,13 @@ impl App {
     ) -> Option<Deferred> {
         let (x, y) = client_position(lparam);
         let mut deferred = None;
-        if button == MouseButton::Left && self.selecting {
+        if button == MouseButton::Left
+            && let Some(uri) = self.pressed_link.take()
+        {
+            if self.link_at(x, y).is_some_and(|link| link.uri == uri) {
+                link_opener::open(&uri);
+            }
+        } else if button == MouseButton::Left && self.selecting {
             self.selecting = false;
             if let Err(e) = self.vt.selection_release(self.pointer(x, y)) {
                 tracing::warn!("failed to finish the selection: {e}");
@@ -728,6 +854,7 @@ impl App {
             return;
         }
         self.vt.scroll_to_bottom();
+        self.refresh_hovered_link_now();
         self.clear_selection();
         if let Err(e) = self.backend.write(data) {
             tracing::warn!("failed to write input to the child: {e}");
@@ -766,6 +893,7 @@ impl App {
         }
         // 奥へ回すと過去（上）へ。
         self.vt.scroll(-(lines as isize));
+        self.refresh_hovered_link_now();
         self.invalidate();
     }
 
@@ -783,6 +911,8 @@ impl App {
         if self.vt.take_bell() {
             self.ring_bell();
         }
+        // マウスの下の文字が変わったかもしれない。
+        self.refresh_hovered_link_now();
         self.invalidate();
 
         let exit = self.backend.poll_exit();
@@ -847,6 +977,7 @@ impl App {
         if let Err(e) = self.vt.resize(size) {
             tracing::warn!("failed to resize the terminal: {e}");
         }
+        self.refresh_hovered_link_now();
         if (size.cols, size.rows) != (current.cols, current.rows)
             && let Err(e) = self.backend.resize(size)
         {
@@ -1094,6 +1225,40 @@ fn is_context_menu_shortcut(key: Key, mods: Mods) -> bool {
     (key == Key::ContextMenu && held.is_empty()) || (key == Key::F10 && held == Mods::SHIFT)
 }
 
+/// リンクを開く修飾キー。Ctrl（ほかの修飾キーなし）。Ctrl+Alt は配列によって AltGr になるので含めない。
+fn is_link_modifier(mods: Mods) -> bool {
+    held_mods(mods) == Mods::CTRL
+}
+
+/// マウスのメッセージのときに押されている修飾キー。Ctrl と Shift は `wparam` から、そのほかは
+/// いまのキーボードの状態から取る。
+fn mouse_mods(wparam: WPARAM) -> Mods {
+    let held = wparam.0 as u32;
+    let mut mods = keyboard::current_mods() & !(Mods::CTRL | Mods::SHIFT);
+    if held & MK_CONTROL.0 != 0 {
+        mods |= Mods::CTRL;
+    }
+    if held & MK_SHIFT.0 != 0 {
+        mods |= Mods::SHIFT;
+    }
+    mods
+}
+
+/// 修飾キーそのもの。押した・離したときに、リンクの下線を出し入れする。
+fn is_modifier_key(key: Key) -> bool {
+    matches!(
+        key,
+        Key::ControlLeft
+            | Key::ControlRight
+            | Key::ShiftLeft
+            | Key::ShiftRight
+            | Key::AltLeft
+            | Key::AltRight
+            | Key::MetaLeft
+            | Key::MetaRight
+    )
+}
+
 /// 押されている修飾キーだけ。ロックの状態は除く。
 fn held_mods(mods: Mods) -> Mods {
     mods & (Mods::CTRL | Mods::SHIFT | Mods::ALT | Mods::SUPER)
@@ -1282,6 +1447,31 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             with_app(&mut |app| app.on_mouse_move(lparam, wparam));
             LRESULT(0)
         }
+        WM_MOUSELEAVE => {
+            with_app(&mut |app| app.on_mouse_leave());
+            LRESULT(0)
+        }
+        // Ctrl を離さないまま窓を離れると、離したことが届かないので、リンクの下線を消しておく。
+        WM_KILLFOCUS => {
+            with_app(&mut |app| app.refresh_hovered_link(false));
+            // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+        // リンクの上では手の形にする。既定の処理は、マウスが動くたびに窓のクラスの矢印に戻す。
+        WM_SETCURSOR if (lparam.0 & 0xffff) as u32 == HTCLIENT => {
+            let mut on_link = false;
+            with_app(&mut |app| {
+                on_link = app.hovered_link.is_some();
+                if on_link {
+                    app.set_cursor_shape();
+                }
+            });
+            if on_link {
+                return LRESULT(1);
+            }
+            // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
         // メニューキーと Shift+F10 は WM_KEYDOWN で扱い、既定の処理に渡さないので、ここへは来ない。
         // 来るのは外から送られたときで、位置が (-1, -1) ならキーボードからとしてカーソルの位置に出す。
         // 位置のあるもの（タイトルバーの右クリックなど）は、システムメニューを出す既定の処理に任せる。
@@ -1464,6 +1654,15 @@ mod tests {
             KEYBOARD_CONTEXT_MENU_POSITION
         );
         assert_eq!(client_position(LPARAM(-1)), KEYBOARD_CONTEXT_MENU_POSITION);
+    }
+
+    #[test]
+    fn links_open_with_ctrl_alone() {
+        assert!(is_link_modifier(Mods::CTRL));
+        assert!(is_link_modifier(Mods::CTRL | Mods::CAPS_LOCK));
+        assert!(!is_link_modifier(Mods::empty()));
+        assert!(!is_link_modifier(Mods::CTRL | Mods::SHIFT));
+        assert!(!is_link_modifier(Mods::CTRL | Mods::ALT));
     }
 
     #[test]

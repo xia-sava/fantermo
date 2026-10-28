@@ -11,7 +11,7 @@ use libghostty_vt::{
     key, mouse,
     paste::Options as PasteOptions,
     render::{CellIterator, RenderState, RowIterator},
-    screen::CellWide,
+    screen::{CellWide, GridRef},
     selection::{
         FormatOptions as SelectionFormatOptions,
         gesture::{DragEvent, Geometry, Gesture, PressEvent, ReleaseEvent},
@@ -19,8 +19,8 @@ use libghostty_vt::{
     style::{PaletteIndex, RgbColor, Style, StyleColor, Underline as StyleUnderline},
     terminal::{
         ClipboardMime, ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType,
-        Point, PointCoordinate, PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes,
-        SizeReportSize,
+        Point, PointCoordinate, PointSpace, PrimaryDeviceAttributes, ScrollViewport,
+        SecondaryDeviceAttributes, SizeReportSize,
     },
 };
 use std::time::Duration;
@@ -28,6 +28,7 @@ use std::time::Duration;
 use crate::{
     backend::GridSize,
     frame::{CellView, CursorView, Frame, Rgb, Underline},
+    link::{self, LineCell, Link, LinkSpan},
 };
 
 pub use libghostty_vt::{
@@ -101,6 +102,15 @@ const FAINT_OPACITY: f32 = 0.5;
 /// XTVERSION の問い合わせに返す名前。
 const XTVERSION_NAME: &str = "fantermo";
 
+/// リンクを探すときに、指した行の前後へ折り返しをたどる行数の上限。
+const MAX_LINK_LINE_ROWS: u32 = 64;
+
+/// セルの文字（書記素クラスタ）を読むときの、コードポイントの数の初めの見込み。
+const GRAPHEME_BUFFER_LEN: usize = 16;
+
+/// OSC 8 の URI を読むときの、バイト数の初めの見込み。
+const URI_BUFFER_LEN: usize = 256;
+
 /// 端末の状態。シェルの出力を `feed` で流し込み、シェルへの応答を `take_replies` で取り出す。
 pub struct Vt {
     terminal: Terminal<'static, 'static>,
@@ -127,6 +137,8 @@ pub struct Vt {
     selection_press: PressEvent<'static>,
     selection_drag: DragEvent<'static>,
     selection_release: ReleaseEvent<'static>,
+    /// `frame` で下線を引く範囲（マウスの下のリンク）。
+    link_underline: Vec<LinkSpan>,
 }
 
 impl Vt {
@@ -189,7 +201,110 @@ impl Vt {
             selection_press: PressEvent::new()?,
             selection_drag: DragEvent::new()?,
             selection_release: ReleaseEvent::new()?,
+            link_underline: Vec::new(),
         })
+    }
+
+    /// 表示している範囲の `col` 桁目・`row` 行目のセルにあるリンク。OSC 8 のハイパーリンクがあれば
+    /// そちらを、なければ画面の文字から見つけた URL を返す。折り返した行はつなげて探す。
+    pub fn link_at(&self, col: u16, row: u16) -> Result<Option<Link>, VtError> {
+        let size = self.size.get();
+        if col >= size.cols || row >= size.rows {
+            return Ok(None);
+        }
+        let Some(viewport_top) =
+            self.screen_row(Point::Viewport(PointCoordinate { x: 0, y: 0 }))?
+        else {
+            return Ok(None);
+        };
+        let screen_row = viewport_top + u32::from(row);
+        let cells = self.logical_line(screen_row, size.cols)?;
+        let Some(index) = cells.iter().position(|cell| {
+            cell.screen_row == screen_row
+                && (cell.col..cell.col + u16::from(cell.width)).contains(&col)
+        }) else {
+            return Ok(None);
+        };
+        let Some((uri, range)) = link::link_in_line(&cells, index) else {
+            return Ok(None);
+        };
+        let spans = link::spans_of(&cells, range, viewport_top, size.rows);
+        Ok(Some(Link { uri, spans }))
+    }
+
+    /// `frame` で下線を引く範囲を決める。空なら引かない。
+    pub fn set_link_underline(&mut self, spans: Vec<LinkSpan>) {
+        self.link_underline = spans;
+    }
+
+    /// `point` のセルの、スクロールバックの先頭から数えた行。
+    fn screen_row(&self, point: Point) -> Result<Option<u32>, VtError> {
+        let grid_ref = self.terminal.grid_ref(point)?;
+        Ok(self
+            .terminal
+            .point_from_grid_ref(&grid_ref, PointSpace::Screen)?
+            .map(|point| point.y))
+    }
+
+    /// `screen_row` の行を含む論理行（折り返しでつながった行）のセルを、先頭から並べる。
+    /// たどるのは前後それぞれ [`MAX_LINK_LINE_ROWS`] 行まで。
+    fn logical_line(&self, screen_row: u32, cols: u16) -> Result<Vec<LineCell>, VtError> {
+        let row_at = |y: u32| {
+            self.terminal
+                .grid_ref(Point::Screen(PointCoordinate { x: 0, y }))
+                .and_then(|grid_ref| grid_ref.row())
+        };
+        let mut first = screen_row;
+        while first > 0
+            && screen_row - first < MAX_LINK_LINE_ROWS
+            && row_at(first)?.is_wrap_continuation()?
+        {
+            first -= 1;
+        }
+        let mut cells = Vec::new();
+        let mut y = first;
+        loop {
+            self.push_row_cells(y, cols, &mut cells)?;
+            let wrapped = row_at(y)?.is_wrapped()?;
+            if !wrapped || y.saturating_sub(screen_row) >= MAX_LINK_LINE_ROWS {
+                break;
+            }
+            y += 1;
+            // 最後の行が折り返しの印を持っていても、その先の行はない。
+            if row_at(y).is_err() {
+                break;
+            }
+        }
+        Ok(cells)
+    }
+
+    /// スクロールバックの先頭から数えて `y` 行目のセルを `cells` に足す。全角の文字の右半分と、
+    /// 行末に収まらなかった全角の文字の印は除く。
+    fn push_row_cells(&self, y: u32, cols: u16, cells: &mut Vec<LineCell>) -> Result<(), VtError> {
+        for x in 0..cols {
+            let grid_ref = self
+                .terminal
+                .grid_ref(Point::Screen(PointCoordinate { x, y }))?;
+            let cell = grid_ref.cell()?;
+            let width = match cell.wide()? {
+                CellWide::Wide => 2,
+                CellWide::SpacerTail | CellWide::SpacerHead => continue,
+                CellWide::Narrow => 1,
+            };
+            let uri = if cell.has_hyperlink()? {
+                hyperlink_uri(&grid_ref)?
+            } else {
+                None
+            };
+            cells.push(LineCell {
+                screen_row: y,
+                col: x,
+                width,
+                text: graphemes(&grid_ref)?,
+                uri,
+            });
+        }
+        Ok(())
     }
 
     /// アプリがマウスの報告を求めている（vim の `mouse=a` など）。
@@ -398,7 +513,8 @@ impl Vt {
     }
 
     /// 描画のために画面の内容を取り出す。反転表示はここで前景色と背景色を入れ替え、薄くした文字は
-    /// 前景色を背景色に寄せ、不可視の文字は文字と装飾を除いておく。
+    /// 前景色を背景色に寄せ、不可視の文字は文字と装飾を除いておく。[`Vt::set_link_underline`] で
+    /// 決めた範囲には下線を付ける。
     pub fn frame(&mut self) -> Result<Frame, VtError> {
         let snapshot = self.render_state.update(&self.terminal)?;
         let colors = snapshot.colors()?;
@@ -462,6 +578,15 @@ impl Vt {
                     view.strikethrough = false;
                     view.overline = false;
                 }
+                // マウスの下のリンクには下線を引く。下線を持つ文字はその下線のまま描く。
+                if view.underline == Underline::None
+                    && self
+                        .link_underline
+                        .iter()
+                        .any(|span| span.row == row_index && span.cols.contains(&col))
+                {
+                    view.underline = Underline::Single;
+                }
                 if !view.text.is_empty() || view.bg.is_some() || view.has_decoration() {
                     cells.push(view);
                 }
@@ -506,6 +631,33 @@ impl Vt {
         let text = Formatter::new(&self.terminal, options)?.format_alloc(None)?;
         Ok(String::from_utf8_lossy(&text).into_owned())
     }
+}
+
+/// `grid_ref` のセルの文字（書記素クラスタ）。空のセルは空の文字列。
+fn graphemes(grid_ref: &GridRef) -> Result<String, VtError> {
+    let mut buf = vec!['\0'; GRAPHEME_BUFFER_LEN];
+    let len = match grid_ref.graphemes(&mut buf) {
+        Err(VtError::OutOfSpace { required }) => {
+            buf.resize(required, '\0');
+            grid_ref.graphemes(&mut buf)?
+        }
+        result => result?,
+    };
+    Ok(buf[..len].iter().collect())
+}
+
+/// `grid_ref` のセルの、OSC 8 のハイパーリンクの URI。なければ `None`。UTF-8 でないバイトは
+/// U+FFFD に置き換える。
+fn hyperlink_uri(grid_ref: &GridRef) -> Result<Option<String>, VtError> {
+    let mut buf = vec![0u8; URI_BUFFER_LEN];
+    let len = match grid_ref.hyperlink_uri(&mut buf) {
+        Err(VtError::OutOfSpace { required }) => {
+            buf.resize(required, 0);
+            grid_ref.hyperlink_uri(&mut buf)?
+        }
+        result => result?,
+    };
+    Ok((len > 0).then(|| String::from_utf8_lossy(&buf[..len]).into_owned()))
 }
 
 fn viewport_point(at: PointerPosition) -> Point {
@@ -850,6 +1002,106 @@ mod tests {
         let mut vt = new_vt();
         vt.feed(b"\x1b[8ma");
         assert!(vt.frame().unwrap().cells.is_empty());
+    }
+
+    fn span(row: u16, cols: std::ops::Range<u16>) -> LinkSpan {
+        LinkSpan { row, cols }
+    }
+
+    #[test]
+    fn osc_8_hyperlinks_are_found_with_their_cells() {
+        let mut vt = new_vt();
+        vt.feed(b"go \x1b]8;;https://example.com/a\x1b\\click here\x1b]8;;\x1b\\ end");
+        let link = vt.link_at(9, 0).unwrap().unwrap();
+        assert_eq!(link.uri, "https://example.com/a");
+        // 空白のセルも含めて、同じリンクのセルをまとめる。
+        assert_eq!(link.spans, [span(0, 3..13)]);
+        assert_eq!(vt.link_at(2, 0).unwrap(), None);
+        assert_eq!(vt.link_at(14, 0).unwrap(), None);
+        // 長い URI も読める。
+        let long = format!("https://example.com/{}", "a".repeat(URI_BUFFER_LEN * 2));
+        vt.feed(format!("\r\n\x1b]8;id=x;{long}\x07link\x1b]8;;\x07").as_bytes());
+        assert_eq!(vt.link_at(0, 1).unwrap().unwrap().uri, long);
+    }
+
+    #[test]
+    fn urls_in_text_are_found() {
+        let mut vt = new_vt();
+        vt.feed("見 https://a.jp/ だ".as_bytes());
+        // 全角の文字は 2 セル。URL は 3 桁目から。
+        let link = vt.link_at(8, 0).unwrap().unwrap();
+        assert_eq!(link.uri, "https://a.jp/");
+        assert_eq!(link.spans, [span(0, 3..16)]);
+        assert_eq!(vt.link_at(2, 0).unwrap(), None);
+        assert_eq!(vt.link_at(17, 0).unwrap(), None);
+        // 画面の外は何もない。
+        assert_eq!(vt.link_at(SIZE.cols, 0).unwrap(), None);
+    }
+
+    #[test]
+    fn wrapped_urls_are_joined() {
+        let mut vt = new_vt();
+        // 20 桁で折り返す。
+        vt.feed(b"see https://example.com/abcdefghijklmnop.\r\nnext https://x.example");
+        let expected = "https://example.com/abcdefghijklmnop";
+        for (col, row) in [(4, 0), (19, 0), (0, 1), (19, 1)] {
+            let link = vt.link_at(col, row).unwrap().unwrap();
+            assert_eq!(link.uri, expected, "({col}, {row})");
+            assert_eq!(link.spans, [span(0, 4..20), span(1, 0..20)]);
+        }
+        // 終わりの「.」は 3 行目に折り返している。
+        assert_eq!(vt.link_at(0, 2).unwrap(), None);
+        // 改行で終わった行の次の行は別の行。
+        let link = vt.link_at(6, 3).unwrap().unwrap();
+        assert_eq!(link.uri, "https://x.example");
+    }
+
+    #[test]
+    fn wrapped_urls_reach_into_the_scrollback() {
+        let mut vt = new_vt();
+        vt.feed(b"https://example.com/abcdefghijklmnopqrstuvwxyz");
+        // URL は 3 行にわたる。5 行の改行で、表示している範囲の先頭は 4 行目になる。
+        for _ in 0..SIZE.rows {
+            vt.feed(b"\r\n");
+        }
+        vt.scroll(-2);
+        // URL の 2 行目が表示している範囲の先頭にあり、1 行目は範囲の外。
+        let link = vt.link_at(0, 0).unwrap().unwrap();
+        assert_eq!(link.uri, "https://example.com/abcdefghijklmnopqrstuvwxyz");
+        assert_eq!(link.spans, [span(0, 0..20), span(1, 0..6)]);
+    }
+
+    #[test]
+    fn the_link_underline_is_drawn_on_its_cells() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b]8;;https://example.com\x1b\\a b\x1b]8;;\x1b\\ \x1b[4:3mc\x1b[0m");
+        vt.set_link_underline(vec![span(0, 0..3), span(0, 4..5)]);
+        let underlines: Vec<(u16, Underline)> = vt
+            .frame()
+            .unwrap()
+            .cells
+            .iter()
+            .map(|cell| (cell.col, cell.underline))
+            .collect();
+        // リンクの中の空白にも引く。下線を持つ文字はその下線のまま。
+        assert_eq!(
+            underlines,
+            [
+                (0, Underline::Single),
+                (1, Underline::Single),
+                (2, Underline::Single),
+                (3, Underline::None),
+                (4, Underline::Curly),
+            ]
+        );
+        vt.set_link_underline(Vec::new());
+        assert!(
+            vt.frame()
+                .unwrap()
+                .cells
+                .iter()
+                .all(|cell| cell.col == 4 || cell.underline == Underline::None)
+        );
     }
 
     fn first_row_text(vt: &mut Vt) -> String {
