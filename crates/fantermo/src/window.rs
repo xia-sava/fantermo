@@ -1506,6 +1506,12 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
                     }),
                     Some(MenuCommand::Paste) => with_app(&mut |app| next = app.paste_clipboard()),
                     Some(MenuCommand::SelectAll) => with_app(&mut |app| app.select_all()),
+                    Some(MenuCommand::NewTab) => {
+                        with_app(&mut |app| next = app.run_tab_command(TabCommand::New))
+                    }
+                    Some(MenuCommand::CloseTab) => {
+                        with_app(&mut |app| next = app.run_tab_command(TabCommand::Close))
+                    }
                     None => {}
                 }
             }

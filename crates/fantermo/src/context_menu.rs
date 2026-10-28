@@ -17,13 +17,17 @@ pub enum MenuCommand {
     Copy,
     Paste,
     SelectAll,
+    NewTab,
+    CloseTab,
 }
 
 impl MenuCommand {
-    const ALL: [MenuCommand; 3] = [
+    const ALL: [MenuCommand; 5] = [
         MenuCommand::Copy,
         MenuCommand::Paste,
         MenuCommand::SelectAll,
+        MenuCommand::NewTab,
+        MenuCommand::CloseTab,
     ];
 
     /// メニューの項目の ID。0 は「何も選ばれなかった」に使われるので避ける。
@@ -32,6 +36,8 @@ impl MenuCommand {
             MenuCommand::Copy => 1,
             MenuCommand::Paste => 2,
             MenuCommand::SelectAll => 3,
+            MenuCommand::NewTab => 4,
+            MenuCommand::CloseTab => 5,
         }
     }
 
@@ -45,6 +51,8 @@ impl MenuCommand {
             MenuCommand::Copy => "コピー(&C)\tCtrl+C",
             MenuCommand::Paste => "貼り付け(&P)\tShift+Insert",
             MenuCommand::SelectAll => "すべて選択(&A)",
+            MenuCommand::NewTab => "新しいタブ(&T)\tCtrl+Shift+T",
+            MenuCommand::CloseTab => "タブを閉じる(&W)\tCtrl+Shift+W",
         }
     }
 }
@@ -96,6 +104,9 @@ fn build(can_copy: bool) -> windows::core::Result<HMENU> {
     append(MF_STRING, Some(MenuCommand::Paste))?;
     append(MF_SEPARATOR, None)?;
     append(MF_STRING, Some(MenuCommand::SelectAll))?;
+    append(MF_SEPARATOR, None)?;
+    append(MF_STRING, Some(MenuCommand::NewTab))?;
+    append(MF_STRING, Some(MenuCommand::CloseTab))?;
     Ok(menu)
 }
 
