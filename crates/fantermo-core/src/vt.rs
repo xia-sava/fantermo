@@ -289,6 +289,13 @@ impl Vt {
         }
     }
 
+    /// スクロールバックも含めて、すべてを選ぶ。
+    pub fn select_all(&mut self) -> Result<(), VtError> {
+        let selection = self.terminal.select_all()?;
+        self.terminal.set_selection(selection.as_ref())?;
+        Ok(())
+    }
+
     pub fn clear_selection(&mut self) -> Result<(), VtError> {
         self.terminal.set_selection(None)?;
         Ok(())
@@ -608,6 +615,18 @@ mod tests {
 
         vt.clear_selection().unwrap();
         assert_eq!(vt.selected_text().unwrap(), None);
+    }
+
+    #[test]
+    fn select_all_includes_the_scrollback() {
+        let mut vt = new_vt();
+        for line in 0..10 {
+            vt.feed(format!("line{line}\r\n").as_bytes());
+        }
+        vt.select_all().unwrap();
+        let text = vt.selected_text().unwrap().unwrap();
+        assert!(text.starts_with("line0\n"));
+        assert!(text.contains("line9"));
     }
 
     #[test]

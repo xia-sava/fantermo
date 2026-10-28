@@ -18,7 +18,7 @@ use windows::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::{
             DirectWrite::IDWriteFactory,
-            Gdi::{InvalidateRect, ScreenToClient, ValidateRect},
+            Gdi::{ClientToScreen, InvalidateRect, ScreenToClient, ValidateRect},
         },
         System::{
             LibraryLoader::GetModuleHandleW,
@@ -51,6 +51,7 @@ use windows::{
 use crate::{
     clipboard,
     conpty::{ConPty, SpawnOptions},
+    context_menu::{self, MenuCommand},
     dump::{DUMP_INTERVAL, ScreenDump},
     font::{self, Font},
     ime::{self, CursorRect},
@@ -170,10 +171,13 @@ fn message_loop() -> u32 {
     msg.wParam.0 as u32
 }
 
-/// キーの処理のあとで、窓の借用を手放してからすること。
-enum AfterKey {
+/// 入力の処理のあとで、窓の借用を手放してからすること。ダイアログやメニューは自分でメッセージを
+/// 回すので、借用を持ったまま開くと、その間に届いたメッセージの処理が飛ばされる。
+enum Deferred {
     /// 改行を含む貼り付けの内容を、編集のダイアログで確かめる。
     EditPaste { text: String, font: Font },
+    /// 画面の (`x`, `y`) にコンテキストメニューを出す。
+    ContextMenu { x: i32, y: i32, can_copy: bool },
 }
 
 struct App {
@@ -274,7 +278,7 @@ impl App {
         position: KeyPosition,
         action: KeyAction,
         chars: &[char],
-    ) -> Option<AfterKey> {
+    ) -> Option<Deferred> {
         let mods = keyboard::current_mods();
         let key = keyboard::key_from_position(position);
         // コピーや貼り付けに使ったキーは、離したときもシェルに送らない。
@@ -308,7 +312,7 @@ impl App {
     }
 
     /// クリップボードの文字列を貼り付ける。改行を含んで確かめが要るときは、編集のダイアログを開くよう返す。
-    fn paste_clipboard(&mut self) -> Option<AfterKey> {
+    fn paste_clipboard(&mut self) -> Option<Deferred> {
         let text = match clipboard::text(self.hwnd) {
             Ok(Some(text)) => paste_editor::from_crlf(&text),
             Ok(None) => return None,
@@ -318,7 +322,7 @@ impl App {
             }
         };
         match self.paste(&text, false) {
-            Some(PasteOutcome::Unsafe) => Some(AfterKey::EditPaste {
+            Some(PasteOutcome::Unsafe) => Some(Deferred::EditPaste {
                 text,
                 font: self.font.clone(),
             }),
@@ -420,16 +424,30 @@ impl App {
         self.invalidate();
     }
 
-    fn on_button_up(&mut self, button: MouseButton, lparam: LPARAM, wparam: WPARAM) {
+    /// マウスのボタンを離した。アプリへ送らなかった右ボタンなら、コンテキストメニューを出すよう返す。
+    fn on_button_up(
+        &mut self,
+        button: MouseButton,
+        lparam: LPARAM,
+        wparam: WPARAM,
+    ) -> Option<Deferred> {
         let (x, y) = client_position(lparam);
+        let mut deferred = None;
         if button == MouseButton::Left && self.selecting {
             self.selecting = false;
             if let Err(e) = self.vt.selection_release(self.pointer(x, y)) {
                 tracing::warn!("failed to finish the selection: {e}");
             }
             self.invalidate();
-        } else {
-            self.report_mouse(MouseAction::Release, Some(button), x, y, wparam);
+        } else if !self.report_mouse(MouseAction::Release, Some(button), x, y, wparam)
+            && button == MouseButton::Right
+        {
+            let (screen_x, screen_y) = self.client_to_screen(x, y);
+            deferred = Some(Deferred::ContextMenu {
+                x: screen_x,
+                y: screen_y,
+                can_copy: self.has_selection(),
+            });
         }
         if held_button(wparam).is_none() {
             // SAFETY: このスレッドが捕まえたマウスを放す。
@@ -437,6 +455,28 @@ impl App {
                 tracing::warn!("failed to release the mouse capture: {e}");
             }
         }
+        deferred
+    }
+
+    fn has_selection(&self) -> bool {
+        self.vt.selected_text().is_ok_and(|text| text.is_some())
+    }
+
+    fn select_all(&mut self) {
+        if let Err(e) = self.vt.select_all() {
+            tracing::warn!("failed to select all: {e}");
+        }
+        self.invalidate();
+    }
+
+    /// 窓のクライアント領域の中の位置を、画面での位置にする。
+    fn client_to_screen(&self, x: i32, y: i32) -> (i32, i32) {
+        let mut point = POINT { x, y };
+        // SAFETY: self.hwnd は有効な窓で、point は書き込める。
+        if !unsafe { ClientToScreen(self.hwnd, &mut point) }.as_bool() {
+            tracing::warn!("failed to convert the menu position");
+        }
+        (point.x, point.y)
     }
 
     /// マウスの操作をアプリへ送るか。アプリが求めていて、Shift を押していないとき。
@@ -659,6 +699,37 @@ fn client_size(hwnd: HWND) -> (u32, u32) {
     )
 }
 
+/// 窓の借用を手放した状態で、入力の処理が残したことをする。その結果さらに残ったことも続けてする
+/// （メニューで貼り付けを選び、それが編集のダイアログを要する場合など）。
+fn run_deferred(
+    hwnd: HWND,
+    deferred: Option<Deferred>,
+    with_app: &dyn Fn(&mut dyn FnMut(&mut App)),
+) {
+    let mut next = deferred;
+    while let Some(deferred) = next.take() {
+        match deferred {
+            Deferred::EditPaste { text, font } => {
+                if let Some(edited) = paste_editor::edit(hwnd, &text, &font) {
+                    with_app(&mut |app| {
+                        app.paste(&edited, true);
+                    });
+                }
+            }
+            Deferred::ContextMenu { x, y, can_copy } => {
+                match context_menu::show(hwnd, x, y, can_copy) {
+                    Some(MenuCommand::Copy) => with_app(&mut |app| {
+                        app.copy_selection();
+                    }),
+                    Some(MenuCommand::Paste) => with_app(&mut |app| next = app.paste_clipboard()),
+                    Some(MenuCommand::SelectAll) => with_app(&mut |app| app.select_all()),
+                    None => {}
+                }
+            }
+        }
+    }
+}
+
 /// マウスのメッセージの `lparam` の x と y（符号付きの 16 ビット）。
 fn client_position(lparam: LPARAM) -> (i32, i32) {
     let x = i32::from((lparam.0 & 0xffff) as u16 as i16);
@@ -821,16 +892,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             } else {
                 KeyAction::Press
             };
-            let mut after = None;
-            with_app(&mut |app| after = app.on_key(virtual_key, position, action, &chars));
-            // ダイアログは自分でメッセージを回すので、借用を手放してから開く。
-            if let Some(AfterKey::EditPaste { text, font }) = after
-                && let Some(edited) = paste_editor::edit(hwnd, &text, &font)
-            {
-                with_app(&mut |app| {
-                    app.paste(&edited, true);
-                });
-            }
+            let mut deferred = None;
+            with_app(&mut |app| deferred = app.on_key(virtual_key, position, action, &chars));
+            run_deferred(hwnd, deferred, &with_app);
             LRESULT(0)
         }
         WM_KEYUP | WM_SYSKEYUP => {
@@ -852,7 +916,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         WM_LBUTTONUP | WM_MBUTTONUP | WM_RBUTTONUP => {
             let button = message_button(msg);
-            with_app(&mut |app| app.on_button_up(button, lparam, wparam));
+            let mut deferred = None;
+            with_app(&mut |app| deferred = app.on_button_up(button, lparam, wparam));
+            run_deferred(hwnd, deferred, &with_app);
             LRESULT(0)
         }
         WM_MOUSEMOVE => {

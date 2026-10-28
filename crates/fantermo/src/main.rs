@@ -7,6 +7,7 @@ mod atlas;
 mod boxdraw;
 mod clipboard;
 mod conpty;
+mod context_menu;
 mod dump;
 mod font;
 mod ime;
