@@ -10,6 +10,7 @@ use std::{
 use fantermo_core::{
     backend::{ExitCode, GridSize},
     config::{Config, DEFAULT_FONT_FAMILIES, FontConfig, PasteConfirm, WideGlyph},
+    frame::{Frame, Rgb},
     link::Link,
     vt::{
         self, Key, KeyAction, KeyInput, Mods, MouseAction, MouseButton, MouseInput, PasteOutcome,
@@ -66,6 +67,7 @@ use crate::{
     link_opener, paste_editor,
     renderer::{Area, Renderer},
     session::{Session, SessionId},
+    tab_bar::{self, TabView},
 };
 
 const WINDOW_CLASS: PCWSTR = w!("fantermo");
@@ -238,21 +240,25 @@ fn grid_pixels(font: &Font, cols: u16, rows: u16) -> SIZE {
     }
 }
 
-/// 大きさが `width` × `height` のクライアント領域のうち、表示している端末を描く領域。クライアント領域の
-/// 全体に描く。
-fn terminal_area_in_client(width: u32, height: u32) -> Area {
+/// 大きさが `width` × `height` のクライアント領域のうち、表示している端末を描く領域。上端の高さ
+/// `tab_bar_height` のタブバーを除いた残りの全体に描く。
+fn terminal_area_in_client(width: u32, height: u32, tab_bar_height: u32) -> Area {
+    let tab_bar_height = tab_bar_height.min(height);
     Area {
         x: 0,
-        y: 0,
+        y: tab_bar_height,
         width,
-        height,
+        height: height - tab_bar_height,
     }
 }
 
 /// 端末を描く領域の大きさが `terminal` になるクライアント領域の大きさ。[`terminal_area_in_client`] と
 /// 対になる。
-fn client_size_for_terminal(terminal: SIZE) -> SIZE {
-    terminal
+fn client_size_for_terminal(terminal: SIZE, tab_bar_height: u32) -> SIZE {
+    SIZE {
+        cx: terminal.cx,
+        cy: terminal.cy + tab_bar_height as i32,
+    }
 }
 
 /// クライアント領域の大きさが `client` になる、DPI が `dpi` の窓の大きさ（枠を含む）。
@@ -296,8 +302,9 @@ fn create_window(font: &Font, dpi: u32) -> windows::core::Result<HWND> {
         return Err(windows::core::Error::from_thread());
     }
 
+    // 起動したときの端末は一つなので、タブバーは出さない。
     let size = window_size(
-        client_size_for_terminal(grid_pixels(font, INITIAL_COLS, INITIAL_ROWS)),
+        client_size_for_terminal(grid_pixels(font, INITIAL_COLS, INITIAL_ROWS), 0),
         dpi,
     )?;
 
@@ -412,7 +419,8 @@ impl App {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let font_config = config.font;
         let (width, height) = client_size(hwnd);
-        let terminal_area = terminal_area_in_client(width, height);
+        let terminal_area =
+            terminal_area_in_client(width, height, tab_bar::height(font.cell_height_px, 1));
         let size = grid_size(&font, terminal_area);
         let renderer = Renderer::new(hwnd, width, height, &dwrite, &font, font_config.wide_glyph)?;
         let first_id = SessionId(0);
@@ -558,7 +566,14 @@ impl App {
     fn open_session(&mut self) {
         let id = SessionId(self.next_session_id);
         let command_line = command_line_for(self.arguments.as_deref(), self.shell.as_deref());
-        let size = grid_size(&self.font, self.terminal_area);
+        // タブバーが出ると端末を描く領域が狭まるので、足したあとの領域の大きさで起動する。
+        let (width, height) = client_size(self.hwnd);
+        let area = terminal_area_in_client(
+            width,
+            height,
+            tab_bar::height(self.font.cell_height_px, self.sessions.len() + 1),
+        );
+        let size = grid_size(&self.font, area);
         let session = match Session::spawn(
             id,
             &command_line,
@@ -573,6 +588,7 @@ impl App {
         };
         self.next_session_id += 1;
         self.sessions.push(session);
+        self.relayout();
         self.activate(self.sessions.len() - 1);
     }
 
@@ -588,9 +604,12 @@ impl App {
         }
         drop(self.sessions.remove(index));
         self.active = active_after_close(self.active, index, self.sessions.len());
+        self.relayout();
         if was_active {
             self.on_activated();
         }
+        // タブバーのタブが減った。
+        self.invalidate();
         false
     }
 
@@ -1107,6 +1126,9 @@ impl App {
             // マウスの下の文字が変わったかもしれない。
             self.refresh_hovered_link_now();
             self.invalidate();
+        } else if events.title_changed {
+            // タブバーのタイトルを描き直す。
+            self.invalidate();
         }
         events
             .exited
@@ -1126,10 +1148,7 @@ impl App {
     /// 窓のタイトルを、表示している端末のタイトルにする。アプリが付けていなければ既定のタイトル。
     /// 変わったときだけ窓に設定する。
     fn update_window_title(&mut self) {
-        let title = match self.session().title() {
-            "" => WINDOW_TITLE,
-            title => title,
-        };
+        let title = tab_title(self.session());
         if title == self.window_title {
             return;
         }
@@ -1166,8 +1185,26 @@ impl App {
         if let Err(e) = self.renderer.resize(width, height) {
             tracing::warn!("failed to resize the swap chain: {e}");
         }
-        self.terminal_area = terminal_area_in_client(width, height);
+        self.layout(width, height);
+    }
+
+    /// 端末の数が変わった。タブバーを出し入れし、端末を描く領域と端末の大きさを合わせる。窓の大きさは
+    /// 変えない（タブバーの分だけ端末の行数が変わる）。
+    fn relayout(&mut self) {
+        let (width, height) = client_size(self.hwnd);
+        self.layout(width, height);
+    }
+
+    /// クライアント領域の大きさが `width` × `height` のときの、端末を描く領域に合わせる。
+    fn layout(&mut self, width: u32, height: u32) {
+        self.terminal_area =
+            terminal_area_in_client(width, height, self.tab_bar_height(&self.font));
         self.resize_sessions();
+    }
+
+    /// `font` で描くときのタブバーの高さ。
+    fn tab_bar_height(&self, font: &Font) -> u32 {
+        tab_bar::height(font.cell_height_px, self.sessions.len())
     }
 
     /// すべての端末の大きさを、端末を描く領域に合わせる。表示していない端末も同じ大きさにする。
@@ -1246,9 +1283,10 @@ impl App {
     fn scaled_client_size(&self, dpi: u32) -> windows::core::Result<SIZE> {
         let font = load_font(&self.dwrite, &self.font_config, dpi)?;
         let size = self.session().vt.size();
-        Ok(client_size_for_terminal(grid_pixels(
-            &font, size.cols, size.rows,
-        )))
+        Ok(client_size_for_terminal(
+            grid_pixels(&font, size.cols, size.rows),
+            self.tab_bar_height(&font),
+        ))
     }
 
     /// DPI が `dpi` に変わったときに、いまの桁数と行数がそのまま収まる窓の大きさ（枠を含む）。
@@ -1274,8 +1312,8 @@ impl App {
         self.render_to(Some(&frame_path));
     }
 
-    /// 表示している端末を、端末を描く領域に描いて表示する。`capture` を渡すと、表示する前の画面を
-    /// PNG で書き出す。
+    /// 表示している端末を端末を描く領域に、端末が二つ以上ならタブバーをその上に描いて表示する。
+    /// `capture` を渡すと、表示する前の画面を PNG で書き出す。
     fn render_to(&mut self, capture: Option<&std::path::Path>) {
         let frame = match self.session_mut().vt.frame() {
             Ok(frame) => frame,
@@ -1284,14 +1322,64 @@ impl App {
                 return;
             }
         };
-        if let Err(e) = self.renderer.render(&frame, self.terminal_area, capture) {
+        let tab_bar = self.tab_bar_frame(frame.background, frame.foreground);
+        let mut layers = vec![(&frame, self.terminal_area)];
+        if let Some((tab_bar, area)) = &tab_bar {
+            layers.push((tab_bar, *area));
+        }
+        if let Err(e) = self.renderer.render(&layers, capture) {
             tracing::warn!("failed to render: {e}");
         }
+    }
+
+    /// タブバーの画面と、それを描く領域。タブバーを出さないときは `None`。色は端末の背景色
+    /// `background` と文字の色 `foreground` から決める。
+    fn tab_bar_frame(&self, background: Rgb, foreground: Rgb) -> Option<(Frame, Area)> {
+        let area = self.tab_bar_area()?;
+        let tabs: Vec<TabView> = self
+            .sessions
+            .iter()
+            .map(|session| TabView {
+                title: tab_title(session),
+            })
+            .collect();
+        let frame = tab_bar::frame(
+            &tabs,
+            self.active,
+            self.tab_bar_cols(),
+            background,
+            foreground,
+        );
+        Some((frame, area))
+    }
+
+    /// タブバーを描く領域。端末を描く領域の上の、窓の幅いっぱい。タブバーを出さないときは `None`。
+    fn tab_bar_area(&self) -> Option<Area> {
+        (self.terminal_area.y > 0).then_some(Area {
+            x: 0,
+            y: 0,
+            width: self.terminal_area.width,
+            height: self.terminal_area.y,
+        })
+    }
+
+    /// タブバーの幅（セル）。
+    fn tab_bar_cols(&self) -> u16 {
+        (self.terminal_area.width / self.font.cell_width_px).min(u32::from(u16::MAX)) as u16
     }
 
     fn invalidate(&self) {
         // SAFETY: self.hwnd は有効な窓。
         unsafe { _ = InvalidateRect(Some(self.hwnd), None, false) };
+    }
+}
+
+/// 端末のタブと、表示しているときの窓に出すタイトル。アプリが付けたタイトル、付けていなければ既定の
+/// タイトル。
+fn tab_title(session: &Session) -> &str {
+    match session.title() {
+        "" => WINDOW_TITLE,
+        title => title,
     }
 }
 

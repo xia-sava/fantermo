@@ -70,6 +70,32 @@ pub fn is_safe_to_paste(text: &str) -> bool {
     libghostty_vt::paste::is_safe(text)
 }
 
+/// 端末の外で文字列をセルに並べるときの、書記素クラスタ一つ。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Grapheme {
+    pub text: String,
+    /// 占めるセルの数。端末と同じ数え方で、曖昧幅は 1。幅のない文字（制御文字など）だけなら 0。
+    pub width: u8,
+}
+
+/// `text` を書記素クラスタに分け、それぞれが占めるセルの数を添える（端末の mode 2027 と同じ数え方）。
+pub fn split_graphemes(text: &str) -> Vec<Grapheme> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut graphemes = Vec::new();
+    let mut rest = chars.as_slice();
+    while !rest.is_empty() {
+        let (consumed, width) = libghostty_vt::unicode::grapheme_width(rest);
+        // 空でない入力では少なくとも 1 文字を読むはずだが、読まなければ 1 文字ずつ進めて止まらないようにする。
+        let consumed = consumed.clamp(1, rest.len());
+        graphemes.push(Grapheme {
+            text: rest[..consumed].iter().collect(),
+            width,
+        });
+        rest = &rest[consumed..];
+    }
+    graphemes
+}
+
 /// マウスの位置。表示している範囲の中のセルと、窓の中のピクセル。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PointerPosition {
@@ -739,6 +765,27 @@ mod tests {
         cell_width_px: 8,
         cell_height_px: 16,
     };
+
+    #[test]
+    fn graphemes_are_measured_like_the_terminal() {
+        let widths = |text: &str| -> Vec<(String, u8)> {
+            split_graphemes(text)
+                .into_iter()
+                .map(|grapheme| (grapheme.text, grapheme.width))
+                .collect()
+        };
+        assert_eq!(
+            widths("a端"),
+            vec![("a".to_owned(), 1), ("端".to_owned(), 2)]
+        );
+        // 曖昧幅は 1。
+        assert_eq!(widths("○"), vec![("○".to_owned(), 1)]);
+        // 結合文字は前の文字と一つにまとまる。
+        assert_eq!(widths("e\u{301}"), vec![("e\u{301}".to_owned(), 1)]);
+        // 絵文字の ZWJ の並びは一つで 2 セル。
+        assert_eq!(widths("👨\u{200d}👩"), vec![("👨\u{200d}👩".to_owned(), 2)]);
+        assert_eq!(widths(""), vec![]);
+    }
 
     fn new_vt() -> Vt {
         Vt::new(SIZE, "xterm-256color").unwrap()

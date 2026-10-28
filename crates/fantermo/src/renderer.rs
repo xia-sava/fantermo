@@ -149,20 +149,23 @@ impl Renderer {
         self.create_target()
     }
 
-    /// 端末の画面 `frame` を、左上のセルが `area` の左上に来るように描いて表示する。`area` の外は
-    /// 画面の背景色で塗る。`capture` を渡すと、表示する前のバックバッファを PNG で書き出す。
+    /// 画面 `layers` を順に、それぞれ左上のセルが領域の左上に来るように描いて表示する。それぞれの
+    /// 領域はその画面の背景色で塗ってから描き、どの領域にも入らないところは最初の画面の背景色で塗る。
+    /// `capture` を渡すと、表示する前のバックバッファを PNG で書き出す。
     pub fn render(
         &mut self,
-        frame: &Frame,
-        area: Area,
+        layers: &[(&Frame, Area)],
         capture: Option<&Path>,
     ) -> windows::core::Result<()> {
-        let instances = match self.instances(frame, area) {
+        let Some((first, _)) = layers.first() else {
+            return Ok(());
+        };
+        let instances = match self.instances(layers) {
             Ok(instances) => instances,
             Err(AtlasFull) => {
                 // 描きかけのフレームの場所は捨てたアトラスを指すので、空にしてから組み直す。
                 self.atlas.clear()?;
-                self.instances(frame, area).unwrap_or_else(|AtlasFull| {
+                self.instances(layers).unwrap_or_else(|AtlasFull| {
                     tracing::warn!("the glyph atlas cannot hold one frame");
                     Vec::new()
                 })
@@ -172,7 +175,7 @@ impl Renderer {
             // SAFETY: target は現在のバックバッファのビュー。
             unsafe {
                 self.context
-                    .ClearRenderTargetView(target, &rgba(frame.background))
+                    .ClearRenderTargetView(target, &rgba(first.background))
             };
             self.pipeline.draw(
                 &self.device,
@@ -197,9 +200,27 @@ impl Renderer {
         }
     }
 
+    /// 画面ごとに、領域の背景、セルの背景、カーソル、グリフ、装飾の順に四角形を並べる。
+    fn instances(&mut self, layers: &[(&Frame, Area)]) -> Result<Vec<Instance>, AtlasFull> {
+        let mut instances = Vec::new();
+        for &(frame, area) in layers {
+            instances.push(solid(
+                [
+                    area.x as f32,
+                    area.y as f32,
+                    area.width as f32,
+                    area.height as f32,
+                ],
+                frame.background,
+            ));
+            instances.append(&mut self.frame_instances(frame, area)?);
+        }
+        Ok(instances)
+    }
+
     /// 背景、カーソル、グリフ、装飾の順に四角形を並べる。カーソルの上の文字は背景色で描く。
     /// 取り消し線と上線は文字と同じ色、下線は指定された色（なければ文字と同じ色）で描く。
-    fn instances(&mut self, frame: &Frame, area: Area) -> Result<Vec<Instance>, AtlasFull> {
+    fn frame_instances(&mut self, frame: &Frame, area: Area) -> Result<Vec<Instance>, AtlasFull> {
         let mut backgrounds = Vec::new();
         let mut glyphs = Vec::new();
         let mut decorations = Vec::new();
