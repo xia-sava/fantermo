@@ -10,7 +10,8 @@ use windows::{
         Direct2D::{
             Common::{
                 D2D_RECT_F, D2D_SIZE_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F,
-                D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_OPEN, D2D1_PIXEL_FORMAT,
+                D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED,
+                D2D1_FIGURE_END_OPEN, D2D1_PIXEL_FORMAT,
             },
             D2D1_ANTIALIAS_MODE_ALIASED, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL,
             D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
@@ -281,7 +282,7 @@ impl GlyphAtlas {
         Ok(slot)
     }
 
-    /// `slot` に文字を描く。罫線とブロック要素は形として描き、それ以外はフォントで描く。
+    /// `slot` に文字を描く。罫線・ブロック要素・点字などの記号は形として描き、それ以外はフォントで描く。
     fn draw(&self, key: &GlyphKey, slot: Slot) -> windows::core::Result<()> {
         let shapes = boxdraw::shapes(
             &key.text,
@@ -295,7 +296,7 @@ impl GlyphAtlas {
         }
     }
 
-    /// 罫線やブロック要素の形を `slot` に描く。
+    /// 記号や装飾の形を `slot` に描く。
     fn draw_shapes(&self, shapes: &[Shape], slot: Slot) -> windows::core::Result<()> {
         let origin = Matrix3x2::translation(slot.x as f32, slot.y as f32);
         self.draw_in_slot(slot, &origin, |context| {
@@ -357,8 +358,48 @@ impl GlyphAtlas {
                 // SAFETY: 描画中の context と、同じファクトリで作った図形。
                 unsafe { context.DrawGeometry(&geometry, &self.brush, width, None) };
             }
+            Shape::Polygon { ref points, alpha } => {
+                let geometry = self.path(points, true)?;
+                // SAFETY: 描画中の context と、同じ context が作ったブラシと、同じファクトリで作った図形。
+                unsafe {
+                    self.brush.SetOpacity(alpha);
+                    context.FillGeometry(&geometry, &self.brush, None);
+                    self.brush.SetOpacity(1.0);
+                }
+            }
+            Shape::Polyline { ref points, width } => {
+                let geometry = self.path(points, false)?;
+                // SAFETY: 描画中の context と、同じファクトリで作った図形。
+                unsafe { context.DrawGeometry(&geometry, &self.brush, width, None) };
+            }
         }
         Ok(())
+    }
+
+    /// `points` を順に結んだ図形。`closed` なら閉じて塗れる形にする。
+    fn path(
+        &self,
+        points: &[(f32, f32)],
+        closed: bool,
+    ) -> windows::core::Result<ID2D1PathGeometry1> {
+        let (begin, end) = if closed {
+            (D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED)
+        } else {
+            (D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_OPEN)
+        };
+        let vertices: Vec<Vector2> = points.iter().map(|&p| point(p)).collect();
+        // SAFETY: ファクトリは有効で、sink は作った図形にだけ書き、閉じてから図形を使う。
+        unsafe {
+            let geometry = self.factory.CreatePathGeometry()?;
+            let sink = geometry.Open()?;
+            if let [first, rest @ ..] = &vertices[..] {
+                sink.BeginFigure(*first, begin);
+                sink.AddLines(rest);
+                sink.EndFigure(end);
+            }
+            sink.Close()?;
+            Ok(geometry)
+        }
     }
 
     /// 半周期ごとに二次ベジェ曲線で山と谷をつないだ波線。`left` から上へ向かって始まる。
