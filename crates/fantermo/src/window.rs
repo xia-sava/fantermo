@@ -13,8 +13,8 @@ use fantermo_core::{
     backend::{ExitCode, GridSize},
     background::{Candidate, Random},
     config::{
-        self, BackgroundConfig, ColorsConfig, Config, DEFAULT_FONT_FAMILIES, FontConfig,
-        PasteConfig, PasteConfirm, Profile, ScrollBarConfig, WideGlyph, WindowConfig,
+        self, BackendKind, BackgroundConfig, ColorsConfig, Config, DEFAULT_FONT_FAMILIES,
+        FontConfig, PasteConfig, PasteConfirm, Profile, ScrollBarConfig, WideGlyph, WindowConfig,
     },
     frame::Rgb,
     keymap::{self, Keymap},
@@ -87,7 +87,7 @@ use crate::{
     paste_editor,
     renderer::{Backdrop, Renderer},
     scroll_bar,
-    session::{Session, SessionId},
+    session::{Session, SessionId, Startup},
     settings_dialog::{self, FontChoice},
     tab_bar::{self, Hit, TabView},
     text_dialog,
@@ -155,27 +155,36 @@ enum Launch {
     Profile(usize),
 }
 
-/// 端末を開くときに起動するコマンドライン。`launch` が [`Launch::Default`] なら、fantermo の引数
-/// `arguments` があればそれ、なければ既定のプロファイル（`profiles` の `default` 番目）のもの。
-/// 一覧から選んだプロファイルなら、引数があってもそのプロファイルのもの。並びの外なら先頭のもの。
-fn command_line_for(
+/// 端末を開くときに起動するもの。`launch` が [`Launch::Default`] なら、fantermo の引数
+/// `arguments` があればそのコマンドラインを既定のバックエンドで、なければ既定のプロファイル
+/// （`profiles` の `default` 番目）のもの。一覧から選んだプロファイルなら、引数があってもその
+/// プロファイルのもの。並びの外なら先頭のもの。
+fn startup_for(
     arguments: Option<&str>,
     profiles: &[Profile],
     default: usize,
     launch: Launch,
-) -> String {
+) -> Startup {
     let index = match (launch, arguments) {
-        (Launch::Default, Some(arguments)) => return arguments.to_owned(),
+        (Launch::Default, Some(arguments)) => {
+            return Startup {
+                backend: BackendKind::default(),
+                command_line: arguments.to_owned(),
+            };
+        }
         (Launch::Default, None) => default,
         (Launch::Profile(index), _) => index,
     };
-    profiles
-        .get(index)
-        .or(profiles.first())
-        .map_or(config::DEFAULT_COMMAND_LINE, |profile| {
-            profile.command.as_str()
-        })
-        .to_owned()
+    match profiles.get(index).or(profiles.first()) {
+        Some(profile) => Startup {
+            backend: profile.backend,
+            command_line: profile.command.clone(),
+        },
+        None => Startup {
+            backend: BackendKind::default(),
+            command_line: config::DEFAULT_COMMAND_LINE.to_owned(),
+        },
+    }
 }
 
 /// 背景画像を選ぶ乱数の種。起動するたびに変わる。
@@ -737,7 +746,7 @@ impl App {
         let first_id = SessionId(0);
         let session = Session::spawn(
             first_id,
-            &command_line_for(
+            &startup_for(
                 arguments.as_deref(),
                 &config.profiles,
                 config::default_profile_index(&config.profiles, config.default_profile.as_deref()),
@@ -981,7 +990,7 @@ impl App {
     /// 何もしない。
     fn open_session(&mut self, launch: Launch) {
         let id = SessionId(self.next_session_id);
-        let command_line = command_line_for(
+        let startup = startup_for(
             self.arguments.as_deref(),
             &self.profiles,
             self.default_profile_index(),
@@ -990,14 +999,18 @@ impl App {
         let size = grid_size(&self.font, self.terminal_area);
         let mut session = match Session::spawn(
             id,
-            &command_line,
+            &startup,
             size,
             &self.colors.terminal_colors(),
             Arc::new(poster(self.hwnd, WM_APP_WAKE, WPARAM(id.0))),
         ) {
             Ok(session) => session,
             Err(e) => {
-                tracing::warn!("failed to open a terminal with {command_line:?}: {e}");
+                tracing::warn!(
+                    "failed to open a terminal with {:?} ({}): {e}",
+                    startup.command_line,
+                    startup.backend.name()
+                );
                 return;
             }
         };
@@ -1007,7 +1020,7 @@ impl App {
         self.activate(self.sessions.len() - 1);
     }
 
-    /// `sessions` の `index` の端末を閉じる（子プロセスは疑似コンソールを閉じて終わらせる）。最後の
+    /// `sessions` の `index` の端末を閉じる（子プロセスはバックエンドを落として終わらせる）。最後の
     /// 端末なら閉じずに `true` を返す（窓を閉じると一緒に閉じる）。
     fn close_session(&mut self, index: usize) -> bool {
         if self.sessions.len() == 1 {
@@ -3180,8 +3193,11 @@ mod tests {
     #[test]
     fn command_line_prefers_arguments_then_the_default_profile() {
         let profiles = [Profile::builtin(), Profile::from_shell("zsh -l")];
-        let line =
-            |arguments, default, launch| command_line_for(arguments, &profiles, default, launch);
+        let line = |arguments, default, launch| {
+            let startup = startup_for(arguments, &profiles, default, launch);
+            assert_eq!(startup.backend, BackendKind::Conpty);
+            startup.command_line
+        };
         assert_eq!(line(Some("cmd.exe"), 1, Launch::Default), "cmd.exe");
         assert_eq!(line(None, 1, Launch::Default), "zsh -l");
         assert_eq!(line(None, 0, Launch::Default), "powershell.exe -NoLogo");
@@ -3191,8 +3207,11 @@ mod tests {
         assert_eq!(line(None, 5, Launch::Default), "powershell.exe -NoLogo");
         assert_eq!(line(None, 0, Launch::Profile(7)), "powershell.exe -NoLogo");
         assert_eq!(
-            command_line_for(None, &[], 0, Launch::Default),
-            config::DEFAULT_COMMAND_LINE
+            startup_for(None, &[], 0, Launch::Default),
+            Startup {
+                backend: BackendKind::Conpty,
+                command_line: config::DEFAULT_COMMAND_LINE.to_owned(),
+            }
         );
     }
 

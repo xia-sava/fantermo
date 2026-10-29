@@ -16,7 +16,7 @@ use std::{
     thread,
 };
 
-use fantermo_core::backend::{Backend, ExitCode, GridSize};
+use fantermo_core::backend::{Backend, ExitCode, GridSize, SpawnOptions, Wake};
 use windows::{
     Win32::{
         Foundation::{HANDLE, WAIT_OBJECT_0},
@@ -38,19 +38,11 @@ use windows::{
 /// 出力のパイプから一度に読む大きさ。
 const READ_BUFFER_SIZE: usize = 64 * 1024;
 
-/// 出力が届いたときと、子プロセスが終了したときに、別のスレッドから呼ばれる。
-pub type Wake = Arc<dyn Fn() + Send + Sync>;
-
-pub struct SpawnOptions<'a> {
-    /// 子プロセスのコマンドライン。`CreateProcessW` にそのまま渡す。
-    pub command_line: &'a str,
-    /// 子プロセスに渡す環境変数のうち、このプロセスの環境から変えるもの。
-    pub env: &'a [(&'a str, &'a str)],
-    pub size: GridSize,
-}
-
 pub struct ConPty {
     console: HPCON,
+    /// 疑似コンソールに伝えてある桁数と行数。セルのピクセル寸法は疑似コンソールに渡らないので、
+    /// これが変わったときだけ伝える。
+    console_size: COORD,
     input: File,
     process: Arc<OwnedHandle>,
     output: mpsc::Receiver<Vec<u8>>,
@@ -59,14 +51,17 @@ pub struct ConPty {
 }
 
 impl ConPty {
+    /// `options` のコマンドラインを疑似コンソールにつないで起動する。コマンドラインは
+    /// `CreateProcessW` にそのまま渡す。
     pub fn spawn(options: &SpawnOptions, wake: Wake) -> io::Result<Self> {
         let (console_input, input) = create_pipe()?;
         let (output, console_output) = create_pipe()?;
 
+        let console_size = coord(options.size);
         // SAFETY: 二つのハンドルは直前に作った有効なパイプの端で、この呼び出しの間は生きている。
         let console = unsafe {
             CreatePseudoConsole(
-                coord(options.size),
+                console_size,
                 HANDLE(console_input.as_raw_handle()),
                 HANDLE(console_output.as_raw_handle()),
                 0,
@@ -102,6 +97,7 @@ impl ConPty {
 
         Ok(Self {
             console,
+            console_size,
             input: File::from(input),
             process,
             output: receiver,
@@ -117,8 +113,14 @@ impl Backend for ConPty {
     }
 
     fn resize(&mut self, size: GridSize) -> io::Result<()> {
+        let console_size = coord(size);
+        if console_size == self.console_size {
+            return Ok(());
+        }
         // SAFETY: self.console は Drop まで閉じない。
-        unsafe { ResizePseudoConsole(self.console, coord(size)) }.map_err(io::Error::from)
+        unsafe { ResizePseudoConsole(self.console, console_size) }.map_err(io::Error::from)?;
+        self.console_size = console_size;
+        Ok(())
     }
 
     fn drain_output(&mut self, sink: &mut dyn FnMut(&[u8])) {
