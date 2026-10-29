@@ -30,6 +30,7 @@ mod renderer;
 mod session;
 mod shader;
 mod tab_bar;
+mod text_dialog;
 mod ui_font;
 mod window;
 

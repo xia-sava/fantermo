@@ -78,6 +78,7 @@ use crate::{
     renderer::Renderer,
     session::{Session, SessionId},
     tab_bar::{self, Hit, TabView},
+    text_dialog,
     ui_font::UiFont,
 };
 
@@ -747,7 +748,7 @@ impl App {
     /// 編集のダイアログを開くよう返す。
     fn paste_clipboard(&mut self) -> Option<Deferred> {
         let text = match clipboard::text(self.hwnd) {
-            Ok(Some(text)) => paste_editor::from_crlf(&text),
+            Ok(Some(text)) => text_dialog::from_crlf(&text),
             Ok(None) => return None,
             Err(e) => {
                 tracing::warn!("failed to read the clipboard: {e}");
