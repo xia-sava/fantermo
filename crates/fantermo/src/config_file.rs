@@ -14,7 +14,7 @@ use std::{
     thread,
 };
 
-use fantermo_core::config::{self, Config, Warning};
+use fantermo_core::config::{self, Config, Parsed, Warning};
 use windows::{
     Win32::{
         Foundation::HANDLE,
@@ -53,9 +53,44 @@ pub fn path() -> Option<PathBuf> {
     Some(path)
 }
 
+/// 読んだ設定と、利用者に見せる警告の文。
+#[derive(Debug, Default)]
+pub struct Loaded {
+    pub config: Config,
+    /// 作れなかった・読めなかった・誤りがあったときに、利用者に見せる文。何もなければ `None`。
+    pub notice: Option<String>,
+}
+
+/// いつ読んだか。誤りがあったときに、どの設定で動いているかの言い方を決める。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Occasion {
+    /// 起動したとき。誤りのある箇所は既定値になる。
+    Startup,
+    /// 書き換えられて読み直したとき。誤りのある箇所は前の値のまま。
+    Reload,
+}
+
+impl Occasion {
+    /// ファイル全体を読めなかったときに、どの設定で動いているか。
+    fn whole(self) -> &'static str {
+        match self {
+            Occasion::Startup => "既定の設定で動いています",
+            Occasion::Reload => "前の設定のまま動いています",
+        }
+    }
+
+    /// 誤りのある項目を、どの値にしたか。
+    fn item(self) -> &'static str {
+        match self {
+            Occasion::Startup => "既定値",
+            Occasion::Reload => "前の値",
+        }
+    }
+}
+
 /// 起動したときに設定ファイルを読む。無ければフォルダごと作り、[`config::TEMPLATE`] を書く。作れない
 /// とき、読めないときは既定値。読めなかった項目は警告を残して既定値にする。
-pub fn load(path: Option<&Path>) -> Config {
+pub fn load(path: Option<&Path>) -> Loaded {
     if let Some(path) = path
         && let Err(e) = create_if_missing(path)
     {
@@ -63,9 +98,16 @@ pub fn load(path: Option<&Path>) -> Config {
             "cannot create the settings file {}, using the defaults: {e}",
             path.display()
         );
-        return Config::default();
+        return Loaded {
+            config: Config::default(),
+            notice: Some(format!(
+                "設定ファイルを作れなかったので、{}。\n\n{}\n{e}",
+                Occasion::Startup.whole(),
+                path.display()
+            )),
+        };
     }
-    read(path, &Config::default())
+    read(path, &Config::default(), Occasion::Startup)
 }
 
 /// `path` にファイルが無ければ、フォルダごと作って [`config::TEMPLATE`] を書く。あれば何もしない。
@@ -96,23 +138,30 @@ fn create_if_missing(path: &Path) -> io::Result<()> {
 /// 書き換えられた設定ファイルを読み直す。`previous` はいま使っている設定。無いときは既定値。読めない
 /// とき、TOML として読めないときは `previous` のまま。読めなかった項目は警告を残して `previous` の値に
 /// する。
-pub fn reload(path: Option<&Path>, previous: &Config) -> Config {
-    read(path, previous)
+pub fn reload(path: Option<&Path>, previous: &Config) -> Loaded {
+    read(path, previous, Occasion::Reload)
 }
 
-fn read(path: Option<&Path>, previous: &Config) -> Config {
+fn read(path: Option<&Path>, previous: &Config, occasion: Occasion) -> Loaded {
     let Some(path) = path else {
-        return Config::default();
+        return Loaded::default();
     };
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             tracing::info!("no settings file at {}; using the defaults", path.display());
-            return Config::default();
+            return Loaded::default();
         }
         Err(e) => {
             tracing::warn!("cannot read the settings file {}: {e}", path.display());
-            return previous.clone();
+            return Loaded {
+                config: previous.clone(),
+                notice: Some(format!(
+                    "設定ファイルを読めなかったので、{}。\n\n{}\n{e}",
+                    occasion.whole(),
+                    path.display()
+                )),
+            };
         }
     };
     let parsed = config::parse(&text, previous);
@@ -124,7 +173,37 @@ fn read(path: Option<&Path>, previous: &Config) -> Config {
     } else {
         tracing::info!("loaded the settings from {}", path.display());
     }
-    parsed.config
+    Loaded {
+        notice: notice_text(path, &parsed, occasion),
+        config: parsed.config,
+    }
+}
+
+/// 解釈した結果の警告を、利用者に見せる文にする。警告がなければ `None`。
+fn notice_text(path: &Path, parsed: &Parsed, occasion: Occasion) -> Option<String> {
+    if parsed.warnings.is_empty() {
+        return None;
+    }
+    let lead = if parsed.syntax_error {
+        format!(
+            "設定ファイルを TOML として読めなかったので、{}。",
+            occasion.whole()
+        )
+    } else {
+        format!(
+            "設定ファイルの次の箇所を無視しました。誤りのある項目は{}のままです。",
+            occasion.item()
+        )
+    };
+    let mut text = format!("{lead}\n\n{}", path.display());
+    for warning in &parsed.warnings {
+        text.push('\n');
+        if let Some(line) = warning.line {
+            text.push_str(&format!("{line} 行目: "));
+        }
+        text.push_str(&warning.message);
+    }
+    Some(text)
 }
 
 /// ログに残す、警告の 1 行。ファイルの場所と行を添える。
@@ -296,6 +375,34 @@ mod tests {
             "[font]\nsize = 9\n"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn notice_names_the_file_and_the_lines() {
+        let path = Path::new(r"C:\settings\config.toml");
+        let parsed = config::parse("shell = 1\n[font]\nsize = 0\n", &Config::default());
+        assert_eq!(
+            notice_text(path, &parsed, Occasion::Reload).as_deref(),
+            Some(
+                "設定ファイルの次の箇所を無視しました。誤りのある項目は前の値のままです。\n\n\
+                 C:\\settings\\config.toml\n\
+                 1 行目: ignoring shell: invalid type: integer `1`, expected a string\n\
+                 3 行目: ignoring font.size = 0: must be between 1 and 128"
+            )
+        );
+
+        let parsed = config::parse("[font\n", &Config::default());
+        let text = notice_text(path, &parsed, Occasion::Startup).unwrap();
+        assert!(
+            text.starts_with(
+                "設定ファイルを TOML として読めなかったので、既定の設定で動いています。\n\n\
+                 C:\\settings\\config.toml\n1 行目: cannot parse the settings: "
+            ),
+            "{text}"
+        );
+
+        let parsed = config::parse(config::TEMPLATE, &Config::default());
+        assert_eq!(notice_text(path, &parsed, Occasion::Startup), None);
     }
 
     #[test]

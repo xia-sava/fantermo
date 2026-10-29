@@ -58,13 +58,16 @@ use windows::{
 };
 
 use crate::{
-    clipboard, config_file,
+    clipboard,
+    config_file::{self, Loaded},
     context_menu::{self, MenuCommand},
     dump::{DUMP_INTERVAL, ScreenDump},
     font::{self, Font},
     ime::{self, CursorRect},
     keyboard::{self, KeyPosition, Utf16Assembler},
-    link_opener, paste_editor,
+    link_opener,
+    notice::{self, Topic},
+    paste_editor,
     renderer::{Area, Renderer},
     session::{Session, SessionId},
     tab_bar::{self, TabView},
@@ -120,12 +123,13 @@ fn command_line_for(arguments: Option<&str>, shell: Option<&str>) -> String {
 
 /// 窓を開き、子プロセスを起動して、窓が閉じるまでメッセージを処理する。最後の端末の子プロセスが終わって
 /// 窓を閉じたときはその終了コードを、利用者が最後の端末を閉じたときは 0 を返す。`arguments` は fantermo の引数（子プロセスのコマンドライン）。`config_path` は
-/// 設定ファイルの場所で、`config` はそこから読んだ設定。
+/// 設定ファイルの場所で、`loaded` はそこから読んだ設定。読んだときの警告は、窓を出してから見せる。
 pub fn run(
     arguments: Option<String>,
     config_path: Option<PathBuf>,
-    config: Config,
+    loaded: Loaded,
 ) -> Result<u32, Box<dyn std::error::Error>> {
+    let Loaded { config, notice } = loaded;
     let dwrite = font::create_factory()?;
     // SAFETY: 引数のない問い合わせ。
     let system_dpi = unsafe { GetDpiForSystem() };
@@ -157,6 +161,10 @@ pub fn run(
 
     // SAFETY: hwnd は有効な窓。
     unsafe { _ = ShowWindow(hwnd, SW_SHOWDEFAULT) };
+    // メッセージループの外なので、App の借用はない。
+    if let Some(text) = notice {
+        notice::warn(hwnd, Topic::Settings, text);
+    }
     Ok(message_loop())
 }
 
@@ -355,6 +363,8 @@ enum Deferred {
     ContextMenu { x: i32, y: i32, can_copy: bool },
     /// 窓を閉じる。最後の端末を閉じたときに使う。
     CloseWindow,
+    /// `topic` についての警告 `text` を見せる。
+    Warn { topic: Topic, text: String },
 }
 
 /// タブの操作。
@@ -1327,8 +1337,26 @@ impl App {
     /// 作り直しに使う DPI を返す。作り直しは借用を手放してから [`change_dpi_in_place`] で行う。
     /// グリフの描き方だけが変わったときは、セルの寸法は変わらないので、この場でアトラスだけを作り直す。
     /// 貼り付けの設定はすぐに入れ替える。`shell` は次に開く端末から使う。
-    fn reload_config(&mut self) -> Option<u32> {
-        let config = config_file::reload(self.config_path.as_deref(), &self.config_in_use());
+    /// 誤りがあれば、それを見せることを返す（借用を手放してから [`run_deferred`] で見せる）。誤りが
+    /// なければ、まだ見せていない設定の警告を取り下げる。
+    fn reload_config(&mut self) -> (Option<u32>, Option<Deferred>) {
+        let Loaded { config, notice } =
+            config_file::reload(self.config_path.as_deref(), &self.config_in_use());
+        let warn = match notice {
+            Some(text) => Some(Deferred::Warn {
+                topic: Topic::Settings,
+                text,
+            }),
+            None => {
+                notice::withdraw(Topic::Settings);
+                None
+            }
+        };
+        (self.apply_config(config), warn)
+    }
+
+    /// 読み直した設定を入れ替える。作り直しが要れば、その DPI を返す（[`App::reload_config`]）。
+    fn apply_config(&mut self, config: Config) -> Option<u32> {
         self.paste_confirm = config.paste.confirm;
         self.shell = config.shell;
         if config.font == self.font_config {
@@ -1599,6 +1627,7 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
             }
             // DestroyWindow はこの場で WM_DESTROY を送るので、借用を手放してから呼ぶ。
             Deferred::CloseWindow => destroy_window(hwnd),
+            Deferred::Warn { topic, text } => notice::warn(hwnd, topic, text),
         }
     }
 }
@@ -1874,12 +1903,14 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             if let Err(e) = unsafe { KillTimer(Some(hwnd), CONFIG_TIMER_ID) } {
                 tracing::warn!("failed to stop the settings timer: {e}");
             }
-            let mut rebuild_dpi = None;
-            with_app(&mut |app| rebuild_dpi = app.reload_config());
+            let mut reloaded = (None, None);
+            with_app(&mut |app| reloaded = app.reload_config());
+            let (rebuild_dpi, deferred) = reloaded;
             // WM_DPICHANGED をこの場で送るので、借用を手放してから呼ぶ。
             if let Some(dpi) = rebuild_dpi {
                 change_dpi_in_place(hwnd, dpi);
             }
+            run_deferred(hwnd, deferred, &with_app);
             LRESULT(0)
         }
         WM_KEYDOWN | WM_SYSKEYDOWN => {

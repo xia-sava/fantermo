@@ -22,6 +22,7 @@ mod keyboard;
 mod known_folder;
 mod link_opener;
 mod logging;
+mod notice;
 mod paste_editor;
 mod pipeline;
 mod renderer;
@@ -32,15 +33,9 @@ mod window;
 
 use std::path::Path;
 
-use windows::{
-    Win32::{
-        System::Environment::GetCommandLineW,
-        UI::{
-            HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
-            WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW},
-        },
-    },
-    core::{HSTRING, w},
+use windows::Win32::{
+    System::Environment::GetCommandLineW,
+    UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
 };
 
 fn main() {
@@ -54,32 +49,18 @@ fn main() {
     }
 
     let config_path = config_file::path();
-    let config = config_file::load(config_path.as_deref());
-    match window::run(child_command_line(), config_path, config) {
+    let loaded = config_file::load(config_path.as_deref());
+    match window::run(child_command_line(), config_path, loaded) {
         Ok(code) => std::process::exit(code as i32),
         Err(e) => {
             tracing::error!("{e}");
             // 開発中のビルドはコンソールに出たログで分かる。リリースのビルドにはコンソールがない。
             if !cfg!(debug_assertions) {
-                show_startup_error(&e.to_string(), log_dir.as_deref());
+                notice::error(&startup_error_text(&e.to_string(), log_dir.as_deref()));
             }
             std::process::exit(1);
         }
     }
-}
-
-/// 起動に失敗したことをメッセージボックスで知らせる。
-fn show_startup_error(error: &str, log_dir: Option<&Path>) {
-    let text = startup_error_text(error, log_dir);
-    // SAFETY: 引数の文字列は呼び出しの間だけ生きていればよく、持ち主の窓はない。
-    unsafe {
-        MessageBoxW(
-            None,
-            &HSTRING::from(text),
-            w!("fantermo"),
-            MB_OK | MB_ICONERROR,
-        )
-    };
 }
 
 fn startup_error_text(error: &str, log_dir: Option<&Path>) -> String {

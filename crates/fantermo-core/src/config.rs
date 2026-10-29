@@ -240,6 +240,10 @@ pub fn parse(text: &str, previous: &Config) -> Parsed {
         }
     }
     reader.warn_unknown(&root, None);
+    // ファイルの上から順に読めるように、行の順に並べる。
+    reader
+        .warnings
+        .sort_by_key(|warning| warning.line.unwrap_or(usize::MAX));
     Parsed {
         config,
         warnings: reader.warnings,
