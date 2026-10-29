@@ -53,10 +53,11 @@ use windows::{
                 SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
                 SystemParametersInfoW, TranslateMessage, WA_INACTIVE, WHEEL_DELTA, WINDOW_EX_STYLE,
                 WM_ACTIVATE, WM_APP, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU, WM_DEADCHAR, WM_DESTROY,
-                WM_DPICHANGED, WM_GETDPISCALEDSIZE, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION,
-                WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
-                WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN,
-                WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_SYSCHAR, WM_SYSCOLORCHANGE, WM_SYSDEADCHAR,
+                WM_DPICHANGED, WM_ENDSESSION, WM_GETDPISCALEDSIZE, WM_IME_COMPOSITION,
+                WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN,
+                WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+                WM_NCDESTROY, WM_PAINT, WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP,
+                WM_SETCURSOR, WM_SIZE, WM_SYSCHAR, WM_SYSCOLORCHANGE, WM_SYSDEADCHAR,
                 WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
             },
         },
@@ -466,7 +467,8 @@ struct App {
     dpi: u32,
     /// 設定ファイルの場所。
     config_path: Option<PathBuf>,
-    /// 窓の状態ファイルの場所。窓を閉じるときに書く。`None` なら書かない。
+    /// 窓の状態ファイルの場所。窓を閉じるときと、ログオフ・シャットダウンのときに書く。`None` なら
+    /// 書かない。
     state_path: Option<PathBuf>,
     /// `font` を探したときの設定。
     font_config: FontConfig,
@@ -2241,6 +2243,23 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         // × と Alt+F4。メニューの終了と、最後の端末が終わったときと同じく、状態を書いてから閉じる。
         WM_CLOSE => {
             destroy_window(hwnd);
+            LRESULT(0)
+        }
+        // ログオフ・シャットダウン・再起動。窓は閉じられないまま、WM_ENDSESSION から戻ったあとで
+        // プロセスごと終わらされるので、閉じるときと同じく状態を書く。問われた時点でも書いておく
+        // （ENDSESSION_CRITICAL では WM_ENDSESSION のあとに時間がほとんどないため）。書くのは一時
+        // ファイルからの置き換えなので、二度書いても、取りやめになっても害はない。終わるのを止めない。
+        // 窓は壊さず、端末と子プロセスはほかのプロセスと一緒に終わらされるのに任せる。
+        WM_QUERYENDSESSION => {
+            tracing::info!("the session may end (flags {:#x})", lparam.0);
+            save_window_state(hwnd);
+            LRESULT(1)
+        }
+        WM_ENDSESSION => {
+            if wparam.0 != 0 {
+                tracing::info!("the session is ending (flags {:#x})", lparam.0);
+                save_window_state(hwnd);
+            }
             LRESULT(0)
         }
         WM_DESTROY => {
