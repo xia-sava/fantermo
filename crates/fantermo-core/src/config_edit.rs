@@ -9,9 +9,9 @@
 //!   表の最後に足す。表がなければ、ファイルの最後に表ごと足す。
 //! - 既定値に戻した項目は、その行を既定値の `# キー = …` のコメントの行にする（`default_profile` は
 //!   既定値を一つに書けないので、それまでの値をコメントにする）。上に書いた説明のコメントは残る。
-//! - プロファイル（`[[profiles]]`）は、名前で突き合わせて変えた値だけを書き換え、なくなった表を消し、
-//!   増えた表を最後に足す（名前を変えた表は、突き合わなかった表と順に組にする）。表がなければ最初の表の
-//!   見出しの前に足す。プロファイルを書いたら、最上位の `shell` の行はコメントにする。既定のプロファイル
+//! - プロファイル（`[[profiles]]`）は、名前で突き合わせて（突き合わなければコマンドラインが同じ表と）
+//!   変えた値だけを書き換え、なくなった表を消し、新しい表を作って、設定の順に並べる。表がなければ最初の
+//!   表の見出しの前に足す。プロファイルを書いたら、最上位の `shell` の行はコメントにする。既定のプロファイル
 //!   だけに戻したら、表を消す。
 //! - `[colors]` と `[colors.…]` の色は既定の色を一つに書けないので、既定に戻した色はそれまでの値を
 //!   コメントにする。
@@ -19,7 +19,7 @@
 //!   既定の割り当てに戻した組み合わせは、既定の割り当ての `# "…" = "…"` のコメントの行にし、既定で
 //!   割り当てていない組み合わせは行を消す。
 
-use toml_edit::{Array, Decor, DocumentMut, InlineTable, Item, Key, Table, Value};
+use toml_edit::{Array, ArrayOfTables, Decor, DocumentMut, InlineTable, Item, Key, Table, Value};
 
 use crate::{
     config::{
@@ -529,17 +529,21 @@ fn profile_inline_table(profile: &Profile) -> Value {
     Value::InlineTable(table)
 }
 
-/// `[[profiles]]` の表を、`wanted` に合わせて書き換える。名前で突き合わせ、残りは前から順に組にする。
-/// 名前のない表（読めない表）はそのまま残す。
+/// `[[profiles]]` の表を、`wanted` に合わせて `wanted` の順に並べ直す。書いてある表とは名前で突き合わせ、
+/// 突き合わなかったものはコマンドラインが同じ表と組にする（名前だけを変えたとき）。組になった表は、変えた
+/// 値だけを書き換えてコメントと知らないキーを残す。組にならなかった表は消し、新しいプロファイルは表を
+/// 作る。名前のない表（読めない表）は最後にそのまま残す。
 fn merge_profile_tables(doc: &mut DocumentMut, wanted: &[Profile]) {
-    let written: Vec<Option<String>> = match doc.get(PROFILES_KEY) {
+    let text_of =
+        |table: &Table, key: &str| table.get(key).and_then(Item::as_str).map(str::to_owned);
+    let written: Vec<(Option<String>, Option<String>)> = match doc.get(PROFILES_KEY) {
         Some(Item::ArrayOfTables(array)) => array
             .iter()
             .map(|table| {
-                table
-                    .get(PROFILE_NAME)
-                    .and_then(Item::as_str)
-                    .map(str::to_owned)
+                (
+                    text_of(table, PROFILE_NAME),
+                    text_of(table, PROFILE_COMMAND),
+                )
             })
             .collect(),
         _ => Vec::new(),
@@ -547,18 +551,24 @@ fn merge_profile_tables(doc: &mut DocumentMut, wanted: &[Profile]) {
     // wanted の位置から、書いてある表の位置へ。
     let mut pairs: Vec<Option<usize>> = vec![None; wanted.len()];
     let mut used = vec![false; written.len()];
+    let named = |index: usize| written[index].0.is_some();
     for (want, pair) in wanted.iter().zip(pairs.iter_mut()) {
         if let Some(index) = (0..written.len())
-            .find(|&index| !used[index] && written[index].as_deref() == Some(want.name.as_str()))
+            .find(|&index| !used[index] && written[index].0.as_deref() == Some(want.name.as_str()))
         {
             used[index] = true;
             *pair = Some(index);
         }
     }
-    for pair in pairs.iter_mut().filter(|pair| pair.is_none()) {
-        if let Some(index) =
-            (0..written.len()).find(|&index| !used[index] && written[index].is_some())
-        {
+    for (want, pair) in wanted.iter().zip(pairs.iter_mut()) {
+        if pair.is_some() {
+            continue;
+        }
+        if let Some(index) = (0..written.len()).find(|&index| {
+            !used[index]
+                && named(index)
+                && written[index].1.as_deref() == Some(want.command.as_str())
+        }) {
             used[index] = true;
             *pair = Some(index);
         }
@@ -580,87 +590,85 @@ fn merge_profile_tables(doc: &mut DocumentMut, wanted: &[Profile]) {
     };
     let root_has_values = doc.as_table().iter().any(|(_, item)| item.is_value());
 
-    if !matches!(doc.get(PROFILES_KEY), Some(Item::ArrayOfTables(_))) {
-        doc.as_table_mut()
-            .insert(PROFILES_KEY, Item::ArrayOfTables(Default::default()));
-    }
-    let Some(Item::ArrayOfTables(array)) = doc.get_mut(PROFILES_KEY) else {
-        return;
+    let old: Vec<Table> = match doc.as_table_mut().remove(PROFILES_KEY) {
+        Some(Item::ArrayOfTables(array)) => array.into_iter().collect(),
+        _ => Vec::new(),
     };
+    // 新しい並び。表と、書いてあった位置（新しい表は `None`）。
+    let mut tables: Vec<(Option<usize>, Table)> = Vec::new();
     for (want, pair) in wanted.iter().zip(&pairs) {
-        if let Some(table) = pair.and_then(|index| array.get_mut(index)) {
-            update_profile_table(table, want);
-        }
+        let mut table = match pair {
+            Some(index) => old[*index].clone(),
+            None => {
+                let mut table = Table::new();
+                table.decor_mut().set_prefix("\n");
+                table
+            }
+        };
+        update_profile_table(&mut table, want);
+        tables.push((*pair, table));
     }
-    // 突き合わなかった名前のある表を後ろから消す。先頭の表の前のコメント（ファイルの先頭のコメントなど）
-    // は、次の表へ移す。表がなくなれば、続く表へ返す。
-    let mut orphaned_prefix = None;
-    for index in (0..written.len()).rev() {
-        if used[index] || written[index].is_none() {
-            continue;
-        }
-        let removed_prefix = array
-            .get(index)
-            .map(|table| decor_prefix(table.decor()))
-            .unwrap_or_default();
-        array.remove(index);
-        if index != 0 {
-            continue;
-        }
-        match array.get_mut(0) {
-            Some(next) => next.decor_mut().set_prefix(removed_prefix),
-            None => orphaned_prefix = Some(removed_prefix),
-        }
-    }
-    // 増えたプロファイルを最後に足す。表が一つもなければ、続く表の前のコメントのうち、空行で見出しと
-    // 離れたところまでを最初の表の前に移す。
-    let was_empty = array.is_empty();
-    // 足す表は、書いてあるプロファイルの最後の表と同じ位置（同じ位置の表は配列の順に並ぶ）か、続く表の
-    // すぐ前。
-    let position = array
+    tables.extend(
+        old.iter()
+            .enumerate()
+            .filter(|(index, _)| !named(*index))
+            .map(|(index, table)| (Some(index), table.clone())),
+    );
+    // 同じ位置の表は配列の順に並ぶので、どれも書いてあった最初の表の位置（なければ続く表のすぐ前）にする。
+    let position = old
         .iter()
         .filter_map(Table::position)
-        .max()
+        .min()
         .or(following_position.map(|position| position - 1))
         .unwrap_or(0);
-    for (want, pair) in wanted.iter().zip(&pairs) {
-        if pair.is_some() {
-            continue;
+    // 最初の表の前のコメント（ファイルの先頭のコメントなど）は、並べ直しても最初の表の前に置く。
+    match old.first().map(|table| decor_prefix(table.decor())) {
+        Some(head) => {
+            if tables.is_empty() {
+                // 表がなくなるので、続く表の前へ返す。
+                let after = following_prefix(doc, &following);
+                let rest = after.strip_prefix('\n').unwrap_or(&after);
+                set_following_prefix(doc, &following, format!("{head}{rest}"));
+                return;
+            }
+            for (from, table) in tables.iter_mut().skip(1) {
+                if *from == Some(0) {
+                    table.decor_mut().set_prefix("\n");
+                }
+            }
+            let (from, first) = &mut tables[0];
+            if *from != Some(0) {
+                let own = decor_prefix(first.decor());
+                let own = own.strip_prefix('\n').unwrap_or(&own);
+                first.decor_mut().set_prefix(format!("{head}{own}"));
+            }
         }
-        let mut table = Table::new();
+        None => {
+            if tables.is_empty() {
+                return;
+            }
+            // 続く表の前のコメントのうち、空行で見出しと離れたところまでを最初の表の前に移す。ファイルの
+            // 最後のコメントは、表の後ろに残す。
+            let mut before = String::new();
+            if let Following::Table(_) = following {
+                let after = following_prefix(doc, &following);
+                let (moved, rest) = split_after_last_blank_line(&after);
+                before = moved;
+                set_following_prefix(doc, &following, format!("\n{rest}"));
+            }
+            if before.is_empty() && root_has_values {
+                before = "\n".to_owned();
+            }
+            tables[0].1.decor_mut().set_prefix(before);
+        }
+    }
+    let mut array = ArrayOfTables::new();
+    for (_, mut table) in tables {
         table.set_position(Some(position));
-        update_profile_table(&mut table, want);
-        let prefix = if array.is_empty() { "" } else { "\n" };
-        table.decor_mut().set_prefix(prefix);
         array.push(table);
     }
-    if array.is_empty() {
-        doc.as_table_mut().remove(PROFILES_KEY);
-        if let Some(removed) = orphaned_prefix {
-            let after = following_prefix(doc, &following);
-            let rest = after.strip_prefix('\n').unwrap_or(&after);
-            set_following_prefix(doc, &following, format!("{removed}{rest}"));
-        }
-        return;
-    }
-    if was_empty {
-        // ファイルの最後のコメントは、表の後ろに残す。
-        let mut before = String::new();
-        if let Following::Table(_) = following {
-            let after = following_prefix(doc, &following);
-            let (moved, rest) = split_after_last_blank_line(&after);
-            before = moved;
-            set_following_prefix(doc, &following, format!("\n{rest}"));
-        }
-        if before.is_empty() && root_has_values {
-            before = "\n".to_owned();
-        }
-        if let Some(Item::ArrayOfTables(array)) = doc.get_mut(PROFILES_KEY)
-            && let Some(first) = array.get_mut(0)
-        {
-            first.decor_mut().set_prefix(before);
-        }
-    }
+    doc.as_table_mut()
+        .insert(PROFILES_KEY, Item::ArrayOfTables(array));
 }
 
 fn update_profile_table(table: &mut Table, profile: &Profile) {
@@ -1679,6 +1687,34 @@ images = ['C:\walls', 'D:\pics\*.png']",
             "default_profile = \"Cygwin zsh\"\n\n# mine\n[[profiles]]\nname = 'PowerShell'\ncommand = \"pwsh.exe\" # plain\n\n# cygwin\n[[profiles]]\nname = \"Cygwin zsh\"\ncommand = 'C:\\cygwin64\\bin\\zsh.exe -l'\nbackend = 'conpty'\n\n[[profiles]]\nname = \"WSL\"\ncommand = \"wsl.exe\"\n\n[font]\nsize = 9\n"
         );
         assert_reads_as(&updated, &edited);
+    }
+
+    #[test]
+    fn profiles_follow_the_new_order_and_new_names_get_new_tables() {
+        let text = "default_profile = 'b'\n\n# head\n[[profiles]]\nname = 'a'\ncommand = 'cmd.exe'\n\n[[profiles]]\nname = 'b'\ncommand = 'pwsh.exe' # mine\n\n[[profiles]]\nname = 'c'\ncommand = 'zsh.exe'\nbackend = 'conpty'\n\n[font]\nsize = 9\n";
+        let base = config::parse(text, &Config::default()).config;
+        let mut edited = base.clone();
+        // a を消し、c の名前とコマンドラインを変え、新しいものを足す。
+        edited.profiles.remove(0);
+        edited.profiles[1] = profile("c2", "zsh.exe -l");
+        edited.profiles.push(profile("d", "wsl.exe"));
+        edited.default_profile = Some("c2".to_owned());
+        let updated = update(text, &base, &edited).unwrap();
+        // 名前もコマンドラインも違う c の表は、組にせず作り直す。先頭のコメントは最初の表の前に残す。
+        assert_eq!(
+            updated,
+            "default_profile = \"c2\"\n\n# head\n[[profiles]]\nname = 'b'\ncommand = 'pwsh.exe' # mine\n\n[[profiles]]\nname = \"c2\"\ncommand = \"zsh.exe -l\"\n\n[[profiles]]\nname = \"d\"\ncommand = \"wsl.exe\"\n\n[font]\nsize = 9\n"
+        );
+        assert_reads_as(&updated, &edited);
+
+        // 並べ替えたら、その順に書く。
+        let mut swapped = edited.clone();
+        swapped.profiles.swap(0, 2);
+        let reordered = update(&updated, &edited, &swapped).unwrap();
+        assert_reads_as(&reordered, &swapped);
+        assert!(
+            reordered.starts_with("default_profile = \"c2\"\n\n# head\n[[profiles]]\nname = \"d\"")
+        );
     }
 
     #[test]
