@@ -3,10 +3,10 @@
 //! 引数があれば、それを子プロセスのコマンドラインにする（例: `fantermo.exe C:\app\cygwin\bin\zsh.exe -l`）。
 //! 引数がなければ設定ファイルの既定のプロファイルを、プロファイルを書いていなければ PowerShell を起動する。
 //! 新しいタブも同じ決め方で起動する。設定ファイルは `%APPDATA%\fantermo\config.toml`（`config_file`）。
-//! 窓の位置・大きさ・最大化は、閉じるときに同じフォルダの `state.toml` に書き、次に起動したときに戻す
-//! （`window_state`）。
+//! ウィンドウの位置・大きさ・最大化は、閉じるときに同じフォルダの `state.toml` に書き、次に起動した
+//! ときに戻す（`window_state`）。
 //!
-//! リリースのビルドはコンソールの窓を持たない GUI のアプリにし、ログはファイルに出す（`logging`）。
+//! リリースのビルドはコンソールのウィンドウを持たない GUI のアプリにし、ログはファイルに出す（`logging`）。
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -61,15 +61,15 @@ fn main() {
     let log_dir = logging::init();
     tracing::info!("fantermo {}", version::display());
 
-    // SAFETY: 起動直後、窓を作る前に一度だけ呼ぶ。
+    // SAFETY: 起動直後、ウィンドウを作る前に一度だけ呼ぶ。
     let dpi_awareness =
         unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
     if let Err(e) = dpi_awareness {
         tracing::warn!("failed to enable per-monitor DPI awareness: {e}");
     }
-    // 背景画像を読む WIC と、ファイルを選ぶダイアログを、窓のスレッドで使う。プロセスが終わるまで
+    // 背景画像を読む WIC と、ファイルを選ぶダイアログを、ウィンドウのスレッドで使う。プロセスが終わるまで
     // 解放しない。
-    // SAFETY: 窓のスレッド（このスレッド）で、窓を作る前に一度だけ初期化する。
+    // SAFETY: ウィンドウのスレッド（このスレッド）で、ウィンドウを作る前に一度だけ初期化する。
     let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
     if let Err(e) = com.ok() {
         tracing::warn!("failed to initialize COM: {e}");

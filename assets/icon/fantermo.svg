@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
-  <!-- fantermo のアイコン（32 px 以上）。黄色の地に、裾が波の黒い画面。中に黄色の「%」 -->
+  <!-- fantermo のアイコン（32 px 以上）。黄色の背景に、裾が波の黒い画面。中に黄色の「%」 -->
   <defs>
     <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#ffdb4d"/>

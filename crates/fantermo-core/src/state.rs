@@ -1,8 +1,8 @@
 //! 状態ファイル（TOML）の型と、文字列との変換。
 //!
-//! 状態ファイルは fantermo が終わるとき（窓を閉じるとき、ログオフ・シャットダウンで終わらされる
+//! 状態ファイルは fantermo が終わるとき（ウィンドウを閉じるとき、ログオフ・シャットダウンで終わらされる
 //! とき）に書き、次に起動したときに読む。利用者が手で書くもの
-//! ではない。覚えるのは窓の位置・大きさ・最大化だけ。
+//! ではない。覚えるのはウィンドウの位置・大きさ・最大化だけ。
 
 use serde::{Deserialize, Serialize};
 
@@ -12,12 +12,12 @@ const HEADER: &str = "# fantermo が終わるときに書くファイル。手�
 /// 状態の全体。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
-    /// 窓の位置・大きさ・最大化。`None` なら fantermo の既定の大きさで開く。
+    /// ウィンドウの位置・大きさ・最大化。`None` なら fantermo の既定の大きさで開く。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowState>,
 }
 
-/// 窓の位置・大きさ（ピクセル、枠を含む）と、最大化していたか。位置と大きさは最大化していないときの
+/// ウィンドウの位置・大きさ（ピクセル、枠を含む）と、最大化していたか。位置と大きさは最大化していないときの
 /// もの（`GetWindowPlacement` の `rcNormalPosition`。作業領域の座標）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowState {

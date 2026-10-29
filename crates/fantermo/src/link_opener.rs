@@ -33,7 +33,7 @@ const NOTEPAD: &str = "notepad.exe";
 /// `uri` を開く。開いてよいリンクでなければ、警告を残して何もしない。
 ///
 /// 既定のアプリを探して起動するまで時間がかかり、その間にメッセージを回すこともあるので、
-/// 窓のスレッドではなく別のスレッドで開く。
+/// ウィンドウのスレッドではなく別のスレッドで開く。
 pub fn open(uri: &str) {
     let target = match link::open_target(uri) {
         Ok(target) => target,

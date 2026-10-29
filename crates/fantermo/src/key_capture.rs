@@ -1,9 +1,9 @@
 //! 押したキーの組み合わせを読み取る小さなダイアログ。設定ダイアログのキーの割り当てに使う。
 //!
-//! 開いている間のキーのメッセージは、窓に届ける前にループで読み取る（Tab や Enter や Alt の組み合わせも、
-//! ダイアログの操作やメニューにせずに組み合わせとして読む）。修飾キーだけを押している間は待ち、ほかの
-//! キーを押したらその組み合わせで閉じる。修飾キーなしの Esc はやめる。名前を持たないキー（設定ファイルに
-//! 書けないキー）は読まずに待つ。
+//! 開いている間のキーのメッセージは、ウィンドウに届ける前にループで読み取る（Tab や Enter や Alt の
+//! 組み合わせも、ダイアログの操作やメニューにせずに組み合わせとして読む）。修飾キーだけを押している間は
+//! 待ち、ほかのキーを押したらその組み合わせで閉じる。修飾キーなしの Esc はやめる。名前を持たないキー
+//! （設定ファイルに書けないキー）は読まずに待つ。
 
 use std::{cell::Cell, sync::OnceLock};
 
@@ -61,9 +61,9 @@ pub fn capture(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> Option<KeyCo
         }
     };
     let closed = Cell::new(false);
-    // SAFETY: hwnd は作ったばかりの窓。ポインタは modal::run が戻るまで有効で、WM_DESTROY で外す。
+    // SAFETY: hwnd は作ったばかりのウィンドウ。ポインタは modal::run が戻るまで有効で、WM_DESTROY で外す。
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, std::ptr::from_ref(&closed) as isize) };
-    // SAFETY: hwnd は有効な窓。
+    // SAFETY: hwnd は有効なウィンドウ。
     unsafe {
         _ = ShowWindow(hwnd, SW_SHOW);
         _ = SetFocus(Some(hwnd));
@@ -87,7 +87,7 @@ pub fn capture(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> Option<KeyCo
 enum Read {
     /// 読み取りを終える。組み合わせか、やめたなら `None`。
     Done(Option<KeyCombo>),
-    /// 窓には渡さず、待ち続ける。
+    /// ウィンドウには渡さず、待ち続ける。
     Wait,
 }
 
@@ -164,7 +164,7 @@ fn create(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> windows::core::Re
     unsafe { AdjustWindowRectExForDpi(&mut rect, style, false, WS_EX_DLGMODALFRAME, dpi)? };
     let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
     let mut owner_rect = RECT::default();
-    // SAFETY: owner は有効な窓で、owner_rect は書き込める。
+    // SAFETY: owner は有効なウィンドウで、owner_rect は書き込める。
     unsafe { GetWindowRect(owner, &mut owner_rect)? };
     let left = owner_rect.left + (owner_rect.right - owner_rect.left - width) / 2;
     let top = owner_rect.top + (owner_rect.bottom - owner_rect.top - height) / 2;
@@ -188,7 +188,7 @@ fn create(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> windows::core::Re
         )?
     };
     let text = format!("{prompt}\nEsc でやめる。");
-    // SAFETY: hwnd は有効な窓で、文字列はこの呼び出しの間は生きている。
+    // SAFETY: hwnd は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
     let label = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
@@ -205,7 +205,7 @@ fn create(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> windows::core::Re
             None,
         )?
     };
-    // SAFETY: label は有効な窓で、フォントは呼び出し元のダイアログが閉じるまで消さない。
+    // SAFETY: label は有効なウィンドウで、フォントは呼び出し元のダイアログが閉じるまで消さない。
     unsafe {
         SendMessageW(
             label,

@@ -1,6 +1,6 @@
 # fantermo
 
-Windows 用の端末アプリです．エスケープシーケンスの解釈と端末の状態管理に [libghostty-vt](https://github.com/ghostty-org/ghostty)（Ghostty の端末エミュレーションのライブラリ）を使い，窓・描画・入力・IME を Windows 向けに作ります．
+Windows 用の端末アプリです．エスケープシーケンスの解釈と端末の状態管理に [libghostty-vt](https://github.com/ghostty-org/ghostty)（Ghostty の端末エミュレーションのライブラリ）を使い，ウィンドウ・描画・入力・IME を Windows 向けに作ります．
 
 名前はエスペラントの fantomo（幽霊）と terminalo（端末）から．
 
@@ -9,7 +9,7 @@ Windows 用の端末アプリです．エスケープシーケンスの解釈と
 Rust の workspace（edition 2024）で，2 つのクレートに分かれています．
 
 - **`fantermo-core`** … UI に依存しない層．libghostty-vt の上に載せた端末の状態，バックエンドの trait，設定，ブリッジ（シェルとの間を中継する補助プログラム）とのプロトコル．
-- **`fantermo`** … 実行ファイル．窓（Win32），描画（Direct3D 11 + DirectWrite），キー入力，IME，ConPTY．
+- **`fantermo`** … 実行ファイル．ウィンドウ（Win32），描画（Direct3D 11 + DirectWrite），キー入力，IME，ConPTY．
 
 libghostty-vt は [libghostty-rs](https://github.com/uzaaft/libghostty-rs) のバインディングを，git の依存としてコミットで固定して使います．
 
@@ -20,7 +20,7 @@ libghostty-vt は [libghostty-rs](https://github.com/uzaaft/libghostty-rs) の�
 - インストーラ: 開くと，使っているユーザーだけのために `%LOCALAPPDATA%\Programs\fantermo\` に入れます．管理者権限は要りません．スタートメニューの「fantermo」から起動してください．新しいバージョンのインストーラを開くと，前のバージョンを置き換えます．アンインストールは「設定」の「アプリ」（「プログラムと機能」）からできます．
 - zip: 好きな場所に展開して，中の `fantermo.exe` を起動してください．
 
-設定ファイルと窓の状態は `%APPDATA%\fantermo\` に，ログは `%LOCALAPPDATA%\fantermo\logs\` に置きます．どちらもアンインストールしても消さないので，要らなければ手で消してください．
+設定ファイルとウィンドウの状態は `%APPDATA%\fantermo\` に，ログは `%LOCALAPPDATA%\fantermo\logs\` に置きます．どちらもアンインストールしても消さないので，要らなければ手で消してください．
 
 インストーラで入れたバージョンは，タブバーのメニューのボタン（≡）の「fantermo について…」の「更新を確認」で，新しいバージョンを確かめて更新できます．zip から展開したものでは押せません．
 

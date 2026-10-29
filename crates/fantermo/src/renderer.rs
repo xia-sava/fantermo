@@ -1,4 +1,4 @@
-//! Direct3D 11 で窓に描く。
+//! Direct3D 11 でウィンドウに描く。
 
 use std::{
     collections::HashMap,
@@ -113,7 +113,7 @@ impl Renderer {
             SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
             ..Default::default()
         };
-        // SAFETY: hwnd はこのスレッドが作った有効な窓で、desc は初期化済み。
+        // SAFETY: hwnd はこのスレッドが作った有効なウィンドウで、desc は初期化済み。
         let swap_chain =
             unsafe { factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None)? };
 
@@ -230,7 +230,7 @@ impl Renderer {
         Ok(())
     }
 
-    /// 窓のクライアント領域の大きさに合わせてバッファを作り直す。
+    /// ウィンドウのクライアント領域の大きさに合わせてバッファを作り直す。
     pub fn resize(&mut self, width: u32, height: u32) -> windows::core::Result<()> {
         let (width, height) = (width.max(1), height.max(1));
         if (width, height) == (self.width, self.height) {

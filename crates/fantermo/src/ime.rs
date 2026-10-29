@@ -1,4 +1,4 @@
-//! IME の変換中の窓と候補の窓を、端末のカーソルの位置に出させる。
+//! IME の変換中のウィンドウと候補のウィンドウを、端末のカーソルの位置に出させる。
 //!
 //! 変換中の文字列は IME 自身に描かせる。確定した文字列は WM_CHAR で届く。
 
@@ -12,7 +12,7 @@ use windows::Win32::{
 
 use crate::font::Font;
 
-/// カーソルのセルの、窓のクライアント領域での位置と大きさ（ピクセル）。
+/// カーソルのセルの、ウィンドウのクライアント領域での位置と大きさ（ピクセル）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CursorRect {
     pub x: i32,
@@ -21,9 +21,10 @@ pub struct CursorRect {
     pub height: i32,
 }
 
-/// 変換中の窓をカーソルの位置に、端末と同じフォントで出させる。候補の窓はカーソルのセルを避けさせる。
+/// 変換中のウィンドウをカーソルの位置に、端末と同じフォントで出させる。候補のウィンドウはカーソルの
+/// セルを避けさせる。
 pub fn place_windows(hwnd: HWND, cursor: CursorRect, font: &Font) {
-    // SAFETY: hwnd は有効な窓。得た入力コンテキストはこの関数の最後で返す。
+    // SAFETY: hwnd は有効なウィンドウ。得た入力コンテキストはこの関数の最後で返す。
     let context = unsafe { ImmGetContext(hwnd) };
     if context.is_invalid() {
         return;

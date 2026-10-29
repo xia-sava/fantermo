@@ -1,6 +1,6 @@
-//! 窓の状態ファイルの場所と読み書き、窓の位置・大きさ・最大化との受け渡し。
+//! ウィンドウの状態ファイルの場所と読み書き、ウィンドウの位置・大きさ・最大化との受け渡し。
 //!
-//! 置き場所は `%APPDATA%\fantermo\state.toml`（設定ファイルと同じフォルダ）。窓を閉じるときと、
+//! 置き場所は `%APPDATA%\fantermo\state.toml`（設定ファイルと同じフォルダ）。ウィンドウを閉じるときと、
 //! ログオフ・シャットダウンで終わらされるときに書き、
 //! 起動したときに一度だけ読む（書き換えを見張らない）。中身の型と解釈は `fantermo_core::state` が
 //! 受け持つ。
@@ -127,13 +127,13 @@ pub fn write_replacing(path: &Path, text: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// 窓のいまの位置・大きさ・最大化。最小化していれば、最大化していないものとする。
+/// ウィンドウのいまの位置・大きさ・最大化。最小化していれば、最大化していないものとする。
 pub fn current(hwnd: HWND) -> Option<WindowState> {
     let mut placement = WINDOWPLACEMENT {
         length: size_of::<WINDOWPLACEMENT>() as u32,
         ..Default::default()
     };
-    // SAFETY: hwnd は有効な窓で、placement は length を入れた書き込める領域。
+    // SAFETY: hwnd は有効なウィンドウで、placement は length を入れた書き込める領域。
     if let Err(e) = unsafe { GetWindowPlacement(hwnd, &mut placement) } {
         tracing::warn!("failed to get the window placement: {e}");
         return None;
@@ -152,12 +152,12 @@ fn from_placement(placement: &WINDOWPLACEMENT) -> WindowState {
     }
 }
 
-/// 窓を見せずに、最大化していないときの位置と大きさを `window` にする。最大化は見せるときに
+/// ウィンドウを見せずに、最大化していないときの位置と大きさを `window` にする。最大化は見せるときに
 /// `ShowWindow` で行う。どのモニタにも重ならない位置（モニタを外したときなど）は、`SetWindowPlacement`
 /// が作業領域の中へ寄せる。
 pub fn restore_hidden(hwnd: HWND, window: &WindowState) {
     let placement = to_hidden_placement(window);
-    // SAFETY: hwnd は有効な窓で、placement は length を入れて初期化してある。
+    // SAFETY: hwnd は有効なウィンドウで、placement は length を入れて初期化してある。
     if let Err(e) = unsafe { SetWindowPlacement(hwnd, &placement) } {
         tracing::warn!("failed to restore the window placement: {e}");
     }

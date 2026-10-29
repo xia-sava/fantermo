@@ -23,11 +23,11 @@ pub enum Next {
     Nothing,
     /// 新しいバージョンをダウンロードする。
     Download(Release),
-    /// 更新を当てるスクリプトに引き渡したので、fantermo を閉じる。
+    /// 更新を適用するスクリプトに引き渡したので、fantermo を閉じる。
     Quit,
 }
 
-/// 別のスレッドの結果 `event` を、窓 `owner` の上のメッセージボックスで見せる。
+/// 別のスレッドの結果 `event` を、ウィンドウ `owner` の上のメッセージボックスで見せる。
 pub fn on_event(owner: HWND, event: Event) -> Next {
     match event {
         Event::Checked(Ok(comparison)) => on_checked(owner, comparison),
@@ -117,7 +117,8 @@ fn on_downloaded(owner: HWND, downloaded: Downloaded) -> Next {
 }
 
 fn show(owner: HWND, text: &str, style: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
-    // SAFETY: owner は有効な窓で、文字列はこの呼び出しの間は生きている。窓の借用は持っていない。
+    // SAFETY: owner は有効なウィンドウで、文字列はこの呼び出しの間は生きている。ウィンドウの借用は
+    // 持っていない。
     unsafe {
         MessageBoxW(
             Some(owner),

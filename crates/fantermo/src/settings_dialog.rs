@@ -5,7 +5,7 @@
 //! 「キャンセル」（Esc、×）は最後に書いたとき（書いていなければ開いたとき）の設定に戻して閉じる。
 //! 設定ファイルには、最後に書いたとき（または開いたとき）から変えた項目だけを書く。
 //!
-//! 開いている間は呼び出し元の窓を無効にする（`modal`）。端末の出力や描き直しは、ダイアログのループ
+//! 開いている間は呼び出し元のウィンドウを無効にする（`modal`）。端末の出力や描き直しは、ダイアログのループ
 //! から届く。
 
 use std::{
@@ -115,7 +115,7 @@ const ID_KEY_RESET: i32 = 504;
 /// 見出しや説明の文字。押せないので同じ ID でよい。
 const ID_LABEL: i32 = -1;
 
-/// 96 DPI のときの寸法（ピクセル）。窓の DPI に合わせて拡大する。
+/// 96 DPI のときの寸法（ピクセル）。ウィンドウの DPI に合わせて拡大する。
 const BASE_DPI: u32 = 96;
 const CLIENT_WIDTH: i32 = 640;
 const CLIENT_HEIGHT: i32 = 490;
@@ -302,13 +302,13 @@ const TERMINAL_COLOR_LABELS: [&str; 2] = ["背景色", "文字の色"];
 
 /// タブバーの色の表示。[`config::TAB_BAR_COLOR_KEYS`] の順。
 const TAB_BAR_COLOR_LABELS: [&str; 9] = [
-    "地",
+    "背景",
     "表示しているタブ",
     "表示しているタブの縁",
     "表示しているタブの文字",
     "表示していないタブの文字",
     "タブの区切りの線",
-    "マウスの下のタブ",
+    "マウスを載せているタブ",
     "「+」「▾」「≡」",
     "ベルの印",
 ];
@@ -317,7 +317,7 @@ const TAB_BAR_COLOR_LABELS: [&str; 9] = [
 const SCROLL_BAR_COLOR_LABELS: [&str; 4] = [
     "トラック",
     "つまみ",
-    "マウスの下のつまみ",
+    "マウスを載せているつまみ",
     "ドラッグしているつまみ",
 ];
 
@@ -526,16 +526,16 @@ pub fn run(owner: HWND, request: Request, host: &mut dyn Host) {
         closed: Cell::new(false),
     };
     state.fill(&current, selected_font);
-    // SAFETY: hwnd は作ったばかりの窓。ポインタは modal::run が戻るまで有効で、WM_DESTROY で外す。
+    // SAFETY: hwnd は作ったばかりのウィンドウ。ポインタは modal::run が戻るまで有効で、WM_DESTROY で外す。
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, std::ptr::from_ref(&state) as isize) };
-    // SAFETY: owner は呼び出し元の有効な窓。
+    // SAFETY: owner は呼び出し元の有効なウィンドウ。
     let dpi = unsafe { GetDpiForWindow(owner) };
     state.set_dpi(dpi);
     if let Err(e) = place(owner, hwnd, dpi) {
         tracing::warn!("failed to place the settings dialog: {e}");
     }
     state.show_page(PAGE_APPEARANCE);
-    // SAFETY: hwnd と一覧は有効な窓。
+    // SAFETY: hwnd と一覧は有効なウィンドウ。
     unsafe {
         _ = ShowWindow(hwnd, SW_SHOW);
         _ = SetFocus(Some(state.controls.pages));
@@ -718,7 +718,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
                      id: i32,
                      rect: Option<DipRect>|
      -> windows::core::Result<HWND> {
-        // SAFETY: hwnd は有効な窓で、文字列はこの呼び出しの間は生きている。
+        // SAFETY: hwnd は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
         let control = unsafe {
             CreateWindowExW(
                 ex_style,
@@ -1604,7 +1604,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     ))
 }
 
-/// ダイアログを、DPI が `dpi` のときの大きさにして、呼び出し元の窓の真ん中に置く。
+/// ダイアログを、DPI が `dpi` のときの大きさにして、呼び出し元のウィンドウの真ん中に置く。
 fn place(owner: HWND, dialog: HWND, dpi: u32) -> windows::core::Result<()> {
     let mut rect = RECT {
         left: 0,
@@ -1624,11 +1624,11 @@ fn place(owner: HWND, dialog: HWND, dpi: u32) -> windows::core::Result<()> {
     };
     let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
     let mut owner_rect = RECT::default();
-    // SAFETY: owner は有効な窓で、owner_rect は書き込める。
+    // SAFETY: owner は有効なウィンドウで、owner_rect は書き込める。
     unsafe { GetWindowRect(owner, &mut owner_rect)? };
     let left = owner_rect.left + (owner_rect.right - owner_rect.left - width) / 2;
     let top = owner_rect.top + (owner_rect.bottom - owner_rect.top - height) / 2;
-    // SAFETY: dialog は有効な窓。
+    // SAFETY: dialog は有効なウィンドウ。
     unsafe { SetWindowPos(dialog, None, left, top, width, height, SWP_NOZORDER) }
 }
 
@@ -1642,7 +1642,7 @@ impl State<'_> {
     fn fill(&self, config: &Config, selected_font: usize) {
         let c = &self.controls;
         for font in &self.fonts {
-            // SAFETY: コンボボックスは有効な窓で、文字列はこの呼び出しの間は生きている。
+            // SAFETY: コンボボックスは有効なウィンドウで、文字列はこの呼び出しの間は生きている。
             unsafe {
                 SendMessageW(
                     c.font,
@@ -1652,7 +1652,7 @@ impl State<'_> {
                 )
             };
         }
-        // SAFETY: コンボボックスは有効な窓。
+        // SAFETY: コンボボックスは有効なウィンドウ。
         unsafe { SendMessageW(c.font, CB_SETCURSEL, Some(WPARAM(selected_font)), None) };
         set_text(c.size, &format_size(config.font.size_pt));
         let wide_glyph = WideGlyph::ALL
@@ -1678,7 +1678,7 @@ impl State<'_> {
             .iter()
             .position(|&value| value == config.background.fit);
         if let Some(fit) = fit {
-            // SAFETY: コンボボックスは有効な窓。
+            // SAFETY: コンボボックスは有効なウィンドウ。
             unsafe { SendMessageW(c.background_fit, CB_SETCURSEL, Some(WPARAM(fit)), None) };
         }
         *self.keys.borrow_mut() = config.keys.clone();
@@ -1718,7 +1718,7 @@ impl State<'_> {
         // SAFETY: 色を渡してブラシを作るだけ。
         let brush = unsafe { CreateSolidBrush(colorref(color)) };
         let previous = std::mem::replace(&mut self.swatch_brushes.borrow_mut()[item], brush);
-        // SAFETY: row のコントロールはダイアログの子の有効な窓。
+        // SAFETY: row のコントロールはダイアログの子の有効なウィンドウ。
         unsafe {
             _ = EnableWindow(row.reset, written.is_some());
             _ = InvalidateRect(Some(row.swatch), None, true);
@@ -1797,11 +1797,11 @@ impl State<'_> {
     fn refresh_profiles(&self, selected: usize) {
         let list = self.controls.profiles_list;
         let profiles = self.profiles.borrow();
-        // SAFETY: 一覧は有効な窓。
+        // SAFETY: 一覧は有効なウィンドウ。
         unsafe { SendMessageW(list, LB_RESETCONTENT, None, None) };
         for (index, profile) in profiles.iter().enumerate() {
             let text = profile_row_text(profile, index == self.default_profile.get());
-            // SAFETY: 一覧は有効な窓で、文字列はこの呼び出しの間は生きている。
+            // SAFETY: 一覧は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
             unsafe {
                 SendMessageW(
                     list,
@@ -1813,14 +1813,14 @@ impl State<'_> {
         }
         let index = selected.min(profiles.len().saturating_sub(1));
         drop(profiles);
-        // SAFETY: 一覧は有効な窓。
+        // SAFETY: 一覧は有効なウィンドウ。
         unsafe { SendMessageW(list, LB_SETCURSEL, Some(WPARAM(index)), None) };
         self.on_profile_selected();
     }
 
     /// プロファイルの一覧で選んでいる位置。
     fn selected_profile(&self) -> Option<usize> {
-        // SAFETY: 一覧は有効な窓。
+        // SAFETY: 一覧は有効なウィンドウ。
         let index =
             unsafe { SendMessageW(self.controls.profiles_list, LB_GETCURSEL, None, None) }.0;
         usize::try_from(index)
@@ -1854,7 +1854,7 @@ impl State<'_> {
             (c.profile_name, selected.is_some()),
             (c.profile_command, selected.is_some()),
         ] {
-            // SAFETY: control はダイアログの子の有効な窓。
+            // SAFETY: control はダイアログの子の有効なウィンドウ。
             unsafe { _ = EnableWindow(control, enabled) };
         }
     }
@@ -1878,7 +1878,7 @@ impl State<'_> {
             profile_row_text(profile, index == self.default_profile.get())
         };
         let list = self.controls.profiles_list;
-        // SAFETY: 一覧は有効な窓で、文字列はこの呼び出しの間は生きている。
+        // SAFETY: 一覧は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
         unsafe {
             SendMessageW(list, LB_DELETESTRING, Some(WPARAM(index)), None);
             SendMessageW(
@@ -1939,10 +1939,10 @@ impl State<'_> {
         } else {
             self.controls.profiles_list
         };
-        // SAFETY: focus はダイアログの子の有効な窓。押したボタンが押せなくなることがあるので移す。
+        // SAFETY: focus はダイアログの子の有効なウィンドウ。押したボタンが押せなくなることがあるので移す。
         unsafe { _ = SetFocus(Some(focus)) };
         if id == ID_PROFILE_ADD {
-            // SAFETY: 入力欄は有効な窓。名前をすぐ打ち替えられるように全体を選ぶ。
+            // SAFETY: 入力欄は有効なウィンドウ。名前をすぐ打ち替えられるように全体を選ぶ。
             unsafe {
                 SendMessageW(
                     focus,
@@ -1958,10 +1958,10 @@ impl State<'_> {
     fn refresh_background_images(&self, selected: Option<usize>) {
         let list = self.controls.background_images;
         let images = self.background_images.borrow();
-        // SAFETY: 一覧は有効な窓。
+        // SAFETY: 一覧は有効なウィンドウ。
         unsafe { SendMessageW(list, LB_RESETCONTENT, None, None) };
         for image in images.iter() {
-            // SAFETY: 一覧は有効な窓で、文字列はこの呼び出しの間は生きている。
+            // SAFETY: 一覧は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
             unsafe {
                 SendMessageW(
                     list,
@@ -1977,7 +1977,7 @@ impl State<'_> {
             && !images.is_empty()
         {
             let index = selected.min(images.len() - 1);
-            // SAFETY: 一覧は有効な窓。
+            // SAFETY: 一覧は有効なウィンドウ。
             unsafe { SendMessageW(list, LB_SETCURSEL, Some(WPARAM(index)), None) };
         }
         drop(images);
@@ -1986,7 +1986,7 @@ impl State<'_> {
 
     /// 背景画像の一覧で選んでいる位置。
     fn selected_background_image(&self) -> Option<usize> {
-        // SAFETY: 一覧は有効な窓。
+        // SAFETY: 一覧は有効なウィンドウ。
         let index =
             unsafe { SendMessageW(self.controls.background_images, LB_GETCURSEL, None, None) }.0;
         usize::try_from(index)
@@ -2007,7 +2007,7 @@ impl State<'_> {
             c.background_item_opacity,
             c.background_item_opacity_spin,
         ] {
-            // SAFETY: control はダイアログの子の有効な窓。
+            // SAFETY: control はダイアログの子の有効なウィンドウ。
             unsafe { _ = EnableWindow(control, selected.is_some()) };
         }
         let (fit, opacity) = match &selected {
@@ -2018,7 +2018,7 @@ impl State<'_> {
             // 何も選ばない。
             None => (usize::MAX, String::new()),
         };
-        // SAFETY: コンボボックスは有効な窓。
+        // SAFETY: コンボボックスは有効なウィンドウ。
         unsafe { SendMessageW(c.background_item_fit, CB_SETCURSEL, Some(WPARAM(fit)), None) };
         // 借用は持っていない（入力欄の EN_CHANGE はこの中で届く）。
         set_text(c.background_item_opacity, &opacity);
@@ -2035,7 +2035,7 @@ impl State<'_> {
         else {
             return;
         };
-        // SAFETY: 一覧は有効な窓で、文字列はこの呼び出しの間は生きている。
+        // SAFETY: 一覧は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
         unsafe {
             SendMessageW(list, LB_DELETESTRING, Some(WPARAM(index)), None);
             SendMessageW(
@@ -2053,7 +2053,7 @@ impl State<'_> {
         let Some(index) = self.selected_background_image() else {
             return;
         };
-        // SAFETY: コンボボックスは有効な窓。
+        // SAFETY: コンボボックスは有効なウィンドウ。
         let choice =
             unsafe { SendMessageW(self.controls.background_item_fit, CB_GETCURSEL, None, None) }.0;
         let Some(fit) = usize::try_from(choice).ok().and_then(item_fit_from_choice) else {
@@ -2124,7 +2124,8 @@ impl State<'_> {
         };
         self.refresh_background_images(Some(selected));
         self.preview();
-        // SAFETY: 一覧はダイアログの子の有効な窓。押したボタンが押せなくなることがあるので、一覧へ戻す。
+        // SAFETY: 一覧はダイアログの子の有効なウィンドウ。押したボタンが押せなくなることがあるので、
+        // 一覧へ戻す。
         unsafe { _ = SetFocus(Some(self.controls.background_images)) };
     }
 
@@ -2152,10 +2153,10 @@ impl State<'_> {
     fn refresh_keys(&self, selected: Option<KeyRow>) {
         let c = &self.controls;
         let rows = key_rows(&self.keys.borrow());
-        // SAFETY: 一覧は有効な窓。
+        // SAFETY: 一覧は有効なウィンドウ。
         unsafe { SendMessageW(c.keys_list, LB_RESETCONTENT, None, None) };
         for row in &rows {
-            // SAFETY: 一覧は有効な窓で、文字列はこの呼び出しの間は生きている。
+            // SAFETY: 一覧は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
             unsafe {
                 SendMessageW(
                     c.keys_list,
@@ -2172,7 +2173,7 @@ impl State<'_> {
                     .or_else(|| rows.iter().position(|(action, _)| *action == selected.0))
             })
             .unwrap_or(0);
-        // SAFETY: 一覧は有効な窓。
+        // SAFETY: 一覧は有効なウィンドウ。
         unsafe { SendMessageW(c.keys_list, LB_SETCURSEL, Some(WPARAM(index)), None) };
         *self.key_rows.borrow_mut() = rows;
         self.update_key_buttons();
@@ -2180,7 +2181,7 @@ impl State<'_> {
 
     /// キーの割り当ての一覧で選んでいる行。
     fn selected_key_row(&self) -> Option<KeyRow> {
-        // SAFETY: 一覧は有効な窓。
+        // SAFETY: 一覧は有効なウィンドウ。
         let index = unsafe { SendMessageW(self.controls.keys_list, LB_GETCURSEL, None, None) }.0;
         let index = usize::try_from(index).ok()?;
         self.key_rows.borrow().get(index).copied()
@@ -2199,7 +2200,7 @@ impl State<'_> {
             (remove, has_combo),
             (reset, not_default),
         ] {
-            // SAFETY: button はダイアログの子の有効な窓。
+            // SAFETY: button はダイアログの子の有効なウィンドウ。
             unsafe { _ = EnableWindow(button, enabled) };
         }
     }
@@ -2246,7 +2247,8 @@ impl State<'_> {
         };
         self.refresh_keys(Some(selected));
         self.preview();
-        // SAFETY: 一覧はダイアログの子の有効な窓。押したボタンが押せなくなることがあるので、一覧へ戻す。
+        // SAFETY: 一覧はダイアログの子の有効なウィンドウ。押したボタンが押せなくなることがあるので、
+        // 一覧へ戻す。
         unsafe { _ = SetFocus(Some(self.controls.keys_list)) };
     }
 
@@ -2272,7 +2274,7 @@ impl State<'_> {
                 action_label(other),
                 action_label(action)
             );
-            // SAFETY: hwnd は有効な窓で、文字列はこの呼び出しの間は生きている。借用は持っていない。
+            // SAFETY: hwnd は有効なウィンドウで、文字列はこの呼び出しの間は生きている。借用は持っていない。
             let answer = unsafe {
                 MessageBoxW(
                     Some(self.hwnd),
@@ -2336,7 +2338,7 @@ impl State<'_> {
             };
         }
         for &(control, [left, top, width, height]) in &c.placed {
-            // SAFETY: control はダイアログの子の有効な窓。
+            // SAFETY: control はダイアログの子の有効なウィンドウ。
             unsafe {
                 _ = MoveWindow(
                     control,
@@ -2357,7 +2359,7 @@ impl State<'_> {
             (c.background_item_opacity_spin, c.background_item_opacity),
         ] {
             // 範囲は、上の矢印で数が増える向き（既定は逆）にするためだけに決める。数は step で決める。
-            // SAFETY: spin と buddy はダイアログの子の有効な窓。
+            // SAFETY: spin と buddy はダイアログの子の有効なウィンドウ。
             unsafe {
                 SendMessageW(spin, UDM_SETBUDDY, Some(WPARAM(buddy.0 as usize)), None);
                 SendMessageW(
@@ -2380,12 +2382,12 @@ impl State<'_> {
     /// `page` 番目のページのコントロールだけを見せる。
     fn show_page(&self, page: usize) {
         let c = &self.controls;
-        // SAFETY: 一覧は有効な窓。
+        // SAFETY: 一覧は有効なウィンドウ。
         unsafe { SendMessageW(c.pages, LB_SETCURSEL, Some(WPARAM(page)), None) };
         for (index, controls) in c.page_controls.iter().enumerate() {
             let show = if index == page { SW_SHOW } else { SW_HIDE };
             for &control in controls {
-                // SAFETY: control はダイアログの子の有効な窓。
+                // SAFETY: control はダイアログの子の有効なウィンドウ。
                 unsafe { _ = ShowWindow(control, show) };
             }
         }
@@ -2395,7 +2397,7 @@ impl State<'_> {
     fn read(&self) -> Result<Config, (&'static str, HWND)> {
         let c = &self.controls;
         let mut config = self.base.borrow().clone();
-        // SAFETY: コンボボックスは有効な窓。
+        // SAFETY: コンボボックスは有効なウィンドウ。
         let selected = unsafe { SendMessageW(c.font, CB_GETCURSEL, None, None) }.0;
         if let Ok(selected) = usize::try_from(selected)
             && selected != self.base_font.get()
@@ -2428,7 +2430,7 @@ impl State<'_> {
         if let Err((index, field, message)) = check_profiles(&profiles) {
             // エラーのあるプロファイルを選び、その入力欄へ移れるようにする。
             if self.selected_profile() != Some(index) {
-                // SAFETY: 一覧は有効な窓。
+                // SAFETY: 一覧は有効なウィンドウ。
                 unsafe { SendMessageW(c.profiles_list, LB_SETCURSEL, Some(WPARAM(index)), None) };
                 self.on_profile_selected();
             }
@@ -2458,7 +2460,7 @@ impl State<'_> {
                 "画像の濃さは、0 から 1 までの数で書いてください。",
                 c.background_opacity,
             ))?;
-        // SAFETY: コンボボックスは有効な窓。
+        // SAFETY: コンボボックスは有効なウィンドウ。
         let fit = unsafe { SendMessageW(c.background_fit, CB_GETCURSEL, None, None) }.0;
         if let Some(&fit) = usize::try_from(fit)
             .ok()
@@ -2474,7 +2476,7 @@ impl State<'_> {
     /// 編集中の設定を読み、読めれば端末に反映する（前に反映したものと同じなら何もしない）。読めた
     /// 設定を返す。読めなければエラーを見せる。
     fn preview(&self) -> Option<Config> {
-        // SAFETY: hwnd は有効な窓。掛けていないタイマーを止めても害はない。
+        // SAFETY: hwnd は有効なウィンドウ。掛けていないタイマーを止めても害はない。
         unsafe { _ = KillTimer(Some(self.hwnd), PREVIEW_TIMER_ID) };
         let config = match self.read() {
             Ok(config) => config,
@@ -2505,7 +2507,7 @@ impl State<'_> {
         let Some(edited) = self.preview() else {
             // 読めない入力欄へ移る。エラーメッセージは preview が見せている。
             if let Err((_, control)) = self.read() {
-                // SAFETY: control はダイアログの子の有効な窓。
+                // SAFETY: control はダイアログの子の有効なウィンドウ。
                 unsafe { _ = SetFocus(Some(control)) };
             }
             return false;
@@ -2516,7 +2518,7 @@ impl State<'_> {
             Err(_) => return false,
         };
         if let Err(text) = saved {
-            // SAFETY: hwnd は有効な窓で、文字列はこの呼び出しの間は生きている。借用は持っていない。
+            // SAFETY: hwnd は有効なウィンドウで、文字列はこの呼び出しの間は生きている。借用は持っていない。
             unsafe {
                 MessageBoxW(
                     Some(self.hwnd),
@@ -2527,7 +2529,7 @@ impl State<'_> {
             };
             return false;
         }
-        // SAFETY: コンボボックスは有効な窓。
+        // SAFETY: コンボボックスは有効なウィンドウ。
         let selected = unsafe { SendMessageW(self.controls.font, CB_GETCURSEL, None, None) }.0;
         if let Ok(selected) = usize::try_from(selected)
             && selected != self.base_font.get()
@@ -2547,7 +2549,7 @@ impl State<'_> {
 
     /// 最後に書いたときの設定に戻して閉じる。
     fn cancel(&self) {
-        // SAFETY: hwnd は有効な窓。掛けていないタイマーを止めても害はない。
+        // SAFETY: hwnd は有効なウィンドウ。掛けていないタイマーを止めても害はない。
         unsafe { _ = KillTimer(Some(self.hwnd), PREVIEW_TIMER_ID) };
         let base = self.base.borrow().clone();
         self.preview_config(&base);
@@ -2561,7 +2563,7 @@ impl State<'_> {
 
     /// 入力欄を打ったので、少し待ってから反映する。
     fn schedule_preview(&self) {
-        // SAFETY: hwnd は有効な窓。同じ番号のタイマーは掛け直しになる。
+        // SAFETY: hwnd は有効なウィンドウ。同じ番号のタイマーは掛け直しになる。
         if unsafe {
             SetTimer(
                 Some(self.hwnd),
@@ -2717,12 +2719,12 @@ fn image_filters() -> Vec<file_dialog::Filter> {
 }
 
 fn set_text(control: HWND, text: &str) {
-    // SAFETY: control は有効な窓で、文字列はこの呼び出しの間は生きている。
+    // SAFETY: control は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
     unsafe { _ = SetWindowTextW(control, &HSTRING::from(text)) };
 }
 
 fn get_text(control: HWND) -> String {
-    // SAFETY: control は有効な窓。
+    // SAFETY: control は有効なウィンドウ。
     let length = unsafe { GetWindowTextLengthW(control) }.max(0) as usize;
     let mut buffer = vec![0u16; length + 1];
     // SAFETY: buffer は length + 1 個の u16 を書き込める。
@@ -2775,7 +2777,7 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     state.apply();
                 }
                 (ID_PAGES, LBN_SELCHANGE) => {
-                    // SAFETY: 一覧は有効な窓。
+                    // SAFETY: 一覧は有効なウィンドウ。
                     let page =
                         unsafe { SendMessageW(state.controls.pages, LB_GETCURSEL, None, None) }.0;
                     if let Ok(page) = usize::try_from(page)
@@ -2873,9 +2875,10 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         // Enter を自分で使わないコントロールは、既定のボタンをこの二つで問い合わせて押させる。
         DM_GETDEFID => LRESULT(((DC_HASDEFID as isize) << 16) | IDOK.0 as isize),
         WM_NEXTDLGCTL => {
-            // lparam が 0 でなければ、wparam は移す先の子の窓。順に移すほうは使われないので扱わない。
+            // lparam が 0 でなければ、wparam は移す先の子のウィンドウ。順に移すほうは使われないので
+            // 扱わない。
             if lparam.0 & 0xffff != 0 {
-                // SAFETY: wparam はこのダイアログの子の窓のハンドルとして渡される。
+                // SAFETY: wparam はこのダイアログの子のウィンドウのハンドルとして渡される。
                 unsafe { _ = SetFocus(Some(HWND(wparam.0 as *mut _))) };
             }
             LRESULT(0)

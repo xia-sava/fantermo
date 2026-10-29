@@ -3,7 +3,7 @@
 #  アイコン assets/icon/fantermo.ico を作る (git-bash 側)
 #  図案（assets/icon/*.svg）を変えたら作り直してコミットする。ビルドのたびには作らない。
 #  例: ./tools/icon.sh
-#  あわせて、各サイズを明るい地と暗い地に並べた見本を target/icon/sheet.png に書く。
+#  あわせて、各サイズを明るい背景と暗い背景に並べた見本を target/icon/sheet.png に書く。
 #
 #  使うもの:
 #    - Microsoft Edge（ヘッドレスで SVG を 256 px の PNG に描く）。プロファイルは target/icon/ の下に
@@ -11,7 +11,7 @@
 #    - python3.12 と Pillow（tools/icon/icon.py。PNG を各サイズに縮め、ICO にまとめる）
 #
 #  サイズと図案:
-#    - 16、20、24 px … fantermo-small.svg（地と画面を広げ、「%」の線を太くしたもの）
+#    - 16、20、24 px … fantermo-small.svg（背景と画面を広げ、「%」の線を太くしたもの）
 #    - 32、40、48、64、96、256 px … fantermo.svg
 #    256 px は PNG、ほかは 32 ビットのビットマップで ICO に入れる。
 # ============================================================

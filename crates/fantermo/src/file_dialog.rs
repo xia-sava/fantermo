@@ -87,7 +87,7 @@ fn create(title: &str, options: FILEOPENDIALOGOPTIONS) -> windows::core::Result<
 
 /// ダイアログを開き、閉じるまで待つ。選んで閉じたら `true`、やめたら `false`。
 fn show(dialog: &IFileOpenDialog, owner: HWND) -> windows::core::Result<bool> {
-    // SAFETY: owner は呼び出し元の有効な窓。借用は持っていない。
+    // SAFETY: owner は呼び出し元の有効なウィンドウ。借用は持っていない。
     match unsafe { dialog.Show(Some(owner)) } {
         Ok(()) => Ok(true),
         Err(e) if e.code() == HRESULT::from_win32(ERROR_CANCELLED.0) => Ok(false),

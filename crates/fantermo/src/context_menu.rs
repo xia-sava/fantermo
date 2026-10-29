@@ -220,7 +220,7 @@ pub fn show(owner: HWND, request: &MenuRequest) -> Option<Chosen> {
             rcExclude: exclude,
         }
     });
-    // SAFETY: menu は作ったばかりのメニューで、owner は有効な窓。params はこの呼び出しの間は生きて
+    // SAFETY: menu は作ったばかりのメニューで、owner は有効なウィンドウ。params はこの呼び出しの間は生きて
     // いる。選ばれた ID を戻り値で受け取る。
     let chosen = unsafe {
         TrackPopupMenuEx(

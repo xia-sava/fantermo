@@ -4,7 +4,8 @@
 //! つまみの位置と長さで、スクロールバックを含む全体の中の、表示している範囲を示す。つまみは両端の
 //! 丸い細い形で、マウスを載せている間とドラッグしている間は太く描き、トラックも薄く塗る。スクロールバックが
 //! ない（代替画面も）ときはつまみを描かない。寸法は DPI に比例させ、色は [`Palette`] にまとめる。
-//! つまみの位置と長さの計算と、描くもの（[`Paint`]）の組み立ては、窓や描画に依存しない関数にしてある。
+//! つまみの位置と長さの計算と、描くもの（[`Paint`]）の組み立ては、ウィンドウや描画に依存しない関数に
+//! してある。
 
 use fantermo_core::{config::SCROLL_BAR_COLOR_KEYS, frame::Rgb, vt::ScrollPosition};
 
@@ -37,7 +38,7 @@ const DRAGGED_THUMB_TINT: f32 = 0.65;
 /// マウスを載せている間に塗るトラックの色を、端末の背景色から文字の色へ寄せる割合。
 const TRACK_TINT: f32 = 0.06;
 
-/// スクロールバーの寸法を決めるもの。寸法は窓の DPI に比例させる。
+/// スクロールバーの寸法を決めるもの。寸法はウィンドウの DPI に比例させる。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Metrics {
     pub dpi: u32,
@@ -73,7 +74,7 @@ impl Metrics {
     }
 }
 
-/// つまみが動くトラック。窓のクライアント領域の中の縦の範囲（ピクセル）。
+/// つまみが動くトラック。ウィンドウのクライアント領域の中の縦の範囲（ピクセル）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Track {
     pub top: u32,
@@ -89,7 +90,7 @@ pub fn track(bar: Area, metrics: Metrics) -> Track {
     }
 }
 
-/// つまみ。窓のクライアント領域の中の縦の範囲（ピクセル）。
+/// つまみ。ウィンドウのクライアント領域の中の縦の範囲（ピクセル）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Thumb {
     pub top: u32,
@@ -121,7 +122,7 @@ pub fn thumb(track: Track, position: ScrollPosition, min_length: u32) -> Option<
     })
 }
 
-/// つまみの上端を `top`（窓のクライアント領域の中の y。トラックからはみ出してもよい）に動かした
+/// つまみの上端を `top`（ウィンドウのクライアント領域の中の y。トラックからはみ出してもよい）に動かした
 /// ときに、表示する範囲の先頭の行。[`thumb`] と対になる。長さ `length` のつまみがトラックの上端で
 /// 0、下端でいちばん新しい行（`total - len`）。
 pub fn row_at(track: Track, length: u32, position: ScrollPosition, top: i32) -> usize {
@@ -163,7 +164,8 @@ pub enum Part {
     Page(Direction),
 }
 
-/// スクロールバーの中の高さ `y`（窓のクライアント領域の中）が、つまみ `thumb` に対してどこにあるか。
+/// スクロールバーの中の高さ `y`（ウィンドウのクライアント領域の中）が、つまみ `thumb` に対してどこに
+/// あるか。
 /// 押し続けてページを送るときは、つまみが `y` まで来たら（`Page` の向きが変わったら）止める。
 pub fn part_at(thumb: Thumb, y: i32) -> Part {
     if y < thumb.top as i32 {
@@ -328,7 +330,7 @@ mod tests {
         length: 480,
     };
 
-    /// 既定の幅（96 DPI で 12）のスクロールバーの、DPI が `dpi` の窓での寸法。
+    /// 既定の幅（96 DPI で 12）のスクロールバーの、DPI が `dpi` のウィンドウでの寸法。
     fn metrics(dpi: u32) -> Metrics {
         Metrics {
             dpi,

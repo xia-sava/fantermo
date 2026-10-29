@@ -1,4 +1,4 @@
-//! 更新を当てる、fantermo の外で動くスクリプト。
+//! 更新を適用する、fantermo の外で動くスクリプト。
 //!
 //! fantermo が動いている間は実行ファイルを置き換えられないので、スクリプトに引き渡してから fantermo を
 //! 閉じる。スクリプトは fantermo の終了を待ち、msiexec で MSI を無人で入れ、入れ終えたら fantermo を
@@ -66,7 +66,7 @@ pub struct Plan<'a> {
     pub wait_seconds: u32,
 }
 
-/// 更新を当てる PowerShell のスクリプト。
+/// 更新を適用する PowerShell のスクリプト。
 ///
 /// 待つプロセスがすべて終わる（か上限を過ぎる）のを待ち、`msiexec /i <MSI> /qn /norestart` で入れる。
 /// 終了コードが 0（成功）か 3010（成功。再起動で反映するものがある）なら一時フォルダを消して
@@ -144,7 +144,7 @@ pub fn write_script(dir: &Path, script: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// スクリプト `path` を、窓を出さない PowerShell で起動する。終わるのは待たない。
+/// スクリプト `path` を、ウィンドウを出さない PowerShell で起動する。終わるのは待たない。
 pub fn launch(path: &Path) -> io::Result<()> {
     let powershell = system_root()?.join(POWERSHELL_UNDER_SYSTEM_ROOT);
     Command::new(powershell)

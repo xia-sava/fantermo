@@ -1,7 +1,7 @@
 //! 複数行の入力欄とボタンを並べたダイアログ。入力欄の上に、文の行とリンクの行を並べられる。
 //!
-//! 開いている間は呼び出し元の窓を無効にし、メッセージはこのダイアログのループで回す。IDOK のボタンを
-//! 押せば入力欄の文字列を返し、IDCANCEL のボタンや Esc なら何も返さない。ほかのボタンを押せば、その
+//! 開いている間は呼び出し元のウィンドウを無効にし、メッセージはこのダイアログのループで回す。IDOK の
+//! ボタンを押せば入力欄の文字列を返し、IDCANCEL のボタンや Esc なら何も返さない。ほかのボタンを押せば、その
 //! ボタンを返して閉じる。リンクを押せば既定のアプリで開く。
 
 use std::{
@@ -64,12 +64,12 @@ const SELECT_TO_END: isize = -1;
 /// Ctrl+A の A の仮想キー。
 const VK_A: usize = b'A' as usize;
 
-/// 96 DPI のときの寸法（ピクセル）。窓の DPI に合わせて拡大する。
+/// 96 DPI のときの寸法（ピクセル）。ウィンドウの DPI に合わせて拡大する。
 const BASE_DPI: f32 = 96.0;
 const MARGIN: f32 = 8.0;
 const BUTTON_WIDTH: f32 = 112.0;
 const BUTTON_HEIGHT: f32 = 30.0;
-/// 呼び出し元の窓に対する、ダイアログの大きさの割合。
+/// 呼び出し元のウィンドウに対する、ダイアログの大きさの割合。
 const SIZE_RATIO: f32 = 0.7;
 /// 端末の文字に対する、入力欄の文字の大きさの割合。
 const FONT_RATIO: f32 = 0.75;
@@ -115,7 +115,7 @@ pub enum Closed {
     Ok(String),
     /// IDOK と IDCANCEL のほかのボタンを押した。そのコントロール ID を添える。
     Button(i32),
-    /// IDCANCEL のボタン、Esc、窓の × で閉じた。開けなかったときも。
+    /// IDCANCEL のボタン、Esc、ウィンドウの × で閉じた。開けなかったときも。
     Cancel,
 }
 
@@ -162,7 +162,7 @@ struct DialogState {
     font: Cell<HFONT>,
     /// 入力欄の上の行のフォント。行がなければ作らない。
     header_font: Cell<HFONT>,
-    /// 寸法の拡大率（窓の DPI / 96）。
+    /// 寸法の拡大率（ウィンドウの DPI / 96）。
     scale: Cell<f32>,
     /// 閉じたわけ。ボタンで閉じるまでは `None`。
     result: RefCell<Option<Closed>>,
@@ -206,20 +206,20 @@ fn register_class() -> windows::core::Result<()> {
     Ok(())
 }
 
-/// 呼び出し元の窓の真ん中に、その大きさの 7 割でダイアログを作る。`min_columns` があれば、その桁数が
-/// 収まるまで幅を広げる。
+/// 呼び出し元のウィンドウの真ん中に、その大きさの 7 割でダイアログを作る。`min_columns` があれば、その
+/// 桁数が収まるまで幅を広げる。
 fn create(
     owner: HWND,
     dialog: &Dialog,
     state: &DialogState,
     font: &Font,
 ) -> windows::core::Result<HWND> {
-    // SAFETY: owner は呼び出し元の有効な窓。
+    // SAFETY: owner は呼び出し元の有効なウィンドウ。
     let dpi = unsafe { GetDpiForWindow(owner) };
     state.scale.set(dpi as f32 / BASE_DPI);
 
     let mut owner_rect = RECT::default();
-    // SAFETY: owner は有効な窓で、owner_rect は書き込める。
+    // SAFETY: owner は有効なウィンドウで、owner_rect は書き込める。
     unsafe { GetWindowRect(owner, &mut owner_rect)? };
     let width = ((owner_rect.right - owner_rect.left) as f32 * SIZE_RATIO) as i32;
     let height = ((owner_rect.bottom - owner_rect.top) as f32 * SIZE_RATIO) as i32;
@@ -247,7 +247,7 @@ fn create(
     };
 
     let child = |class: PCWSTR, text: &str, style: WINDOW_STYLE, ex_style, id: i32| {
-        // SAFETY: hwnd は有効な窓で、文字列はこの呼び出しの間は生きている。
+        // SAFETY: hwnd は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
         unsafe {
             CreateWindowExW(
                 ex_style,
@@ -337,7 +337,7 @@ fn create(
     if !dialog.header.is_empty() {
         create_header_font(state, dpi);
     }
-    // SAFETY: 入力欄は有効な窓。
+    // SAFETY: 入力欄は有効なウィンドウ。
     unsafe {
         SendMessageW(
             state.edit.get(),
@@ -348,7 +348,7 @@ fn create(
     };
 
     // 状態を結び付けてから大きさを決め、WM_SIZE で子を並べさせる。
-    // SAFETY: hwnd は作ったばかりの窓。ポインタは run_modal が戻るまで有効で、WM_DESTROY で外す。
+    // SAFETY: hwnd は作ったばかりのウィンドウ。ポインタは run_modal が戻るまで有効で、WM_DESTROY で外す。
     unsafe {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, std::ptr::from_ref(state) as isize);
         SetWindowPos(hwnd, None, left, top, width, height, SWP_NOZORDER)?;
@@ -357,7 +357,7 @@ fn create(
     if let Some(columns) = dialog.min_columns {
         widen_for_columns(owner, &owner_rect, hwnd, state, columns);
     }
-    // SAFETY: hwnd と入力欄は有効な窓。
+    // SAFETY: hwnd と入力欄は有効なウィンドウ。
     unsafe {
         _ = ShowWindow(hwnd, SW_SHOW);
         _ = SetFocus(Some(state.edit.get()));
@@ -406,7 +406,7 @@ fn create_header_font(state: &DialogState, dpi: u32) {
 /// `control` に `font` で文字を 1 行描いたときの高さ（ピクセル）。測れなければ `None`。
 fn line_height(control: HWND, font: HFONT) -> Option<i32> {
     let sample: Vec<u16> = "Ag版".encode_utf16().collect();
-    // SAFETY: control は有効な窓。選んだフォントは戻し、DC は読み終えたら返す。
+    // SAFETY: control は有効なウィンドウ。選んだフォントは戻し、DC は読み終えたら返す。
     unsafe {
         let dc = GetDC(Some(control));
         if dc.is_invalid() {
@@ -422,7 +422,7 @@ fn line_height(control: HWND, font: HFONT) -> Option<i32> {
 }
 
 /// 入力欄の文字を並べる幅に `columns` 桁が収まらなければ、足りない分だけダイアログを広げ、
-/// 呼び出し元の窓 `owner`（場所は `owner_rect`）の真ん中に置き直す。モニターからははみ出させない。
+/// 呼び出し元のウィンドウ `owner`（場所は `owner_rect`）の真ん中に置き直す。モニターからははみ出させない。
 fn widen_for_columns(
     owner: HWND,
     owner_rect: &RECT,
@@ -435,7 +435,7 @@ fn widen_for_columns(
         return;
     };
     let mut format = RECT::default();
-    // SAFETY: 入力欄は有効な窓で、format は書き込める。
+    // SAFETY: 入力欄は有効なウィンドウで、format は書き込める。
     unsafe {
         SendMessageW(
             state.edit.get(),
@@ -449,7 +449,7 @@ fn widen_for_columns(
         return;
     }
     let mut window = RECT::default();
-    // SAFETY: dialog は有効な窓で、window は書き込める。
+    // SAFETY: dialog は有効なウィンドウで、window は書き込める。
     if let Err(e) = unsafe { GetWindowRect(dialog, &mut window) } {
         tracing::warn!("failed to read the text dialog position: {e}");
         return;
@@ -458,7 +458,7 @@ fn widen_for_columns(
     let left = owner_rect.left + (owner_rect.right - owner_rect.left - width) / 2;
     let (left, width) = fit_horizontally(owner, left, width);
     let height = window.bottom - window.top;
-    // SAFETY: dialog は有効な窓。WM_SIZE で子を並べ直す。
+    // SAFETY: dialog は有効なウィンドウ。WM_SIZE で子を並べ直す。
     let moved =
         unsafe { SetWindowPos(dialog, None, left, window.top, width, height, SWP_NOZORDER) };
     if let Err(e) = moved {
@@ -471,7 +471,7 @@ fn text_width(state: &DialogState, columns: u32) -> Option<i32> {
     let edit = state.edit.get();
     // 平均の文字幅は実際の送り幅より小さいことがあるので、その桁数の文字列の幅を測る。
     let line: Vec<u16> = std::iter::repeat_n(u16::from(b'0'), columns as usize).collect();
-    // SAFETY: edit は有効な窓。選んだフォントは戻し、DC は読み終えたら返す。
+    // SAFETY: edit は有効なウィンドウ。選んだフォントは戻し、DC は読み終えたら返す。
     unsafe {
         let dc = GetDC(Some(edit));
         if dc.is_invalid() {
@@ -486,13 +486,13 @@ fn text_width(state: &DialogState, columns: u32) -> Option<i32> {
     }
 }
 
-/// 横の位置 `left` と幅 `width` を、呼び出し元の窓があるモニターの作業領域に収める。
+/// 横の位置 `left` と幅 `width` を、呼び出し元のウィンドウがあるモニターの作業領域に収める。
 fn fit_horizontally(owner: HWND, left: i32, width: i32) -> (i32, i32) {
     let mut info = MONITORINFO {
         cbSize: size_of::<MONITORINFO>() as u32,
         ..Default::default()
     };
-    // SAFETY: owner は有効な窓で、info は大きさを入れて初期化してある。
+    // SAFETY: owner は有効なウィンドウで、info は大きさを入れて初期化してある。
     let found = unsafe {
         let monitor = MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST);
         GetMonitorInfoW(monitor, &mut info).as_bool()
@@ -507,14 +507,14 @@ fn fit_horizontally(owner: HWND, left: i32, width: i32) -> (i32, i32) {
     (left, width)
 }
 
-/// 呼び出し元の窓を無効にし、ダイアログが閉じるまでメッセージを回す。入力欄での Ctrl+A は、すべてを
+/// 呼び出し元のウィンドウを無効にし、ダイアログが閉じるまでメッセージを回す。入力欄での Ctrl+A は、すべてを
 /// 選ぶ。
 fn run_modal(owner: HWND, dialog: HWND, state: &DialogState) {
     modal::run(owner, dialog, &state.closed, |msg| {
         if !is_select_all(msg, state.edit.get()) {
             return false;
         }
-        // SAFETY: 入力欄は有効な窓。
+        // SAFETY: 入力欄は有効なウィンドウ。
         unsafe {
             SendMessageW(
                 state.edit.get(),
@@ -541,7 +541,7 @@ fn is_select_all(msg: &MSG, edit: HWND) -> bool {
 /// 入力欄の上の行を上から並べ、入力欄を広く取り、ボタンを右下に並べる。
 fn layout(dialog: HWND, state: &DialogState) {
     let mut client = RECT::default();
-    // SAFETY: dialog は有効な窓で、client は書き込める。
+    // SAFETY: dialog は有効なウィンドウで、client は書き込める。
     if unsafe { GetClientRect(dialog, &mut client) }.is_err() {
         return;
     }
@@ -552,7 +552,7 @@ fn layout(dialog: HWND, state: &DialogState) {
     let line_height = state.header_line_height.get();
     let mut top = margin;
     for &line in state.header.borrow().iter() {
-        // SAFETY: line は dialog の子の有効な窓。
+        // SAFETY: line は dialog の子の有効なウィンドウ。
         unsafe {
             _ = MoveWindow(
                 line,
@@ -568,7 +568,7 @@ fn layout(dialog: HWND, state: &DialogState) {
     if !state.header.borrow().is_empty() {
         top += margin;
     }
-    // SAFETY: 入力欄は dialog の子の有効な窓。
+    // SAFETY: 入力欄は dialog の子の有効なウィンドウ。
     unsafe {
         _ = MoveWindow(
             state.edit.get(),
@@ -582,7 +582,7 @@ fn layout(dialog: HWND, state: &DialogState) {
     let mut button_left = client.right;
     for &button in state.buttons.borrow().iter().rev() {
         button_left -= margin + button_w;
-        // SAFETY: button は dialog の子の有効な窓。
+        // SAFETY: button は dialog の子の有効なウィンドウ。
         unsafe { _ = MoveWindow(button, button_left, button_top, button_w, button_h, true) };
     }
 }
@@ -649,9 +649,10 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             None => LRESULT(0),
         },
         WM_NEXTDLGCTL => {
-            // lparam が 0 でなければ、wparam は移す先の子の窓。順に移すほうは使われないので扱わない。
+            // lparam が 0 でなければ、wparam は移す先の子のウィンドウ。順に移すほうは使われないので
+            // 扱わない。
             if lparam.0 & 0xffff != 0 {
-                // SAFETY: wparam はこのダイアログの子の窓のハンドルとして渡される。
+                // SAFETY: wparam はこのダイアログの子のウィンドウのハンドルとして渡される。
                 unsafe { _ = SetFocus(Some(HWND(wparam.0 as *mut _))) };
             }
             LRESULT(0)

@@ -1,5 +1,5 @@
 //! タブバーのタイトルに使う、Windows の UI のフォント（メッセージボックスなどのメッセージのフォント）。
-//! 端末のフォントとは別に、窓の DPI に合わせ、メッセージのフォントより少し小さくした大きさで
+//! 端末のフォントとは別に、ウィンドウの DPI に合わせ、メッセージのフォントより少し小さくした大きさで
 //! DirectWrite の書式を作り、文字列の幅を測る。
 
 use std::{cell::RefCell, collections::HashMap};
@@ -61,7 +61,7 @@ pub struct UiFont {
 }
 
 impl UiFont {
-    /// DPI が `dpi` の窓のメッセージのフォントの書体を、その [`TITLE_SIZE_RATIO`] 倍の大きさで。
+    /// DPI が `dpi` のウィンドウのメッセージのフォントの書体を、その [`TITLE_SIZE_RATIO`] 倍の大きさで。
     /// 問い合わせられなければ [`FALLBACK_FAMILY`] の [`FALLBACK_SIZE_PT`] ポイントの同じ割合。
     pub fn for_dpi(dwrite: &IDWriteFactory, dpi: u32) -> windows::core::Result<Self> {
         let (family, message_size_px, weight) = match message_font(dpi) {

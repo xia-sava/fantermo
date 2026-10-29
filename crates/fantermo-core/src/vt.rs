@@ -45,7 +45,7 @@ pub struct MouseInput {
     /// 押した・離したボタン。動かしただけなら、押しているボタン（なければ `None`）。
     pub button: Option<MouseButton>,
     pub mods: Mods,
-    /// 窓の中の位置（ピクセル）。
+    /// ウィンドウの中の位置（ピクセル）。
     pub x: f32,
     pub y: f32,
     /// どれかのボタンを押している。ドラッグとただの移動を区別するのに使う。
@@ -97,7 +97,7 @@ pub fn split_graphemes(text: &str) -> Vec<Grapheme> {
     graphemes
 }
 
-/// マウスの位置。表示している範囲の中のセルと、窓の中のピクセル。
+/// マウスの位置。表示している範囲の中のセルと、ウィンドウの中のピクセル。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PointerPosition {
     pub col: u16,
@@ -176,7 +176,7 @@ pub struct Vt {
     selection_press: PressEvent<'static>,
     selection_drag: DragEvent<'static>,
     selection_release: ReleaseEvent<'static>,
-    /// `frame` で下線を引く範囲（マウスの下のリンク）。
+    /// `frame` で下線を引く範囲（マウスを載せているリンク）。
     link_underline: Vec<LinkSpan>,
 }
 
@@ -655,7 +655,7 @@ impl Vt {
                     view.clear_text_and_decoration();
                     view.blink = false;
                 }
-                // マウスの下のリンクには下線を引く。下線を持つ文字はその下線のまま描く。
+                // マウスを載せているリンクには下線を引く。下線を持つ文字はその下線のまま描く。
                 if view.underline == Underline::None
                     && self
                         .link_underline
@@ -1601,7 +1601,7 @@ mod tests {
         assert!(vt.encode_key(&release).unwrap().is_empty());
     }
 
-    /// 窓の大きさを変えている間は、Windows の処理の上にウィンドウプロシージャが積まれて呼ばれ、
+    /// ウィンドウの大きさを変えている間は、Windows の処理の上にウィンドウプロシージャが積まれて呼ばれ、
     /// スタックの残りが少ない。そこで桁数を増やしても、スタックがあふれないこと。
     #[test]
     fn growing_columns_fits_in_a_small_stack() {

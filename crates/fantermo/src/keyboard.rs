@@ -13,7 +13,7 @@ const DEAD_KEY_FLAG: u32 = 0x8000_0000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyPosition {
     pub scan_code: u16,
-    /// 拡張キー（右の Ctrl と Alt、矢印キーの島、テンキーの Enter など）。
+    /// 拡張キー（右の Ctrl と Alt、矢印キーのブロック、テンキーの Enter など）。
     pub extended: bool,
     /// 押されたままで繰り返されている。
     pub repeated: bool,

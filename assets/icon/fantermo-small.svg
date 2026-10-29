@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
-  <!-- fantermo のアイコン（24 px 以下）。fantermo.svg と同じ図案を、地と画面を広げ、「%」の線を太くして描く -->
+  <!-- fantermo のアイコン（24 px 以下）。fantermo.svg と同じ図案を、背景と画面を広げ、「%」の線を太くして描く -->
   <defs>
     <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#ffdb4d"/>

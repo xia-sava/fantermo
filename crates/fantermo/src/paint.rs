@@ -1,5 +1,5 @@
-//! 端末の画面（[`fantermo_core::frame::Frame`]）のほかに窓に描くもの。セルの格子によらず、ピクセルの
-//! 位置で塗りつぶし・形・文字を並べる。タブバーとスクロールバーに使う。
+//! 端末の画面（[`fantermo_core::frame::Frame`]）のほかにウィンドウに描くもの。セルの格子によらず、
+//! ピクセルの位置で塗りつぶし・形・文字を並べる。タブバーとスクロールバーに使う。
 
 use std::f32::consts::{FRAC_PI_2, PI};
 
@@ -10,11 +10,11 @@ use crate::boxdraw::Shape;
 /// 円や円弧を多角形にするときの、一周の頂点の数。
 const CIRCLE_SEGMENTS: usize = 48;
 
-/// タブバーとスクロールバーの寸法の定数を決めた DPI。定数はこの DPI でのピクセルで、窓の DPI に
+/// タブバーとスクロールバーの寸法の定数を決めた DPI。定数はこの DPI でのピクセルで、ウィンドウの DPI に
 /// 比例させて使う（[`scale`]）。
 pub const BASE_DPI: u32 = 96;
 
-/// DPI が `dpi` の窓での、[`BASE_DPI`] のときに `px` ピクセルの長さ。少なくとも 1 ピクセル。
+/// DPI が `dpi` のウィンドウでの、[`BASE_DPI`] のときに `px` ピクセルの長さ。少なくとも 1 ピクセル。
 pub fn scale(px: u32, dpi: u32) -> u32 {
     ((px * dpi + BASE_DPI / 2) / BASE_DPI).max(1)
 }
@@ -31,7 +31,7 @@ pub fn mix(from: Rgb, to: Rgb, ratio: f32) -> Rgb {
     }
 }
 
-/// バックバッファ（窓のクライアント領域）の中の矩形。単位はピクセル。
+/// バックバッファ（ウィンドウのクライアント領域）の中の矩形。単位はピクセル。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Area {
     pub x: u32,

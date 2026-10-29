@@ -9,9 +9,9 @@
 //!   表の最後に足す。表がなければ、ファイルの最後に表ごと足す。
 //! - 既定値に戻した項目は、その行を既定値の `# キー = …` のコメントの行にする（`default_profile` は
 //!   既定値を一つに書けないので、それまでの値をコメントにする）。上に書いた説明のコメントは残る。
-//! - プロファイル（`[[profiles]]`）は、名前で突き合わせて（突き合わなければコマンドラインが同じ表と）
-//!   変えた値だけを書き換え、なくなった表を消し、新しい表を作って、設定の順に並べる。表がなければ最初の
-//!   表の見出しの前に足す。プロファイルを書いたら、最上位の `shell` の行はコメントにする。既定のプロファイル
+//! - プロファイル（`[[profiles]]`）は、名前で照合して（一致しなければコマンドラインが同じ表と）変えた
+//!   値だけを書き換え、なくなった表を消し、新しい表を作って、設定の順に並べる。表がなければ最初の表の
+//!   見出しの前に足す。プロファイルを書いたら、最上位の `shell` の行はコメントにする。既定のプロファイル
 //!   だけに戻したら、表を消す。
 //! - `[colors]` と `[colors.…]` の色は既定の色を一つに書けないので、既定に戻した色はそれまでの値を
 //!   コメントにする。
@@ -60,7 +60,7 @@ impl Setting {
         Setting::BackgroundFit,
     ];
 
-    /// 項目を置く表の道筋。最上位なら空。
+    /// 項目を置く表のキーのパス。最上位なら空。
     fn path(self) -> &'static [&'static str] {
         match self {
             Setting::DefaultProfile => &[],
@@ -116,7 +116,7 @@ impl Setting {
     }
 }
 
-/// `[keys]` の表の道筋。
+/// `[keys]` の表のキーのパス。
 const KEYS_PATH: &[&str] = &["keys"];
 
 /// 最上位のキーの名前。
@@ -204,7 +204,7 @@ fn written_image_settings(item: &Value) -> (Option<BackgroundFit>, Option<f32>) 
 }
 
 /// ファイルに書いてある `background.images` の配列 `written` を、一覧 `images` に合わせて書き換えた
-/// 配列。項目はパスで突き合わせ（同じパスが二つあれば前から順に）、一覧にない項目は消し、一覧にしか
+/// 配列。項目はパスで照合し（同じパスが二つあれば前から順に）、一覧にない項目は消し、一覧にしか
 /// ない項目は最後に足す。読めない項目、項目の前のコメント、並びは残す。収め方と濃さを変えた項目だけを
 /// 書き換え、全体の値に任せるようにした表は（ほかのキーがなければ）文字列に戻す。
 fn merged_images(written: &Array, images: &[BackgroundImage]) -> Array {
@@ -529,10 +529,10 @@ fn profile_inline_table(profile: &Profile) -> Value {
     Value::InlineTable(table)
 }
 
-/// `[[profiles]]` の表を、`wanted` に合わせて `wanted` の順に並べ直す。書いてある表とは名前で突き合わせ、
-/// 突き合わなかったものはコマンドラインで突き合わせる（名前だけを変えたとき）。突き合った表は、変えた
-/// 値だけを書き換えてコメントと知らないキーを残す。突き合わなかった表は消し、新しいプロファイルは表を
-/// 作る。名前のない表（読めない表）は最後にそのまま残す。
+/// `[[profiles]]` の表を、`wanted` に合わせて `wanted` の順に並べ直す。書いてある表とは名前で照合し、
+/// 一致しなかったものはコマンドラインで照合する（名前だけを変えたとき）。一致した表は、変えた値だけを
+/// 書き換えてコメントと知らないキーを残す。一致しなかった表は消し、新しいプロファイルは表を作る。名前の
+/// ない表（読めない表）は最後にそのまま残す。
 fn merge_profile_tables(doc: &mut DocumentMut, wanted: &[Profile]) {
     let text_of =
         |table: &Table, key: &str| table.get(key).and_then(Item::as_str).map(str::to_owned);
@@ -708,7 +708,7 @@ fn path_name(path: &[&str]) -> String {
     path.join(".")
 }
 
-/// 道筋 `path` の表。
+/// キーのパス `path` の表。
 fn table_at<'a>(doc: &'a DocumentMut, path: &[&str]) -> Option<&'a Table> {
     let mut table = doc.as_table();
     for name in path {
@@ -725,8 +725,8 @@ fn table_at_mut<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> Option<&'a mut T
     Some(table)
 }
 
-/// 道筋 `path` の表。無ければ、`create` なら最後に作る（途中の表は見出しを書かない表にする）。表で
-/// ないものが書いてあればエラー。
+/// キーのパス `path` の表。無ければ、`create` なら最後に作る（途中の表は見出しを書かない表にする）。
+/// 表でないものが書いてあればエラー。
 fn section_mut<'a>(
     doc: &'a mut DocumentMut,
     path: &[&str],
@@ -1700,7 +1700,8 @@ images = ['C:\walls', 'D:\pics\*.png']",
         edited.profiles.push(profile("d", "wsl.exe"));
         edited.default_profile = Some("c2".to_owned());
         let updated = update(text, &base, &edited).unwrap();
-        // 名前もコマンドラインも違う c の表は、突き合わせずに作り直す。先頭のコメントは最初の表の前に残す。
+        // 名前もコマンドラインも違う c の表は、どの表とも一致しないので作り直す。先頭のコメントは最初の
+        // 表の前に残す。
         assert_eq!(
             updated,
             "default_profile = \"c2\"\n\n# head\n[[profiles]]\nname = 'b'\ncommand = 'pwsh.exe' # mine\n\n[[profiles]]\nname = \"c2\"\ncommand = \"zsh.exe -l\"\n\n[[profiles]]\nname = \"d\"\ncommand = \"wsl.exe\"\n\n[font]\nsize = 9\n"

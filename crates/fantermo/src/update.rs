@@ -6,8 +6,8 @@
 //! 「更新を確認」を押すと、GitHub の `latest` のリリースから更新の情報 `latest.json` と署名
 //! `latest.json.sig` を取得し、埋め込んだ公開鍵で署名を確かめてから読み、バージョンを比べる。新しい
 //! バージョンを入れるときは、MSI を一時フォルダにダウンロードして SHA-256 を照合し、fantermo の外で動く
-//! スクリプト（`apply`）に引き渡してから fantermo を閉じる。取得とダウンロードは窓を止めないよう別の
-//! スレッドで行い、終わったら窓にメッセージで知らせる。
+//! スクリプト（`apply`）に引き渡してから fantermo を閉じる。取得とダウンロードはウィンドウを止めない
+//! よう別のスレッドで行い、終わったらウィンドウにメッセージで知らせる。
 //!
 //! 取得先はアプリが組み立てる。`latest.json` から使うのはバージョンと MSI の SHA-256 だけ。
 
@@ -105,13 +105,13 @@ pub enum Work {
     Download(Release),
 }
 
-/// 別のスレッドから窓へ渡す結果。
+/// 別のスレッドからウィンドウへ渡す結果。
 pub enum Event {
     Checked(Result<Comparison, CheckError>),
     Downloaded(Result<Downloaded, DownloadError>),
 }
 
-/// `work` を別のスレッドで始める。終わったら結果を `events` に送り、`notify` で窓に知らせる。
+/// `work` を別のスレッドで始める。終わったら結果を `events` に送り、`notify` でウィンドウに知らせる。
 /// スレッドを作れなければ偽を返す。
 pub fn start(work: Work, events: Sender<Event>, notify: impl Fn() + Send + 'static) -> bool {
     let spawned = std::thread::Builder::new()
@@ -180,7 +180,7 @@ impl fmt::Display for CheckError {
     }
 }
 
-/// 更新の情報と署名を取得し、署名を確かめてから、いまのバージョンと比べる。時間がかかるので、窓の
+/// 更新の情報と署名を取得し、署名を確かめてから、いまのバージョンと比べる。時間がかかるので、ウィンドウの
 /// スレッドからは呼ばない。
 fn check() -> Result<Comparison, CheckError> {
     let current = current_version().ok_or(CheckError::CurrentVersion)?;
@@ -282,7 +282,7 @@ impl Drop for Downloaded {
 }
 
 /// `release` の MSI をダウンロードして SHA-256 を照合し、取得のたびに作る一時フォルダに置く。
-/// 時間がかかるので、窓のスレッドからは呼ばない。
+/// 時間がかかるので、ウィンドウのスレッドからは呼ばない。
 fn download(release: &Release) -> Result<Downloaded, DownloadError> {
     let bytes = http::get(RELEASE_HOST, &release_path(MSI_NAME), MSI_MAX_BYTES)
         .map_err(DownloadError::Fetch)?;
@@ -356,7 +356,7 @@ impl Downloaded {
         }
     }
 
-    /// 更新を当てるスクリプトに引き渡す。スクリプトは、この fantermo と `others` のプロセスが終わるのを
+    /// 更新を適用するスクリプトに引き渡す。スクリプトは、この fantermo と `others` のプロセスが終わるのを
     /// 待ってから MSI を入れるので、成功したら fantermo を閉じる。
     ///
     /// 照合してから引き渡すまでの間に MSI が差し替えられていないよう、引き渡す前にもう一度照合する。

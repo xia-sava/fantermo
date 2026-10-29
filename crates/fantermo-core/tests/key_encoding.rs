@@ -31,7 +31,7 @@ fn ctrl_c_without_text_is_etx() {
 }
 
 /// Windows は Ctrl+C を文字 U+0003 としても届ける。これを文字として付けると、変換器は
-/// 普通のシェルが無視する CSI u を出す。窓の層は制御文字をキーの情報に付けないこと。
+/// 普通のシェルが無視する CSI u を出す。ウィンドウの層は制御文字をキーの情報に付けないこと。
 #[test]
 fn ctrl_c_with_control_char_text_is_csi_u() {
     assert_eq!(encode_ctrl_c(Some("\x03")), b"\x1b[3;5u");

@@ -1,4 +1,4 @@
-//! 端末の窓。Win32 のメッセージを受け、端末の状態・バックエンド・描画をつなぐ。
+//! 端末のウィンドウ。Win32 のメッセージを受け、端末の状態・バックエンド・描画をつなぐ。
 
 use std::{
     cell::RefCell,
@@ -98,10 +98,10 @@ use crate::{
 const WINDOW_CLASS: PCWSTR = w!("fantermo");
 const WINDOW_TITLE: &str = "fantermo";
 
-/// 窓のスタイル。
+/// ウィンドウのスタイル。
 const MAIN_WINDOW_STYLE: WINDOW_STYLE = WS_OVERLAPPEDWINDOW;
 
-/// 端末の出力が届いたときと子プロセスが終了したときに、読むためのスレッドなどが窓のスレッドを
+/// 端末の出力が届いたときと子プロセスが終了したときに、読むためのスレッドなどがウィンドウのスレッドを
 /// 起こすメッセージ。`wparam` はその端末の [`SessionId`]。
 const WM_APP_WAKE: u32 = WM_APP + 1;
 
@@ -138,11 +138,11 @@ const SCROLL_BAR_REPEAT_INTERVAL: Duration = Duration::from_millis(50);
 /// キーボードから開いた WM_CONTEXTMENU が `lparam` に入れてくる位置。
 const KEYBOARD_CONTEXT_MENU_POSITION: (i32, i32) = (-1, -1);
 
-/// 起動したときの大きさ（セルの数）。窓の状態ファイルに大きさを覚えていないときに使う。
+/// 起動したときの大きさ（セルの数）。ウィンドウの状態ファイルに大きさを覚えていないときに使う。
 const INITIAL_COLS: u16 = 100;
 const INITIAL_ROWS: u16 = 30;
 
-/// 開発用。起動したときの窓の DPI を、この環境変数の値とみなす。倍率の違うモニタへ移したときの
+/// 開発用。起動したときのウィンドウの DPI を、この環境変数の値とみなす。倍率の違うモニタへ移したときの
 /// 作り直しを、モニタを使わずに確かめるために使う。
 const DPI_ENV: &str = "FANTERMO_DPI";
 
@@ -196,11 +196,12 @@ fn random_seed() -> u64 {
     hasher.finish()
 }
 
-/// 窓を開き、子プロセスを起動して、窓が閉じるまでメッセージを処理する。最後の端末の子プロセスが終わって
-/// 窓を閉じたときはその終了コードを、利用者が最後の端末を閉じたときは 0 を返す。`arguments` は fantermo の引数（子プロセスのコマンドライン）。`config_path` は
-/// 設定ファイルの場所で、`loaded` はそこから読んだ設定。読んだときの警告は、窓を出してから見せる。
-/// `state_path` は窓の状態ファイルの場所で、`state` はそこから読んだ状態。窓を見せる前に、覚えていた
-/// 位置・大きさに戻し、閉じるときに書く。
+/// ウィンドウを開き、子プロセスを起動して、ウィンドウが閉じるまでメッセージを処理する。最後の端末の
+/// 子プロセスが終わってウィンドウを閉じたときはその終了コードを、利用者が最後の端末を閉じたときは 0 を
+/// 返す。`arguments` は fantermo の引数（子プロセスのコマンドライン）。`config_path` は設定ファイルの
+/// 場所で、`loaded` はそこから読んだ設定。読んだときの警告は、ウィンドウを出してから見せる。
+/// `state_path` はウィンドウの状態ファイルの場所で、`state` はそこから読んだ状態。ウィンドウを見せる前に、
+/// 覚えていた位置・大きさに戻し、閉じるときに書く。
 pub fn run(
     arguments: Option<String>,
     config_path: Option<PathBuf>,
@@ -237,17 +238,17 @@ pub fn run(
     )?;
     app.state_path = state_path;
     let app = Box::into_raw(Box::new(RefCell::new(app)));
-    // SAFETY: hwnd はこのスレッドが作った窓。ポインタは WM_NCDESTROY で取り戻して解放する。
+    // SAFETY: hwnd はこのスレッドが作ったウィンドウ。ポインタは WM_NCDESTROY で取り戻して解放する。
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, app as isize) };
 
-    // 窓を置いたモニタの DPI がシステムの DPI と違えば、DPI が変わったときと同じように作り直す。
+    // ウィンドウを置いたモニタの DPI がシステムの DPI と違えば、DPI が変わったときと同じように作り直す。
     let window_dpi = dpi_from_env().unwrap_or_else(|| {
-        // SAFETY: hwnd は有効な窓。
+        // SAFETY: hwnd は有効なウィンドウ。
         unsafe { GetDpiForWindow(hwnd) }
     });
     if window_dpi != system_dpi {
         change_dpi_in_place(hwnd, window_dpi);
-        // 作り直しは桁数と行数を保って窓の大きさを変えるので、覚えていた大きさに戻し直す。桁数と
+        // 作り直しは桁数と行数を保ってウィンドウの大きさを変えるので、覚えていた大きさに戻し直す。桁数と
         // 行数は、届く WM_SIZE で新しいセルの寸法から決め直す。
         if let Some(window) = &restored {
             window_state::restore_hidden(hwnd, window);
@@ -259,7 +260,7 @@ pub fn run(
     } else {
         SW_SHOWDEFAULT
     };
-    // SAFETY: hwnd は有効な窓。
+    // SAFETY: hwnd は有効なウィンドウ。
     unsafe { _ = ShowWindow(hwnd, show) };
     // メッセージループの外なので、App の借用はない。
     if let Some(text) = notice {
@@ -316,8 +317,8 @@ fn dpi_from_env() -> Option<u32> {
     }
 }
 
-/// 窓の左上を動かさずに、DPI が `dpi` に変わったときの処理（フォントとアトラスの作り直し）をさせる。
-/// 桁数と行数は保つ。DPI が変わらず、フォントの設定が変わったときにも使う。
+/// ウィンドウの左上を動かさずに、DPI が `dpi` に変わったときの処理（フォントとアトラスの作り直し）を
+/// させる。桁数と行数は保つ。DPI が変わらず、フォントの設定が変わったときにも使う。
 fn change_dpi_in_place(hwnd: HWND, dpi: u32) {
     let Some(app) = app_of(hwnd) else {
         return;
@@ -331,11 +332,11 @@ fn change_dpi_in_place(hwnd: HWND, dpi: u32) {
         }
     };
     let mut rect = RECT::default();
-    // SAFETY: hwnd は有効な窓で、rect は書き込める。
+    // SAFETY: hwnd は有効なウィンドウで、rect は書き込める。
     if let Err(e) = unsafe { GetWindowRect(hwnd, &mut rect) } {
         tracing::warn!("failed to get the window position: {e}");
     }
-    // 枠の大きさは、いまの窓の枠から取る。DPI_ENV で DPI を差し替えたときも、枠は窓の実際の
+    // 枠の大きさは、いまのウィンドウの枠から取る。DPI_ENV で DPI を差し替えたときも、枠はウィンドウの実際の
     // DPI で付くため。
     let (current_width, current_height) = client_size(hwnd);
     let frame_width = (rect.right - rect.left) - current_width as i32;
@@ -344,7 +345,7 @@ fn change_dpi_in_place(hwnd: HWND, dpi: u32) {
     rect.bottom = rect.top + client.cy + frame_height;
     // WM_DPICHANGED の wparam は、下位に横の DPI、上位に縦の DPI。
     let wparam = WPARAM((dpi | (dpi << 16)) as usize);
-    // SAFETY: hwnd は有効な窓。rect は処理が終わるまで生きている。借用は持っていない。
+    // SAFETY: hwnd は有効なウィンドウ。rect は処理が終わるまで生きている。借用は持っていない。
     unsafe {
         SendMessageW(
             hwnd,
@@ -385,7 +386,7 @@ fn grid_pixels(font: &Font, cols: u16, rows: u16) -> SIZE {
     }
 }
 
-/// 窓のクライアント領域のうち、端末の画面の周りに取る場所の寸法。
+/// ウィンドウのクライアント領域のうち、端末の画面の周りに取る場所の寸法。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Insets {
     /// 上端のタブバーの高さ（[`tab_bar::height`]）。
@@ -399,7 +400,7 @@ struct Insets {
 }
 
 impl Insets {
-    /// DPI が `dpi` の窓での寸法。`scroll_bar_width` は設定のスクロールバーの幅、`padding` は設定の
+    /// DPI が `dpi` のウィンドウでの寸法。`scroll_bar_width` は設定のスクロールバーの幅、`padding` は設定の
     /// 余白（どちらも 96 DPI でのピクセル。DPI に比例させる）。
     fn new(dpi: u32, scroll_bar_width: u32, padding: u32) -> Self {
         Self {
@@ -483,7 +484,7 @@ fn area_to_client(area: Area, x: i32, y: i32) -> (i32, i32) {
     (x + area.x as i32, y + area.y as i32)
 }
 
-/// クライアント領域の大きさが `client` になる、DPI が `dpi` の窓の大きさ（枠を含む）。
+/// クライアント領域の大きさが `client` になる、DPI が `dpi` のウィンドウの大きさ（枠を含む）。
 fn window_size(client: SIZE, dpi: u32) -> windows::core::Result<SIZE> {
     let mut rect = RECT {
         left: 0,
@@ -501,7 +502,7 @@ fn window_size(client: SIZE, dpi: u32) -> windows::core::Result<SIZE> {
     })
 }
 
-/// 窓を作る。大きさは、`font` のセルを [`INITIAL_COLS`] × [`INITIAL_ROWS`] 並べた端末の画面に、
+/// ウィンドウを作る。大きさは、`font` のセルを [`INITIAL_COLS`] × [`INITIAL_ROWS`] 並べた端末の画面に、
 /// タブバーと幅 `scroll_bar_width` のスクロールバーと余白 `padding`（どちらも設定の値）を足したもの。
 fn create_window(
     font: &Font,
@@ -560,7 +561,7 @@ fn create_window(
 
 fn message_loop() -> u32 {
     let mut msg = MSG::default();
-    // SAFETY: msg は書き込める。窓は問わず、このスレッドのメッセージを取る。
+    // SAFETY: msg は書き込める。ウィンドウは問わず、このスレッドのメッセージを取る。
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
         // SAFETY: msg は GetMessageW が埋めたもの。
         unsafe {
@@ -571,7 +572,7 @@ fn message_loop() -> u32 {
     msg.wParam.0 as u32
 }
 
-/// 入力の処理のあとで、窓の借用を手放してからすること。ダイアログやメニューは自分でメッセージを
+/// 入力の処理のあとで、ウィンドウの借用を手放してからすること。ダイアログやメニューは自分でメッセージを
 /// 回すので、借用を持ったまま開くと、その間に届いたメッセージの処理が飛ばされる。
 enum Deferred {
     /// 改行を含む貼り付けの内容を、編集のダイアログで確かめる。
@@ -582,7 +583,7 @@ enum Deferred {
     EditSettings,
     /// コンテキストメニューか、タブバーのメニューのボタンのメニューを出す。
     Menu(MenuRequest),
-    /// 窓を閉じる。最後の端末を閉じたときと、メニューで終了を選んだときに使う。
+    /// ウィンドウを閉じる。最後の端末を閉じたときと、メニューで終了を選んだときに使う。
     CloseWindow,
     /// `topic` についての警告 `text` を見せる。
     Warn { topic: Topic, text: String },
@@ -594,7 +595,7 @@ enum Deferred {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ScrollBarDrag {
     /// つまみをドラッグしている。`grab` は、押した位置のつまみの上端からの高さ。動かしても、つまみの
-    /// 中の押した位置をマウスの下に保つ。
+    /// 中の押した位置をマウスの位置に保つ。
     Thumb { grab: i32 },
     /// つまみの外を押し続けている。つまみがマウスの位置 `y` に来るまで、`direction` へページを送る。
     Page {
@@ -622,12 +623,12 @@ struct App {
     font: Font,
     /// タブバーのタイトルの書体（Windows の UI のフォント）。
     ui_font: Rc<UiFont>,
-    /// いまの窓の DPI。
+    /// いまのウィンドウの DPI。
     dpi: u32,
     /// 設定ファイルの場所。
     config_path: Option<PathBuf>,
-    /// 窓の状態ファイルの場所。窓を閉じるときと、ログオフ・シャットダウンのときに書く。`None` なら
-    /// 書かない。
+    /// ウィンドウの状態ファイルの場所。ウィンドウを閉じるときと、ログオフ・シャットダウンのときに書く。
+    /// `None` なら書かない。
     state_path: Option<PathBuf>,
     /// `font` を探したときの設定。
     font_config: FontConfig,
@@ -639,19 +640,19 @@ struct App {
     profiles: Vec<Profile>,
     /// 設定の既定のプロファイルの名前。`None` なら先頭。
     default_profile: Option<String>,
-    /// 窓が持つ端末。タブの並びの順。少なくとも一つある。
+    /// ウィンドウが持つ端末。タブの並びの順。少なくとも一つある。
     sessions: Vec<Session>,
     /// 表示している端末の、`sessions` の中の位置。
     active: usize,
     /// 次に開く端末の番号。閉じた端末の番号は使い直さない（閉じたあとに届く知らせを捨てるため）。
     next_session_id: usize,
-    /// 窓のクライアント領域のうち、表示している端末を描く領域。
+    /// ウィンドウのクライアント領域のうち、表示している端末を描く領域。
     terminal_area: Area,
     renderer: Renderer,
     dump: Option<ScreenDump>,
-    /// 窓のタイトルに出している文字列。
+    /// ウィンドウのタイトルに出している文字列。
     window_title: String,
-    /// 最後の端末が終わったときの、その子プロセスの終了コード。窓を閉じたあとの終了コードにする。
+    /// 最後の端末が終わったときの、その子プロセスの終了コード。ウィンドウを閉じたあとの終了コードにする。
     exit: Option<ExitCode>,
     /// キーを伴わずに届く文字（IME の確定など）を組み立てる。
     text_input: Utf16Assembler,
@@ -659,7 +660,7 @@ struct App {
     wheel_lines_per_notch: u32,
     /// ダブルクリックの判定に使う時計。
     clock: Instant,
-    /// マウスの、窓のクライアント領域の中の位置。窓の外へ出たら `None`。
+    /// マウスの、ウィンドウのクライアント領域の中の位置。ウィンドウの外へ出たら `None`。
     pointer_in_window: Option<(i32, i32)>,
     /// fantermo が受け持つキーの割り当て。
     keymap: Keymap,
@@ -669,17 +670,17 @@ struct App {
     background: BackgroundConfig,
     /// 背景画像を選ぶ乱数。
     random: Random,
-    /// 窓のクライアント領域のうち、背景画像を敷く領域。
+    /// ウィンドウのクライアント領域のうち、背景画像を敷く領域。
     backdrop_area: Area,
     /// 割り当ての動作に使ったので、離したときにも端末へ送らないキー。タブを切り替えたあとに
-    /// 離したことが届くので、端末ごとではなく窓に持つ。
+    /// 離したことが届くので、端末ごとではなくウィンドウに持つ。
     suppressed_release: Option<Key>,
-    /// タブバーの上で押したマウスのボタンと、そのときマウスの下にあったもの。離すまで、マウスの
+    /// タブバーの上で押したマウスのボタンと、そのときマウスを載せていたもの。離すまで、マウスの
     /// 操作を端末へ送らない。
     tab_bar_press: Option<(MouseButton, Option<Hit>)>,
-    /// タブバーの上の、マウスの下にあるもの。変わったときだけタブバーを描き直す。
+    /// タブバーの上の、マウスを載せているもの。変わったときだけタブバーを描き直す。
     tab_bar_hover: Option<Hit>,
-    /// 窓がアクティブ（前面）。WM_ACTIVATE で決める。
+    /// ウィンドウがアクティブ（前面）。WM_ACTIVATE で決める。
     window_active: bool,
     /// 点滅の文字を見せている。点滅させていないときは `true`。
     blink_visible: bool,
@@ -689,7 +690,7 @@ struct App {
     scroll_bar_width: u32,
     /// 設定の端末の画面の余白（96 DPI でのピクセル）。
     padding: u32,
-    /// 窓のクライアント領域のうち、スクロールバーを描く領域。
+    /// ウィンドウのクライアント領域のうち、スクロールバーを描く領域。
     scroll_bar_area: Area,
     /// スクロールバーの上で押したマウスのボタンと、左ボタンならその操作。離すまで、マウスの操作を
     /// 端末へ送らない。
@@ -708,7 +709,8 @@ struct App {
     settings_written: Option<String>,
     /// 更新の確認かダウンロードを別のスレッドでしているか、その結果を見せている。その間は新しく始めない。
     update_busy: bool,
-    /// 更新のスレッドが結果を送るチャネルの送信側と、窓が受け取る受信側。送ったら `WM_APP_UPDATE` で知らせる。
+    /// 更新のスレッドが結果を送るチャネルの送信側と、ウィンドウが受け取る受信側。送ったら
+    /// `WM_APP_UPDATE` で知らせる。
     update_sender: mpsc::Sender<update::Event>,
     update_events: mpsc::Receiver<update::Event>,
 }
@@ -762,7 +764,7 @@ impl App {
 
         let dump = ScreenDump::from_env();
         if dump.is_some() {
-            // SAFETY: hwnd は有効な窓。
+            // SAFETY: hwnd は有効なウィンドウ。
             unsafe {
                 SetTimer(
                     Some(hwnd),
@@ -970,7 +972,7 @@ impl App {
         }
     }
 
-    /// タブの操作をする。最後の端末を閉じたときは、窓を閉じるよう返す。
+    /// タブの操作をする。最後の端末を閉じたときは、ウィンドウを閉じるよう返す。
     fn run_tab_command(&mut self, command: TabCommand) -> Option<Deferred> {
         let count = self.sessions.len();
         match command {
@@ -1021,7 +1023,7 @@ impl App {
     }
 
     /// `sessions` の `index` の端末を閉じる（子プロセスはバックエンドを破棄して終わらせる）。最後の
-    /// 端末なら閉じずに `true` を返す（窓を閉じると一緒に閉じる）。
+    /// 端末なら閉じずに `true` を返す（ウィンドウを閉じると一緒に閉じる）。
     fn close_session(&mut self, index: usize) -> bool {
         if self.sessions.len() == 1 {
             return true;
@@ -1036,7 +1038,7 @@ impl App {
         if was_active {
             self.on_activated();
         }
-        // タブバーのタブが減り、マウスの下にあるものも変わりうる。
+        // タブバーのタブが減り、マウスを載せているものも変わりうる。
         self.update_tab_bar_hover();
         self.invalidate();
         false
@@ -1064,7 +1066,8 @@ impl App {
         self.session_mut().release_pointer();
     }
 
-    /// 表示する端末が替わった。窓のタイトルとマウスの下のリンクとタブバーのものを合わせ、描き直す。
+    /// 表示する端末が替わった。ウィンドウのタイトルとマウスを載せているリンクとタブバーのものを合わせ、
+    /// 描き直す。
     fn on_activated(&mut self) {
         tracing::debug!(
             "showing terminal {:?} ({} of {})",
@@ -1141,19 +1144,19 @@ impl App {
         self.invalidate();
     }
 
-    /// 窓のクライアント領域の中の位置を、端末を描く領域の左上からの位置にする。
+    /// ウィンドウのクライアント領域の中の位置を、端末を描く領域の左上からの位置にする。
     fn client_to_terminal(&self, x: i32, y: i32) -> (i32, i32) {
         client_to_area(self.terminal_area, x, y)
     }
 
-    /// 端末を描く領域の左上からの位置を、窓のクライアント領域の中の位置にする。
+    /// 端末を描く領域の左上からの位置を、ウィンドウのクライアント領域の中の位置にする。
     fn terminal_to_client(&self, x: i32, y: i32) -> (i32, i32) {
         area_to_client(self.terminal_area, x, y)
     }
 
-    /// 窓のクライアント領域の中の位置を、端末を描く領域の左上からの位置にする。クライアント領域の中で
-    /// セルの外（端末の画面の余白など）なら、いちばん近いセルの中の位置にする。クライアント領域の外
-    /// （ドラッグで窓の外へ出たとき）はそのまま。マウスの選択とアプリへの報告に使う。
+    /// ウィンドウのクライアント領域の中の位置を、端末を描く領域の左上からの位置にする。クライアント領域の
+    /// 中でセルの外（端末の画面の余白など）なら、いちばん近いセルの中の位置にする。クライアント領域の外
+    /// （ドラッグでウィンドウの外へ出たとき）はそのまま。マウスの選択とアプリへの報告に使う。
     fn pointer_in_terminal(&self, x: i32, y: i32) -> (i32, i32) {
         let (terminal_x, terminal_y) = self.client_to_terminal(x, y);
         let (width, height) = client_size(self.hwnd);
@@ -1163,8 +1166,8 @@ impl App {
         clamp_to_grid(terminal_x, terminal_y, self.session().vt.size())
     }
 
-    /// 窓のクライアント領域の中の位置を、表示している範囲のセルに直す。端末を描く領域の外は端のセルに
-    /// する。
+    /// ウィンドウのクライアント領域の中の位置を、表示している範囲のセルに直す。端末を描く領域の外は端の
+    /// セルにする。
     fn pointer(&self, x: i32, y: i32) -> PointerPosition {
         let (x, y) = self.pointer_in_terminal(x, y);
         let size = self.session().vt.size();
@@ -1180,7 +1183,7 @@ impl App {
         }
     }
 
-    /// 窓のクライアント領域の中の位置にあるリンク。
+    /// ウィンドウのクライアント領域の中の位置にあるリンク。
     fn link_at(&self, x: i32, y: i32) -> Option<Link> {
         let (x, y) = self.client_to_terminal(x, y);
         let size = self.session().vt.size();
@@ -1200,8 +1203,8 @@ impl App {
         })
     }
 
-    /// マウスの下のリンクを探し直す。`modifier_held` はリンクを開く修飾キー（Ctrl）を押しているか。
-    /// 変わったら、下線を引き直し、カーソルの形を変える。
+    /// マウスを載せているリンクを探し直す。`modifier_held` はリンクを開く修飾キー（Ctrl）を押している
+    /// か。変わったら、下線を引き直し、カーソルの形を変える。
     fn refresh_hovered_link(&mut self, modifier_held: bool) {
         let link = match self.pointer_in_window {
             Some((x, y)) if modifier_held && !self.session().selecting => self.link_at(x, y),
@@ -1228,8 +1231,8 @@ impl App {
         }
     }
 
-    /// 修飾キーをいま押しているかで、マウスの下のリンクを探し直す。画面の中身や表示している範囲が
-    /// 変わったときに使う。
+    /// 修飾キーをいま押しているかで、マウスを載せているリンクを探し直す。画面の中身や表示している
+    /// 範囲が変わったときに使う。
     fn refresh_hovered_link_now(&mut self) {
         if self.pointer_in_window.is_none() && self.session().hovered_link.is_none() {
             return;
@@ -1252,7 +1255,8 @@ impl App {
         }
     }
 
-    /// マウスが窓のクライアント領域の中の (`x`, `y`) にある。窓の外へ出たことが届くようにする。
+    /// マウスがウィンドウのクライアント領域の中の (`x`, `y`) にある。ウィンドウの外へ出たことが届くように
+    /// する。
     fn track_pointer(&mut self, x: i32, y: i32) {
         if self.pointer_in_window.is_none() {
             let mut track = TRACKMOUSEEVENT {
@@ -1261,7 +1265,7 @@ impl App {
                 hwndTrack: self.hwnd,
                 dwHoverTime: 0,
             };
-            // SAFETY: track は初期化済みで、self.hwnd はこのスレッドの有効な窓。
+            // SAFETY: track は初期化済みで、self.hwnd はこのスレッドの有効なウィンドウ。
             if let Err(e) = unsafe { TrackMouseEvent(&mut track) } {
                 tracing::warn!("failed to track the mouse leaving the window: {e}");
             }
@@ -1269,7 +1273,7 @@ impl App {
         self.pointer_in_window = Some((x, y));
     }
 
-    /// マウスが窓のクライアント領域の外へ出た。
+    /// マウスがウィンドウのクライアント領域の外へ出た。
     fn on_mouse_leave(&mut self) {
         self.pointer_in_window = None;
         self.refresh_hovered_link(false);
@@ -1325,7 +1329,7 @@ impl App {
     }
 
     /// スクロールバーの上で押したまま、マウスが高さ `y` へ動いた。つまみをドラッグしていれば、押した
-    /// 位置がマウスの下に来るようにつまみを動かし、その位置の行を表示する。
+    /// 位置がマウスの位置に来るようにつまみを動かし、その位置の行を表示する。
     fn drag_scroll_bar(&mut self, y: i32) {
         let Some((button, Some(drag))) = self.scroll_bar_press else {
             return;
@@ -1378,7 +1382,7 @@ impl App {
     }
 
     fn set_scroll_bar_timer(&self, delay: Duration) {
-        // SAFETY: self.hwnd は有効な窓。同じ番号のタイマーは掛け直しになる。
+        // SAFETY: self.hwnd は有効なウィンドウ。同じ番号のタイマーは掛け直しになる。
         if unsafe {
             SetTimer(
                 Some(self.hwnd),
@@ -1396,14 +1400,14 @@ impl App {
     }
 
     fn kill_scroll_bar_timer(&self) {
-        // SAFETY: self.hwnd は有効な窓。掛けていなければ失敗するだけ。
+        // SAFETY: self.hwnd は有効なウィンドウ。掛けていなければ失敗するだけ。
         if unsafe { KillTimer(Some(self.hwnd), SCROLL_BAR_TIMER_ID) }.is_err() {
             tracing::debug!("the scroll bar timer was not running");
         }
     }
 
-    /// タブバーの上の、マウスの下にあるものを決め直す。変わったら描き直す。マウスの位置やタブの並びが
-    /// 変わったときに使う。
+    /// タブバーの上の、マウスを載せているものを決め直す。変わったら描き直す。マウスの位置やタブの
+    /// 並びが変わったときに使う。
     fn update_tab_bar_hover(&mut self) {
         let hover = self
             .pointer_in_window
@@ -1421,8 +1425,8 @@ impl App {
     /// （アプリへも送らず、選択も始めない）。そうでなければ、アプリがマウスを求めていればアプリへ送り、
     /// 求めていなければ左ボタンで選択を始める。Shift を押していれば、アプリが求めていても選択にする。
     fn on_button_down(&mut self, button: MouseButton, lparam: LPARAM, wparam: WPARAM) {
-        // 窓の外までドラッグしても離したことが届くように、マウスをキャプチャする。
-        // SAFETY: self.hwnd はこのスレッドの有効な窓。
+        // ウィンドウの外までドラッグしても離したことが届くように、マウスをキャプチャする。
+        // SAFETY: self.hwnd はこのスレッドの有効なウィンドウ。
         unsafe { SetCapture(self.hwnd) };
         let (x, y) = client_position(lparam);
         if let Some(hit) = self.tab_bar_hit(x, y) {
@@ -1552,8 +1556,8 @@ impl App {
         deferred
     }
 
-    /// 窓のクライアント領域の中の (`x`, `y`) がタブバーの上なら、そこにあるもの（タブの間や右の空きなら
-    /// `None`）を `Some` で返す。タブバーの外なら `None`。
+    /// ウィンドウのクライアント領域の中の (`x`, `y`) がタブバーの上なら、そこにあるもの（タブの間や右の
+    /// 空きなら `None`）を `Some` で返す。タブバーの外なら `None`。
     fn tab_bar_hit(&self, x: i32, y: i32) -> Option<Option<Hit>> {
         self.tab_bar_area()
             .contains(x, y)
@@ -1570,12 +1574,13 @@ impl App {
         )
     }
 
-    /// タブバーの上で押した `button` を (`x`, `y`) で離した。押したときのマウスの下のものは `pressed`。
+    /// タブバーの上で押した `button` を (`x`, `y`) で離した。押したときにマウスを載せていたものは
+    /// `pressed`。
     /// 左ボタンは押したのと同じボタンの上で離したら、閉じるボタンならそのタブを閉じ、新しいタブのボタン
     /// なら新しいタブを開き、プロファイルの一覧のボタンなら一覧を出すよう返す（タブは押したときに
     /// 切り替えてある）。中ボタンを同じタブの上で離したらそのタブを閉じる。右ボタンは、新しいタブと
     /// プロファイルの一覧のボタンの上で押して離したら一覧を、ほかはコンテキストメニューを出すよう返す。
-    /// 最後のタブを閉じたら、窓を閉じるよう返す。
+    /// 最後のタブを閉じたら、ウィンドウを閉じるよう返す。
     fn on_tab_bar_click(
         &mut self,
         button: MouseButton,
@@ -1651,7 +1656,7 @@ impl App {
         })
     }
 
-    /// `menu` を出す要求。位置は窓の左上で、隠さない矩形はない。
+    /// `menu` を出す要求。位置はウィンドウの左上で、隠さない矩形はない。
     fn menu_request(&self, menu: Menu) -> MenuRequest {
         MenuRequest {
             keys: self.keymap.clone(),
@@ -1666,7 +1671,7 @@ impl App {
         }
     }
 
-    /// 窓のクライアント領域の中の (`x`, `y`) にコンテキストメニューを出すよう返す。
+    /// ウィンドウのクライアント領域の中の (`x`, `y`) にコンテキストメニューを出すよう返す。
     fn context_menu(&self, x: i32, y: i32) -> Deferred {
         let (screen_x, screen_y) = self.client_to_screen(x, y);
         Deferred::Menu(MenuRequest {
@@ -1742,10 +1747,10 @@ impl App {
         self.invalidate();
     }
 
-    /// 窓のクライアント領域の中の位置を、画面での位置にする。
+    /// ウィンドウのクライアント領域の中の位置を、画面での位置にする。
     fn client_to_screen(&self, x: i32, y: i32) -> (i32, i32) {
         let mut point = POINT { x, y };
-        // SAFETY: self.hwnd は有効な窓で、point は書き込める。
+        // SAFETY: self.hwnd は有効なウィンドウで、point は書き込める。
         if !unsafe { ClientToScreen(self.hwnd, &mut point) }.as_bool() {
             tracing::warn!("failed to convert the menu position");
         }
@@ -1763,11 +1768,11 @@ impl App {
         })
     }
 
-    /// 画面での位置（WM_MOUSEWHEEL の `lparam`）を、窓のクライアント領域の中の位置にする。
+    /// 画面での位置（WM_MOUSEWHEEL の `lparam`）を、ウィンドウのクライアント領域の中の位置にする。
     fn screen_to_client(&self, lparam: LPARAM) -> (i32, i32) {
         let (x, y) = client_position(lparam);
         let mut point = POINT { x, y };
-        // SAFETY: self.hwnd は有効な窓で、point は書き込める。
+        // SAFETY: self.hwnd は有効なウィンドウで、point は書き込める。
         if !unsafe { ScreenToClient(self.hwnd, &mut point) }.as_bool() {
             tracing::warn!("failed to convert the wheel position");
         }
@@ -1775,7 +1780,7 @@ impl App {
     }
 
     /// アプリがマウスを求めていて Shift を押していなければ、操作をアプリへ送って `true` を返す。
-    /// `x` と `y` は窓のクライアント領域の中の位置（ピクセル）。
+    /// `x` と `y` はウィンドウのクライアント領域の中の位置（ピクセル）。
     fn report_mouse(
         &mut self,
         action: MouseAction,
@@ -1816,7 +1821,7 @@ impl App {
         self.send(c.encode_utf8(&mut buf).as_bytes());
     }
 
-    /// IME の変換中の窓と候補の窓を、いまのカーソルの位置に出させる。
+    /// IME の変換中のウィンドウと候補のウィンドウを、いまのカーソルの位置に出させる。
     fn place_ime_windows(&self) {
         let (col, row) = match self.session().vt.cursor_cell() {
             Ok(cell) => cell,
@@ -1894,7 +1899,7 @@ impl App {
         self.on_viewport_moved();
     }
 
-    /// 表示する範囲を動かした。マウスの下のリンクを探し直し、描き直す。
+    /// 表示する範囲を動かした。マウスを載せているリンクを探し直し、描き直す。
     fn on_viewport_moved(&mut self) {
         self.refresh_hovered_link_now();
         self.update_scroll_position();
@@ -1919,8 +1924,8 @@ impl App {
     }
 
     /// 端末 `id` に出力が届いたか、子プロセスが終わった。出力を流し込み、タイトルとベルを反映する。
-    /// 表示していない端末の出力も流し込む（描くのは表示している端末だけ）。窓を閉じるときは `true` を
-    /// 返す。
+    /// 表示していない端末の出力も流し込む（描くのは表示している端末だけ）。ウィンドウを閉じるときは
+    /// `true` を返す。
     fn on_wake(&mut self, id: SessionId) -> bool {
         let Some(index) = self.sessions.iter().position(|session| session.id() == id) else {
             tracing::debug!("ignoring a wake for an unknown terminal {id:?}");
@@ -1935,7 +1940,7 @@ impl App {
             if events.title_changed {
                 self.update_window_title();
             }
-            // マウスの下の文字が変わったかもしれない。
+            // マウスを載せている文字が変わったかもしれない。
             self.refresh_hovered_link_now();
             self.invalidate();
         } else if events.title_changed || events.bell {
@@ -1951,7 +1956,7 @@ impl App {
     }
 
     /// `sessions` の `index` の端末の子プロセスが `code` で終わった。その端末を閉じる。最後の端末なら、
-    /// それを窓の終了コードにし、窓を閉じるよう `true` を返す。
+    /// それをウィンドウの終了コードにし、ウィンドウを閉じるよう `true` を返す。
     fn on_session_ended(&mut self, index: usize, code: ExitCode) -> bool {
         if !self.close_session(index) {
             return false;
@@ -1960,15 +1965,15 @@ impl App {
         true
     }
 
-    /// 窓のタイトルを、表示している端末のタイトルにする。アプリが付けていなければ既定のタイトル。
-    /// 変わったときだけ窓に設定する。
+    /// ウィンドウのタイトルを、表示している端末のタイトルにする。アプリが付けていなければ既定のタイトル。
+    /// 変わったときだけウィンドウに設定する。
     fn update_window_title(&mut self) {
         let title = tab_title(self.session());
         if title == self.window_title {
             return;
         }
         let title = title.to_owned();
-        // SAFETY: self.hwnd は有効な窓。文字列はこの呼び出しの間は生きている。
+        // SAFETY: self.hwnd は有効なウィンドウ。文字列はこの呼び出しの間は生きている。
         if let Err(e) = unsafe { SetWindowTextW(self.hwnd, &HSTRING::from(&title)) } {
             tracing::warn!("failed to set the window title: {e}");
             return;
@@ -1976,7 +1981,7 @@ impl App {
         self.window_title = title;
     }
 
-    /// ベル。窓が前面になければ、前面に来るまでタスクバーのボタンを点滅させる。音は鳴らさない。
+    /// ベル。ウィンドウが前面になければ、前面に来るまでタスクバーのボタンを点滅させる。音は鳴らさない。
     fn ring_bell(&self) {
         // SAFETY: 引数のない問い合わせ。
         if unsafe { GetForegroundWindow() } == self.hwnd {
@@ -1991,11 +1996,12 @@ impl App {
             // 0 でカーソルの点滅の間隔を使う。
             dwTimeout: 0,
         };
-        // SAFETY: flash は初期化済みで、self.hwnd は有効な窓。戻り値は前の点滅の状態で、失敗ではない。
+        // SAFETY: flash は初期化済みで、self.hwnd は有効なウィンドウ。戻り値は前の点滅の状態で、失敗では
+        // ない。
         unsafe { _ = FlashWindowEx(&flash) };
     }
 
-    /// 窓のクライアント領域の大きさが変わった。端末を描く領域と、端末の大きさを合わせる。
+    /// ウィンドウのクライアント領域の大きさが変わった。端末を描く領域と、端末の大きさを合わせる。
     fn on_resize(&mut self, width: u32, height: u32) {
         if let Err(e) = self.renderer.resize(width, height) {
             tracing::warn!("failed to resize the swap chain: {e}");
@@ -2065,8 +2071,8 @@ impl App {
 
     /// 設定ファイルを読み直す。フォントの設定が変わっていて、そのフォントを測れたら設定を入れ替え、
     /// 作り直しに使う DPI を返す。作り直しは借用を手放してから [`change_dpi_in_place`] で行う。
-    /// スクロールバーの幅や余白が変わったときも、端末の桁数と行数を保って窓の大きさを変えるので、同じく
-    /// 返す。
+    /// スクロールバーの幅や余白が変わったときも、端末の桁数と行数を保ってウィンドウの大きさを変えるので、
+    /// 同じく返す。
     /// グリフの描き方だけが変わったときは、セルの寸法は変わらないので、この場でアトラスだけを作り直す。
     /// 貼り付けの設定はすぐに入れ替える。プロファイルは次に開く端末から使う。
     /// エラーがあれば、それを見せることを返す（借用を手放してから [`run_deferred`] で見せる）。エラーが
@@ -2238,7 +2244,7 @@ impl App {
         ))
     }
 
-    /// DPI が `dpi` に変わったときに、いまの桁数と行数がそのまま収まる窓の大きさ（枠を含む）。
+    /// DPI が `dpi` に変わったときに、いまの桁数と行数がそのまま収まるウィンドウの大きさ（枠を含む）。
     fn scaled_window_size(&self, dpi: u32) -> windows::core::Result<SIZE> {
         window_size(self.scaled_client_size(dpi)?, dpi)
     }
@@ -2266,7 +2272,8 @@ impl App {
     }
 
     /// 表示している端末を端末を描く領域に、タブバーをその上に描いて表示する。表示している範囲の位置も
-    /// 読み直す（出力、窓の大きさの変更、タブの切り替えなど、描き直すことはどれも位置を動かしうる）。
+    /// 読み直す（出力、ウィンドウの大きさの変更、タブの切り替えなど、描き直すことはどれも位置を動かし
+    /// うる）。
     /// `capture` を渡すと、表示する前の画面を PNG で書き出す。
     fn render_to(&mut self, capture: Option<&std::path::Path>) {
         self.update_scroll_position();
@@ -2369,8 +2376,8 @@ impl App {
         Insets::new(dpi, self.scroll_bar_width, self.padding)
     }
 
-    /// タブバーを描く領域。窓の上端に、窓の幅いっぱい。その下の端末の画面の上の余白は含まない（余白の
-    /// 上のマウスは、ほかの余白と同じく端末のいちばん近いセルとみなす）。
+    /// タブバーを描く領域。ウィンドウの上端に、ウィンドウの幅いっぱい。その下の端末の画面の上の余白は
+    /// 含まない（余白の上のマウスは、ほかの余白と同じく端末のいちばん近いセルとみなす）。
     fn tab_bar_area(&self) -> Area {
         Area {
             x: 0,
@@ -2390,7 +2397,7 @@ impl App {
         }
         self.blink_visible = true;
         if blinking {
-            // SAFETY: self.hwnd は有効な窓。
+            // SAFETY: self.hwnd は有効なウィンドウ。
             let started = unsafe {
                 SetTimer(
                     Some(self.hwnd),
@@ -2407,7 +2414,7 @@ impl App {
                 return;
             }
         } else {
-            // SAFETY: self.hwnd は有効な窓。
+            // SAFETY: self.hwnd は有効なウィンドウ。
             if let Err(e) = unsafe { KillTimer(Some(self.hwnd), BLINK_TIMER_ID) } {
                 tracing::warn!("failed to stop the blink timer: {e}");
             }
@@ -2422,7 +2429,7 @@ impl App {
         self.invalidate();
     }
 
-    /// 窓がアクティブになった・でなくなった。アクティブでない間は点滅を止め、文字を見せておく。
+    /// ウィンドウがアクティブになった・でなくなった。アクティブでない間は点滅を止め、文字を見せておく。
     /// 点滅を始めるかどうかは、次に描くときに画面に点滅の文字があるかで決める。
     fn on_activate(&mut self, active: bool) {
         self.window_active = active;
@@ -2437,12 +2444,12 @@ impl App {
     }
 
     fn invalidate(&self) {
-        // SAFETY: self.hwnd は有効な窓。
+        // SAFETY: self.hwnd は有効なウィンドウ。
         unsafe { _ = InvalidateRect(Some(self.hwnd), None, false) };
     }
 }
 
-/// 端末のタブと、表示しているときの窓に出すタイトル。アプリが付けたタイトル、付けていなければ既定の
+/// 端末のタブと、表示しているときのウィンドウに出すタイトル。アプリが付けたタイトル、付けていなければ既定の
 /// タイトル。
 fn tab_title(session: &Session) -> &str {
     match session.title() {
@@ -2466,7 +2473,7 @@ fn poster(hwnd: HWND, message: u32, wparam: WPARAM) -> impl Fn() + Send + Sync +
     // HWND はスレッドをまたいで渡せないので、値だけを持たせる。PostMessageW はどのスレッドからでも呼べる。
     let hwnd_value = hwnd.0 as isize;
     move || {
-        // SAFETY: 窓がすでに壊れていれば失敗するだけで、害はない。
+        // SAFETY: ウィンドウがすでに壊れていれば失敗するだけで、害はない。
         unsafe {
             _ = PostMessageW(Some(HWND(hwnd_value as *mut _)), message, wparam, LPARAM(0));
         }
@@ -2475,7 +2482,7 @@ fn poster(hwnd: HWND, message: u32, wparam: WPARAM) -> impl Fn() + Send + Sync +
 
 fn client_size(hwnd: HWND) -> (u32, u32) {
     let mut rect = RECT::default();
-    // SAFETY: hwnd は有効な窓で、rect は書き込める。
+    // SAFETY: hwnd は有効なウィンドウで、rect は書き込める。
     if let Err(e) = unsafe { GetClientRect(hwnd, &mut rect) } {
         tracing::warn!("failed to get the client size: {e}");
     }
@@ -2485,10 +2492,10 @@ fn client_size(hwnd: HWND) -> (u32, u32) {
     )
 }
 
-/// 窓に結び付けた App を借りて `action` を呼ぶもの。借りられなければ呼ばない。
+/// ウィンドウに結び付けた App を借りて `action` を呼ぶもの。借りられなければ呼ばない。
 type WithApp<'a> = dyn Fn(&mut dyn FnMut(&mut App)) + 'a;
 
-/// 窓の借用を手放した状態で、入力の処理が残したことをする。その結果さらに残ったことも続けてする
+/// ウィンドウの借用を手放した状態で、入力の処理が残したことをする。その結果さらに残ったことも続けてする
 /// （メニューで貼り付けを選び、それが編集のダイアログを要する場合など）。
 fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
     let mut next = deferred;
@@ -2528,7 +2535,7 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
                         }
                     });
                 }
-                // 窓を閉じるので、新しく始めないよう `update_busy` は立てたままにする。
+                // ウィンドウを閉じるので、新しく始めないよう `update_busy` は立てたままにする。
                 update::prompt::Next::Quit => next = Some(Deferred::CloseWindow),
             },
         }
@@ -2615,7 +2622,7 @@ fn edit_settings(hwnd: HWND, with_app: &WithApp) {
         config_path,
     };
     settings_dialog::run(hwnd, request, &mut host);
-    // 開いている間に最後の端末が終わって窓が閉じたら、App はもう無い。
+    // 開いている間に最後の端末が終わってウィンドウが閉じたら、App はもう無い。
     if app_of(hwnd).is_none() {
         return;
     }
@@ -2629,16 +2636,16 @@ fn edit_settings(hwnd: HWND, with_app: &WithApp) {
     }
 }
 
-/// 窓の位置・大きさ・最大化を状態ファイルに書いてから、窓を閉じる。
+/// ウィンドウの位置・大きさ・最大化を状態ファイルに書いてから、ウィンドウを閉じる。
 fn destroy_window(hwnd: HWND) {
     save_window_state(hwnd);
-    // SAFETY: hwnd は有効な窓。借用は持っていない。
+    // SAFETY: hwnd は有効なウィンドウ。借用は持っていない。
     if let Err(e) = unsafe { DestroyWindow(hwnd) } {
         tracing::warn!("failed to destroy the window: {e}");
     }
 }
 
-/// 窓のいまの位置・大きさ・最大化を状態ファイルに書く。
+/// ウィンドウのいまの位置・大きさ・最大化を状態ファイルに書く。
 fn save_window_state(hwnd: HWND) {
     let Some(app) = app_of(hwnd) else {
         return;
@@ -2799,7 +2806,7 @@ fn take_translated_chars(hwnd: HWND) -> Option<Vec<char>> {
     let mut dead = false;
     loop {
         let mut msg = MSG::default();
-        // SAFETY: msg は書き込める。この窓の、指定した種類のメッセージだけを取り出す。
+        // SAFETY: msg は書き込める。このウィンドウの、指定した種類のメッセージだけを取り出す。
         let found = CHAR_MESSAGES.into_iter().find(|&kind| unsafe {
             PeekMessageW(&mut msg, Some(hwnd), kind, kind, PM_REMOVE).as_bool()
         });
@@ -2812,7 +2819,7 @@ fn take_translated_chars(hwnd: HWND) -> Option<Vec<char>> {
     (!dead).then_some(chars)
 }
 
-/// 窓に結び付けた App。WM_NCDESTROY で解放されるまで有効。
+/// ウィンドウに結び付けた App。WM_NCDESTROY で解放されるまで有効。
 fn app_of(hwnd: HWND) -> Option<&'static RefCell<App>> {
     // SAFETY: GWLP_USERDATA には run が入れた App のポインタか 0 が入っている。
     let pointer = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const RefCell<App>;
@@ -2844,7 +2851,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             LRESULT(0)
         }
         WM_PAINT => {
-            // SAFETY: hwnd は有効な窓。描くのは Direct3D なので、更新領域を空にするだけ。
+            // SAFETY: hwnd は有効なウィンドウ。描くのは Direct3D なので、更新領域を空にするだけ。
             unsafe { _ = ValidateRect(Some(hwnd), None) };
             with_app(&mut |app| app.render());
             LRESULT(0)
@@ -2870,7 +2877,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         // 知らせが続けて届くたびにタイマーを掛け直し、止んでから一度だけ読み直す。
         WM_APP_CONFIG_CHANGED => {
-            // SAFETY: hwnd は有効な窓。同じ番号のタイマーは掛け直しになる。
+            // SAFETY: hwnd は有効なウィンドウ。同じ番号のタイマーは掛け直しになる。
             if unsafe {
                 SetTimer(
                     Some(hwnd),
@@ -2895,8 +2902,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             with_app(&mut |app| app.on_scroll_bar_timer());
             LRESULT(0)
         }
-        // ほかの窓にマウスのキャプチャが移ったら（Alt+Tab など）、離したことが届かないので、スクロール
-        // バーの操作を終える。lparam はマウスをキャプチャする窓。
+        // ほかのウィンドウにマウスのキャプチャが移ったら（Alt+Tab など）、離したことが届かないので、
+        // スクロールバーの操作を終える。lparam はマウスをキャプチャするウィンドウ。
         WM_CAPTURECHANGED if lparam.0 != hwnd.0 as isize => {
             with_app(&mut |app| app.end_scroll_bar_press());
             LRESULT(0)
@@ -2905,11 +2912,11 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         WM_ACTIVATE => {
             let active = (wparam.0 & 0xffff) as u32 != WA_INACTIVE;
             with_app(&mut |app| app.on_activate(active));
-            // SAFETY: 受け取った引数をそのまま既定の処理に渡す（フォーカスを窓に移してもらう）。
+            // SAFETY: 受け取った引数をそのまま既定の処理に渡す（フォーカスをウィンドウに移してもらう）。
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_TIMER if wparam.0 == CONFIG_TIMER_ID => {
-            // SAFETY: hwnd は有効な窓。
+            // SAFETY: hwnd は有効なウィンドウ。
             if let Err(e) = unsafe { KillTimer(Some(hwnd), CONFIG_TIMER_ID) } {
                 tracing::warn!("failed to stop the settings timer: {e}");
             }
@@ -2978,13 +2985,13 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
-        // Ctrl を離さないまま窓を離れると、離したことが届かないので、リンクの下線を消しておく。
+        // Ctrl を離さないままウィンドウを離れると、離したことが届かないので、リンクの下線を消しておく。
         WM_KILLFOCUS => {
             with_app(&mut |app| app.refresh_hovered_link(false));
             // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
-        // リンクの上では手の形にする。既定の処理は、マウスが動くたびに窓のクラスの矢印に戻す。
+        // リンクの上では手の形にする。既定の処理は、マウスが動くたびにウィンドウのクラスの矢印に戻す。
         WM_SETCURSOR if (lparam.0 & 0xffff) as u32 == HTCLIENT => {
             let mut on_link = false;
             with_app(&mut |app| {
@@ -3023,7 +3030,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
-        // DPI が変わる前に、変わった後の窓の大きさを問われる。いまの桁数と行数が収まる大きさを返す。
+        // DPI が変わる前に、変わった後のウィンドウの大きさを問われる。いまの桁数と行数が収まる大きさを
+        // 返す。
         WM_GETDPISCALEDSIZE => {
             let dpi = wparam.0 as u32;
             let mut scaled = None;
@@ -3032,7 +3040,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 Err(e) => tracing::warn!("failed to compute the window size for {dpi} DPI: {e}"),
             });
             let Some(scaled) = scaled else {
-                // 0 を返すと、Windows が窓の大きさを DPI の比で拡大する。
+                // 0 を返すと、Windows がウィンドウの大きさを DPI の比で拡大する。
                 return LRESULT(0);
             };
             // SAFETY: WM_GETDPISCALEDSIZE の lparam は、新しい大きさを書き込む SIZE を指す。
@@ -3051,7 +3059,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
             // SAFETY: WM_DPICHANGED の lparam は推奨された矩形を指す。
             let suggested = unsafe { &*(lparam.0 as *const RECT) };
-            // SAFETY: hwnd は有効な窓。WM_SIZE がこの場で届くが、借用は持っていない。
+            // SAFETY: hwnd は有効なウィンドウ。WM_SIZE がこの場で届くが、借用は持っていない。
             if let Err(e) = unsafe {
                 SetWindowPos(
                     hwnd,
@@ -3075,11 +3083,11 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             destroy_window(hwnd);
             LRESULT(0)
         }
-        // ログオフ・シャットダウン・再起動。窓は閉じられないまま、WM_ENDSESSION から戻ったあとで
+        // ログオフ・シャットダウン・再起動。ウィンドウは閉じられないまま、WM_ENDSESSION から戻ったあとで
         // プロセスごと終わらされるので、閉じるときと同じく状態を書く。問われた時点でも書いておく
         // （ENDSESSION_CRITICAL では WM_ENDSESSION のあとに時間がほとんどないため）。書くのは一時
         // ファイルからの置き換えなので、二度書いても、取りやめになっても害はない。終わるのを止めない。
-        // 窓は壊さず、端末と子プロセスはほかのプロセスと一緒に終わらされるのに任せる。
+        // ウィンドウは壊さず、端末と子プロセスはほかのプロセスと一緒に終わらされるのに任せる。
         WM_QUERYENDSESSION => {
             tracing::info!("the session may end (flags {:#x})", lparam.0);
             save_window_state(hwnd);
@@ -3093,7 +3101,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             LRESULT(0)
         }
         WM_DESTROY => {
-            // SAFETY: hwnd は有効な窓。
+            // SAFETY: hwnd は有効なウィンドウ。
             unsafe {
                 _ = KillTimer(Some(hwnd), DUMP_TIMER_ID);
                 _ = KillTimer(Some(hwnd), CONFIG_TIMER_ID);
@@ -3107,7 +3115,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             LRESULT(0)
         }
         WM_NCDESTROY => {
-            // SAFETY: hwnd は有効な窓で、ポインタを外すのはここだけ。
+            // SAFETY: hwnd は有効なウィンドウで、ポインタを外すのはここだけ。
             let pointer = unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) } as *mut RefCell<App>;
             // SAFETY: pointer は run が Box::into_raw で作ったもので、ほかに参照は残っていない。
             drop(unsafe { Box::from_raw(pointer) });
@@ -3129,7 +3137,7 @@ mod tests {
 
     #[test]
     fn mouse_positions_keep_their_sign() {
-        // 窓の外（左上）へドラッグすると、負の位置で届く。
+        // ウィンドウの外（左上）へドラッグすると、負の位置で届く。
         let lparam = LPARAM((((-5i16 as u16) as isize) << 16) | ((-3i16 as u16) as isize));
         assert_eq!(client_position(lparam), (-3, -5));
     }

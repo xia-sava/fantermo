@@ -35,15 +35,15 @@ pub enum Topic {
 /// まとめて見せるときの、警告と警告の区切り。
 const SEPARATOR: &str = "\n\n";
 
-/// メッセージボックスの窓のクラス名。
+/// メッセージボックスのウィンドウのクラス名。
 const MESSAGE_BOX_CLASS: &str = "#32770";
 
 thread_local! {
-    /// 窓のスレッドの警告の待ち行列。
+    /// ウィンドウのスレッドの警告の待ち行列。
     static QUEUE: RefCell<Queue> = RefCell::default();
 }
 
-/// `owner` の窓に、`topic` についての警告 `text` を見せる。メッセージボックスを閉じるまで戻らない。
+/// `owner` のウィンドウに、`topic` についての警告 `text` を見せる。メッセージボックスを閉じるまで戻らない。
 /// すでにメッセージボックスを開いているとき（その中で回るメッセージの処理から呼ばれたとき）は、待たせて
 /// すぐに戻る。開いているものが同じ話題の違う文なら閉じさせ、閉じたあとに新しい文で見せる。
 pub fn warn(owner: HWND, topic: Topic, text: String) {
@@ -58,8 +58,8 @@ pub fn warn(owner: HWND, topic: Topic, text: String) {
         return;
     }
     while let Some(text) = QUEUE.with_borrow_mut(Queue::take) {
-        // 開いている間に子プロセスが終わって窓を閉じると、持ち主の窓はもうない。
-        // SAFETY: 窓のハンドルを調べるだけ。
+        // 開いている間に子プロセスが終わってウィンドウを閉じると、持ち主のウィンドウはもうない。
+        // SAFETY: ウィンドウのハンドルを調べるだけ。
         if unsafe { IsWindow(Some(owner)) }.as_bool() {
             message_box(Some(owner), &text, MB_ICONWARNING);
         }
@@ -67,8 +67,9 @@ pub fn warn(owner: HWND, topic: Topic, text: String) {
     }
 }
 
-/// `topic` の警告を取り下げる。エラーが直ったときに使う。待っているものは捨て、`owner` の窓に開いている
-/// メッセージボックスで見せていれば閉じさせる（ほかの話題の警告も見せていれば、閉じたあとに見せ直す）。
+/// `topic` の警告を取り下げる。エラーが直ったときに使う。待っているものは捨て、`owner` のウィンドウに
+/// 開いているメッセージボックスで見せていれば閉じさせる（ほかの話題の警告も見せていれば、閉じたあとに
+/// 見せ直す）。
 /// メッセージボックスを開いて閉じるのを待つことはしないので、借用を持ったまま呼んでよい。
 pub fn withdraw(owner: HWND, topic: Topic) {
     if QUEUE.with_borrow_mut(|queue| queue.withdraw(topic)) {
@@ -76,13 +77,13 @@ pub fn withdraw(owner: HWND, topic: Topic) {
     }
 }
 
-/// 持ち主の窓なしに、エラー `text` を見せる。窓を開く前や閉じたあとに使う。
+/// 持ち主のウィンドウなしに、エラー `text` を見せる。ウィンドウを開く前や閉じたあとに使う。
 pub fn error(text: &str) {
     message_box(None, text, MB_ICONERROR);
 }
 
 fn message_box(owner: Option<HWND>, text: &str, icon: MESSAGEBOX_STYLE) {
-    // SAFETY: 文字列は呼び出しの間は生きている。owner は None か有効な窓で、借用は持っていない。
+    // SAFETY: 文字列は呼び出しの間は生きている。owner は None か有効なウィンドウで、借用は持っていない。
     let result = unsafe { MessageBoxW(owner, &HSTRING::from(text), w!("fantermo"), MB_OK | icon) };
     if result.0 == 0 {
         tracing::warn!(
@@ -92,8 +93,8 @@ fn message_box(owner: Option<HWND>, text: &str, icon: MESSAGEBOX_STYLE) {
     }
 }
 
-/// このスレッドで `owner` の窓を持ち主として開いているメッセージボックスに、WM_CLOSE を積む。閉じると
-/// [`warn`] の中の `MessageBoxW` が戻り、待っている警告があれば続けて見せる。
+/// このスレッドで `owner` のウィンドウを持ち主として開いているメッセージボックスに、WM_CLOSE を積む。
+/// 閉じると [`warn`] の中の `MessageBoxW` が戻り、待っている警告があれば続けて見せる。
 fn close_message_box(owner: HWND) {
     let mut search = BoxSearch { owner, closed: 0 };
     // SAFETY: search はこの呼び出しの間は生きていて、コールバックはこの呼び出しの中でだけ呼ばれる。
@@ -120,17 +121,17 @@ extern "system" fn close_if_message_box(hwnd: HWND, lparam: LPARAM) -> BOOL {
     // SAFETY: lparam は close_message_box が渡した BoxSearch を指し、列挙の間は生きている。
     let search = unsafe { &mut *(lparam.0 as *mut BoxSearch) };
     let mut class = [0u16; 16];
-    // SAFETY: hwnd は列挙された窓で、class は書き込める。
+    // SAFETY: hwnd は列挙されたウィンドウで、class は書き込める。
     let length = unsafe { GetClassNameW(hwnd, &mut class) }.max(0) as usize;
     if String::from_utf16_lossy(&class[..length]) != MESSAGE_BOX_CLASS {
         return true.into();
     }
-    // SAFETY: hwnd は列挙された窓。
+    // SAFETY: hwnd は列挙されたウィンドウ。
     if unsafe { GetWindow(hwnd, GW_OWNER) }.ok() != Some(search.owner) {
         return true.into();
     }
     // OK だけのメッセージボックスは、WM_CLOSE で OK を押したのと同じに閉じる。
-    // SAFETY: hwnd は有効な窓。積むだけで、この場では処理されない。
+    // SAFETY: hwnd は有効なウィンドウ。積むだけで、この場では処理されない。
     match unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) } {
         Ok(()) => search.closed += 1,
         Err(e) => tracing::warn!("failed to close a message box: {e}"),

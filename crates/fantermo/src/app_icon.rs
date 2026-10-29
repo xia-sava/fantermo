@@ -18,7 +18,7 @@ use windows::{
 /// アイコンのリソースの番号。`fantermo.rc` の `IDI_FANTERMO` と揃える。
 const ICON_RESOURCE_ID: u16 = 1;
 
-/// 窓のアイコンの二つの大きさ。
+/// ウィンドウのアイコンの二つの大きさ。
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Icons {
     /// Alt+Tab とタスクバーに出す大きいアイコン。
@@ -62,15 +62,15 @@ fn load_one(
     }
 }
 
-/// 窓 `hwnd` のアイコンを DPI が `dpi` の大きさにする。前に `set` で付けたアイコンは捨てる
-/// （窓のクラスのアイコンは捨てない）。
+/// ウィンドウ `hwnd` のアイコンを DPI が `dpi` の大きさにする。前に `set` で付けたアイコンは捨てる
+/// （ウィンドウのクラスのアイコンは捨てない）。
 pub fn set(hwnd: HWND, instance: HINSTANCE, dpi: u32) {
     let icons = load(instance, dpi);
     for (kind, icon) in [(ICON_BIG, icons.big), (ICON_SMALL, icons.small)] {
         let Some(icon) = icon else {
             continue;
         };
-        // SAFETY: hwnd は有効な窓。WM_SETICON は前に WM_SETICON で付けたアイコンを返す。
+        // SAFETY: hwnd は有効なウィンドウ。WM_SETICON は前に WM_SETICON で付けたアイコンを返す。
         let previous = unsafe {
             SendMessageW(
                 hwnd,
@@ -82,7 +82,7 @@ pub fn set(hwnd: HWND, instance: HINSTANCE, dpi: u32) {
         if previous.0 == 0 {
             continue;
         }
-        // SAFETY: 前の WM_SETICON でこの関数が付けたアイコンで、もう窓は使わない。
+        // SAFETY: 前の WM_SETICON でこの関数が付けたアイコンで、もうウィンドウは使わない。
         if let Err(e) = unsafe { DestroyIcon(HICON(previous.0 as *mut _)) } {
             tracing::warn!("failed to destroy the previous window icon: {e}");
         }

@@ -1,6 +1,6 @@
-//! 自分で作ったダイアログを、呼び出し元の窓を無効にして開いている間のメッセージのループ。
+//! 自分で作ったダイアログを、呼び出し元のウィンドウを無効にして開いている間のメッセージのループ。
 //!
-//! 呼び出し元の窓へのメッセージ（端末の出力、描き直し、タイマーなど）も、このループから届く。
+//! 呼び出し元のウィンドウへのメッセージ（端末の出力、描き直し、タイマーなど）も、このループから届く。
 
 use std::cell::Cell;
 
@@ -15,15 +15,15 @@ use windows::Win32::{
     },
 };
 
-/// 呼び出し元の窓 `owner` を無効にし、ダイアログ `dialog` が閉じる（`closed` が立つ）までメッセージを
-/// 回す。`intercept` が `true` を返したメッセージは、ほかに渡さない。
+/// 呼び出し元のウィンドウ `owner` を無効にし、ダイアログ `dialog` が閉じる（`closed` が立つ）まで
+/// メッセージを回す。`intercept` が `true` を返したメッセージは、ほかに渡さない。
 pub fn run(
     owner: HWND,
     dialog: HWND,
     closed: &Cell<bool>,
     mut intercept: impl FnMut(&MSG) -> bool,
 ) {
-    // SAFETY: owner は有効な窓。閉じた後に必ず有効に戻す。
+    // SAFETY: owner は有効なウィンドウ。閉じた後に必ず有効に戻す。
     unsafe { _ = EnableWindow(owner, false) };
     let mut msg = MSG::default();
     while !closed.get() {
@@ -42,7 +42,7 @@ pub fn run(
             continue;
         }
         // Tab での移動、Enter で既定のボタン、Esc でキャンセルを、ダイアログの決まりどおりに扱う。
-        // SAFETY: dialog はこのスレッドの窓で、msg は GetMessageW が埋めたもの。
+        // SAFETY: dialog はこのスレッドのウィンドウで、msg は GetMessageW が埋めたもの。
         if unsafe { IsDialogMessageW(dialog, &msg) }.as_bool() {
             continue;
         }
@@ -52,7 +52,7 @@ pub fn run(
             DispatchMessageW(&msg);
         }
     }
-    // SAFETY: owner は有効な窓。
+    // SAFETY: owner は有効なウィンドウ。
     unsafe {
         _ = EnableWindow(owner, true);
         _ = SetForegroundWindow(owner);

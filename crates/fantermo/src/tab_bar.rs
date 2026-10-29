@@ -1,10 +1,10 @@
-//! タブバー。窓の上端に、端末ごとのタブを並べる。端末が一つのときも出す。
+//! タブバー。ウィンドウの上端に、端末ごとのタブを並べる。端末が一つのときも出す。
 //!
 //! 寸法は端末のフォントによらず DPI から決め、セルの格子によらずピクセルの位置で並べる。色は
-//! [`Palette`] にまとめ、既定では地と表示していないタブを Windows のコントロールの色より少し濃い
-//! グレー、表示しているタブを窓の地の色（白）で上の角を丸め、左・右・上に細い縁の線を引いて描く。
+//! [`Palette`] にまとめ、既定では背景と表示していないタブを Windows のコントロールの色より少し濃い
+//! グレー、表示しているタブをウィンドウの背景の色（白）で上の角を丸め、左・右・上に細い縁の線を引いて描く。
 //! 並べ方（どこがどのタブか、タイトルの省略、ベルの印の位置）と、描くもの（[`Paint`]）の組み立ては、
-//! 窓や描画に依存しない関数にしてある。
+//! ウィンドウや描画に依存しない関数にしてある。
 
 use fantermo_core::{config::TAB_BAR_COLOR_KEYS, frame::Rgb, vt};
 
@@ -13,28 +13,28 @@ use crate::paint::{Area, Corner, Icon, Paint, mix, scale};
 /// タブバーの高さ。
 const BAR_HEIGHT: u32 = 26;
 
-/// タブバーの上の辺（窓のタイトルバーの下）からタブの上の辺までの空き。
+/// タブバーの上の辺（ウィンドウのタイトルバーの下）からタブの上の辺までの空き。
 const TOP_MARGIN: u32 = 2;
 
-/// 表示しているタブとマウスの下のタブの、上の角の半径。表示しているタブの縁の線の外側の半径。
+/// 表示しているタブとマウスを載せているタブの、上の角の半径。表示しているタブの縁の線の外側の半径。
 const CORNER_RADIUS: u32 = 5;
 
 /// 表示しているタブの左・右・上の縁の線の太さ。線はタブの矩形の内側に引く。
 const ACTIVE_TAB_BORDER: u32 = 1;
 
-/// 窓の左端とメニューのボタンの間、ボタンとタブの間のすき間。
+/// ウィンドウの左端とメニューのボタンの間、ボタンとタブの間のすき間。
 const MARGIN: u32 = 6;
 
 /// タブの中の左右の余白。タブの並びの右の余白にも使う。
 const PADDING: u32 = 10;
 
-/// 新しいタブのボタンとメニューのボタン（丸い地）の直径。
+/// 新しいタブのボタンとメニューのボタン（丸い背景）の直径。
 const BUTTON: u32 = 18;
 
 /// 新しいタブのボタンの「+」、プロファイルの一覧のボタンの「▾」、メニューのボタンの「≡」の一辺。
 const BUTTON_MARK: u32 = 8;
 
-/// タブを閉じるボタン（丸い地）の直径。
+/// タブを閉じるボタン（丸い背景）の直径。
 const CLOSE_BUTTON: u32 = 16;
 
 /// 閉じるボタンの「×」の一辺。
@@ -68,31 +68,31 @@ const BELL_COLOR: Rgb = Rgb {
     b: 0x30,
 };
 
-/// タブバーの地の色を、コントロールの地の色から文字の色へ寄せる割合。表示しているタブ（窓の地の
-/// 色）との差を大きくする。
+/// タブバーの背景の色を、コントロールの背景の色から文字の色へ寄せる割合。表示しているタブ（ウィンドウの
+/// 背景の色）との差を大きくする。
 const BAR_TINT: f32 = 0.15;
 
-/// マウスの下の、表示していないタブの色を、タブバーの地の色から窓の地の色へ寄せる割合。
+/// マウスを載せている表示していないタブの色を、タブバーの背景の色からウィンドウの背景の色へ寄せる割合。
 const HOVERED_TAB_TINT: f32 = 0.5;
 
-/// マウスの下のボタン（×、+、≡）の丸い地の色を、ボタンの下の色から文字の色へ寄せる割合。
+/// マウスを載せているボタン（×、+、≡）の丸い背景の色を、ボタンの下の色から文字の色へ寄せる割合。
 const HOVERED_BUTTON_TINT: f32 = 0.15;
 
-/// 押しているボタンの丸い地の色を、ボタンの下の色から文字の色へ寄せる割合。
+/// 押しているボタンの丸い背景の色を、ボタンの下の色から文字の色へ寄せる割合。
 const PRESSED_BUTTON_TINT: f32 = 0.28;
 
-/// DPI が `dpi` の窓での、タブバーの高さ（ピクセル）。
+/// DPI が `dpi` のウィンドウでの、タブバーの高さ（ピクセル）。
 pub fn height(dpi: u32) -> u32 {
     Metrics { dpi }.bar_height()
 }
 
-/// タブバーの寸法を決めるもの。寸法は窓の DPI に比例させる。
+/// タブバーの寸法を決めるもの。寸法はウィンドウの DPI に比例させる。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Metrics {
     pub dpi: u32,
 }
 
-/// タイトルの文字列の大きさを測るもの。窓では Windows の UI のフォントで測る。
+/// タイトルの文字列の大きさを測るもの。ウィンドウでは Windows の UI のフォントで測る。
 pub trait Measure {
     /// `text` を 1 行に組んだ幅（ピクセル）。
     fn width(&self, text: &str) -> u32;
@@ -115,7 +115,7 @@ impl Metrics {
         self.scale(TOP_MARGIN)
     }
 
-    /// 表示しているタブとマウスの下のタブの、上の角の半径。
+    /// 表示しているタブとマウスを載せているタブの、上の角の半径。
     fn corner_radius(self) -> u32 {
         self.scale(CORNER_RADIUS)
     }
@@ -125,7 +125,7 @@ impl Metrics {
         self.scale(ACTIVE_TAB_BORDER)
     }
 
-    /// 窓の左端とメニューのボタンの間、ボタンとタブの間のすき間。
+    /// ウィンドウの左端とメニューのボタンの間、ボタンとタブの間のすき間。
     fn margin(self) -> u32 {
         self.scale(MARGIN)
     }
@@ -150,7 +150,7 @@ impl Metrics {
         (self.scale(SEPARATOR_WIDTH), self.scale(SEPARATOR_HEIGHT))
     }
 
-    /// タブを閉じるボタン（丸い地）の直径。
+    /// タブを閉じるボタン（丸い背景）の直径。
     fn close_button(self) -> u32 {
         self.scale(CLOSE_BUTTON)
     }
@@ -160,7 +160,7 @@ impl Metrics {
         self.scale(CLOSE_MARK)
     }
 
-    /// 新しいタブのボタンとメニューのボタン（丸い地）の直径。
+    /// 新しいタブのボタンとメニューのボタン（丸い背景）の直径。
     fn button(self) -> u32 {
         self.scale(BUTTON)
     }
@@ -242,7 +242,7 @@ pub fn layout(metrics: Metrics, width: u32, tabs: usize, active: usize) -> Layou
         width: button_size,
         height: button_size,
     };
-    // 窓の左端とメニューのボタンの間、ボタンとタブの間には同じすき間を空ける。
+    // ウィンドウの左端とメニューのボタンの間、ボタンとタブの間には同じすき間を空ける。
     let gap = metrics.margin();
     let menu = button_at(gap);
     let start = menu.right() + gap;
@@ -341,7 +341,7 @@ impl Layout {
         if column(self.profiles, self.metrics).contains(x, y) {
             return Some(Hit::Profiles);
         }
-        // メニューのボタンは、窓の左端からとみなす。
+        // メニューのボタンは、ウィンドウの左端からとみなす。
         let menu = Area {
             x: 0,
             width: self.menu.right(),
@@ -456,7 +456,7 @@ pub struct TabView<'a> {
 /// Windows のシステムの色（`GetSysColor`）。タブバーの既定の色（[`Palette::from_system`]）を決める。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SystemColors {
-    /// コントロールの地（`COLOR_BTNFACE`）。
+    /// コントロールの背景（`COLOR_BTNFACE`）。
     pub face: Rgb,
     /// コントロールの文字（`COLOR_BTNTEXT`）。
     pub text: Rgb,
@@ -464,16 +464,16 @@ pub struct SystemColors {
     pub gray_text: Rgb,
     /// コントロールの暗い縁（`COLOR_BTNSHADOW`）。
     pub shadow: Rgb,
-    /// 窓の地（`COLOR_WINDOW`）。
+    /// ウィンドウの背景（`COLOR_WINDOW`）。
     pub window: Rgb,
-    /// 窓の文字（`COLOR_WINDOWTEXT`）。
+    /// ウィンドウの文字（`COLOR_WINDOWTEXT`）。
     pub window_text: Rgb,
 }
 
 /// タブバーの色。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Palette {
-    /// タブバーの地。表示していないタブも、マウスの下になければこの色のまま。
+    /// タブバーの背景。表示していないタブも、マウスを載せていなければこの色のまま。
     pub bar: Rgb,
     /// 表示しているタブ。
     pub active_tab: Rgb,
@@ -481,13 +481,13 @@ pub struct Palette {
     pub active_border: Rgb,
     /// 表示しているタブのタイトルと閉じるボタンの「×」。
     pub active_title: Rgb,
-    /// 表示していないタブのタイトルと閉じるボタンの「×」、マウスの下の「+」「▾」「≡」。
+    /// 表示していないタブのタイトルと閉じるボタンの「×」、マウスを載せている「+」「▾」「≡」。
     pub inactive_title: Rgb,
     /// 表示していないタブの間の区切りの線。
     pub separator: Rgb,
-    /// マウスの下の、表示していないタブ。
+    /// マウスを載せている表示していないタブ。
     pub hovered_tab: Rgb,
-    /// マウスの下にない、新しいタブのボタンの「+」、プロファイルの一覧のボタンの「▾」、メニューの
+    /// マウスを載せていない、新しいタブのボタンの「+」、プロファイルの一覧のボタンの「▾」、メニューの
     /// ボタンの「≡」。
     pub idle_mark: Rgb,
     /// 表示していない間にベルが鳴ったタブの印。
@@ -495,9 +495,9 @@ pub struct Palette {
 }
 
 impl Palette {
-    /// Windows のシステムの色から決める既定の色。地と表示していないタブはコントロールの地の色を文字の
-    /// 色へ少し寄せた色、表示しているタブは窓の地と文字の色で、縁の線はコントロールの暗い縁の色。
-    /// マウスの下のタブは、地と窓の地の間の色。
+    /// Windows のシステムの色から決める既定の色。背景と表示していないタブはコントロールの背景の色を文字の
+    /// 色へ少し寄せた色、表示しているタブはウィンドウの背景と文字の色で、縁の線はコントロールの暗い縁の色。
+    /// マウスを載せているタブは、背景とウィンドウの背景の間の色。
     pub fn from_system(system: SystemColors) -> Self {
         let bar = mix(system.face, system.text, BAR_TINT);
         Self {
@@ -544,8 +544,8 @@ impl Palette {
         ]
     }
 
-    /// 色 `base` の上に、色 `ink` の印で描くボタンの丸い地の色。`pressed` なら押しているとき、
-    /// そうでなければマウスの下にあるとき。
+    /// 色 `base` の上に、色 `ink` の印で描くボタンの丸い背景の色。`pressed` なら押しているとき、
+    /// そうでなければマウスを載せているとき。
     fn button(&self, base: Rgb, ink: Rgb, pressed: bool) -> Rgb {
         let tint = if pressed {
             PRESSED_BUTTON_TINT
@@ -556,30 +556,30 @@ impl Palette {
     }
 }
 
-/// マウスの下にあるものと、押しているもの。
+/// マウスを載せているものと、押しているもの。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Highlight {
     pub hovered: Option<Hit>,
-    /// 左ボタンを押したときにマウスの下にあったもの。マウスの下にあるときだけ、押している色で描く。
+    /// 左ボタンを押したときにマウスを載せていたもの。マウスを載せているときだけ、押している色で描く。
     pub pressed: Option<Hit>,
 }
 
 impl Highlight {
-    /// `hit` の丸い地の色を決めるとき、押しているか。マウスの下になければ `None`。
+    /// `hit` の丸い背景の色を決めるとき、押しているか。マウスを載せていなければ `None`。
     fn state(&self, hit: Hit) -> Option<bool> {
         (self.hovered == Some(hit)).then_some(self.pressed == Some(hit))
     }
 
-    /// マウスの下にあるタブの位置。
+    /// マウスを載せているタブの位置。
     fn hovered_tab(&self) -> Option<usize> {
         self.hovered.and_then(Hit::tab)
     }
 }
 
 /// `layout` のとおりに並べたタブバーに描くもの。`tabs` は端末の並びの順のタブ、`active` は表示して
-/// いるタブの位置、`highlight` はマウスの下にあるものと押しているもの。色は `colors`、タイトルの幅は
+/// いるタブの位置、`highlight` はマウスを載せているものと押しているもの。色は `colors`、タイトルの幅は
 /// `measure` で測る。閉じるボタンは、表示しているタブと
-/// マウスの下のタブにだけ出す。描くのはタブバーの高さまでで、その下の端末の画面の余白には描かない。
+/// マウスを載せているタブにだけ出す。描くのはタブバーの高さまでで、その下の端末の画面の余白には描かない。
 pub fn paints(
     layout: &Layout,
     tabs: &[TabView],
@@ -702,15 +702,15 @@ pub fn paints(
 
 /// タブバーのボタン（×、+、▾、≡）一つ。
 struct Button {
-    /// ボタンの矩形。マウスの下にあれば、ここに丸い地を描く。
+    /// ボタンの矩形。マウスを載せていれば、ここに丸い背景を描く。
     area: Area,
     /// 真ん中に描く印と、その一辺と色。
     mark: (Icon, u32, Rgb),
-    /// マウスの下にあれば、押しているか。
+    /// マウスを載せていれば、押しているか。
     state: Option<bool>,
-    /// ボタンの下の色。丸い地の色は、ここから `ink` へ寄せて決める。
+    /// ボタンの下の色。丸い背景の色は、ここから `ink` へ寄せて決める。
     base: Rgb,
-    /// ボタンの下の地に置く文字の色。
+    /// ボタンの下の背景に置く文字の色。
     ink: Rgb,
 }
 
@@ -843,7 +843,7 @@ mod tests {
     /// 10、すき間 12、余白 20、ボタン 36、閉じるボタン 32、ベルの印 12、印のすき間 12、タブの幅 144〜480。
     const METRICS: Metrics = Metrics { dpi: 192 };
 
-    /// セルの幅が 16 ピクセルの 100 桁の窓のタブバーの幅。
+    /// セルの幅が 16 ピクセルの 100 桁のウィンドウのタブバーの幅。
     const WIDTH: u32 = 100 * 16;
 
     /// 幅が ASCII の文字と [`ELLIPSIS`] は 10、ほかの文字は 20 ピクセル、1 行の高さが 32 ピクセルの書体。
@@ -996,7 +996,7 @@ mod tests {
         // プロファイルの一覧のボタンは、そのすぐ右から、上から下まで。
         assert_eq!(layout.hit(1068, 30), Some(Hit::Profiles));
         assert_eq!(layout.hit(1103, 0), Some(Hit::Profiles));
-        // メニューのボタンは、窓の左端から、上から下まで。
+        // メニューのボタンは、ウィンドウの左端から、上から下まで。
         assert_eq!(layout.hit(0, 0), Some(Hit::Menu));
         assert_eq!(layout.hit(47, 51), Some(Hit::Menu));
         // メニューのボタンとタブの間、タブとボタンの間、右の空き、その下の端末の画面の余白。
@@ -1252,7 +1252,7 @@ mod tests {
     #[test]
     fn default_colours_come_from_the_system() {
         let colors = palette();
-        // 地はコントロールの地の色を、文字の色へ 15% 寄せる。
+        // 背景はコントロールの背景の色を、文字の色へ 15% 寄せる。
         assert_eq!(colors.bar, mix(SYSTEM.face, SYSTEM.text, BAR_TINT));
         assert!(colors.bar.r < SYSTEM.face.r && colors.bar.r > SYSTEM.text.r);
         assert_eq!(
@@ -1264,7 +1264,7 @@ mod tests {
         assert_eq!(colors.separator, SYSTEM.shadow);
         assert_eq!(colors.idle_mark, SYSTEM.gray_text);
         assert_eq!(colors.bell, BELL_COLOR);
-        // マウスの下のタブは、地と窓の地の間。
+        // マウスを載せているタブは、背景とウィンドウの背景の間。
         assert!(colors.hovered_tab.r > colors.bar.r && colors.hovered_tab.r < WINDOW.r);
     }
 
@@ -1304,7 +1304,7 @@ mod tests {
             &colors,
             &FixedWidth,
         );
-        // 地はタブバーの全体で、その下の端末の画面の余白は含まない。
+        // 背景はタブバーの全体で、その下の端末の画面の余白は含まない。
         assert_eq!(
             paints[0],
             Paint::Fill {
@@ -1360,8 +1360,9 @@ mod tests {
                 },
             ]
         );
-        // その内側を、左・右・上を線の太さ 2 だけ空けて窓の地の色で塗る。角は同じ中心 (550, 14) と
-        // (1010, 14) の半径 8 の円。下の辺はまっすぐで、タブバーの下の辺まで（下には線がない）。
+        // その内側を、左・右・上を線の太さ 2 だけ空けてウィンドウの背景の色で塗る。角は同じ中心
+        // (550, 14) と (1010, 14) の半径 8 の円。下の辺はまっすぐで、タブバーの下の辺まで（下には線が
+        // ない）。
         assert_eq!(
             icons(WINDOW),
             vec![
@@ -1386,7 +1387,7 @@ mod tests {
                 },
             ]
         );
-        // 縁の線を先に、窓の地の色を後に描く。
+        // 縁の線を先に、ウィンドウの背景の色を後に描く。
         let first_window = paints
             .iter()
             .position(|paint| matches!(paint, Paint::Fill { color, .. } if *color == WINDOW));
@@ -1400,7 +1401,7 @@ mod tests {
             Paint::Label { y, .. } => y + FixedWidth.height() <= 52,
         }));
         // タイトルは一つの文字列として、余白の右、タブの高さの真ん中に置く。表示しているタブの
-        // タイトルは窓の文字の色、ほかはコントロールの文字の色。
+        // タイトルはウィンドウの文字の色、ほかはコントロールの文字の色。
         assert_eq!(
             titles(&paints),
             vec![
@@ -1452,7 +1453,7 @@ mod tests {
             separators(Highlight::default()),
             vec![layout.tabs()[3].area.x - 1]
         );
-        // マウスの下のタブの左右にも引かない。
+        // マウスを載せているタブの左右にも引かない。
         let hovered = Highlight {
             hovered: Some(Hit::Close(3)),
             pressed: None,
@@ -1499,7 +1500,7 @@ mod tests {
             close_marks(hovered),
             vec![close.x + 8, layout.tabs()[2].close.x + 8]
         );
-        // マウスの下のタブも、表示しているタブと同じく上の角を丸めて描く。
+        // マウスを載せているタブも、表示しているタブと同じく上の角を丸めて描く。
         let paints = paints(&layout, &tabs, 0, hovered, &colors, &FixedWidth);
         let corners = icons_of(&paints, Icon::Corner(Corner::TopLeft));
         assert_eq!(
@@ -1532,12 +1533,12 @@ mod tests {
             hovered: Some(Hit::Close(0)),
             pressed: None,
         };
-        // 表示しているタブの上では、窓の地の色を窓の文字の色へ寄せる。
+        // 表示しているタブの上では、ウィンドウの背景の色をウィンドウの文字の色へ寄せる。
         assert_eq!(
             backgrounds(over_close),
             vec![(close, colors.button(WINDOW, WINDOW_TEXT, false))]
         );
-        // 押したままボタンの上にあれば押している色、外へ出れば地を描かない。
+        // 押したままボタンの上にあれば押している色、外へ出れば背景を描かない。
         let pressed = Highlight {
             pressed: Some(Hit::Close(0)),
             ..over_close
@@ -1551,8 +1552,8 @@ mod tests {
             pressed: Some(Hit::Close(0)),
         };
         assert_eq!(backgrounds(pressed_elsewhere), vec![]);
-        // 新しいタブのボタン。地の上では、地の色をコントロールの文字の色へ寄せる。「+」は一辺 16 で
-        // 真ん中に、マウスの下ならコントロールの文字の色。
+        // 新しいタブのボタン。背景の上では、背景の色をコントロールの文字の色へ寄せる。「+」は一辺 16 で
+        // 真ん中に、マウスを載せていればコントロールの文字の色。
         let over_new_tab = Highlight {
             hovered: Some(Hit::NewTab),
             pressed: None,

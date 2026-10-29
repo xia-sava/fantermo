@@ -35,7 +35,7 @@ SIZES = [
 # この大きさ以上のサイズを PNG で持つ。
 PNG_FROM = 256
 
-# 見本の地の色（明るい地、暗い地）と、サイズの間の空き。
+# 見本の背景の色（明るい背景、暗い背景）と、サイズの間の空き。
 SHEET_BACKGROUNDS = [(243, 243, 243), (32, 32, 32)]
 SHEET_GAP = 16
 # 小さいサイズが見えるよう、見本を縦横この倍率で拡大する（画素は補間しない）。
@@ -98,7 +98,7 @@ def write_ico(frames: list[Image.Image], path: Path) -> None:
 
 
 def write_sheet(frames: list[Image.Image], path: Path) -> None:
-    """各サイズを明るい地と暗い地に並べた見本。"""
+    """各サイズを明るい背景と暗い背景に並べた見本。"""
     width = sum(f.width for f in frames) + SHEET_GAP * (len(frames) + 1)
     height = SOURCE_SIZE + SHEET_GAP * 2
     sheet = Image.new("RGB", (width, height * len(SHEET_BACKGROUNDS)))

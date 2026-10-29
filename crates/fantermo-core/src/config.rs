@@ -91,12 +91,12 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 
 [scroll_bar]
 # 端末の右のスクロールバーの幅（96 DPI でのピクセル。画面の拡大率に合わせて広げる）。4 から 64 まで。
-# 書き換えたら、端末の桁数と行数を保ったまま窓の幅を変える。
+# 書き換えたら、端末の桁数と行数を保ったままウィンドウの幅を変える。
 # width = 12
 
 [window]
 # 端末の画面の上・下・左・右に空ける余白（96 DPI でのピクセル。画面の拡大率に合わせて広げる）。0 から 64 まで。
-# 余白は端末の背景色で塗る。書き換えたら、端末の桁数と行数を保ったまま窓の大きさを変える。
+# 余白は端末の背景色で塗る。書き換えたら、端末の桁数と行数を保ったままウィンドウの大きさを変える。
 # padding = 4
 
 [colors]
@@ -110,10 +110,11 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 
 [colors.tab_bar]
 # タブバーの色。"#rrggbb" の形で書く。書かない色は Windows のシステムの色から決める（下の値は Windows 11
-# の既定の色のときのもの）。bar は地、active_tab は表示しているタブ、active_border はその左・右・上の縁の
-# 線、active_title はその文字と閉じるボタンの「×」、inactive_title は表示していないタブの文字と「×」と
-# マウスの下の「+」「▾」「≡」、separator は表示していないタブの間の区切りの線、hovered_tab はマウスの下の
-# 表示していないタブ、idle_mark はマウスの下にない「+」「▾」「≡」、bell はベルが鳴ったタブの印。
+# の既定の色のときのもの）。bar は背景、active_tab は表示しているタブ、active_border はその左・右・上の
+# 縁の線、active_title はその文字と閉じるボタンの「×」、inactive_title は表示していないタブの文字と「×」と
+# マウスを載せている「+」「▾」「≡」、separator は表示していないタブの間の区切りの線、hovered_tab は
+# マウスを載せている表示していないタブ、idle_mark はマウスを載せていない「+」「▾」「≡」、bell はベルが
+# 鳴ったタブの印。
 # bar = "#cccccc"
 # active_tab = "#ffffff"
 # active_border = "#a0a0a0"
@@ -127,7 +128,7 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 [colors.scroll_bar]
 # スクロールバーの色。"#rrggbb" の形で書く。書かない色は端末の背景色と文字の色から決める（下の値は配色が
 # "dark" の黒の背景と白の文字のときのもの）。track はマウスを載せている間とドラッグしている間のトラック、thumb は
-# つまみ、hovered_thumb はマウスの下のつまみ、dragged_thumb はドラッグしているつまみ。
+# つまみ、hovered_thumb はマウスを載せているつまみ、dragged_thumb はドラッグしているつまみ。
 # track = "#0f0f0f"
 # thumb = "#595959"
 # hovered_thumb = "#808080"
@@ -434,7 +435,7 @@ impl ColorTable {
         ColorTable::ScrollBar,
     ];
 
-    /// 表の道筋（`["colors", "tab_bar"]` など）。
+    /// 表のキーのパス（`["colors", "tab_bar"]` など）。
     pub fn path(self) -> &'static [&'static str] {
         match self {
             ColorTable::Terminal => &["colors"],
@@ -1096,8 +1097,8 @@ fn read_profiles(reader: &mut Reader, root: &mut Table, config: &mut Config) {
     }
 }
 
-/// `profiles` の項目一つ（道筋は `path`）を読む。表で、`name` と `command` が空でない文字列で、`backend`
-/// が書いていないか知っている名前なら、そのプロファイル。そうでなければ警告して `None`。
+/// `profiles` の項目一つ（キーのパスは `path`）を読む。表で、`name` と `command` が空でない文字列で、
+/// `backend` が書いていないか知っている名前なら、そのプロファイル。そうでなければ警告して `None`。
 fn read_profile(reader: &mut Reader, path: &str, value: Value) -> Option<Profile> {
     let Value::Table(mut table) = value else {
         reader.warn(path, format!("ignoring {path}: expected a table"));
@@ -1190,7 +1191,8 @@ fn read_background(reader: &mut Reader, table: &mut Table, background: &mut Back
         .apply(&mut background.fit, defaults.fit);
 }
 
-/// 表 `table`（道筋は `section`）の `image_opacity` を読む。範囲の外は警告して読めなかったことにする。
+/// 表 `table`（キーのパスは `section`）の `image_opacity` を読む。範囲の外は警告して読めなかったことに
+/// する。
 fn read_image_opacity(reader: &mut Reader, table: &mut Table, section: Option<&str>) -> Item<f32> {
     let path = key_path(section, "image_opacity");
     reader
@@ -1234,8 +1236,8 @@ fn read_background_images(reader: &mut Reader, value: Value) -> Item<Vec<Backgro
     }
 }
 
-/// `background.images` の項目一つ（道筋は `path`）を読む。文字列ならそのパス、表なら `path` と、
-/// 書いてあれば `fit` と `image_opacity`。読めなければ警告して `None`。表の中の読めない `fit` と
+/// `background.images` の項目一つ（キーのパスは `path`）を読む。文字列ならそのパス、表なら `path`
+/// と、書いてあれば `fit` と `image_opacity`。読めなければ警告して `None`。表の中の読めない `fit` と
 /// `image_opacity` は、警告してその値だけを全体の値に任せる。
 fn read_background_image(reader: &mut Reader, path: &str, value: Value) -> Option<BackgroundImage> {
     let empty = || format!("ignoring {path}: names must not be empty");
@@ -1311,7 +1313,7 @@ fn read_colors(reader: &mut Reader, colors: &mut Table, config: &mut ColorsConfi
     }
 }
 
-/// 表 `values`（道筋は `section`）から、`table` の色を `slots` に読む。
+/// 表 `values`（キーのパスは `section`）から、`table` の色を `slots` に読む。
 fn read_color_values(
     reader: &mut Reader,
     values: &mut Table,
@@ -1383,7 +1385,7 @@ fn read_keys(reader: &mut Reader, keys: Table, previous: &Keymap) -> Keymap {
 
 /// 項目を読みながら、警告をエラーのある行と一緒に溜める。
 struct Reader {
-    /// キーの道筋（`font.size` など）から、そのキーを書いた行へ。
+    /// キーのパス（`font.size` など）から、そのキーを書いた行へ。
     lines: HashMap<String, usize>,
     warnings: Vec<Warning>,
 }
@@ -1439,7 +1441,7 @@ fn syntax_warning(text: &str, error: &toml::de::Error) -> Warning {
     }
 }
 
-/// 表のキーの道筋（`font.size`、`colors.tab_bar.bar` など。キーは引用符を外した名前）から、そのキーを
+/// 表のキーのパス（`font.size`、`colors.tab_bar.bar` など。キーは引用符を外した名前）から、そのキーを
 /// 書いた行へ。`[font]` のような表の見出しは、見出しの行になる。
 fn key_lines(text: &str) -> HashMap<String, usize> {
     let mut lines = HashMap::new();

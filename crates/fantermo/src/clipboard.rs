@@ -16,7 +16,7 @@ struct OpenedClipboard;
 
 impl OpenedClipboard {
     fn open(owner: HWND) -> windows::core::Result<Self> {
-        // SAFETY: owner は呼び出し元の有効な窓。閉じるのは Drop で一度だけ。
+        // SAFETY: owner は呼び出し元の有効なウィンドウ。閉じるのは Drop で一度だけ。
         unsafe { OpenClipboard(Some(owner))? };
         Ok(Self)
     }

@@ -1,4 +1,4 @@
-//! HTTPS で取得する（WinHTTP の同期の呼び出し）。窓のスレッドからは呼ばない。
+//! HTTPS で取得する（WinHTTP の同期の呼び出し）。ウィンドウのスレッドからは呼ばない。
 
 use std::{ffi::c_void, fmt};
 
