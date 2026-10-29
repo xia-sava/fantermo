@@ -4,26 +4,7 @@
 //! まま（起動したときは既定値）にし、知らないキーは無視する。どちらも、誤りのある行を添えた警告として
 //! 返す。TOML として読めないときは、すべてを前の値のままにする。
 //!
-//! ```toml
-//! # 起動するコマンドライン。fantermo の引数があれば、そちらを使う。
-//! shell = 'C:\cygwin64\bin\zsh.exe -l'
-//!
-//! [font]
-//! # 先頭から探して、最初に見つかったものを使う。文字列一つでもよい。
-//! family = ["Bizin Gothic", "BIZ UDGothic", "Consolas"]
-//! # ポイント。
-//! size = 12
-//! # グリフがセルより広いとき（曖昧幅の ○ や ※ が全角の幅でデザインされているときなど）の描き方。
-//! # セルの数は変えない。"shrink" は横に縮める、"clip" は縮めずにセルの左に置いてはみ出しを切る、
-//! # "overflow" は縮めずに右のセルへはみ出して描く。
-//! wide_glyph = "shrink"
-//!
-//! [paste]
-//! # 貼り付ける前に、内容を編集できるダイアログで確かめるとき。"unsafe" はアプリが bracketed paste を
-//! # 有効にしていないなど、改行を含む文字列がコマンドとして走りうるとき、"multiline" は bracketed
-//! # paste に関わらず改行を含むとき。"never" は確かめずに改行ごと送る。
-//! confirm = "unsafe"
-//! ```
+//! 書ける項目と既定値は [`TEMPLATE`] にある。
 
 use std::{collections::HashMap, ops::RangeInclusive};
 
@@ -41,6 +22,34 @@ pub const DEFAULT_FONT_SIZE_PT: f32 = 12.0;
 
 /// フォントの大きさとして受け付ける範囲（ポイント）。
 pub const FONT_SIZE_RANGE_PT: RangeInclusive<f32> = 1.0..=128.0;
+
+/// 設定ファイルが無いときに作る中身。どの項目も既定値のままコメントにして並べ、利用者が `#` を消して
+/// 書き換えられるようにする。`shell` の値だけは既定値ではなく例（既定では書かない）。
+pub const TEMPLATE: &str = r#"# fantermo の設定ファイル。
+# 行頭の「#」を消して値を書き換え、保存すると読み直す。書いていない項目は既定値になる。
+
+# 起動するコマンドライン。fantermo を引数つきで起動したときは、引数のほうを使う。
+# 書かなければ PowerShell を起動する。書き換えたら、次に開くタブから使う。
+# shell = 'C:\cygwin64\bin\zsh.exe -l'
+
+[font]
+# フォントの名前。先頭から探し、最初に見つかったものを使う。名前一つだけでもよい。
+# family = ["Bizin Gothic", "BIZ UDGothic", "Consolas"]
+
+# 大きさ（ポイント）。1 から 128 まで。小数でもよい。
+# size = 12
+
+# グリフがセルより広いとき（曖昧幅の ○ や ※ が全角の幅でデザインされているときなど）の描き方。
+# セルの数は変えない。"shrink" は横に縮める、"clip" は縮めずにセルの左に置いてはみ出しを切る、
+# "overflow" は縮めずに右のセルへはみ出して描く。
+# wide_glyph = "shrink"
+
+[paste]
+# 貼り付ける前に、内容を編集できるダイアログで確かめるとき。
+# "unsafe" は改行を含む文字列がコマンドとして走りうるとき（アプリが bracketed paste を有効にしていない
+# ときなど）、"multiline" は bracketed paste に関わらず改行を含むとき、"never" は確かめずに改行ごと送る。
+# confirm = "unsafe"
+"#;
 
 /// 設定の全体。
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -402,6 +411,50 @@ mod tests {
                 confirm: PasteConfirm::Never,
             },
         }
+    }
+
+    #[test]
+    fn template_gives_the_defaults_without_warnings() {
+        let parsed = super::parse(TEMPLATE, &customized());
+        assert!(!parsed.syntax_error);
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        assert_eq!(parsed.config, Config::default());
+    }
+
+    /// 行頭の `# ` に続けて `キー = ` と書いた行の `# ` を外す。
+    fn uncomment_settings(text: &str) -> String {
+        text.lines()
+            .map(|line| {
+                let Some(rest) = line.strip_prefix("# ") else {
+                    return line.to_owned();
+                };
+                let is_setting = rest.split_once(" = ").is_some_and(|(key, _)| {
+                    !key.is_empty() && key.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                });
+                if is_setting { rest } else { line }.to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn template_shows_every_setting_with_its_default() {
+        let text = uncomment_settings(TEMPLATE);
+        let parsed = parse(&text);
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        assert_eq!(
+            parsed.config,
+            Config {
+                shell: Some(r"C:\cygwin64\bin\zsh.exe -l".to_owned()),
+                ..Config::default()
+            }
+        );
+        // どの項目も外した行として書いてある。
+        let settings = text
+            .lines()
+            .filter(|line| !line.starts_with('#') && line.contains(" = "))
+            .count();
+        assert_eq!(settings, 5, "{text}");
     }
 
     #[test]

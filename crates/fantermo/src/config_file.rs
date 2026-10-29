@@ -1,13 +1,14 @@
 //! 設定ファイルの場所、読み込み、書き換えの監視。
 //!
-//! 置き場所は `%APPDATA%\fantermo\config.toml`。無ければ既定値で動き、ファイルは作らない。
-//! 中身の解釈は `fantermo_core::config` が受け持つ。
+//! 置き場所は `%APPDATA%\fantermo\config.toml`。起動したときに無ければ、各項目を既定値のまま
+//! コメントにして並べたファイルを作る。中身の解釈は `fantermo_core::config` が受け持つ。
 //!
 //! 書き換えは、ファイルを置くフォルダを監視するスレッドで知る。エディタは一度の保存で何度も
 //! 書き込んだり、別名で書いてから名前を変えたりするので、フォルダの中の名前の変化も見る。
 
 use std::{
-    io,
+    fs::OpenOptions,
+    io::{self, Write},
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     path::{Path, PathBuf},
     thread,
@@ -52,10 +53,44 @@ pub fn path() -> Option<PathBuf> {
     Some(path)
 }
 
-/// 起動したときに設定ファイルを読む。無いときや読めないときは既定値。読めなかった項目は警告を残して
-/// 既定値にする。
+/// 起動したときに設定ファイルを読む。無ければフォルダごと作り、[`config::TEMPLATE`] を書く。作れない
+/// とき、読めないときは既定値。読めなかった項目は警告を残して既定値にする。
 pub fn load(path: Option<&Path>) -> Config {
+    if let Some(path) = path
+        && let Err(e) = create_if_missing(path)
+    {
+        tracing::warn!(
+            "cannot create the settings file {}, using the defaults: {e}",
+            path.display()
+        );
+        return Config::default();
+    }
     read(path, &Config::default())
+}
+
+/// `path` にファイルが無ければ、フォルダごと作って [`config::TEMPLATE`] を書く。あれば何もしない。
+fn create_if_missing(path: &Path) -> io::Result<()> {
+    if let Some(dir) = path.parent()
+        && !dir.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(dir)?;
+    }
+    // 在るファイルは開かずに失敗させ、書き換えない。
+    let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    if let Err(e) = file.write_all(config::TEMPLATE.as_bytes()) {
+        drop(file);
+        // 書きかけのファイルを残すと、次に起動したときに読めないファイルとして扱われる。
+        if let Err(remove) = std::fs::remove_file(path) {
+            tracing::warn!("cannot remove {}: {remove}", path.display());
+        }
+        return Err(e);
+    }
+    tracing::info!("created the settings file {}", path.display());
+    Ok(())
 }
 
 /// 書き換えられた設定ファイルを読み直す。`previous` はいま使っている設定。無いときは既定値。読めない
@@ -226,6 +261,41 @@ mod tests {
         bytes.extend(name);
         bytes.resize(len, 0);
         bytes
+    }
+
+    /// 試しごとに別の、空のフォルダ（一時フォルダの下）。
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "fantermo-config-test-{}-{name}",
+            std::process::id()
+        ));
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn missing_file_is_created_with_its_folder() {
+        let dir = scratch_dir("create");
+        let path = dir.join("fantermo").join("config.toml");
+        create_if_missing(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), config::TEMPLATE);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn existing_file_is_left_as_it_is() {
+        let dir = scratch_dir("keep");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[font]\nsize = 9\n").unwrap();
+        create_if_missing(&path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[font]\nsize = 9\n"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
