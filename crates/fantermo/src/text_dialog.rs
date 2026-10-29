@@ -1,8 +1,8 @@
 //! 複数行の入力欄とボタンを並べたダイアログ。入力欄の上に、文の行とリンクの行を並べられる。
 //!
 //! 開いている間は呼び出し元の窓を無効にし、メッセージはこのダイアログのループで回す。IDOK のボタンを
-//! 押せば入力欄の文字列を返し、IDCANCEL のボタンや Esc なら何も返さない。リンクを押せば既定のアプリで
-//! 開く。
+//! 押せば入力欄の文字列を返し、IDCANCEL のボタンや Esc なら何も返さない。ほかのボタンを押せば、その
+//! ボタンを返して閉じる。リンクを押せば既定のアプリで開く。
 
 use std::{
     cell::{Cell, RefCell},
@@ -76,7 +76,7 @@ const FONT_RATIO: f32 = 0.75;
 
 /// ダイアログの下に右から並べるボタン。
 pub struct Button {
-    /// 押したときの制御 ID。IDOK か IDCANCEL ならダイアログを閉じる。ほかの ID は押しても何もしない。
+    /// 押したときの制御 ID。どのボタンを押してもダイアログを閉じる。
     pub id: i32,
     pub label: &'static str,
     /// Enter で押されるボタンとして描く。
@@ -108,19 +108,29 @@ pub struct Dialog<'a> {
     pub buttons: &'a [Button],
 }
 
-/// `dialog` を開き、閉じるまで待つ。IDOK のボタンで閉じたら、入力欄の文字列を返す。
-/// 改行は `\n` で返す。`font` は端末のフォントで、入力欄はその書体を少し小さくして使う。
-pub fn run(owner: HWND, dialog: &Dialog, font: &Font) -> Option<String> {
+/// ダイアログを閉じたわけ。
+#[derive(Debug, PartialEq, Eq)]
+pub enum Closed {
+    /// IDOK のボタンを押した。入力欄の文字列を添える。改行は `\n`。
+    Ok(String),
+    /// IDOK と IDCANCEL のほかのボタンを押した。その制御 ID を添える。
+    Button(i32),
+    /// IDCANCEL のボタン、Esc、窓の × で閉じた。開けなかったときも。
+    Cancel,
+}
+
+/// `dialog` を開き、閉じるまで待つ。`font` は端末のフォントで、入力欄はその書体を少し小さくして使う。
+pub fn run(owner: HWND, dialog: &Dialog, font: &Font) -> Closed {
     if let Err(e) = register_class() {
         tracing::warn!("failed to register the text dialog: {e}");
-        return None;
+        return Closed::Cancel;
     }
     let state = DialogState::default();
     let hwnd = match create(owner, dialog, &state, font) {
         Ok(hwnd) => hwnd,
         Err(e) => {
             tracing::warn!("failed to open the text dialog {:?}: {e}", dialog.title);
-            return None;
+            return Closed::Cancel;
         }
     };
     // SAFETY: 入力欄はこのダイアログの子で、文字列はこの呼び出しの間は生きている。
@@ -134,7 +144,7 @@ pub fn run(owner: HWND, dialog: &Dialog, font: &Font) -> Option<String> {
             unsafe { _ = DeleteObject(HGDIOBJ(created_font.0)) };
         }
     }
-    state.result.take().map(|text| from_crlf(&text))
+    state.result.take().unwrap_or(Closed::Cancel)
 }
 
 /// ダイアログの状態。ウィンドウプロシージャからも触るので、共有の参照だけで読み書きする。
@@ -154,7 +164,10 @@ struct DialogState {
     header_font: Cell<HFONT>,
     /// 寸法の拡大率（窓の DPI / 96）。
     scale: Cell<f32>,
-    result: RefCell<Option<String>>,
+    /// 閉じたわけ。ボタンで閉じるまでは `None`。
+    result: RefCell<Option<Closed>>,
+    /// ボタンの制御 ID。入力欄などのほかの子からの WM_COMMAND と見分ける。
+    button_ids: RefCell<Vec<i32>>,
     closed: Cell<bool>,
     /// Enter で押されるボタンの制御 ID。
     default_id: Cell<Option<i32>>,
@@ -306,6 +319,7 @@ fn create(
             button.id,
         )?;
         state.buttons.borrow_mut().push(control);
+        state.button_ids.borrow_mut().push(button.id);
         if button.default {
             state.default_id.set(Some(button.id));
         }
@@ -602,10 +616,17 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         WM_COMMAND => {
             let id = (wparam.0 & 0xffff) as i32;
-            if id == IDOK.0 {
-                state.result.replace(Some(read_text(state.edit.get())));
-            }
-            if id == IDOK.0 || id == IDCANCEL.0 {
+            let closed = if id == IDOK.0 {
+                Some(Closed::Ok(from_crlf(&read_text(state.edit.get()))))
+            } else if id == IDCANCEL.0 {
+                Some(Closed::Cancel)
+            } else if state.button_ids.borrow().contains(&id) {
+                Some(Closed::Button(id))
+            } else {
+                None
+            };
+            if let Some(closed) = closed {
+                state.result.replace(Some(closed));
                 // SAFETY: hwnd はこのダイアログ。
                 unsafe { _ = DestroyWindow(hwnd) };
             }

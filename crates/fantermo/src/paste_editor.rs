@@ -9,7 +9,7 @@ use windows::Win32::{
 
 use crate::{
     font::Font,
-    text_dialog::{self, Button, Dialog},
+    text_dialog::{self, Button, Closed, Dialog},
 };
 
 const TITLE: &str = "貼り付ける内容の確認";
@@ -38,5 +38,8 @@ pub fn edit(owner: HWND, text: &str, font: &Font) -> Option<String> {
         min_columns: None,
         buttons: &BUTTONS,
     };
-    text_dialog::run(owner, &dialog, font)
+    match text_dialog::run(owner, &dialog, font) {
+        Closed::Ok(text) => Some(text),
+        Closed::Button(_) | Closed::Cancel => None,
+    }
 }

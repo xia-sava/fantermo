@@ -2378,7 +2378,9 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
                     });
                 }
             }
-            Deferred::ShowAbout { font } => about::show(hwnd, &font),
+            Deferred::ShowAbout { font } => {
+                about::show(hwnd, &font);
+            }
             Deferred::EditSettings => edit_settings(hwnd, with_app),
             Deferred::Menu(request) => match context_menu::show(hwnd, &request) {
                 Some(MenuCommand::Copy) => with_app(&mut |app| {
