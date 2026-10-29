@@ -19,6 +19,7 @@ mod conpty;
 mod context_menu;
 mod decoration;
 mod dump;
+mod file_dialog;
 mod font;
 mod ime;
 mod key_capture;

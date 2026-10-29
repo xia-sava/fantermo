@@ -10,13 +10,16 @@
 
 use std::{
     cell::{Cell, RefCell},
+    path::PathBuf,
     sync::OnceLock,
     time::Duration,
 };
 
 use fantermo_core::{
+    background::IMAGE_EXTENSIONS,
     config::{
-        self, ColorScheme, ColorTable, ColorsConfig, Config, PasteConfirm, WideGlyph, format_color,
+        self, BackgroundFit, ColorScheme, ColorTable, ColorsConfig, Config, PasteConfirm,
+        WideGlyph, format_color,
     },
     frame::Rgb,
     keymap::{Action, KeyCombo, Keymap},
@@ -62,7 +65,7 @@ use windows::{
     core::{HSTRING, PCWSTR, w},
 };
 
-use crate::{key_capture, modal, scroll_bar, ui_font};
+use crate::{file_dialog, key_capture, modal, scroll_bar, ui_font};
 
 const CLASS: PCWSTR = w!("fantermo-settings-dialog");
 const TITLE: &str = "設定";
@@ -86,6 +89,13 @@ const ID_SCROLL_BAR_WIDTH_SPIN: i32 = 221;
 /// `paste.confirm` のラジオボタン。[`PasteConfirm::ALL`] の順に ID が続く。
 const ID_PASTE_CONFIRM: i32 = 300;
 const ID_SHELL: i32 = 400;
+const ID_BACKGROUND_IMAGES: i32 = 450;
+const ID_BACKGROUND_ADD_FILES: i32 = 451;
+const ID_BACKGROUND_ADD_FOLDER: i32 = 452;
+const ID_BACKGROUND_REMOVE: i32 = 453;
+const ID_BACKGROUND_OPACITY: i32 = 454;
+const ID_BACKGROUND_OPACITY_SPIN: i32 = 455;
+const ID_BACKGROUND_FIT: i32 = 456;
 const ID_KEYS: i32 = 500;
 const ID_KEY_ADD: i32 = 501;
 const ID_KEY_CHANGE: i32 = 502;
@@ -115,7 +125,21 @@ const SPIN_RANGE: (i32, i32) = (0, 1000);
 const VISIBLE_FONTS: usize = 16;
 
 /// ページ。一覧の順。
-const PAGES: [&str; 5] = ["外観", "動作", "シェル", "キー", "色"];
+const PAGES: [&str; 6] = ["外観", "背景", "動作", "シェル", "キー", "色"];
+
+/// 背景画像の一覧の高さ。
+const BACKGROUND_LIST_HEIGHT: i32 = 150;
+/// 背景画像の上に重ねる背景色の濃さを、上下の矢印で動かす幅。
+const OPACITY_STEP: f32 = 0.05;
+
+/// `background.fit` の選択肢の表示。[`BackgroundFit::ALL`] の順。
+const BACKGROUND_FIT_LABELS: [&str; 5] = [
+    "縦横比を保って端末を覆う（はみ出しを切る）",
+    "縦横比を保って端末に収める",
+    "端末に合わせて引き伸ばす",
+    "元の大きさで敷き詰める",
+    "元の大きさで真ん中に置く",
+];
 
 /// 色のページのコントロールの ID の始まり。色ごとに [`COLOR_ID_STRIDE`] ずつ、見本・値・選ぶ・既定に
 /// 戻すの順に続く。
@@ -354,6 +378,7 @@ pub fn run(owner: HWND, request: Request, host: &mut dyn Host) {
         base_indices: RefCell::new(family_indices),
         base_font: Cell::new(selected_font),
         previewed: RefCell::new(current.clone()),
+        background_images: RefCell::new(current.background.images.clone()),
         keys: RefCell::new(current.keys.clone()),
         key_rows: RefCell::new(Vec::new()),
         colors: RefCell::new(current.colors.clone()),
@@ -444,6 +469,13 @@ struct Controls {
     scroll_bar_width_spin: HWND,
     paste_confirm: [HWND; 3],
     shell: HWND,
+    /// 背景画像の一覧。
+    background_images: HWND,
+    /// 背景画像の一覧の「外す」のボタン。
+    background_remove: HWND,
+    background_opacity: HWND,
+    background_opacity_spin: HWND,
+    background_fit: HWND,
     /// 配色のラジオボタン。[`ColorScheme::ALL`] の順。
     color_scheme: [HWND; 2],
     /// キーの割り当ての一覧。
@@ -472,6 +504,8 @@ struct State<'a> {
     base_font: Cell<usize>,
     /// 最後に端末に反映した設定。
     previewed: RefCell<Config>,
+    /// 編集中の背景画像の一覧。
+    background_images: RefCell<Vec<String>>,
     /// 編集中のキーの割り当て。
     keys: RefCell<Keymap>,
     /// キーの割り当ての一覧の行。一覧の順。
@@ -710,6 +744,162 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         ],
     );
     appearance.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+
+    // 背景
+    let mut background_page = Vec::new();
+    let (class, text, rect) = label(
+        "画像(&I):",
+        [page_left, row(0) + LABEL_OFFSET, page_width, ROW_HEIGHT],
+    );
+    background_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let list_top = row(0) + ROW_HEIGHT;
+    let background_images = child(
+        WC_LISTBOXW,
+        "",
+        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(LBS_NOTIFY as u32),
+        WS_EX_CLIENTEDGE,
+        ID_BACKGROUND_IMAGES,
+        Some([page_left, list_top, page_width, BACKGROUND_LIST_HEIGHT]),
+    )?;
+    background_page.push(background_images);
+    let image_buttons_top = list_top + BACKGROUND_LIST_HEIGHT + BUTTON_GAP;
+    let image_button_width = (page_width - 2 * BUTTON_GAP) / 3;
+    let mut image_buttons = [HWND::default(); 3];
+    for (index, (id, text)) in [
+        (ID_BACKGROUND_ADD_FILES, "ファイルを追加(&L)…"),
+        (ID_BACKGROUND_ADD_FOLDER, "フォルダを追加(&O)…"),
+        (ID_BACKGROUND_REMOVE, "外す(&V)"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        image_buttons[index] = child(
+            w!("BUTTON"),
+            text,
+            WS_GROUP | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+            none,
+            id,
+            Some([
+                page_left + index as i32 * (image_button_width + BUTTON_GAP),
+                image_buttons_top,
+                image_button_width,
+                BUTTON_HEIGHT,
+            ]),
+        )?;
+        background_page.push(image_buttons[index]);
+    }
+    let images_note_top = image_buttons_top + BUTTON_HEIGHT + BUTTON_GAP;
+    let (class, text, rect) = label(
+        "新しいタブを開くたびに、一覧からランダムに一枚選ぶ。フォルダは、その中の画像（png、jpg、bmp、gif、webp）から選ぶ。設定ファイルには「*」「?」のワイルドカードも書ける。",
+        [page_left, images_note_top, page_width, 2 * ROW_HEIGHT],
+    );
+    background_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let opacity_row = images_note_top + 2 * ROW_HEIGHT + MARGIN;
+    let (class, text, rect) = label("背景色の濃さ(&Y):", label_rect(opacity_row));
+    background_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let background_opacity = child(
+        w!("EDIT"),
+        "",
+        edit_style,
+        WS_EX_CLIENTEDGE,
+        ID_BACKGROUND_OPACITY,
+        Some([control_left, opacity_row, NUMBER_WIDTH, ROW_HEIGHT]),
+    )?;
+    background_page.push(background_opacity);
+    let background_opacity_spin = child(
+        UPDOWN_CLASSW,
+        "",
+        spin_style,
+        none,
+        ID_BACKGROUND_OPACITY_SPIN,
+        None,
+    )?;
+    background_page.push(background_opacity_spin);
+    let (class, text, rect) = label(
+        "0〜1。0 は画像をそのまま見せ、1 は背景色で隠す",
+        [
+            control_left + NUMBER_WIDTH + BUTTON_GAP,
+            opacity_row + LABEL_OFFSET,
+            control_width - NUMBER_WIDTH - BUTTON_GAP,
+            ROW_HEIGHT,
+        ],
+    );
+    background_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let fit_row = opacity_row + ROW_HEIGHT + MARGIN;
+    let (class, text, rect) = label("収め方(&T):", label_rect(fit_row));
+    background_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let background_fit = child(
+        WC_COMBOBOXW,
+        "",
+        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
+        none,
+        ID_BACKGROUND_FIT,
+        Some([control_left, fit_row, control_width, ROW_HEIGHT]),
+    )?;
+    background_page.push(background_fit);
+    for text in BACKGROUND_FIT_LABELS {
+        // SAFETY: background_fit は有効なコンボボックスで、文字列はこの呼び出しの間は生きている。
+        unsafe {
+            SendMessageW(
+                background_fit,
+                CB_ADDSTRING,
+                None,
+                Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
+            )
+        };
+    }
+    let (class, text, rect) = label(
+        "画像は端末の画面と余白に敷き、その上に端末の背景色をこの濃さで重ねる。アプリが背景色を付けた文字、反転した文字、選んだ範囲は、その色で塗りつぶす。",
+        [
+            page_left,
+            fit_row + ROW_HEIGHT + MARGIN,
+            page_width,
+            2 * ROW_HEIGHT,
+        ],
+    );
+    background_page.push(child(
         class,
         &text,
         WINDOW_STYLE(0),
@@ -1030,7 +1220,14 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         hwnd,
         Controls {
             pages,
-            page_controls: vec![appearance, behavior, shell_page, keys_page, colors_page],
+            page_controls: vec![
+                appearance,
+                background_page,
+                behavior,
+                shell_page,
+                keys_page,
+                colors_page,
+            ],
             font,
             size,
             size_spin,
@@ -1039,6 +1236,11 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             scroll_bar_width_spin,
             paste_confirm,
             shell,
+            background_images,
+            background_remove: image_buttons[2],
+            background_opacity,
+            background_opacity_spin,
+            background_fit,
             color_scheme,
             keys_list,
             key_buttons,
@@ -1110,6 +1312,19 @@ impl State<'_> {
             .position(|&value| value == config.paste.confirm);
         check_one(&c.paste_confirm, paste_confirm);
         set_text(c.shell, config.shell.as_deref().unwrap_or_default());
+        *self.background_images.borrow_mut() = config.background.images.clone();
+        self.refresh_background_images(None);
+        set_text(
+            c.background_opacity,
+            &format_opacity(config.background.opacity),
+        );
+        let fit = BackgroundFit::ALL
+            .iter()
+            .position(|&value| value == config.background.fit);
+        if let Some(fit) = fit {
+            // SAFETY: コンボボックスは有効な窓。
+            unsafe { SendMessageW(c.background_fit, CB_SETCURSEL, Some(WPARAM(fit)), None) };
+        }
         *self.keys.borrow_mut() = config.keys.clone();
         self.refresh_keys(None);
         *self.colors.borrow_mut() = config.colors.clone();
@@ -1219,6 +1434,111 @@ impl State<'_> {
             .iter()
             .position(|row| row.swatch == control)?;
         self.swatch_brushes.borrow().get(item).copied()
+    }
+
+    /// 背景画像の一覧を作り直し、`selected` 番目（一覧より後ろなら最後）を選ぶ。`None` なら選ばない。
+    fn refresh_background_images(&self, selected: Option<usize>) {
+        let list = self.controls.background_images;
+        let images = self.background_images.borrow();
+        // SAFETY: 一覧は有効な窓。
+        unsafe { SendMessageW(list, LB_RESETCONTENT, None, None) };
+        for image in images.iter() {
+            // SAFETY: 一覧は有効な窓で、文字列はこの呼び出しの間は生きている。
+            unsafe {
+                SendMessageW(
+                    list,
+                    LB_ADDSTRING,
+                    None,
+                    Some(LPARAM(HSTRING::from(image.as_str()).as_ptr() as isize)),
+                )
+            };
+        }
+        if let Some(selected) = selected
+            && !images.is_empty()
+        {
+            let index = selected.min(images.len() - 1);
+            // SAFETY: 一覧は有効な窓。
+            unsafe { SendMessageW(list, LB_SETCURSEL, Some(WPARAM(index)), None) };
+        }
+        drop(images);
+        self.update_background_buttons();
+    }
+
+    /// 背景画像の一覧で選んでいる位置。
+    fn selected_background_image(&self) -> Option<usize> {
+        // SAFETY: 一覧は有効な窓。
+        let index =
+            unsafe { SendMessageW(self.controls.background_images, LB_GETCURSEL, None, None) }.0;
+        usize::try_from(index)
+            .ok()
+            .filter(|&index| index < self.background_images.borrow().len())
+    }
+
+    /// 背景画像の一覧で選んでいるときだけ「外す」を押せるようにする。
+    fn update_background_buttons(&self) {
+        let selected = self.selected_background_image().is_some();
+        // SAFETY: ボタンはダイアログの子の有効な窓。
+        unsafe { _ = EnableWindow(self.controls.background_remove, selected) };
+    }
+
+    /// 背景画像の一覧のボタン `id` が押された。
+    fn on_background_button(&self, id: i32) {
+        let selected = match id {
+            ID_BACKGROUND_ADD_FILES => {
+                let filters = image_filters();
+                let chosen = match file_dialog::open_files(self.hwnd, "背景画像を追加", &filters)
+                {
+                    Ok(chosen) => chosen,
+                    Err(e) => {
+                        tracing::warn!("failed to choose background images: {e}");
+                        return;
+                    }
+                };
+                self.add_background_images(chosen)
+            }
+            ID_BACKGROUND_ADD_FOLDER => {
+                let chosen = match file_dialog::open_folder(self.hwnd, "背景画像のフォルダを追加")
+                {
+                    Ok(chosen) => chosen,
+                    Err(e) => {
+                        tracing::warn!("failed to choose a background image folder: {e}");
+                        return;
+                    }
+                };
+                self.add_background_images(chosen.into_iter().collect())
+            }
+            ID_BACKGROUND_REMOVE => {
+                let Some(index) = self.selected_background_image() else {
+                    return;
+                };
+                self.background_images.borrow_mut().remove(index);
+                Some(index)
+            }
+            _ => return,
+        };
+        let Some(selected) = selected else {
+            return;
+        };
+        self.refresh_background_images(Some(selected));
+        self.preview();
+        // SAFETY: 一覧はダイアログの子の有効な窓。押したボタンが押せなくなることがあるので、一覧へ戻す。
+        unsafe { _ = SetFocus(Some(self.controls.background_images)) };
+    }
+
+    /// 背景画像の一覧の最後に `paths` を足す（同じものがあれば足さない）。足した最後の位置を返し、
+    /// 何も足さなければ `None`。
+    fn add_background_images(&self, paths: Vec<PathBuf>) -> Option<usize> {
+        let mut images = self.background_images.borrow_mut();
+        let mut added = None;
+        for path in paths {
+            let text = path.to_string_lossy().into_owned();
+            if images.iter().any(|image| image.eq_ignore_ascii_case(&text)) {
+                continue;
+            }
+            images.push(text);
+            added = Some(images.len() - 1);
+        }
+        added
     }
 
     /// キーの割り当ての一覧を作り直し、`selected` の行（なければ同じ動作の行、それもなければ先頭）を
@@ -1391,11 +1711,11 @@ impl State<'_> {
         let dpi = self.dpi.get();
         let c = &self.controls;
         let font = self.font.get();
-        let all = c
-            .placed
-            .iter()
-            .map(|(control, _)| *control)
-            .chain([c.size_spin, c.scroll_bar_width_spin]);
+        let all = c.placed.iter().map(|(control, _)| *control).chain([
+            c.size_spin,
+            c.scroll_bar_width_spin,
+            c.background_opacity_spin,
+        ]);
         for control in all {
             // SAFETY: control はダイアログの子で、フォントはダイアログが閉じるまで消さない。
             unsafe {
@@ -1424,6 +1744,7 @@ impl State<'_> {
         for (spin, buddy) in [
             (c.size_spin, c.size),
             (c.scroll_bar_width_spin, c.scroll_bar_width),
+            (c.background_opacity_spin, c.background_opacity),
         ] {
             // 範囲は、上の矢印で数が増える向き（既定は逆）にするためだけに決める。数は step で決める。
             // SAFETY: spin と buddy はダイアログの子の有効な窓。
@@ -1492,6 +1813,20 @@ impl State<'_> {
             config.paste.confirm = PasteConfirm::ALL[index];
         }
         config.shell = config::shell_from_input(&get_text(c.shell));
+        config.background.images = self.background_images.borrow().clone();
+        config.background.opacity =
+            config::parse_background_opacity(&get_text(c.background_opacity)).ok_or((
+                "背景色の濃さは、0 から 1 までの数で書いてください。",
+                c.background_opacity,
+            ))?;
+        // SAFETY: コンボボックスは有効な窓。
+        let fit = unsafe { SendMessageW(c.background_fit, CB_GETCURSEL, None, None) }.0;
+        if let Some(&fit) = usize::try_from(fit)
+            .ok()
+            .and_then(|fit| BackgroundFit::ALL.get(fit))
+        {
+            config.background.fit = fit;
+        }
         config.keys = self.keys.borrow().clone();
         config.colors = self.colors.borrow().clone();
         Ok(config)
@@ -1617,6 +1952,14 @@ impl State<'_> {
             let current = config::parse_scroll_bar_width(&text)
                 .unwrap_or(self.base.borrow().scroll_bar.width);
             set_text(c.scroll_bar_width, &step_width(current, delta).to_string());
+        } else if spin == c.background_opacity_spin {
+            let text = get_text(c.background_opacity);
+            let current = config::parse_background_opacity(&text)
+                .unwrap_or(self.base.borrow().background.opacity);
+            set_text(
+                c.background_opacity,
+                &format_opacity(step_opacity(current, delta)),
+            );
         }
         // 矢印は打ち間違えないので、待たずに反映する。
         self.preview();
@@ -1673,6 +2016,48 @@ fn step_width(current: u32, delta: i32) -> u32 {
 /// 入力欄に見せる、フォントの大きさ。整数なら小数点を付けない。
 fn format_size(size_pt: f32) -> String {
     size_pt.to_string()
+}
+
+/// 背景色の濃さを、矢印で一つ動かした値。[`OPACITY_STEP`] の倍数へ動かし、範囲の端で止める。
+fn step_opacity(current: f32, delta: i32) -> f32 {
+    // 0.35 のように刻みの倍数を書いた値が、f32 の誤差で倍数の手前に見えないようにする。
+    const TOLERANCE: f32 = 1e-3;
+    let steps = current / OPACITY_STEP;
+    let next = if delta > 0 {
+        (steps + TOLERANCE).floor() + 1.0
+    } else {
+        (steps - TOLERANCE).ceil() - 1.0
+    };
+    // 刻みの倍数を f32 で掛けた端数（0.35000002 など）を出さないように、百分の一に丸める。
+    let next = (next * OPACITY_STEP * 100.0).round() / 100.0;
+    next.clamp(
+        *config::BACKGROUND_OPACITY_RANGE.start(),
+        *config::BACKGROUND_OPACITY_RANGE.end(),
+    )
+}
+
+/// 入力欄に見せる、背景色の濃さ。
+fn format_opacity(opacity: f32) -> String {
+    opacity.to_string()
+}
+
+/// 背景画像を選ぶダイアログの、ファイルの種類の絞り込み。
+fn image_filters() -> Vec<file_dialog::Filter> {
+    let spec = IMAGE_EXTENSIONS
+        .iter()
+        .map(|extension| format!("*.{extension}"))
+        .collect::<Vec<_>>()
+        .join(";");
+    vec![
+        file_dialog::Filter {
+            name: "画像".to_owned(),
+            spec,
+        },
+        file_dialog::Filter {
+            name: "すべてのファイル".to_owned(),
+            spec: "*.*".to_owned(),
+        },
+    ]
 }
 
 fn set_text(control: HWND, text: &str) {
@@ -1746,6 +2131,14 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 (ID_FONT, CBN_SELCHANGE) => {
                     state.preview();
                 }
+                (ID_BACKGROUND_IMAGES, LBN_SELCHANGE) => state.update_background_buttons(),
+                (
+                    ID_BACKGROUND_ADD_FILES | ID_BACKGROUND_ADD_FOLDER | ID_BACKGROUND_REMOVE,
+                    BN_CLICKED,
+                ) => state.on_background_button(id),
+                (ID_BACKGROUND_FIT, CBN_SELCHANGE) => {
+                    state.preview();
+                }
                 (ID_KEYS, LBN_SELCHANGE) => state.update_key_buttons(),
                 (ID_KEYS, LBN_DBLCLK) => state.on_key_button(ID_KEY_CHANGE),
                 (ID_KEY_ADD | ID_KEY_CHANGE | ID_KEY_REMOVE | ID_KEY_RESET, BN_CLICKED) => {
@@ -1758,7 +2151,9 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 {
                     state.on_color_scheme();
                 }
-                (ID_SIZE | ID_SCROLL_BAR_WIDTH | ID_SHELL, EN_CHANGE) => state.schedule_preview(),
+                (ID_SIZE | ID_SCROLL_BAR_WIDTH | ID_SHELL | ID_BACKGROUND_OPACITY, EN_CHANGE) => {
+                    state.schedule_preview()
+                }
                 (id, BN_CLICKED)
                     if (ID_WIDE_GLYPH..ID_WIDE_GLYPH + 3).contains(&id)
                         || (ID_PASTE_CONFIRM..ID_PASTE_CONFIRM + 3).contains(&id) =>
@@ -1930,6 +2325,27 @@ mod tests {
         };
         assert_eq!(colorref(color), COLORREF(0x0056_3412));
         assert_eq!(rgb_of(COLORREF(0x0056_3412)), color);
+    }
+
+    #[test]
+    fn arrows_step_the_opacity_by_twentieths_within_the_range() {
+        assert_eq!(step_opacity(0.8, 1), 0.85);
+        assert_eq!(step_opacity(0.8, -1), 0.75);
+        assert_eq!(step_opacity(0.35, 1), 0.4);
+        assert_eq!(step_opacity(0.35, -1), 0.3);
+        assert_eq!(step_opacity(0.33, 1), 0.35);
+        assert_eq!(step_opacity(0.33, -1), 0.3);
+        assert_eq!(step_opacity(1.0, 1), 1.0);
+        assert_eq!(step_opacity(0.0, -1), 0.0);
+        assert_eq!(format_opacity(step_opacity(0.8, 1)), "0.85");
+        assert_eq!(format_opacity(1.0), "1");
+    }
+
+    #[test]
+    fn every_fit_has_a_label() {
+        assert_eq!(BACKGROUND_FIT_LABELS.len(), BackgroundFit::ALL.len());
+        let filters = image_filters();
+        assert_eq!(filters[0].spec, "*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp");
     }
 
     #[test]
