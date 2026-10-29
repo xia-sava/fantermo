@@ -21,17 +21,17 @@ use windows::{
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::{EnableWindow, GetKeyState, SetFocus, VK_CONTROL, VK_MENU},
             WindowsAndMessaging::{
-                BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
-                DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE,
-                ES_READONLY, ES_WANTRETURN, GWLP_USERDATA, GetClientRect, GetMessageW,
-                GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, HMENU,
-                IDC_ARROW, IDCANCEL, IDOK, IsDialogMessageW, LoadCursorW, MSG, MoveWindow,
-                PostQuitMessage, RegisterClassW, SW_SHOW, SWP_NOZORDER, SendMessageW,
-                SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-                TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY,
-                WM_KEYDOWN, WM_SETFONT, WM_SIZE, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE,
-                WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_HSCROLL, WS_POPUP, WS_SYSMENU,
-                WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
+                BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CW_USEDEFAULT, CreateWindowExW, DC_HASDEFID,
+                DM_GETDEFID, DefWindowProcW, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL,
+                ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, ES_WANTRETURN, GWLP_USERDATA,
+                GetClientRect, GetMessageW, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
+                GetWindowTextW, HMENU, IDC_ARROW, IDCANCEL, IDOK, IsDialogMessageW, LoadCursorW,
+                MSG, MoveWindow, PostQuitMessage, RegisterClassW, SW_SHOW, SWP_NOZORDER,
+                SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
+                ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
+                WM_DESTROY, WM_KEYDOWN, WM_NEXTDLGCTL, WM_SETFONT, WM_SIZE, WNDCLASSW, WS_CAPTION,
+                WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_HSCROLL,
+                WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
             },
         },
     },
@@ -128,6 +128,8 @@ struct DialogState {
     scale: Cell<f32>,
     result: RefCell<Option<String>>,
     closed: Cell<bool>,
+    /// Enter で押されるボタンの制御 ID。
+    default_id: Cell<Option<i32>>,
 }
 
 fn register_class() -> windows::core::Result<()> {
@@ -243,6 +245,9 @@ fn create(
             button.id,
         )?;
         state.buttons.borrow_mut().push(control);
+        if button.default {
+            state.default_id.set(Some(button.id));
+        }
     }
 
     // テキストボックスは端末と同じ書体にして、少し小さくする。
@@ -499,6 +504,19 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             if id == IDOK.0 || id == IDCANCEL.0 {
                 // SAFETY: hwnd はこのダイアログ。
                 unsafe { _ = DestroyWindow(hwnd) };
+            }
+            LRESULT(0)
+        }
+        // Enter を自分で使わないテキストボックスは、既定のボタンをこの二つで問い合わせて押させる。
+        DM_GETDEFID => match state.default_id.get() {
+            Some(id) => LRESULT(((DC_HASDEFID as isize) << 16) | id as isize),
+            None => LRESULT(0),
+        },
+        WM_NEXTDLGCTL => {
+            // lparam が 0 でなければ、wparam は移す先の子の窓。順に移すほうは使われないので扱わない。
+            if lparam.0 & 0xffff != 0 {
+                // SAFETY: wparam はこのダイアログの子の窓のハンドルとして渡される。
+                unsafe { _ = SetFocus(Some(HWND(wparam.0 as *mut _))) };
             }
             LRESULT(0)
         }
