@@ -1,0 +1,9 @@
+#pragma code_page(65001)
+
+// fantermo の実行ファイルに埋め込むリソース。マニフェストは build.rs がリンカに渡す。
+
+// アプリのアイコン。番号は src/window.rs の ICON_RESOURCE_ID と揃える。エクスプローラーは番号のいちばん
+// 小さいアイコンを実行ファイルのアイコンにする。
+#define IDI_FANTERMO 1
+
+IDI_FANTERMO ICON "..\\..\\assets\\icon\\fantermo.ico"
