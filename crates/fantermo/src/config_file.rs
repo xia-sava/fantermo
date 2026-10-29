@@ -192,16 +192,17 @@ fn read(path: Option<&Path>, previous: &Config, occasion: Occasion) -> Loaded {
 }
 
 /// 設定ファイルの、`base` から `edited` へ変えた項目だけを書き換える（`fantermo_core::config_edit`）。
-/// ファイルが無ければ [`config::TEMPLATE`] を書き換えて作る。書いた中身を返す。読めない・TOML として
+/// ファイルが無ければ [`config::TEMPLATE`] を書き換えて作る。変える項目がなければ書かない。ファイルの
+/// 中身を返す。読めない・TOML として
 /// 読めない・書けないときは、利用者に見せる文を返し、ファイルは変えない。
 pub fn save(path: &Path, base: &Config, edited: &Config) -> Result<String, String> {
     let failed = |reason: &str, e: &dyn std::fmt::Display| {
         tracing::warn!("cannot save the settings to {}: {e}", path.display());
         format!("{reason}\n\n{}\n{e}", path.display())
     };
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => config::TEMPLATE.to_owned(),
+    let (text, exists) = match std::fs::read_to_string(path) {
+        Ok(text) => (text, true),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => (config::TEMPLATE.to_owned(), false),
         Err(e) => {
             return Err(failed(
                 "設定ファイルを読めなかったので、書き換えませんでした。",
@@ -215,6 +216,10 @@ pub fn save(path: &Path, base: &Config, edited: &Config) -> Result<String, Strin
             &e,
         )
     })?;
+    // 何も変わらなければ書かない（書き換えの知らせを出さない）。
+    if exists && updated == text {
+        return Ok(updated);
+    }
     if let Err(e) = window_state::write_replacing(path, &updated) {
         return Err(failed("設定ファイルに書けませんでした。", &e));
     }
@@ -439,6 +444,17 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "# mine\n[font]\nsize = 14\n"
+        );
+        // 変える項目がなければ書かない。
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(
+            save(&path, &edited, &edited).unwrap(),
+            "# mine\n[font]\nsize = 14\n"
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            modified
         );
 
         std::fs::write(&path, "[font\n").unwrap();
