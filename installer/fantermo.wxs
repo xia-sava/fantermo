@@ -3,11 +3,11 @@
   fantermo の MSI。配布物を作るワークフロー（.github/workflows/release.yml）が WiX で組む。
 
   ユーザー単位で %LOCALAPPDATA%\Programs\fantermo に入れ、管理者権限を求めない。アプリの「更新を確認」は
-  この場所に入れたリリースのビルドでだけ押せる（crates/fantermo/src/update.rs）。版を上げた MSI は
-  MajorUpgrade で古い版を外してから入る。
+  この場所に入れたリリースのビルドでだけ押せる（crates/fantermo/src/update.rs）。バージョンを上げた
+  MSI は MajorUpgrade で古いバージョンを外してから入る。
 
   プリプロセッサの変数（wix build -d で渡す）:
-    Version   製品の版（MAJOR.MINOR.PATCH）
+    Version   製品のバージョン（MAJOR.MINOR.PATCH）
     StageDir  zip と同じ中身（fantermo.exe、LICENSE、THIRD-PARTY-NOTICES.txt、README.md）を置いたフォルダ
     IconFile  「プログラムと機能」に出すアイコン（assets/icon/fantermo.ico）
 
@@ -22,8 +22,8 @@
     UpgradeCode="C4FC87EE-5E35-4A23-8EF4-BF71B422CB1D"
     Scope="perUser">
 
-    <!-- 同じ版の入れ直しも上書きにする。分けると「プログラムと機能」に同じ版が二つ並ぶ。
-         入れるのに失敗したら古い版を戻す。 -->
+    <!-- 同じバージョンの入れ直しも上書きにする。分けると「プログラムと機能」に同じバージョンが二つ
+         並ぶ。入れるのに失敗したら古いバージョンを戻す。 -->
     <MajorUpgrade
       AllowSameVersionUpgrades="yes"
       Schedule="afterInstallInitialize"

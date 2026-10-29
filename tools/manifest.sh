@@ -10,8 +10,8 @@
 #    ./tools/manifest.sh sign out/latest.json <秘密鍵の PEM> assets/manifest-public-key.der
 #    ./tools/manifest.sh verify out/latest.json out/latest.json.sig assets/manifest-public-key.der
 #
-#  write  <版> <置き場の URL> <出力> <種類>=<配布物>...
-#         版と、配布物ごとの URL（置き場の URL + 配布物のファイル名）と sha256 を書く:
+#  write  <バージョン> <置き場の URL> <出力> <種類>=<配布物>...
+#         バージョンと、配布物ごとの URL（置き場の URL + 配布物のファイル名）と sha256 を書く:
 #           { "versionName": "0.0.1", "zip": { "url": "...", "sha256": "..." },
 #             "msi": { "url": "...", "sha256": "..." } }
 #         アプリは msi の sha256 で、ダウンロードした MSI を確かめる。

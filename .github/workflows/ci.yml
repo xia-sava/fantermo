@@ -33,7 +33,7 @@ jobs:
 
       - uses: ./.github/actions/setup-toolchain
 
-      # tools/dev.bat が vcvars64 を読み、Zig の版を確かめてから cargo を呼ぶ（手元と同じ手順）。
+      # tools/dev.bat が vcvars64 を読み、Zig のバージョンを確かめてから cargo を呼ぶ（手元と同じ手順）。
       - name: Check formatting
         shell: cmd
         run: call tools\dev.bat fmt --all --check

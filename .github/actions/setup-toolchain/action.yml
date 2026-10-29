@@ -7,7 +7,7 @@ runs:
     - name: Install Zig
       shell: pwsh
       env:
-        # libghostty-vt の rev が求める Zig の版。tools/dev.bat の ZIG_REQUIRED と揃える。
+        # libghostty-vt の rev が求める Zig のバージョン。tools/dev.bat の ZIG_REQUIRED と揃える。
         ZIG_VERSION: "0.17.0"
         # https://ziglang.org/download/index.json の x86_64-windows の shasum。
         ZIG_SHA256: "b5663f69581dcf391293fbf16c06cb80d81d806545ce618b4d0bab7f0eb8c428"

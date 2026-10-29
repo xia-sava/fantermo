@@ -15,20 +15,20 @@ libghostty-vt は [libghostty-rs](https://github.com/uzaaft/libghostty-rs) の�
 
 ## インストール
 
-[Releases](https://github.com/xia-sava/fantermo/releases) に版ごとのインストーラ（`fantermo-<版>-x64.msi`）と zip（`fantermo-<版>-x64.zip`）を置いています．
+[Releases](https://github.com/xia-sava/fantermo/releases) にバージョンごとのインストーラ（`fantermo-<バージョン>-x64.msi`）と zip（`fantermo-<バージョン>-x64.zip`）を置いています．
 
-- インストーラ: 開くと，使っているユーザーだけのために `%LOCALAPPDATA%\Programs\fantermo\` に入れます．管理者権限は要りません．スタートメニューの「fantermo」から起動してください．新しい版のインストーラを開くと，前の版を置き換えます．アンインストールは「設定」の「アプリ」（「プログラムと機能」）からできます．
+- インストーラ: 開くと，使っているユーザーだけのために `%LOCALAPPDATA%\Programs\fantermo\` に入れます．管理者権限は要りません．スタートメニューの「fantermo」から起動してください．新しいバージョンのインストーラを開くと，前のバージョンを置き換えます．アンインストールは「設定」の「アプリ」（「プログラムと機能」）からできます．
 - zip: 好きな場所に展開して，中の `fantermo.exe` を起動してください．
 
 設定ファイルと窓の状態は `%APPDATA%\fantermo\` に，ログは `%LOCALAPPDATA%\fantermo\logs\` に置きます．どちらもアンインストールしても消さないので，要らなければ手で消してください．
 
-インストーラで入れた版は，タブバーのメニューのボタン（≡）の「fantermo について…」の「更新を確認」で，新しい版を確かめて更新できます．zip の版では押せません．
+インストーラで入れたバージョンは，タブバーのメニューのボタン（≡）の「fantermo について…」の「更新を確認」で，新しいバージョンを確かめて更新できます．zip から展開したものでは押せません．
 
-版と，ビルドしたコミットは，タブバーのメニューのボタン（≡）の「fantermo について…」で見られます．
+バージョンと，ビルドしたコミットは，タブバーのメニューのボタン（≡）の「fantermo について…」で見られます．
 
 ## ビルド
 
-Windows + Rust（edition 2024）+ MSVC ツールチェインと，Zig が必要です．Zig の版は，固定している libghostty-vt が求めるもの（`tools/dev.bat` の `ZIG_REQUIRED`）に合わせます．
+Windows + Rust（edition 2024）+ MSVC ツールチェインと，Zig が必要です．Zig のバージョンは，固定している libghostty-vt が求めるもの（`tools/dev.bat` の `ZIG_REQUIRED`）に合わせます．
 
 ```sh
 ./tools/dev.sh build   # git-bash 用ラッパ（MSVC 環境込みで cargo を呼ぶ）

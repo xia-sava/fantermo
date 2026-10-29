@@ -31,9 +31,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # 版はタグ名から v を除いたもの。Cargo の版（Cargo.toml の [workspace.package] の version）と
-      # 食い違えば止める。食い違ったまま配ると、アプリが見せる版と配布物の版が合わなくなる。
-      # 配布しない手動実行は識別できる名前を付ける。MSI の版には名前ではなく Cargo の版を使う。
+      # バージョンはタグ名から v を除いたもの。Cargo のバージョン（Cargo.toml の [workspace.package] の
+      # version）と食い違えば止める。食い違ったまま配ると、アプリが見せるバージョンと配布物のバージョンが
+      # 合わなくなる。配布しない手動実行は識別できる名前を付ける。MSI のバージョンには名前ではなく Cargo の
+      # バージョンを使う。
       - name: Compute version
         id: compute
         run: |
@@ -45,13 +46,13 @@ jobs:
           fi
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             name="${GITHUB_REF_NAME#v}"
-            # MSI の版は major.minor.patch しか受け付けないため、接尾辞つきのタグも弾く。
+            # MSI のバージョンは major.minor.patch しか受け付けないため、接尾辞つきのタグも弾く。
             if ! printf '%s' "$name" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
               echo "タグは vMAJOR.MINOR.PATCH の形で打つこと（受け取った値: $GITHUB_REF_NAME）" >&2
               exit 1
             fi
             if [ "$name" != "$cargo_version" ]; then
-              echo "タグ（$GITHUB_REF_NAME）と Cargo の版（$cargo_version）が食い違っています" >&2
+              echo "タグ（$GITHUB_REF_NAME）と Cargo のバージョン（$cargo_version）が食い違っています" >&2
               exit 1
             fi
           else
@@ -61,7 +62,7 @@ jobs:
           echo "cargo=$cargo_version" >> "$GITHUB_OUTPUT"
           echo "version=$name (Cargo: $cargo_version)"
 
-  # 配布物を作る前に fmt・clippy・test を通す。ここが落ちればリリースまで進まない。
+  # 配布物を作る前に fmt・clippy・test を通す。ここが失敗すればリリースまで進まない。
   check:
     needs: [version]
     permissions:
@@ -81,7 +82,7 @@ jobs:
 
       - uses: ./.github/actions/setup-toolchain
 
-      # タグを打ったときだけリリースのビルドとして版を見せる（手動実行は 0.0.1 (dev-<短い SHA>)）。
+      # タグを打ったときだけリリースのビルドとしてバージョンを見せる（手動実行は 0.0.1 (dev-<短い SHA>)）。
       - name: Build
         shell: cmd
         env:
@@ -101,7 +102,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           Compress-Archive -Path $stage -DestinationPath "artifacts/$name.zip"
 
-      # zip に詰めたのと同じフォルダから MSI を組む。WiX は .config/dotnet-tools.json で版を固定して入れる。
+      # zip に詰めたのと同じフォルダから MSI を組む。WiX は .config/dotnet-tools.json でバージョンを固定して
+      # 入れる。
       # WiX 7 は OSMF の EULA への同意がないとどのコマンドも止まるので、ランナーのユーザーとして一度
       # 同意しておき、build には -acceptEula も付ける。
       - name: Pack msi
@@ -123,12 +125,12 @@ jobs:
             -d "IconFile=$(Join-Path $env:GITHUB_WORKSPACE 'assets\icon\fantermo.ico')" `
             -o "artifacts/$name.msi" installer/fantermo.wxs
           if ($LASTEXITCODE -ne 0) { throw "wix build が失敗しました（$LASTEXITCODE）" }
-          # wix build は ICE の検証をしないので、別に走らせる。誤りがあれば止める。
+          # wix build は ICE の検証をしないので、別に実行する。エラーがあれば止める。
           dotnet tool run wix msi validate "artifacts/$name.msi"
           if ($LASTEXITCODE -ne 0) { throw "wix msi validate が失敗しました（$LASTEXITCODE）" }
 
       # タグを打ったときの配布物はリリースへ載るため、保持期間は release ジョブへ渡すまででよい。
-      # 手動実行の配布物は成果物としてしか残らないため、手元へ落とすまでの猶予を置く。
+      # 手動実行の配布物は成果物としてしか残らないため、手元へダウンロードするまでの猶予を置く。
       # Actions のストレージ枠はアカウント全体で共有していて、既定の 90 日で抱え続けると
       # 他のリポジトリの CI まで止まる。
       - uses: actions/upload-artifact@v4
@@ -164,7 +166,7 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      # アプリが引く latest.json。配布物は latest に固定の名前で置くので、その名前で照合値を採る。
+      # アプリが取得する latest.json。配布物は latest に固定の名前で置くので、その名前で照合値を採る。
       - name: Write latest.json
         env:
           VERSION_NAME: ${{ needs.version.outputs.name }}
@@ -239,7 +241,7 @@ jobs:
             fi
           done
 
-      # 版ごとのリリース。配布物の実物が残るので、後からどの版で何を配ったかを辿れる。
+      # バージョンごとのリリース。配布物の実物が残るので、後からどのバージョンで何を配ったかを辿れる。
       # 配布物を書き込む唯一の外部コードなので、可変タグではなくコミットで固定する。
       - name: Publish versioned release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
@@ -250,14 +252,14 @@ jobs:
             fantermo ${{ needs.version.outputs.name }}
 
             MSI を開くと、ユーザー単位で %LOCALAPPDATA%\Programs\fantermo に入る（管理者権限は要らない）。
-            スタートメニューの fantermo から起動する。アプリの中から更新できるのは MSI で入れた版だけ。
+            スタートメニューの fantermo から起動する。アプリの中から更新できるのは MSI で入れたバージョンだけ。
 
             zip は、展開して中の fantermo.exe を起動する。
           files: |
             artifacts/fantermo-${{ needs.version.outputs.name }}-x64.msi
             artifacts/fantermo-${{ needs.version.outputs.name }}-x64.zip
 
-      # 更新の取得先。アプリは latest から latest.json と配布物を引くため、置き場を動かさずに
+      # 更新の取得先。アプリは latest から latest.json と配布物を取得するため、置き場を動かさずに
       # 中身だけ差し替える。
       - name: Update latest release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
@@ -265,7 +267,7 @@ jobs:
           tag_name: latest
           name: "Latest build"
           body: |
-            配布中の版（${{ needs.version.outputs.name }}）。
+            配布中のバージョン（${{ needs.version.outputs.name }}）。
           prerelease: true
           files: |
             latest/fantermo.msi

@@ -10,12 +10,12 @@
 #    3. cargo-about の出力 … 実行ファイル fantermo に入る Rust の crate
 #       （設定は tools/licenses/about.toml、テンプレートは tools/licenses/about.hbs）
 #
-#  zig-notices.txt を確かめた版（libghostty-rs 9ede35b8ea94a55ed3608408d67e102883129f1e、Zig 0.17.0）:
+#  zig-notices.txt を確かめたバージョン（libghostty-rs 9ede35b8ea94a55ed3608408d67e102883129f1e、Zig 0.17.0）:
 #    - Ghostty 521cf2c5d30bd48028ca61546c64e7913764073d（libghostty-vt-sys の build.rs の GHOSTTY_COMMIT）
 #    - uucode 0.2.0、ea62149739404a73c202b48a33bf6dd2af4bd9b0（Ghostty の build.zig.zon）。
 #      licenses/ の下の文は tarball に入っていないので、GitHub の同じコミットから取った
 #    - simdutf 9.0.0（Ghostty の pkg/simdutf/vendor/simdutf.h の SIMDUTF_VERSION。pkg/simdutf の
-#      build.zig.zon の版とは違う）。vendor にライセンスの文がないので、GitHub の v9.0.0 の LICENSE-MIT を取った
+#      build.zig.zon のバージョンとは違う）。vendor にライセンスの文がないので、GitHub の v9.0.0 の LICENSE-MIT を取った
 #    - Highway 66486a10623fa0d72fe91260f96c892e41aceb06（pkg/highway の build.zig.zon）。ソースの各ファイルの
 #      見出しが Apache-2.0 なので、同じコミットの LICENSE（Apache-2.0）の文を載せる
 #    - Wuffs 7411f488fe2e2c205c3d3b3d28638b7356522930（pkg/wuffs の build.zig.zon）。release/c/wuffs-v0.4.c は
@@ -39,9 +39,9 @@
 #  libghostty-vt の rev を上げたら:
 #    1. ./tools/dev.sh build のあと、上の zig ar t の結果を比べる。増えたオブジェクトがあれば、どの依存の
 #       ものかを Ghostty の src/build/GhosttyZig.zig と SharedDeps.zig から辿る
-#    2. build.zig.zon（Ghostty と pkg/ の下）の依存のコミットと版、Ghostty の LICENSE が変わっていれば、
-#       zig-notices.txt の文とこのコメントの版を直す
-#    3. このスクリプトを流し直す。about.toml の checksum が合わなければ、文を確かめて checksum を直す
+#    2. build.zig.zon（Ghostty と pkg/ の下）の依存のコミットとバージョン、Ghostty の LICENSE が変わって
+#       いれば、zig-notices.txt の文とこのコメントのバージョンを直す
+#    3. このスクリプトを実行し直す。about.toml の checksum が合わなければ、文を確かめて checksum を直す
 # ============================================================
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # tools/
