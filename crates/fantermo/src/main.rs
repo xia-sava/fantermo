@@ -23,6 +23,7 @@ mod known_folder;
 mod link_opener;
 mod logging;
 mod notice;
+mod paint;
 mod paste_editor;
 mod pipeline;
 mod renderer;

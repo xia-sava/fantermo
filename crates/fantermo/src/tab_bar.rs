@@ -1,98 +1,185 @@
-//! タブバー。窓の上端に端末と同じ書体の 1 行で、端末ごとのタブを並べる。端末が一つのときも出す。
+//! タブバー。窓の上端に、端末ごとのタブを並べる。端末が一つのときも出す。
 //!
-//! タブの並べ方（どの桁がどのタブか、幅、タイトルの省略）と、描くための画面（[`Frame`]）の組み立ては、
-//! 窓や描画に依存しない関数にしてある。
+//! 寸法はセルの幅と高さから決め、セルの格子によらずピクセルの位置で並べる。表示しているタブは
+//! 端末と同じ色で上の角を丸め、下の辺を端末へつなげて描く。並べ方（どこがどのタブか、タイトルの
+//! 省略、ベルの印の位置）と、描くもの（[`Paint`]）の組み立ては、窓や描画に依存しない関数にしてある。
 
-use fantermo_core::{
-    frame::{CellView, Frame, Rgb, Underline},
-    vt,
-};
+use fantermo_core::{frame::Rgb, vt};
 
-/// タブの幅の上限（セル）。
-const MAX_TAB_COLS: u16 = 24;
+use crate::paint::{Area, Corner, Icon, Paint, Side};
 
-/// タブとタブの間のすき間（セル）。
-const TAB_GAP_COLS: u16 = 1;
+/// タブの幅の上限（セルの幅の何倍か）。
+const MAX_TAB_CELLS: u32 = 24;
 
-/// タブの中の、タイトルの左右の余白（セル）。
-const TAB_PADDING_COLS: u16 = 1;
+/// タブが多いときに縮める、タブの幅の下限（セルの幅の何倍か）。これより狭くなるほど多ければ、
+/// 入りきらないタブを描かない。
+const MIN_TAB_CELLS: u32 = 6;
 
 /// 収まらないタイトルの末尾に付ける印。
 const ELLIPSIS: &str = "…";
 
-/// 表示していない間にベルが鳴ったタブの、タイトルの前の印。
-const BELL_MARK: &str = "●";
-
-/// [`BELL_MARK`] を描く幅（セル）。曖昧幅の文字だが、全角の幅でデザインしたフォントでも縮めずに丸く
-/// 描けるよう、2 セルを充てる。タブがそれより狭ければタブの幅に縮める。
-const BELL_MARK_WIDTH: u8 = 2;
-
-/// [`BELL_MARK`] と、タイトルとの間のすき間を合わせた幅（セル）。
-const BELL_MARK_COLS: u16 = BELL_MARK_WIDTH as u16 + 1;
-
-/// [`BELL_MARK`] の色。
+/// 表示していない間にベルが鳴ったタブの、タイトルの前の印（円）の色。
 const BELL_COLOR: Rgb = Rgb {
     r: 0xf0,
     g: 0xb0,
     b: 0x30,
 };
 
-/// タブバーの背景色を、端末の背景色から文字の色へ寄せる割合。
-const BAR_TINT: f32 = 0.10;
-
-/// 表示していないタブの背景色を、端末の背景色から文字の色へ寄せる割合。
-const INACTIVE_TAB_TINT: f32 = 0.22;
+/// タブバーの地の色を、端末の背景色から文字の色へ寄せる割合。
+const BAR_TINT: f32 = 0.12;
 
 /// 表示していないタブのタイトルの色を、端末の文字の色から背景色へ寄せる割合。
 const INACTIVE_TITLE_FADE: f32 = 0.35;
 
-/// タブバーの高さ（ピクセル）。1 セル分。
-pub fn height(cell_height_px: u32) -> u32 {
-    cell_height_px
+/// タブの間の区切りの線の色を、端末の背景色から文字の色へ寄せる割合。
+const SEPARATOR_TINT: f32 = 0.30;
+
+/// タブバーの高さ（ピクセル）。セルの高さ `cell_height` に、上下の余白を足す。
+pub fn height(cell_height: u32) -> u32 {
+    cell_height + 2 * margin(cell_height)
 }
 
-/// タブバーの中のタブ一つの位置。単位はセル。
+/// タブバーの上下の余白と、タブの角の半径（ピクセル）。セルの高さの 1/4。
+fn margin(cell_height: u32) -> u32 {
+    (cell_height / 4).max(1)
+}
+
+/// セルの寸法（ピクセル）。タブバーの寸法はここから決める。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TabSpan {
-    pub col: u16,
-    pub cols: u16,
+pub struct Metrics {
+    pub cell_width: u32,
+    pub cell_height: u32,
 }
 
-/// `tabs` 個のタブを、幅 `cols` のタブバーに左から並べる。タブは同じ幅で、上限は [`MAX_TAB_COLS`]。
-/// 収まらないほど多ければ幅を 1 セルまで縮め、それでも右端からはみ出すタブは返さない（返す数が `tabs`
-/// より少なくなる）。
-pub fn layout(tabs: usize, cols: u16) -> Vec<TabSpan> {
-    if tabs == 0 || cols == 0 {
-        return Vec::new();
+impl Metrics {
+    fn bar_height(self) -> u32 {
+        height(self.cell_height)
     }
-    let tabs_u32 = u32::try_from(tabs).unwrap_or(u32::MAX);
-    let per_tab = (u32::from(cols) + u32::from(TAB_GAP_COLS)) / tabs_u32;
-    let width = per_tab
-        .saturating_sub(u32::from(TAB_GAP_COLS))
-        .clamp(1, u32::from(MAX_TAB_COLS)) as u16;
-    let mut spans = Vec::new();
-    let mut col = 0u16;
-    for _ in 0..tabs {
-        if col >= cols {
-            break;
-        }
-        spans.push(TabSpan {
-            col,
-            cols: width.min(cols - col),
-        });
-        col = col.saturating_add(width).saturating_add(TAB_GAP_COLS);
+
+    /// タブの上の空き。表示しているタブの角の半径にも使う。
+    fn margin(self) -> u32 {
+        margin(self.cell_height)
     }
-    spans
+
+    /// タブの中の左右の余白。タブの並びの左右の余白にも使う。
+    fn padding(self) -> u32 {
+        self.cell_width.max(1)
+    }
+
+    /// ベルの印の円の直径。
+    fn mark_size(self) -> u32 {
+        (self.cell_height * 2 / 5).max(1)
+    }
+
+    /// ベルの印とタイトルの間のすき間。
+    fn mark_gap(self) -> u32 {
+        (self.cell_width / 2).max(1)
+    }
+
+    /// タブの間の区切りの線の太さと高さ。
+    fn separator(self) -> (u32, u32) {
+        ((self.cell_height / 32).max(1), self.cell_height / 2)
+    }
 }
 
-/// タブバーの `col` の桁にあるタブの番号。タブの間のすき間や右の空きなら `None`。
-pub fn tab_at(spans: &[TabSpan], col: u16) -> Option<usize> {
-    spans
-        .iter()
-        .position(|span| (span.col..span.col + span.cols).contains(&col))
+/// タブバーの中のタブ一つ。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TabSlot {
+    /// 端末の並びの中の位置。
+    pub index: usize,
+    /// タブを描く矩形。上の余白の下から、タブバーの下の辺まで。
+    pub area: Area,
 }
 
-/// `title` を幅 `cols` に収めた書記素クラスタの並び。収まらなければ末尾を [`ELLIPSIS`] にする。
+/// タブバーの並べ方。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Layout {
+    metrics: Metrics,
+    /// タブバーの幅（ピクセル）。
+    width: u32,
+    /// 描くタブ。左から並べた順。入りきらないタブは含まない。
+    tabs: Vec<TabSlot>,
+}
+
+/// タブバーの上の、押して働くもの。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hit {
+    /// 端末の並びの中の位置がこの値のタブ。
+    Tab(usize),
+}
+
+/// 幅 `width` のタブバーに、`tabs` 個のタブを左から並べる。タブは同じ幅で、上限はセル
+/// [`MAX_TAB_CELLS`] 個分。多ければ [`MIN_TAB_CELLS`] 個分まで縮め、それでも入りきらなければ、
+/// 表示しているタブ `active` を含む続きのタブだけを並べる。
+pub fn layout(metrics: Metrics, width: u32, tabs: usize, active: usize) -> Layout {
+    let mut layout = Layout {
+        metrics,
+        width,
+        tabs: Vec::new(),
+    };
+    if tabs == 0 {
+        return layout;
+    }
+    let start = metrics.padding();
+    let end = width.saturating_sub(metrics.padding());
+    let room = end.saturating_sub(start);
+    let min_width = MIN_TAB_CELLS * metrics.cell_width.max(1);
+    let max_width = MAX_TAB_CELLS * metrics.cell_width.max(1);
+    let fitting = usize::try_from(room / min_width)
+        .unwrap_or(usize::MAX)
+        .max(1);
+    let shown = tabs.min(fitting);
+    let tab_width = (room / u32::try_from(shown).unwrap_or(u32::MAX)).min(max_width);
+    if tab_width == 0 {
+        return layout;
+    }
+    let first = active
+        .min(tabs - 1)
+        .saturating_sub(shown - 1)
+        .min(tabs - shown);
+    let top = metrics.margin();
+    let tab_height = metrics.bar_height() - top;
+    layout.tabs = (0..shown)
+        .map(|offset| TabSlot {
+            index: first + offset,
+            area: Area {
+                x: start + tab_width * offset as u32,
+                y: top,
+                width: tab_width,
+                height: tab_height,
+            },
+        })
+        .collect();
+    layout
+}
+
+impl Layout {
+    /// 描くタブ。
+    #[cfg(test)]
+    fn tabs(&self) -> &[TabSlot] {
+        &self.tabs
+    }
+
+    /// タブバーの中の (`x`, `y`) にあるもの。タブの上の余白も、そのタブとみなす。何もなければ
+    /// `None`。
+    pub fn hit(&self, x: i32, y: i32) -> Option<Hit> {
+        self.tabs
+            .iter()
+            .find(|tab| column(tab.area, self.metrics).contains(x, y))
+            .map(|tab| Hit::Tab(tab.index))
+    }
+}
+
+/// `area` の横の範囲で、タブバーの上から下まで。
+fn column(area: Area, metrics: Metrics) -> Area {
+    Area {
+        y: 0,
+        height: metrics.bar_height(),
+        ..area
+    }
+}
+
+/// `title` を幅 `cols`（セル）に収めた書記素クラスタの並び。収まらなければ末尾を [`ELLIPSIS`] にする。
 /// 幅のない書記素クラスタ（制御文字など）は除く。
 pub fn fit_title(title: &str, cols: u16) -> Vec<vt::Grapheme> {
     let graphemes: Vec<vt::Grapheme> = vt::split_graphemes(title)
@@ -122,47 +209,49 @@ pub fn fit_title(title: &str, cols: u16) -> Vec<vt::Grapheme> {
     fitted
 }
 
-/// タブ一つの中の、[`BELL_MARK`] とタイトルの位置。単位はセルで、タブの左端から数える。
+/// タブ一つの中の、ベルの印とタイトルの位置。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TabParts {
-    /// [`BELL_MARK`] の位置と幅。印を付けないときは `None`。
-    mark: Option<(u16, u8)>,
-    /// タイトルを置く位置。
-    title_col: u16,
-    /// タイトルに充てる幅。
+struct TabContent {
+    /// ベルの印の円を描く矩形。印を付けないときは `None`。
+    mark: Option<Area>,
+    /// タイトルの左端。
+    title_x: u32,
+    /// タイトルに充てる幅（セル）。
     title_cols: u16,
+    /// タイトルの上端。
+    text_y: u32,
 }
 
-/// 幅 `cols` のタブの中に、[`BELL_MARK`]（`bell` のとき）とタイトルを置く。印はタイトルの左に置き、
-/// タイトルを省略する前にその幅を取る。タイトルに残る幅がなくても印は消さず、狭ければ印とタイトルの
-/// すき間、左右の余白の順に詰め、それでも足りなければ印をタブの幅に縮める。
-fn tab_parts(cols: u16, bell: bool) -> TabParts {
-    let inner = cols.saturating_sub(TAB_PADDING_COLS * 2);
-    let padding = TAB_PADDING_COLS.min(cols);
-    if !bell {
-        return TabParts {
-            mark: None,
-            title_col: padding,
-            title_cols: inner,
+/// 矩形 `tab` のタブの中に、ベルの印（`bell` のとき）とタイトルを置く。印はタイトルの左に置き、
+/// タイトルを省略する前にその幅を取る。タイトルに残る幅がなくても印は消さず、余白に収まらなければ
+/// タブの真ん中に置き、タブより大きければタブの幅に縮める。
+fn tab_content(metrics: Metrics, tab: Area, bell: bool) -> TabContent {
+    let left = tab.x + metrics.padding();
+    let right = tab.right().saturating_sub(metrics.padding());
+    let text_y = tab.y + tab.height.saturating_sub(metrics.cell_height) / 2;
+    let mut title_x = left;
+    let mut mark = None;
+    if bell {
+        let size = metrics.mark_size().min(tab.width).min(tab.height);
+        let x = if left + size <= right {
+            left
+        } else {
+            tab.x + (tab.width - size) / 2
         };
+        mark = Some(Area {
+            x,
+            y: tab.y + (tab.height - size) / 2,
+            width: size,
+            height: size,
+        });
+        title_x = x + size + metrics.mark_gap();
     }
-    let mark_width = u16::from(BELL_MARK_WIDTH);
-    if inner >= BELL_MARK_COLS {
-        return TabParts {
-            mark: Some((padding, BELL_MARK_WIDTH)),
-            title_col: padding + BELL_MARK_COLS,
-            title_cols: inner - BELL_MARK_COLS,
-        };
-    }
-    let mark = if inner >= mark_width {
-        (padding, BELL_MARK_WIDTH)
-    } else {
-        (0, mark_width.min(cols) as u8)
-    };
-    TabParts {
-        mark: (mark.1 > 0).then_some(mark),
-        title_col: mark.0 + u16::from(mark.1),
-        title_cols: 0,
+    let title_cols = right.saturating_sub(title_x) / metrics.cell_width.max(1);
+    TabContent {
+        mark,
+        title_x,
+        title_cols: title_cols.min(u32::from(u16::MAX)) as u16,
+        text_y,
     }
 }
 
@@ -170,7 +259,7 @@ fn tab_parts(cols: u16, bell: bool) -> TabParts {
 #[derive(Clone, Copy, Debug)]
 pub struct TabView<'a> {
     pub title: &'a str,
-    /// 表示していない間にベルが鳴った。タイトルの前に [`BELL_MARK`] を付ける。
+    /// 表示していない間にベルが鳴った。タイトルの前に印を付ける。
     pub bell: bool,
 }
 
@@ -180,8 +269,8 @@ struct Colors {
     bar: Rgb,
     active_tab: Rgb,
     active_title: Rgb,
-    inactive_tab: Rgb,
     inactive_title: Rgb,
+    separator: Rgb,
 }
 
 impl Colors {
@@ -191,8 +280,8 @@ impl Colors {
             // 表示しているタブは端末と同じ色にして、端末とつながって見えるようにする。
             active_tab: background,
             active_title: foreground,
-            inactive_tab: mix(background, foreground, INACTIVE_TAB_TINT),
             inactive_title: mix(foreground, background, INACTIVE_TITLE_FADE),
+            separator: mix(background, foreground, SEPARATOR_TINT),
         }
     }
 }
@@ -209,79 +298,135 @@ fn mix(from: Rgb, to: Rgb, ratio: f32) -> Rgb {
     }
 }
 
-/// 幅 `cols` のタブバーを 1 行の画面として組み立てる。`active` は表示しているタブの番号。色は端末の
-/// 背景色 `background` と文字の色 `foreground` から決める。表示しているタブのタイトルは太字にする。
-pub fn frame(
+/// `layout` のとおりに並べたタブバーに描くもの。`tabs` は端末の並びの順のタブ、`active` は表示して
+/// いるタブの位置。色は端末の背景色 `background` と文字の色 `foreground` から決める。表示している
+/// タブのタイトルは太字にする。
+pub fn paints(
+    layout: &Layout,
     tabs: &[TabView],
     active: usize,
-    cols: u16,
     background: Rgb,
     foreground: Rgb,
-) -> Frame {
+) -> Vec<Paint> {
+    let metrics = layout.metrics;
     let colors = Colors::new(background, foreground);
-    let mut cells = Vec::new();
-    for (index, (tab, span)) in tabs.iter().zip(layout(tabs.len(), cols)).enumerate() {
-        let is_active = index == active;
-        let (tab_bg, title_fg) = if is_active {
-            (colors.active_tab, colors.active_title)
-        } else {
-            (colors.inactive_tab, colors.inactive_title)
-        };
-        let blank = |col: u16| CellView {
-            col,
-            row: 0,
-            text: String::new(),
-            width: 1,
-            fg: title_fg,
-            bg: Some(tab_bg),
-            bold: is_active,
-            italic: false,
-            underline: Underline::None,
-            underline_color: None,
-            strikethrough: false,
-            overline: false,
-            blink: false,
-        };
-        let end = span.col + span.cols;
-        let parts = tab_parts(span.cols, tab.bell);
-        let mut col = span.col;
-        if let Some((offset, width)) = parts.mark {
-            while col < span.col + offset {
-                cells.push(blank(col));
-                col += 1;
-            }
-            cells.push(CellView {
-                text: BELL_MARK.to_owned(),
+    let mut paints = vec![Paint::Fill {
+        area: Area {
+            x: 0,
+            y: 0,
+            width: layout.width,
+            height: metrics.bar_height(),
+        },
+        color: colors.bar,
+    }];
+    for pair in layout.tabs.windows(2) {
+        let [left, right] = pair else { continue };
+        if left.index == active || right.index == active {
+            continue;
+        }
+        let (width, height) = metrics.separator();
+        let area = right.area;
+        paints.push(Paint::Fill {
+            area: Area {
+                x: area.x.saturating_sub(width / 2),
+                y: area.y + (area.height - height) / 2,
                 width,
-                fg: BELL_COLOR,
-                ..blank(col)
+                height,
+            },
+            color: colors.separator,
+        });
+    }
+    if let Some(tab) = layout.tabs.iter().find(|tab| tab.index == active) {
+        push_raised_tab(&mut paints, layout, tab.area, colors.active_tab);
+    }
+    for slot in &layout.tabs {
+        let Some(tab) = tabs.get(slot.index) else {
+            continue;
+        };
+        let is_active = slot.index == active;
+        let title_color = if is_active {
+            colors.active_title
+        } else {
+            colors.inactive_title
+        };
+        let content = tab_content(metrics, slot.area, tab.bell);
+        if let Some(mark) = content.mark {
+            paints.push(Paint::Icon {
+                icon: Icon::Dot,
+                area: mark,
+                color: BELL_COLOR,
             });
-            col += u16::from(width);
         }
-        while col < span.col + parts.title_col {
-            cells.push(blank(col));
-            col += 1;
-        }
-        for grapheme in fit_title(tab.title, parts.title_cols) {
-            cells.push(CellView {
+        let mut x = content.title_x;
+        for grapheme in fit_title(tab.title, content.title_cols) {
+            paints.push(Paint::Text {
+                x,
+                y: content.text_y,
                 text: grapheme.text,
-                width: grapheme.width,
-                ..blank(col)
+                cells: grapheme.width,
+                bold: is_active,
+                color: title_color,
             });
-            col += u16::from(grapheme.width);
-        }
-        while col < end {
-            cells.push(blank(col));
-            col += 1;
+            x += u32::from(grapheme.width) * metrics.cell_width;
         }
     }
-    Frame {
-        cols,
-        rows: 1,
-        background: colors.bar,
-        foreground,
-        cells,
-        cursor: None,
+    paints
+}
+
+/// 矩形 `area` に、上の角を丸め、下の辺の左右を外へ反らせたタブを `color` で描く。
+fn push_raised_tab(paints: &mut Vec<Paint>, layout: &Layout, area: Area, color: Rgb) {
+    let radius = layout.metrics.margin();
+    if area.width < radius * 2 || area.height < radius {
+        paints.push(Paint::Fill { area, color });
+        return;
+    }
+    let square = |x: u32, y: u32| Area {
+        x,
+        y,
+        width: radius,
+        height: radius,
+    };
+    paints.push(Paint::Fill {
+        area: Area {
+            x: area.x + radius,
+            y: area.y,
+            width: area.width - radius * 2,
+            height: radius,
+        },
+        color,
+    });
+    paints.push(Paint::Fill {
+        area: Area {
+            y: area.y + radius,
+            height: area.height - radius,
+            ..area
+        },
+        color,
+    });
+    paints.push(Paint::Icon {
+        icon: Icon::Corner(Corner::TopLeft),
+        area: square(area.x, area.y),
+        color,
+    });
+    paints.push(Paint::Icon {
+        icon: Icon::Corner(Corner::TopRight),
+        area: square(area.right() - radius, area.y),
+        color,
+    });
+    let flare_y = area.bottom() - radius;
+    if area.x >= radius {
+        paints.push(Paint::Icon {
+            icon: Icon::Flare(Side::Left),
+            area: square(area.x - radius, flare_y),
+            color,
+        });
+    }
+    if area.right() + radius <= layout.width {
+        paints.push(Paint::Icon {
+            icon: Icon::Flare(Side::Right),
+            area: square(area.right(), flare_y),
+            color,
+        });
     }
 }
 
@@ -296,48 +441,97 @@ mod tests {
         b: 200,
     };
 
-    fn span(col: u16, cols: u16) -> TabSpan {
-        TabSpan { col, cols }
-    }
+    /// セルが 16×32 ピクセルのときの寸法。
+    const METRICS: Metrics = Metrics {
+        cell_width: 16,
+        cell_height: 32,
+    };
+
+    /// 100 桁の窓のタブバーの幅。
+    const WIDTH: u32 = 100 * 16;
 
     fn text(graphemes: &[vt::Grapheme]) -> String {
         graphemes.iter().map(|g| g.text.as_str()).collect()
     }
 
+    fn xs(layout: &Layout) -> Vec<(usize, u32, u32)> {
+        layout
+            .tabs()
+            .iter()
+            .map(|tab| (tab.index, tab.area.x, tab.area.width))
+            .collect()
+    }
+
+    #[test]
+    fn the_bar_height_follows_the_cell_height() {
+        // 上下に 1/4 ずつの余白。
+        assert_eq!(height(32), 48);
+        assert_eq!(height(24), 36);
+        assert_eq!(height(16), 24);
+        assert_eq!(height(2), 4);
+    }
+
+    #[test]
+    fn a_single_tab_is_laid_out() {
+        let layout = layout(METRICS, WIDTH, 1, 0);
+        assert_eq!(xs(&layout), vec![(0, 16, 24 * 16)]);
+        let tab = layout.tabs()[0].area;
+        // 上の余白の下から、タブバーの下の辺まで。
+        assert_eq!((tab.y, tab.bottom()), (8, 48));
+    }
+
     #[test]
     fn few_tabs_have_the_widest_width() {
-        assert_eq!(layout(2, 100), vec![span(0, 24), span(25, 24)]);
+        let layout = layout(METRICS, WIDTH, 2, 1);
+        assert_eq!(xs(&layout), vec![(0, 16, 384), (1, 400, 384)]);
     }
 
     #[test]
     fn many_tabs_share_the_bar_equally() {
-        // (100 + 1) / 5 - 1 = 19 セルずつ、すき間 1 セル。
-        let spans = layout(5, 100);
-        assert_eq!(spans.len(), 5);
-        assert!(spans.iter().all(|span| span.cols == 19));
-        assert_eq!(spans[4], span(80, 19));
-        assert!(spans[4].col + spans[4].cols <= 100);
+        // 左右の余白を除いた 1568 ピクセルを 5 等分する。
+        let layout = layout(METRICS, WIDTH, 5, 0);
+        assert_eq!(layout.tabs().len(), 5);
+        assert!(layout.tabs().iter().all(|tab| tab.area.width == 313));
+        let last = layout.tabs()[4].area;
+        assert!(last.right() <= WIDTH - 16);
     }
 
     #[test]
-    fn tabs_that_do_not_fit_are_left_out() {
-        // 1 セルずつに縮めても 3 セルの中には 2 つしか入らない。
-        assert_eq!(layout(3, 3), vec![span(0, 1), span(2, 1)]);
-        assert_eq!(layout(2, 0), vec![]);
-        assert_eq!(layout(0, 10), vec![]);
+    fn tabs_that_do_not_fit_leave_the_active_one_shown() {
+        // 1568 ピクセルにはセル 6 個分（96）のタブが 16 個まで入る。
+        let first = layout(METRICS, WIDTH, 40, 0);
+        assert_eq!(first.tabs().len(), 16);
+        assert_eq!(first.tabs()[0].index, 0);
+        assert!(first.tabs().iter().all(|tab| tab.area.width == 98));
+        // 入りきらない位置のタブを表示していれば、それが右端に来るまで並びをずらす。
+        let middle = layout(METRICS, WIDTH, 40, 20);
+        let indexes: Vec<usize> = middle.tabs().iter().map(|tab| tab.index).collect();
+        assert_eq!(indexes, (5..=20).collect::<Vec<_>>());
+        let last = layout(METRICS, WIDTH, 40, 39);
+        assert_eq!(last.tabs()[15].index, 39);
+        // 入りきるうちの位置なら左端から。
+        assert_eq!(layout(METRICS, WIDTH, 40, 15).tabs()[0].index, 0);
     }
 
     #[test]
-    fn columns_map_to_tabs() {
-        let spans = layout(2, 100);
-        assert_eq!(tab_at(&spans, 0), Some(0));
-        assert_eq!(tab_at(&spans, 23), Some(0));
-        // すき間。
-        assert_eq!(tab_at(&spans, 24), None);
-        assert_eq!(tab_at(&spans, 25), Some(1));
-        assert_eq!(tab_at(&spans, 48), Some(1));
-        assert_eq!(tab_at(&spans, 49), None);
-        assert_eq!(tab_at(&spans, 99), None);
+    fn a_narrow_bar_still_shows_one_tab() {
+        let layout = layout(METRICS, 64, 3, 2);
+        assert_eq!(xs(&layout), vec![(2, 16, 32)]);
+        assert_eq!(super::layout(METRICS, 32, 3, 0).tabs(), &[]);
+        assert_eq!(super::layout(METRICS, WIDTH, 0, 0).tabs(), &[]);
+    }
+
+    #[test]
+    fn positions_map_to_tabs() {
+        let layout = layout(METRICS, WIDTH, 2, 0);
+        assert_eq!(layout.hit(16, 20), Some(Hit::Tab(0)));
+        // タブの上の余白もそのタブ。
+        assert_eq!(layout.hit(399, 0), Some(Hit::Tab(0)));
+        assert_eq!(layout.hit(400, 47), Some(Hit::Tab(1)));
+        // 左の余白と、右の空き。
+        assert_eq!(layout.hit(15, 20), None);
+        assert_eq!(layout.hit(784, 20), None);
+        assert_eq!(layout.hit(400, 48), None);
     }
 
     #[test]
@@ -363,161 +557,140 @@ mod tests {
         assert_eq!(text(&fit_title("a\u{7}b", 10)), "ab");
     }
 
-    /// `tabs` 個のタブのうち、0 番だけベルが鳴ったタブバー（幅 `cols`、1 番を表示）。
-    fn bell_frame(titles: &[&str], cols: u16) -> Frame {
-        let tabs: Vec<TabView> = titles
-            .iter()
-            .enumerate()
-            .map(|(index, title)| TabView {
-                title,
-                bell: index == 0,
-            })
-            .collect();
-        frame(&tabs, 1, cols, BLACK, WHITE)
-    }
-
-    /// 印のセルの位置と幅。
-    fn marks(frame: &Frame) -> Vec<(u16, u8)> {
-        frame
-            .cells
-            .iter()
-            .filter(|cell| cell.text == BELL_MARK)
-            .map(|cell| (cell.col, cell.width))
-            .collect()
-    }
-
-    /// `span` の中の、文字のあるセルの位置と文字（印を除く）。
-    fn title_cells(frame: &Frame, span: TabSpan) -> Vec<(u16, String)> {
-        frame
-            .cells
-            .iter()
-            .filter(|cell| (span.col..span.col + span.cols).contains(&cell.col))
-            .filter(|cell| !cell.text.is_empty() && cell.text != BELL_MARK)
-            .map(|cell| (cell.col, cell.text.clone()))
-            .collect()
-    }
-
-    /// `span` の中のセルが、すき間も重なりもなくタブの幅を埋めている。
-    fn covers(frame: &Frame, span: TabSpan) -> bool {
-        let mut col = span.col;
-        for cell in frame
-            .cells
-            .iter()
-            .filter(|cell| (span.col..span.col + span.cols).contains(&cell.col))
-        {
-            if cell.col != col {
-                return false;
-            }
-            col += u16::from(cell.width);
+    fn tab(x: u32, width: u32) -> Area {
+        Area {
+            x,
+            y: 8,
+            width,
+            height: 40,
         }
-        col == span.col + span.cols
+    }
+
+    #[test]
+    fn a_bell_mark_comes_before_the_title() {
+        let plain = tab_content(METRICS, tab(16, 384), false);
+        assert_eq!(plain.mark, None);
+        assert_eq!((plain.title_x, plain.title_cols), (32, 22));
+        // タイトルはタブの高さの真ん中に置く。
+        assert_eq!(plain.text_y, 12);
+        let marked = tab_content(METRICS, tab(16, 384), true);
+        // 直径 12 の円を左の余白の次に置き、すき間 8 を空けてタイトル。
+        assert_eq!(
+            marked.mark,
+            Some(Area {
+                x: 32,
+                y: 22,
+                width: 12,
+                height: 12
+            })
+        );
+        assert_eq!((marked.title_x, marked.title_cols), (52, 20));
+    }
+
+    #[test]
+    fn a_bell_mark_stays_in_narrow_tabs() {
+        // タブの幅ごとに、印の左端と直径、タイトルに残る幅（セル）。
+        let cases: [(u32, (u32, u32), u16); 5] = [
+            // 6 セル分: 余白、印、すき間、タイトル 2 セル、余白。
+            (96, (16, 12), 2),
+            // 余白の中に印が収まる。タイトルに残る幅はない。
+            (44, (16, 12), 0),
+            // 余白に収まらなければ真ん中に置く。
+            (40, (14, 12), 0),
+            (12, (0, 12), 0),
+            // タブより大きければタブの幅に縮める。
+            (8, (0, 8), 0),
+        ];
+        for (width, (x, size), cols) in cases {
+            let content = tab_content(METRICS, tab(0, width), true);
+            let mark = content.mark.expect("a bell mark");
+            assert_eq!((mark.x, mark.width), (x, size), "width {width}");
+            assert!(mark.right() <= width, "width {width}");
+            assert_eq!(content.title_cols, cols, "width {width}");
+        }
+    }
+
+    fn titles(paints: &[Paint]) -> Vec<(u32, String, bool, Rgb)> {
+        paints
+            .iter()
+            .filter_map(|paint| match paint {
+                Paint::Text {
+                    x,
+                    text,
+                    bold,
+                    color,
+                    ..
+                } => Some((*x, text.clone(), *bold, *color)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn dots(paints: &[Paint]) -> Vec<Area> {
+        paints
+            .iter()
+            .filter_map(|paint| match paint {
+                Paint::Icon {
+                    icon: Icon::Dot,
+                    area,
+                    color,
+                } if *color == BELL_COLOR => Some(*area),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
     fn a_bell_mark_survives_a_long_title() {
         let powershell = r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe";
-        let frame = bell_frame(&[powershell, powershell], 100);
-        let spans = layout(2, 100);
-        assert_eq!(marks(&frame), vec![(1, BELL_MARK_WIDTH)]);
-        // 印（2 セル）とすき間の 3 セルを取ってから、残りの 19 セルにタイトルを省略して収める。
-        let title = title_cells(&frame, spans[0]);
-        assert_eq!(title[0].0, 4);
-        let text: String = title.iter().map(|(_, text)| text.as_str()).collect();
-        assert_eq!(text, r"C:\WINDOWS\System3…");
-        assert!(covers(&frame, spans[0]));
-        // 印のないタブのタイトルの幅は変わらない。
-        let other: String = title_cells(&frame, spans[1])
-            .iter()
-            .map(|(_, text)| text.as_str())
-            .collect();
-        assert_eq!(other, r"C:\WINDOWS\System32\W…");
-    }
-
-    #[test]
-    fn a_bell_mark_comes_before_a_short_title() {
-        let frame = bell_frame(&["cmd", "cmd"], 100);
-        let spans = layout(2, 100);
-        assert_eq!(marks(&frame), vec![(1, BELL_MARK_WIDTH)]);
-        assert_eq!(
-            title_cells(&frame, spans[0]),
-            vec![
-                (4, "c".to_owned()),
-                (5, "m".to_owned()),
-                (6, "d".to_owned())
-            ]
-        );
-        assert!(covers(&frame, spans[0]));
-        assert_eq!(title_cells(&frame, spans[1])[0].0, spans[1].col + 1);
-    }
-
-    #[test]
-    fn a_bell_mark_stays_in_narrow_tabs() {
-        let title = "abcdefghijklmnopqrstuvwxyz";
-        // タブの幅ごとに、印の位置（タブの左端から）と幅、残るタイトル。
-        let cases: [(usize, u16, (u16, u8), &str); 6] = [
-            // 6 セル: 余白、印、すき間、タイトル 1 セル、余白。
-            (14, 6, (1, 2), "…"),
-            // 5 セル: タイトルに残る幅はない。
-            (16, 5, (1, 2), ""),
-            // 4 セル: 印とタイトルのすき間を詰める。
-            (20, 4, (1, 2), ""),
-            // 3 セル: 左右の余白も詰める。
-            (25, 3, (0, 2), ""),
-            (30, 2, (0, 2), ""),
-            // 1 セル: 印をタブの幅に縮める。
-            (40, 1, (0, 1), ""),
+        let tabs = [
+            TabView {
+                title: powershell,
+                bell: true,
+            },
+            TabView {
+                title: powershell,
+                bell: false,
+            },
         ];
-        for (tabs, width, (offset, mark_width), expected) in cases {
-            let titles = vec![title; tabs];
-            let spans = layout(tabs, 100);
-            assert_eq!(spans[0].cols, width, "{tabs} tabs");
-            let frame = bell_frame(&titles, 100);
-            assert_eq!(marks(&frame), vec![(offset, mark_width)], "{tabs} tabs");
-            let text: String = title_cells(&frame, spans[0])
-                .iter()
-                .map(|(_, text)| text.as_str())
-                .collect();
-            assert_eq!(text, expected, "{tabs} tabs");
-            assert!(covers(&frame, spans[0]), "{tabs} tabs");
-            assert!(covers(&frame, spans[1]), "{tabs} tabs");
+        let layout = layout(METRICS, WIDTH, 2, 1);
+        let paints = paints(&layout, &tabs, 1, BLACK, WHITE);
+        assert_eq!(dots(&paints).len(), 1);
+        assert!(dots(&paints)[0].right() <= 400);
+        let first: String = titles(&paints)
+            .iter()
+            .filter(|(x, ..)| *x < 400)
+            .map(|(_, text, ..)| text.as_str())
+            .collect();
+        assert_eq!(first, r"C:\WINDOWS\System32…");
+        // 印のないタブのタイトルは、印の分だけ長い。
+        let second: String = titles(&paints)
+            .iter()
+            .filter(|(x, ..)| *x >= 400)
+            .map(|(_, text, ..)| text.as_str())
+            .collect();
+        assert_eq!(second, r"C:\WINDOWS\System32\W…");
+    }
+
+    #[test]
+    fn many_tabs_keep_their_bell_marks() {
+        let tabs: Vec<TabView> = (0..40)
+            .map(|index| TabView {
+                title: "abcdefghijklmnopqrstuvwxyz",
+                bell: index % 2 == 0,
+            })
+            .collect();
+        let layout = layout(METRICS, WIDTH, tabs.len(), 3);
+        let paints = paints(&layout, &tabs, 3, BLACK, WHITE);
+        // 描く 16 個のうち、偶数番の 8 個に印。
+        assert_eq!(dots(&paints).len(), 8);
+        for (slot, dot) in layout.tabs().iter().step_by(2).zip(dots(&paints)) {
+            assert!(dot.x >= slot.area.x && dot.right() <= slot.area.right());
         }
     }
 
     #[test]
-    fn a_bell_puts_a_mark_before_the_title() {
-        let tabs = [
-            TabView {
-                title: "abcdefghijklmnopqrstuvwxyz",
-                bell: true,
-            },
-            TabView {
-                title: "b",
-                bell: false,
-            },
-        ];
-        let frame = frame(&tabs, 1, 100, BLACK, WHITE);
-        let titled: Vec<(u16, &str, Rgb)> = frame
-            .cells
-            .iter()
-            .filter(|cell| cell.col < 24 && !cell.text.is_empty())
-            .map(|cell| (cell.col, cell.text.as_str(), cell.fg))
-            .collect();
-        assert_eq!(titled[0], (1, BELL_MARK, BELL_COLOR));
-        // 印（2 セル）とすき間の 3 セルだけ、タイトルが短くなる。
-        assert_eq!(titled[1].0, 4);
-        let title: String = titled[1..].iter().map(|(_, text, _)| *text).collect();
-        assert_eq!(title, "abcdefghijklmnopqr…");
-        assert!(
-            frame
-                .cells
-                .iter()
-                .filter(|cell| cell.col >= 25)
-                .all(|cell| cell.text != BELL_MARK)
-        );
-    }
-
-    #[test]
-    fn the_frame_fills_each_tab_and_marks_the_active_one() {
+    fn the_active_tab_rises_in_the_terminal_colour() {
         let tabs = [
             TabView {
                 title: "one",
@@ -528,35 +701,75 @@ mod tests {
                 bell: false,
             },
         ];
-        let frame = frame(&tabs, 1, 60, BLACK, WHITE);
-        assert_eq!((frame.cols, frame.rows), (60, 1));
-        assert_eq!(frame.cursor, None);
-        // 表示しているタブは端末の背景色、ほかのタブとタブバーは文字の色へ寄せた色。
+        let layout = layout(METRICS, WIDTH, 2, 1);
+        let paints = paints(&layout, &tabs, 1, BLACK, WHITE);
         let colors = Colors::new(BLACK, WHITE);
-        assert_eq!(frame.background, colors.bar);
-        assert_ne!(colors.bar, colors.inactive_tab);
-        let first = frame.cells.iter().filter(|cell| cell.col < 24);
-        assert!(
-            first
-                .clone()
-                .all(|cell| cell.bg == Some(colors.inactive_tab))
+        // 地はタブバーの全体。
+        assert_eq!(
+            paints[0],
+            Paint::Fill {
+                area: Area {
+                    x: 0,
+                    y: 0,
+                    width: WIDTH,
+                    height: 48
+                },
+                color: colors.bar
+            }
         );
-        assert!(first.clone().all(|cell| !cell.bold));
-        assert_eq!(first.count(), 24);
-        let second: Vec<&CellView> = frame.cells.iter().filter(|cell| cell.col >= 25).collect();
-        assert!(
-            second
-                .iter()
-                .all(|cell| cell.bg == Some(BLACK) && cell.bold)
-        );
-        // 左の余白の次からタイトル。全角の文字は 2 セルを占め、右半分のセルは持たない。
-        let titled: Vec<(u16, &str)> = second
+        // 表示しているタブは端末の背景色で、上の角を丸め、下の左右を外へ反らせる。
+        let icons: Vec<(Icon, Area)> = paints
             .iter()
-            .filter(|cell| !cell.text.is_empty())
-            .map(|cell| (cell.col, cell.text.as_str()))
+            .filter_map(|paint| match paint {
+                Paint::Icon { icon, area, color } if *color == BLACK => Some((*icon, *area)),
+                _ => None,
+            })
             .collect();
-        assert_eq!(titled, vec![(26, "端"), (28, "末")]);
-        let covered: u32 = second.iter().map(|cell| u32::from(cell.width)).sum();
-        assert_eq!(covered, 24);
+        let square = |x, y| Area {
+            x,
+            y,
+            width: 8,
+            height: 8,
+        };
+        assert_eq!(
+            icons,
+            vec![
+                (Icon::Corner(Corner::TopLeft), square(400, 8)),
+                (Icon::Corner(Corner::TopRight), square(776, 8)),
+                (Icon::Flare(Side::Left), square(392, 40)),
+                (Icon::Flare(Side::Right), square(784, 40)),
+            ]
+        );
+        // 表示しているタブのタイトルは太字で端末の文字の色、ほかは薄い色。
+        assert_eq!(
+            titles(&paints),
+            vec![
+                (32, "o".to_owned(), false, colors.inactive_title),
+                (48, "n".to_owned(), false, colors.inactive_title),
+                (64, "e".to_owned(), false, colors.inactive_title),
+                (416, "端".to_owned(), true, WHITE),
+                (448, "末".to_owned(), true, WHITE),
+            ]
+        );
+    }
+
+    #[test]
+    fn separators_stand_between_tabs_that_are_not_shown() {
+        let tabs = [TabView {
+            title: "a",
+            bell: false,
+        }; 4];
+        let layout = layout(METRICS, WIDTH, 4, 1);
+        let paints = paints(&layout, &tabs, 1, BLACK, WHITE);
+        let colors = Colors::new(BLACK, WHITE);
+        let separators: Vec<u32> = paints
+            .iter()
+            .filter_map(|paint| match paint {
+                Paint::Fill { area, color } if *color == colors.separator => Some(area.x),
+                _ => None,
+            })
+            .collect();
+        // 表示している 1 番の左右には引かない。2 番と 3 番の間だけ。
+        assert_eq!(separators, vec![layout.tabs()[3].area.x]);
     }
 }

@@ -30,6 +30,7 @@ use crate::{
     atlas::{AtlasFull, GlyphAtlas, Slot},
     decoration::Decoration,
     font::Font,
+    paint::{Area, Paint},
     pipeline::{CellPipeline, Instance, InstanceKind},
 };
 
@@ -41,15 +42,6 @@ const PRESENT_SYNC_INTERVAL: u32 = 1;
 
 /// 0.0〜1.0 の RGBA。
 pub type Rgba = [f32; 4];
-
-/// バックバッファ（窓のクライアント領域）の中の矩形。単位はピクセル。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Area {
-    pub x: u32,
-    pub y: u32,
-    pub width: u32,
-    pub height: u32,
-}
 
 pub struct Renderer {
     device: ID3D11Device,
@@ -149,23 +141,25 @@ impl Renderer {
         self.create_target()
     }
 
-    /// 画面 `layers` を順に、それぞれ左上のセルが領域の左上に来るように描いて表示する。それぞれの
-    /// 領域はその画面の背景色で塗ってから描き、どの領域にも入らないところは最初の画面の背景色で塗る。
-    /// `capture` を渡すと、表示する前のバックバッファを PNG で書き出す。
+    /// 画面 `layers` を順に、それぞれ左上のセルが領域の左上に来るように描き、その上に `paints` を
+    /// 順に描いて表示する。それぞれの領域はその画面の背景色で塗ってから描き、どの領域にも入らない
+    /// ところは最初の画面の背景色で塗る。`capture` を渡すと、表示する前のバックバッファを PNG で
+    /// 書き出す。
     pub fn render(
         &mut self,
         layers: &[(&Frame, Area)],
+        paints: &[Paint],
         capture: Option<&Path>,
     ) -> windows::core::Result<()> {
         let Some((first, _)) = layers.first() else {
             return Ok(());
         };
-        let instances = match self.instances(layers) {
+        let instances = match self.instances(layers, paints) {
             Ok(instances) => instances,
             Err(AtlasFull) => {
                 // 描きかけのフレームの場所は捨てたアトラスを指すので、空にしてから組み直す。
                 self.atlas.clear()?;
-                self.instances(layers).unwrap_or_else(|AtlasFull| {
+                self.instances(layers, paints).unwrap_or_else(|AtlasFull| {
                     tracing::warn!("the glyph atlas cannot hold one frame");
                     Vec::new()
                 })
@@ -200,22 +194,62 @@ impl Renderer {
         }
     }
 
-    /// 画面ごとに、領域の背景、セルの背景、カーソル、グリフ、装飾の順に四角形を並べる。
-    fn instances(&mut self, layers: &[(&Frame, Area)]) -> Result<Vec<Instance>, AtlasFull> {
+    /// 画面ごとに、領域の背景、セルの背景、カーソル、グリフ、装飾の順に四角形を並べ、続けて
+    /// `paints` を並べる。
+    fn instances(
+        &mut self,
+        layers: &[(&Frame, Area)],
+        paints: &[Paint],
+    ) -> Result<Vec<Instance>, AtlasFull> {
         let mut instances = Vec::new();
         for &(frame, area) in layers {
-            instances.push(solid(
-                [
-                    area.x as f32,
-                    area.y as f32,
-                    area.width as f32,
-                    area.height as f32,
-                ],
-                frame.background,
-            ));
+            instances.push(solid(area_rect(area), frame.background));
             instances.append(&mut self.frame_instances(frame, area)?);
         }
+        for paint in paints {
+            instances.push(self.paint_instance(paint)?);
+        }
         Ok(instances)
+    }
+
+    /// `paint` を描く四角形。
+    fn paint_instance(&mut self, paint: &Paint) -> Result<Instance, AtlasFull> {
+        Ok(match paint {
+            Paint::Fill { area, color } => solid(area_rect(*area), *color),
+            Paint::Icon { icon, area, color } => {
+                let slot = self.atlas.icon_slot(*icon, area.width, area.height)?;
+                glyph(
+                    [
+                        area.x as f32,
+                        area.y as f32,
+                        slot.width as f32,
+                        slot.height as f32,
+                    ],
+                    slot,
+                    *color,
+                )
+            }
+            Paint::Text {
+                x,
+                y,
+                text,
+                cells,
+                bold,
+                color,
+            } => {
+                let slot = self.atlas.slot(text, *bold, false, *cells)?;
+                glyph(
+                    [
+                        *x as f32 - slot.left as f32,
+                        *y as f32,
+                        slot.width as f32,
+                        self.cell_height as f32,
+                    ],
+                    slot,
+                    *color,
+                )
+            }
+        })
     }
 
     /// 背景、カーソル、グリフ、装飾の順に四角形を並べる。カーソルの上の文字は背景色で描く。
@@ -349,6 +383,16 @@ impl Renderer {
 
         write_png(path, desc.Width, desc.Height, &rgba)
     }
+}
+
+/// `area` の左上の x, y と幅, 高さ。
+fn area_rect(area: Area) -> [f32; 4] {
+    [
+        area.x as f32,
+        area.y as f32,
+        area.width as f32,
+        area.height as f32,
+    ]
 }
 
 fn rgba(color: Rgb) -> Rgba {

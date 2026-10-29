@@ -1,4 +1,5 @@
 //! グリフアトラス。DirectWrite で組んだ文字を Direct2D でテクスチャに描き、その場所を覚えておく。
+//! タブバーの角や印のような形（[`Icon`]）も描く。
 //!
 //! 文字は白で、乗算済みのアルファで描く。色はシェーダで付ける。場所は 1 セルの高さの棚に左から
 //! 詰めていき、いっぱいになったら全部を捨てて描き直す。斜体のようにインクがセルの左右へはみ出す
@@ -46,6 +47,7 @@ use crate::{
     boxdraw::{self, Shape},
     decoration::{self, Decoration, Placement},
     font::Font,
+    paint::Icon,
 };
 
 /// アトラスの一辺（ピクセル）。
@@ -111,6 +113,8 @@ pub struct GlyphAtlas {
     slots: HashMap<GlyphKey, Slot>,
     /// 装飾と、それを描いたセルの数ごとの場所。
     decoration_slots: HashMap<(Decoration, u8), Slot>,
+    /// 形と、それを描いた幅と高さごとの場所。
+    icon_slots: HashMap<(Icon, u32, u32), Slot>,
 }
 
 impl GlyphAtlas {
@@ -206,6 +210,7 @@ impl GlyphAtlas {
             next_y: 0,
             slots: HashMap::new(),
             decoration_slots: HashMap::new(),
+            icon_slots: HashMap::new(),
         };
         atlas.clear()?;
         Ok(atlas)
@@ -223,6 +228,7 @@ impl GlyphAtlas {
     pub fn clear(&mut self) -> windows::core::Result<()> {
         self.slots.clear();
         self.decoration_slots.clear();
+        self.icon_slots.clear();
         self.next_x = 0;
         self.next_y = 0;
         // SAFETY: context の描画先はアトラスのテクスチャ。BeginDraw と EndDraw を対にする。
@@ -295,6 +301,24 @@ impl GlyphAtlas {
             tracing::warn!("failed to rasterize {decoration:?}: {e}");
         }
         self.decoration_slots.insert((decoration, cells), slot);
+        Ok(slot)
+    }
+
+    /// `icon` を幅 `width`・高さ `height` で描いた場所を返す。まだ描いていなければ描く。高さは
+    /// 1 セルまでで、それより高ければ 1 セルの高さに切る。
+    pub fn icon_slot(&mut self, icon: Icon, width: u32, height: u32) -> Result<Slot, AtlasFull> {
+        let height = height.min(self.cell_height);
+        if let Some(slot) = self.icon_slots.get(&(icon, width, height)) {
+            return Ok(*slot);
+        }
+        let slot = Slot {
+            height,
+            ..self.allocate(width)?
+        };
+        if let Err(e) = self.draw_shapes(&icon.shapes(width as f32, height as f32), slot) {
+            tracing::warn!("failed to rasterize {icon:?}: {e}");
+        }
+        self.icon_slots.insert((icon, width, height), slot);
         Ok(slot)
     }
 

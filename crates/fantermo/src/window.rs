@@ -10,7 +10,7 @@ use std::{
 use fantermo_core::{
     backend::{ExitCode, GridSize},
     config::{Config, DEFAULT_FONT_FAMILIES, FontConfig, PasteConfig, PasteConfirm, WideGlyph},
-    frame::{Frame, Rgb},
+    frame::Rgb,
     keymap::{self, Keymap},
     link::Link,
     vt::{
@@ -68,10 +68,11 @@ use crate::{
     keyboard::{self, KeyPosition, Utf16Assembler},
     link_opener,
     notice::{self, Topic},
+    paint::{Area, Paint},
     paste_editor,
-    renderer::{Area, Renderer},
+    renderer::Renderer,
     session::{Session, SessionId},
-    tab_bar::{self, TabView},
+    tab_bar::{self, Hit, TabView},
 };
 
 const WINDOW_CLASS: PCWSTR = w!("fantermo");
@@ -426,9 +427,9 @@ struct App {
     /// 割り当ての動作に使ったので、離したときにも端末へ送らないキー。タブを切り替えたあとに
     /// 離したことが届くので、端末ごとではなく窓に持つ。
     suppressed_release: Option<Key>,
-    /// タブバーの上で押したマウスのボタンと、そのときマウスの下にあったタブの番号。離すまで、マウスの
+    /// タブバーの上で押したマウスのボタンと、そのときマウスの下にあったもの。離すまで、マウスの
     /// 操作を端末へ送らない。
-    tab_bar_press: Option<(MouseButton, Option<usize>)>,
+    tab_bar_press: Option<(MouseButton, Option<Hit>)>,
     /// 窓がアクティブ（前面）。WM_ACTIVATE で決める。
     window_active: bool,
     /// 点滅の文字を見せている。点滅させていないときは `true`。
@@ -880,10 +881,10 @@ impl App {
         // SAFETY: self.hwnd はこのスレッドの有効な窓。
         unsafe { SetCapture(self.hwnd) };
         let (x, y) = client_position(lparam);
-        if let Some(tab) = self.tab_bar_hit(x, y) {
-            self.tab_bar_press = Some((button, tab));
+        if let Some(hit) = self.tab_bar_hit(x, y) {
+            self.tab_bar_press = Some((button, hit));
             if button == MouseButton::Left
-                && let Some(index) = tab
+                && let Some(Hit::Tab(index)) = hit
             {
                 self.activate(index);
             }
@@ -948,11 +949,11 @@ impl App {
     ) -> Option<Deferred> {
         let (x, y) = client_position(lparam);
         let mut deferred = None;
-        if let Some((pressed, tab)) = self.tab_bar_press
+        if let Some((pressed, hit)) = self.tab_bar_press
             && pressed == button
         {
             self.tab_bar_press = None;
-            deferred = self.on_tab_bar_click(button, tab, x, y);
+            deferred = self.on_tab_bar_click(button, hit, x, y);
         } else if button == MouseButton::Left
             && let Some(uri) = self.session_mut().pressed_link.take()
         {
@@ -981,33 +982,41 @@ impl App {
         deferred
     }
 
-    /// 窓のクライアント領域の中の (`x`, `y`) がタブバーの上なら、そこにあるタブの番号（タブの間のすき間や
-    /// 右の空きなら `None`）を `Some` で返す。タブバーの外なら `None`。
-    fn tab_bar_hit(&self, x: i32, y: i32) -> Option<Option<usize>> {
-        let area = self.tab_bar_area();
-        let inside = (0..area.width as i32).contains(&x) && (0..area.height as i32).contains(&y);
-        if !inside {
-            return None;
-        }
-        let col = (x as u32 / self.font.cell_width_px).min(u32::from(u16::MAX)) as u16;
-        let spans = tab_bar::layout(self.sessions.len(), self.tab_bar_cols());
-        Some(tab_bar::tab_at(&spans, col))
+    /// 窓のクライアント領域の中の (`x`, `y`) がタブバーの上なら、そこにあるもの（タブの間や右の空きなら
+    /// `None`）を `Some` で返す。タブバーの外なら `None`。
+    fn tab_bar_hit(&self, x: i32, y: i32) -> Option<Option<Hit>> {
+        self.tab_bar_area()
+            .contains(x, y)
+            .then(|| self.tab_bar_layout().hit(x, y))
     }
 
-    /// タブバーの上で押した `button` を (`x`, `y`) で離した。押したときのマウスの下のタブは `pressed_tab`。
+    /// タブバーの並べ方。
+    fn tab_bar_layout(&self) -> tab_bar::Layout {
+        tab_bar::layout(
+            tab_bar::Metrics {
+                cell_width: self.font.cell_width_px,
+                cell_height: self.font.cell_height_px,
+            },
+            self.tab_bar_area().width,
+            self.sessions.len(),
+            self.active,
+        )
+    }
+
+    /// タブバーの上で押した `button` を (`x`, `y`) で離した。押したときのマウスの下のものは `pressed`。
     /// 中ボタンを同じタブの上で離したらそのタブを閉じ、右ボタンならコンテキストメニューを出すよう返す。
     /// 左ボタンは押したときに切り替えてある。
     fn on_tab_bar_click(
         &mut self,
         button: MouseButton,
-        pressed_tab: Option<usize>,
+        pressed: Option<Hit>,
         x: i32,
         y: i32,
     ) -> Option<Deferred> {
         match button {
             MouseButton::Middle => {
-                let index = pressed_tab?;
-                if self.tab_bar_hit(x, y) != Some(Some(index)) {
+                let Hit::Tab(index) = pressed?;
+                if self.tab_bar_hit(x, y) != Some(pressed) {
                     return None;
                 }
                 self.close_session(index).then_some(Deferred::CloseWindow)
@@ -1443,18 +1452,17 @@ impl App {
         if !self.blink_visible {
             frame.hide_blinking_text();
         }
-        let tab_bar = self.tab_bar_frame(frame.background, frame.foreground);
-        let layers = [
-            (&frame, self.terminal_area),
-            (&tab_bar, self.tab_bar_area()),
-        ];
-        if let Err(e) = self.renderer.render(&layers, capture) {
+        let tab_bar = self.tab_bar_paints(frame.background, frame.foreground);
+        if let Err(e) = self
+            .renderer
+            .render(&[(&frame, self.terminal_area)], &tab_bar, capture)
+        {
             tracing::warn!("failed to render: {e}");
         }
     }
 
-    /// タブバーの画面。色は端末の背景色 `background` と文字の色 `foreground` から決める。
-    fn tab_bar_frame(&self, background: Rgb, foreground: Rgb) -> Frame {
+    /// タブバーに描くもの。色は端末の背景色 `background` と文字の色 `foreground` から決める。
+    fn tab_bar_paints(&self, background: Rgb, foreground: Rgb) -> Vec<Paint> {
         let tabs: Vec<TabView> = self
             .sessions
             .iter()
@@ -1463,10 +1471,10 @@ impl App {
                 bell: session.bell_marked,
             })
             .collect();
-        tab_bar::frame(
+        tab_bar::paints(
+            &self.tab_bar_layout(),
             &tabs,
             self.active,
-            self.tab_bar_cols(),
             background,
             foreground,
         )
@@ -1480,11 +1488,6 @@ impl App {
             width: self.terminal_area.width,
             height: self.terminal_area.y,
         }
-    }
-
-    /// タブバーの幅（セル）。
-    fn tab_bar_cols(&self) -> u16 {
-        (self.terminal_area.width / self.font.cell_width_px).min(u32::from(u16::MAX)) as u16
     }
 
     /// 点滅のタイマーを動かす・止める。止めたら点滅の文字を見せた状態に戻す。動かし始めも見せた状態から。
