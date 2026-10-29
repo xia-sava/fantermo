@@ -20,6 +20,7 @@ mod font;
 mod ime;
 mod keyboard;
 mod known_folder;
+mod license;
 mod link_opener;
 mod logging;
 mod notice;

@@ -31,6 +31,8 @@ pub fn edit(owner: HWND, text: &str, font: &Font) -> Option<String> {
     let dialog = Dialog {
         title: TITLE,
         text,
+        read_only: false,
+        min_columns: None,
         buttons: &BUTTONS,
     };
     text_dialog::run(owner, &dialog, font)

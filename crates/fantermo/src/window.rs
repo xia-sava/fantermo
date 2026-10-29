@@ -71,7 +71,7 @@ use crate::{
     font::{self, Font},
     ime::{self, CursorRect},
     keyboard::{self, KeyPosition, Utf16Assembler},
-    link_opener,
+    license, link_opener,
     notice::{self, Topic},
     paint::{Area, Paint},
     paste_editor,
@@ -400,6 +400,8 @@ fn message_loop() -> u32 {
 enum Deferred {
     /// 改行を含む貼り付けの内容を、編集のダイアログで確かめる。
     EditPaste { text: String, font: Font },
+    /// ライセンスのダイアログを開く。`font` は端末のフォント。
+    ShowLicenses { font: Font },
     /// コンテキストメニューか、タブバーのメニューのボタンのメニューを出す。
     Menu(MenuRequest),
     /// 窓を閉じる。最後の端末を閉じたときと、メニューで終了を選んだときに使う。
@@ -1127,7 +1129,6 @@ impl App {
             exclude: None,
             can_copy: self.has_selection(),
             can_open_settings: self.config_path.is_some(),
-            can_open_notices: link_opener::notices_path().is_some(),
         })
     }
 
@@ -1148,7 +1149,6 @@ impl App {
             }),
             can_copy: self.has_selection(),
             can_open_settings: self.config_path.is_some(),
-            can_open_notices: link_opener::notices_path().is_some(),
         })
     }
 
@@ -1760,6 +1760,7 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
                     });
                 }
             }
+            Deferred::ShowLicenses { font } => license::show(hwnd, &font),
             Deferred::Menu(request) => match context_menu::show(hwnd, &request) {
                 Some(MenuCommand::Copy) => with_app(&mut |app| {
                     app.copy_selection();
@@ -1773,7 +1774,11 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
                     with_app(&mut |app| next = app.run_tab_command(TabCommand::Close))
                 }
                 Some(MenuCommand::OpenSettings) => with_app(&mut |app| app.open_settings()),
-                Some(MenuCommand::OpenNotices) => link_opener::open_notices(),
+                Some(MenuCommand::ShowLicenses) => with_app(&mut |app| {
+                    next = Some(Deferred::ShowLicenses {
+                        font: app.font.clone(),
+                    })
+                }),
                 Some(MenuCommand::Exit) => next = Some(Deferred::CloseWindow),
                 None => {}
             },

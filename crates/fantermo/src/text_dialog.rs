@@ -10,8 +10,12 @@ use std::{
 
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
-        Graphics::Gdi::{COLOR_BTNFACE, CreateFontIndirectW, DeleteObject, HBRUSH, HFONT, HGDIOBJ},
+        Foundation::{HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM},
+        Graphics::Gdi::{
+            COLOR_BTNFACE, CreateFontIndirectW, DeleteObject, GetDC, GetMonitorInfoW,
+            GetTextExtentPoint32W, HBRUSH, HFONT, HGDIOBJ, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+            MonitorFromWindow, ReleaseDC, SelectObject,
+        },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             HiDpi::GetDpiForWindow,
@@ -19,13 +23,13 @@ use windows::{
             WindowsAndMessaging::{
                 BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
                 DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE,
-                ES_WANTRETURN, GWLP_USERDATA, GetClientRect, GetMessageW, GetWindowLongPtrW,
-                GetWindowRect, GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW, IDCANCEL,
-                IDOK, IsDialogMessageW, LoadCursorW, MSG, MoveWindow, PostQuitMessage,
-                RegisterClassW, SW_SHOW, SWP_NOZORDER, SendMessageW, SetForegroundWindow,
-                SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
-                WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_KEYDOWN,
-                WM_SETFONT, WM_SIZE, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE,
+                ES_READONLY, ES_WANTRETURN, GWLP_USERDATA, GetClientRect, GetMessageW,
+                GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, HMENU,
+                IDC_ARROW, IDCANCEL, IDOK, IsDialogMessageW, LoadCursorW, MSG, MoveWindow,
+                PostQuitMessage, RegisterClassW, SW_SHOW, SWP_NOZORDER, SendMessageW,
+                SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+                TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY,
+                WM_KEYDOWN, WM_SETFONT, WM_SIZE, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE,
                 WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_HSCROLL, WS_POPUP, WS_SYSMENU,
                 WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
             },
@@ -44,6 +48,8 @@ const EDIT_ID: i32 = 100;
 /// `EM_SETLIMITTEXT` と、その上限を外す値。
 const EM_SETLIMITTEXT: u32 = 0x00C5;
 const NO_TEXT_LIMIT: usize = 0;
+/// `EM_GETRECT`。テキストボックスの中で文字を並べる矩形を返す。
+const EM_GETRECT: u32 = 0x00B2;
 /// `EM_SETSEL` と、すべてを選ぶときの範囲。
 const EM_SETSEL: u32 = 0x00B1;
 const SELECT_FROM_START: usize = 0;
@@ -75,6 +81,10 @@ pub struct Dialog<'a> {
     pub title: &'a str,
     /// テキストボックスに入れる文字列。改行は `\n` で渡す。
     pub text: &'a str,
+    /// テキストボックスを読み取り専用にし、右端で折り返して見せる。選んでコピーはできる。
+    pub read_only: bool,
+    /// テキストボックスに少なくともこの桁数が収まる幅で開く（モニターに収まる範囲で）。
+    pub min_columns: Option<u32>,
     /// 左から順に並べるボタン。
     pub buttons: &'a [Button],
 }
@@ -145,7 +155,8 @@ fn register_class() -> windows::core::Result<()> {
     Ok(())
 }
 
-/// 呼び出し元の窓の真ん中に、その大きさの 7 割でダイアログを作る。
+/// 呼び出し元の窓の真ん中に、その大きさの 7 割でダイアログを作る。`min_columns` があれば、その桁数が
+/// 収まるまで幅を広げる。
 fn create(
     owner: HWND,
     dialog: &Dialog,
@@ -203,12 +214,18 @@ fn create(
             )
         }
     };
-    let edit_style =
-        WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_WANTRETURN) as u32);
+    // 読み取り専用のときは、右端で折り返して見せ、Enter は既定のボタンに渡す。
+    let edit_style = if dialog.read_only {
+        WS_VSCROLL | WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY) as u32)
+    } else {
+        WS_VSCROLL
+            | WS_HSCROLL
+            | WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_WANTRETURN) as u32)
+    };
     state.edit.set(child(
         w!("EDIT"),
         "",
-        WS_VSCROLL | WS_HSCROLL | edit_style,
+        edit_style,
         WS_EX_CLIENTEDGE,
         EDIT_ID,
     )?);
@@ -261,10 +278,102 @@ fn create(
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, std::ptr::from_ref(state) as isize);
         SetWindowPos(hwnd, None, left, top, width, height, SWP_NOZORDER)?;
         layout(hwnd, state);
+    }
+    if let Some(columns) = dialog.min_columns {
+        widen_for_columns(owner, &owner_rect, hwnd, state, columns);
+    }
+    // SAFETY: hwnd とテキストボックスは有効な窓。
+    unsafe {
         _ = ShowWindow(hwnd, SW_SHOW);
         _ = SetFocus(Some(state.edit.get()));
     }
     Ok(hwnd)
+}
+
+/// テキストボックスの文字を並べる幅に `columns` 桁が収まらなければ、足りない分だけダイアログを広げ、
+/// 呼び出し元の窓 `owner`（場所は `owner_rect`）の真ん中に置き直す。モニターからははみ出させない。
+fn widen_for_columns(
+    owner: HWND,
+    owner_rect: &RECT,
+    dialog: HWND,
+    state: &DialogState,
+    columns: u32,
+) {
+    let Some(text_width) = text_width(state, columns) else {
+        tracing::warn!("failed to measure the text dialog font");
+        return;
+    };
+    let mut format = RECT::default();
+    // SAFETY: テキストボックスは有効な窓で、format は書き込める。
+    unsafe {
+        SendMessageW(
+            state.edit.get(),
+            EM_GETRECT,
+            None,
+            Some(LPARAM(std::ptr::from_mut(&mut format) as isize)),
+        )
+    };
+    let shortfall = text_width - (format.right - format.left);
+    if shortfall <= 0 {
+        return;
+    }
+    let mut window = RECT::default();
+    // SAFETY: dialog は有効な窓で、window は書き込める。
+    if let Err(e) = unsafe { GetWindowRect(dialog, &mut window) } {
+        tracing::warn!("failed to read the text dialog position: {e}");
+        return;
+    }
+    let width = window.right - window.left + shortfall;
+    let left = owner_rect.left + (owner_rect.right - owner_rect.left - width) / 2;
+    let (left, width) = fit_horizontally(owner, left, width);
+    let height = window.bottom - window.top;
+    // SAFETY: dialog は有効な窓。WM_SIZE で子を並べ直す。
+    let moved =
+        unsafe { SetWindowPos(dialog, None, left, window.top, width, height, SWP_NOZORDER) };
+    if let Err(e) = moved {
+        tracing::warn!("failed to widen the text dialog: {e}");
+    }
+}
+
+/// テキストボックスのフォントで `columns` 桁を並べた幅（ピクセル）。測れなければ `None`。
+fn text_width(state: &DialogState, columns: u32) -> Option<i32> {
+    let edit = state.edit.get();
+    // 平均の文字幅は実際の送り幅より小さいことがあるので、その桁数の文字列の幅を測る。
+    let line: Vec<u16> = std::iter::repeat_n(u16::from(b'0'), columns as usize).collect();
+    // SAFETY: edit は有効な窓。選んだフォントは戻し、DC は読み終えたら返す。
+    unsafe {
+        let dc = GetDC(Some(edit));
+        if dc.is_invalid() {
+            return None;
+        }
+        let previous = SelectObject(dc, HGDIOBJ(state.font.get().0));
+        let mut size = SIZE::default();
+        let measured = GetTextExtentPoint32W(dc, &line, &mut size).as_bool();
+        SelectObject(dc, previous);
+        ReleaseDC(Some(edit), dc);
+        measured.then_some(size.cx)
+    }
+}
+
+/// 横の位置 `left` と幅 `width` を、呼び出し元の窓があるモニターの作業領域に収める。
+fn fit_horizontally(owner: HWND, left: i32, width: i32) -> (i32, i32) {
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: owner は有効な窓で、info は大きさを入れて初期化してある。
+    let found = unsafe {
+        let monitor = MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST);
+        GetMonitorInfoW(monitor, &mut info).as_bool()
+    };
+    if !found {
+        tracing::warn!("failed to read the monitor of the window");
+        return (left, width);
+    }
+    let work = info.rcWork;
+    let width = width.min(work.right - work.left);
+    let left = left.clamp(work.left, work.right - width);
+    (left, width)
 }
 
 /// 呼び出し元の窓を無効にし、ダイアログが閉じるまでメッセージを回す。

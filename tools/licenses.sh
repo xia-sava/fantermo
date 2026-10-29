@@ -65,8 +65,8 @@ normalize() { tr -d '\r' | sed -e 's/[[:space:]]*$//'; }
     cat <<'EOF'
 fantermo が使っている第三者のソフトウェアと、そのライセンス
 
-fantermo 自身のライセンスは MIT です（LICENSE）。fantermo の実行ファイルには、次のソフトウェアが
-含まれます。二つ以上のライセンスから選べるものは、選んだほうの文を載せています。
+fantermo の実行ファイルには、fantermo 自身（MIT）のほかに、次のソフトウェアが含まれます。
+二つ以上のライセンスから選べるものは、選んだほうの文を載せています。
 
 EOF
     normalize < tools/licenses/zig-notices.txt
