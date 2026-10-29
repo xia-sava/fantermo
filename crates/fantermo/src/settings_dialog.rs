@@ -49,16 +49,16 @@ use windows::{
                 CBS_DROPDOWNLIST, CW_USEDEFAULT, CreateWindowExW, DC_HASDEFID, DM_GETDEFID,
                 DefWindowProcW, DestroyWindow, EN_CHANGE, ES_AUTOHSCROLL, GWLP_USERDATA,
                 GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, HMENU,
-                IDC_ARROW, IDCANCEL, IDOK, IDYES, KillTimer, LB_ADDSTRING, LB_GETCURSEL,
-                LB_RESETCONTENT, LB_SETCURSEL, LB_SETTABSTOPS, LBN_DBLCLK, LBN_SELCHANGE,
-                LBS_NOTIFY, LBS_USETABSTOPS, LoadCursorW, MB_ICONQUESTION, MB_ICONWARNING, MB_OK,
-                MB_YESNO, MessageBoxW, MoveWindow, RegisterClassW, SW_HIDE, SW_SHOW,
-                SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetTimer, SetWindowLongPtrW,
-                SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE,
-                WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_NEXTDLGCTL, WM_NOTIFY,
-                WM_SETFONT, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE,
-                WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_GROUP, WS_POPUP, WS_SYSMENU,
-                WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+                IDC_ARROW, IDCANCEL, IDOK, IDYES, KillTimer, LB_ADDSTRING, LB_DELETESTRING,
+                LB_GETCURSEL, LB_INSERTSTRING, LB_RESETCONTENT, LB_SETCURSEL, LB_SETTABSTOPS,
+                LBN_DBLCLK, LBN_SELCHANGE, LBS_NOTIFY, LBS_USETABSTOPS, LoadCursorW,
+                MB_ICONQUESTION, MB_ICONWARNING, MB_OK, MB_YESNO, MessageBoxW, MoveWindow,
+                RegisterClassW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW,
+                SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+                WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY,
+                WM_DPICHANGED, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETFONT, WM_TIMER, WNDCLASSW,
+                WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME,
+                WS_GROUP, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
             },
         },
     },
@@ -96,6 +96,9 @@ const ID_BACKGROUND_REMOVE: i32 = 453;
 const ID_BACKGROUND_OPACITY: i32 = 454;
 const ID_BACKGROUND_OPACITY_SPIN: i32 = 455;
 const ID_BACKGROUND_FIT: i32 = 456;
+const ID_BACKGROUND_ITEM_FIT: i32 = 457;
+const ID_BACKGROUND_ITEM_OPACITY: i32 = 458;
+const ID_BACKGROUND_ITEM_OPACITY_SPIN: i32 = 459;
 const ID_KEYS: i32 = 500;
 const ID_KEY_ADD: i32 = 501;
 const ID_KEY_CHANGE: i32 = 502;
@@ -128,7 +131,7 @@ const VISIBLE_FONTS: usize = 16;
 const PAGES: [&str; 6] = ["外観", "背景", "動作", "シェル", "キー", "色"];
 
 /// 背景画像の一覧の高さ。
-const BACKGROUND_LIST_HEIGHT: i32 = 150;
+const BACKGROUND_LIST_HEIGHT: i32 = 106;
 /// 背景画像の濃さを、上下の矢印で動かす幅。
 const OPACITY_STEP: f32 = 0.05;
 
@@ -140,6 +143,47 @@ const BACKGROUND_FIT_LABELS: [&str; 5] = [
     "元の大きさで敷き詰める",
     "元の大きさで真ん中に置く",
 ];
+
+/// 一覧の項目の収め方と濃さで、全体の値に任せることの表示。
+const FOLLOW_BACKGROUND_LABEL: &str = "全体の設定に従う";
+
+/// 一覧の項目の収め方のコンボボックスで、`fit` の位置。先頭は [`FOLLOW_BACKGROUND_LABEL`]、続いて
+/// [`BackgroundFit::ALL`] の順。
+fn item_fit_choice(fit: Option<BackgroundFit>) -> usize {
+    fit.and_then(|fit| BackgroundFit::ALL.iter().position(|&value| value == fit))
+        .map_or(0, |index| index + 1)
+}
+
+/// 一覧の項目の収め方のコンボボックスの `choice` 番目の値。範囲の外なら `None`。
+fn item_fit_from_choice(choice: usize) -> Option<Option<BackgroundFit>> {
+    match choice {
+        0 => Some(None),
+        _ => BackgroundFit::ALL.get(choice - 1).copied().map(Some),
+    }
+}
+
+/// 背景画像の一覧の行。パスと、項目に書いた収め方と濃さ（「C:\a.png — tile、0.3」）。
+fn background_row_text(image: &BackgroundImage) -> String {
+    let settings: Vec<String> = image
+        .fit
+        .map(|fit| fit.name().to_owned())
+        .into_iter()
+        .chain(image.image_opacity.map(format_opacity))
+        .collect();
+    if settings.is_empty() {
+        return image.path.clone();
+    }
+    format!("{} — {}", image.path, settings.join("、"))
+}
+
+/// 入力された文字列を、一覧の項目の濃さとして読む。空（空白だけ）なら全体の値に任せる（`Some(None)`）。
+/// 読めなければ `None`。
+fn parse_item_opacity(text: &str) -> Option<Option<f32>> {
+    if text.trim().is_empty() {
+        return Some(None);
+    }
+    config::parse_image_opacity(text).map(Some)
+}
 
 /// 色のページのコントロールの ID の始まり。色ごとに [`COLOR_ID_STRIDE`] ずつ、見本・値・選ぶ・既定に
 /// 戻すの順に続く。
@@ -476,6 +520,10 @@ struct Controls {
     background_opacity: HWND,
     background_opacity_spin: HWND,
     background_fit: HWND,
+    /// 一覧で選んでいる項目の収め方と濃さ。
+    background_item_fit: HWND,
+    background_item_opacity: HWND,
+    background_item_opacity_spin: HWND,
     /// 配色のラジオボタン。[`ColorScheme::ALL`] の順。
     color_scheme: [HWND; 2],
     /// キーの割り当ての一覧。
@@ -802,7 +850,82 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         )?;
         background_page.push(image_buttons[index]);
     }
-    let images_note_top = image_buttons_top + BUTTON_HEIGHT + BUTTON_GAP;
+    let item_fit_row = image_buttons_top + BUTTON_HEIGHT + MARGIN;
+    let (class, text, rect) = label("選んだ画像の収め方(&N):", label_rect(item_fit_row));
+    background_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let background_item_fit = child(
+        WC_COMBOBOXW,
+        "",
+        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
+        none,
+        ID_BACKGROUND_ITEM_FIT,
+        Some([control_left, item_fit_row, control_width, ROW_HEIGHT]),
+    )?;
+    background_page.push(background_item_fit);
+    for text in std::iter::once(FOLLOW_BACKGROUND_LABEL).chain(BACKGROUND_FIT_LABELS) {
+        // SAFETY: background_item_fit は有効なコンボボックスで、文字列はこの呼び出しの間は生きている。
+        unsafe {
+            SendMessageW(
+                background_item_fit,
+                CB_ADDSTRING,
+                None,
+                Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
+            )
+        };
+    }
+    let item_opacity_row = item_fit_row + ROW_HEIGHT + MARGIN;
+    let (class, text, rect) = label("選んだ画像の濃さ(&H):", label_rect(item_opacity_row));
+    background_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let background_item_opacity = child(
+        w!("EDIT"),
+        "",
+        edit_style,
+        WS_EX_CLIENTEDGE,
+        ID_BACKGROUND_ITEM_OPACITY,
+        Some([control_left, item_opacity_row, NUMBER_WIDTH, ROW_HEIGHT]),
+    )?;
+    background_page.push(background_item_opacity);
+    let background_item_opacity_spin = child(
+        UPDOWN_CLASSW,
+        "",
+        spin_style,
+        none,
+        ID_BACKGROUND_ITEM_OPACITY_SPIN,
+        None,
+    )?;
+    background_page.push(background_item_opacity_spin);
+    let (class, text, rect) = label(
+        "0〜1。空なら全体の設定に従う",
+        [
+            control_left + NUMBER_WIDTH + BUTTON_GAP,
+            item_opacity_row + LABEL_OFFSET,
+            control_width - NUMBER_WIDTH - BUTTON_GAP,
+            ROW_HEIGHT,
+        ],
+    );
+    background_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let images_note_top = item_opacity_row + ROW_HEIGHT + BUTTON_GAP;
     let (class, text, rect) = label(
         "新しいタブを開くたびに、一覧からランダムに一枚選ぶ。フォルダは、その中の画像（png、jpg、bmp、gif、webp）から選ぶ。設定ファイルには「*」「?」のワイルドカードも書ける。",
         [page_left, images_note_top, page_width, 2 * ROW_HEIGHT],
@@ -816,7 +939,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         Some(rect),
     )?);
     let opacity_row = images_note_top + 2 * ROW_HEIGHT + MARGIN;
-    let (class, text, rect) = label("画像の濃さ(&Y):", label_rect(opacity_row));
+    let (class, text, rect) = label("全体の画像の濃さ(&Y):", label_rect(opacity_row));
     background_page.push(child(
         class,
         &text,
@@ -861,7 +984,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         Some(rect),
     )?);
     let fit_row = opacity_row + ROW_HEIGHT + MARGIN;
-    let (class, text, rect) = label("収め方(&T):", label_rect(fit_row));
+    let (class, text, rect) = label("全体の収め方(&T):", label_rect(fit_row));
     background_page.push(child(
         class,
         &text,
@@ -1241,6 +1364,9 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             background_opacity,
             background_opacity_spin,
             background_fit,
+            background_item_fit,
+            background_item_opacity,
+            background_item_opacity_spin,
             color_scheme,
             keys_list,
             key_buttons,
@@ -1449,7 +1575,9 @@ impl State<'_> {
                     list,
                     LB_ADDSTRING,
                     None,
-                    Some(LPARAM(HSTRING::from(image.path.as_str()).as_ptr() as isize)),
+                    Some(LPARAM(
+                        HSTRING::from(background_row_text(image)).as_ptr() as isize
+                    )),
                 )
             };
         }
@@ -1474,11 +1602,94 @@ impl State<'_> {
             .filter(|&index| index < self.background_images.borrow().len())
     }
 
-    /// 背景画像の一覧で選んでいるときだけ「外す」を押せるようにする。
+    /// 背景画像の一覧で選んでいるときだけ「外す」と項目の収め方・濃さを触れるようにし、収め方と濃さに
+    /// 選んでいる項目の値を見せる。
     fn update_background_buttons(&self) {
-        let selected = self.selected_background_image().is_some();
-        // SAFETY: ボタンはダイアログの子の有効な窓。
-        unsafe { _ = EnableWindow(self.controls.background_remove, selected) };
+        let c = &self.controls;
+        let selected = self
+            .selected_background_image()
+            .and_then(|index| self.background_images.borrow().get(index).cloned());
+        for control in [
+            c.background_remove,
+            c.background_item_fit,
+            c.background_item_opacity,
+            c.background_item_opacity_spin,
+        ] {
+            // SAFETY: control はダイアログの子の有効な窓。
+            unsafe { _ = EnableWindow(control, selected.is_some()) };
+        }
+        let (fit, opacity) = match &selected {
+            Some(image) => (
+                item_fit_choice(image.fit),
+                image.image_opacity.map(format_opacity).unwrap_or_default(),
+            ),
+            // 何も選ばない。
+            None => (usize::MAX, String::new()),
+        };
+        // SAFETY: コンボボックスは有効な窓。
+        unsafe { SendMessageW(c.background_item_fit, CB_SETCURSEL, Some(WPARAM(fit)), None) };
+        // 借用は持っていない（入力欄の EN_CHANGE はこの中で届く）。
+        set_text(c.background_item_opacity, &opacity);
+    }
+
+    /// 背景画像の一覧の `index` 番目の行を、編集中の項目に合わせて書き直す（選んだままにする）。
+    fn refresh_background_row(&self, index: usize) {
+        let list = self.controls.background_images;
+        let Some(text) = self
+            .background_images
+            .borrow()
+            .get(index)
+            .map(background_row_text)
+        else {
+            return;
+        };
+        // SAFETY: 一覧は有効な窓で、文字列はこの呼び出しの間は生きている。
+        unsafe {
+            SendMessageW(list, LB_DELETESTRING, Some(WPARAM(index)), None);
+            SendMessageW(
+                list,
+                LB_INSERTSTRING,
+                Some(WPARAM(index)),
+                Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
+            );
+            SendMessageW(list, LB_SETCURSEL, Some(WPARAM(index)), None);
+        }
+    }
+
+    /// 一覧で選んでいる項目の収め方のコンボボックスが変わった。
+    fn on_background_item_fit(&self) {
+        let Some(index) = self.selected_background_image() else {
+            return;
+        };
+        // SAFETY: コンボボックスは有効な窓。
+        let choice =
+            unsafe { SendMessageW(self.controls.background_item_fit, CB_GETCURSEL, None, None) }.0;
+        let Some(fit) = usize::try_from(choice).ok().and_then(item_fit_from_choice) else {
+            return;
+        };
+        self.background_images.borrow_mut()[index].fit = fit;
+        self.refresh_background_row(index);
+        self.preview();
+    }
+
+    /// 一覧で選んでいる項目の濃さの入力欄が変わった。読めれば項目に入れる。端末への反映は少し待つ
+    /// （読めなければ、反映するときに誤りを見せる）。
+    fn on_background_item_opacity(&self) {
+        if let Some(index) = self.selected_background_image()
+            && let Some(opacity) =
+                parse_item_opacity(&get_text(self.controls.background_item_opacity))
+        {
+            let changed = {
+                let mut images = self.background_images.borrow_mut();
+                let changed = images[index].image_opacity != opacity;
+                images[index].image_opacity = opacity;
+                changed
+            };
+            if changed {
+                self.refresh_background_row(index);
+            }
+        }
+        self.schedule_preview();
     }
 
     /// 背景画像の一覧のボタン `id` が押された。
@@ -1718,6 +1929,7 @@ impl State<'_> {
             c.size_spin,
             c.scroll_bar_width_spin,
             c.background_opacity_spin,
+            c.background_item_opacity_spin,
         ]);
         for control in all {
             // SAFETY: control はダイアログの子で、フォントはダイアログが閉じるまで消さない。
@@ -1748,6 +1960,7 @@ impl State<'_> {
             (c.size_spin, c.size),
             (c.scroll_bar_width_spin, c.scroll_bar_width),
             (c.background_opacity_spin, c.background_opacity),
+            (c.background_item_opacity_spin, c.background_item_opacity),
         ] {
             // 範囲は、上の矢印で数が増える向き（既定は逆）にするためだけに決める。数は step で決める。
             // SAFETY: spin と buddy はダイアログの子の有効な窓。
@@ -1816,6 +2029,14 @@ impl State<'_> {
             config.paste.confirm = PasteConfirm::ALL[index];
         }
         config.shell = config::shell_from_input(&get_text(c.shell));
+        if self.selected_background_image().is_some()
+            && parse_item_opacity(&get_text(c.background_item_opacity)).is_none()
+        {
+            return Err((
+                "選んだ画像の濃さは、0 から 1 までの数で書くか、空にしてください。",
+                c.background_item_opacity,
+            ));
+        }
         config.background.images = self.background_images.borrow().clone();
         config.background.image_opacity =
             config::parse_image_opacity(&get_text(c.background_opacity)).ok_or((
@@ -1961,6 +2182,16 @@ impl State<'_> {
                 .unwrap_or(self.base.borrow().background.image_opacity);
             set_text(
                 c.background_opacity,
+                &format_opacity(step_opacity(current, delta)),
+            );
+        } else if spin == c.background_item_opacity_spin {
+            // 空（全体の設定に従う）なら、全体の濃さから動かす。
+            let current = parse_item_opacity(&get_text(c.background_item_opacity))
+                .flatten()
+                .or_else(|| config::parse_image_opacity(&get_text(c.background_opacity)))
+                .unwrap_or(self.base.borrow().background.image_opacity);
+            set_text(
+                c.background_item_opacity,
                 &format_opacity(step_opacity(current, delta)),
             );
         }
@@ -2142,6 +2373,8 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 (ID_BACKGROUND_FIT, CBN_SELCHANGE) => {
                     state.preview();
                 }
+                (ID_BACKGROUND_ITEM_FIT, CBN_SELCHANGE) => state.on_background_item_fit(),
+                (ID_BACKGROUND_ITEM_OPACITY, EN_CHANGE) => state.on_background_item_opacity(),
                 (ID_KEYS, LBN_SELCHANGE) => state.update_key_buttons(),
                 (ID_KEYS, LBN_DBLCLK) => state.on_key_button(ID_KEY_CHANGE),
                 (ID_KEY_ADD | ID_KEY_CHANGE | ID_KEY_REMOVE | ID_KEY_RESET, BN_CLICKED) => {
@@ -2344,6 +2577,32 @@ mod tests {
         assert_eq!(step_opacity(0.0, -1), 0.0);
         assert_eq!(format_opacity(step_opacity(0.8, 1)), "0.85");
         assert_eq!(format_opacity(1.0), "1");
+    }
+
+    #[test]
+    fn background_rows_show_the_item_settings() {
+        let mut image = BackgroundImage::new(r"C:\a.png");
+        assert_eq!(background_row_text(&image), r"C:\a.png");
+        image.fit = Some(BackgroundFit::Tile);
+        assert_eq!(background_row_text(&image), r"C:\a.png — tile");
+        image.image_opacity = Some(0.3);
+        assert_eq!(background_row_text(&image), r"C:\a.png — tile、0.3");
+        image.fit = None;
+        assert_eq!(background_row_text(&image), r"C:\a.png — 0.3");
+    }
+
+    #[test]
+    fn item_fits_follow_the_background_first() {
+        assert_eq!(item_fit_choice(None), 0);
+        assert_eq!(item_fit_from_choice(0), Some(None));
+        for (index, fit) in BackgroundFit::ALL.into_iter().enumerate() {
+            assert_eq!(item_fit_choice(Some(fit)), index + 1);
+            assert_eq!(item_fit_from_choice(index + 1), Some(Some(fit)));
+        }
+        assert_eq!(item_fit_from_choice(BackgroundFit::ALL.len() + 1), None);
+        assert_eq!(parse_item_opacity(" "), Some(None));
+        assert_eq!(parse_item_opacity("0.4"), Some(Some(0.4)));
+        assert_eq!(parse_item_opacity("2"), None);
     }
 
     #[test]
