@@ -13,6 +13,12 @@ Rust の workspace（edition 2024）で，2 つのクレートに分かれてい
 
 libghostty-vt は [libghostty-rs](https://github.com/uzaaft/libghostty-rs) のバインディングを，git の依存としてコミットで固定して使います．
 
+## インストール
+
+[Releases](https://github.com/xia-sava/fantermo/releases) に版ごとの zip（`fantermo-<版>-x64.zip`）を置いています．好きな場所に展開して，中の `fantermo.exe` を起動してください．設定ファイルと窓の状態は `%APPDATA%\fantermo\` に置きます．
+
+版と，ビルドしたコミットは，タブバーのメニューのボタン（≡）の「fantermo について…」で見られます．
+
 ## ビルド
 
 Windows + Rust（edition 2024）+ MSVC ツールチェインと，Zig が必要です．Zig の版は，固定している libghostty-vt が求めるもの（`tools/dev.bat` の `ZIG_REQUIRED`）に合わせます．
@@ -33,4 +39,4 @@ Windows + Rust（edition 2024）+ MSVC ツールチェインと，Zig が必要�
 
 [MIT](LICENSE)
 
-fantermo に含まれる第三者のソフトウェアのライセンスは [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) にまとめています．このファイルと LICENSE は実行ファイルに埋め込んであり，タブバーのメニューのボタン（≡）の「ライセンス」で見られます．Rust の crate は [cargo-about](https://github.com/EmbarkStudios/cargo-about) で集め，libghostty-vt に静的にリンクされる Zig 側のライブラリは手で確かめて `tools/licenses/zig-notices.txt` に書いています．依存を変えたら `./tools/licenses.sh` で作り直してください．
+fantermo に含まれる第三者のソフトウェアのライセンスは [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) にまとめています．このファイルと LICENSE は実行ファイルに埋め込んであり，タブバーのメニューのボタン（≡）の「fantermo について…」で見られます．Rust の crate は [cargo-about](https://github.com/EmbarkStudios/cargo-about) で集め，libghostty-vt に静的にリンクされる Zig 側のライブラリは手で確かめて `tools/licenses/zig-notices.txt` に書いています．依存を変えたら `./tools/licenses.sh` で作り直してください．
