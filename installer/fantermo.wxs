@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  fantermo の MSI。配布物を作るワークフロー（.github/workflows/release.yml）が WiX で組む。
+
+  ユーザー単位で %LOCALAPPDATA%\Programs\fantermo に入れ、管理者権限を求めない。アプリの「更新を確認」は
+  この場所に入れたリリースのビルドでだけ押せる（crates/fantermo/src/update.rs）。版を上げた MSI は
+  MajorUpgrade で古い版を外してから入る。
+
+  プリプロセッサの変数（wix build -d で渡す）:
+    Version   製品の版（MAJOR.MINOR.PATCH）
+    StageDir  zip と同じ中身（fantermo.exe、LICENSE、THIRD-PARTY-NOTICES.txt、README.md）を置いたフォルダ
+    IconFile  「プログラムと機能」に出すアイコン（assets/icon/fantermo.ico）
+
+  ユーザーのプロファイルの下に入れる部品は、キーパスをファイルではなく HKCU のレジストリ値にし（ICE38）、
+  作ったフォルダをアンインストールで消す（ICE64）。
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="fantermo"
+    Manufacturer="ISIGE, Akira"
+    Version="$(var.Version)"
+    UpgradeCode="C4FC87EE-5E35-4A23-8EF4-BF71B422CB1D"
+    Scope="perUser">
+
+    <!-- 同じ版の入れ直しも上書きにする。分けると「プログラムと機能」に同じ版が二つ並ぶ。
+         入れるのに失敗したら古い版を戻す。 -->
+    <MajorUpgrade
+      AllowSameVersionUpgrades="yes"
+      Schedule="afterInstallInitialize"
+      DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="fantermo.ico" SourceFile="$(var.IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="fantermo.ico" />
+    <!-- 選べる機能がないので、「プログラムと機能」の「変更」は出さない。 -->
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="UserProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="fantermo" />
+      </Directory>
+    </StandardDirectory>
+
+    <!-- スタートメニューのショートカットから開いた端末のシェルが、インストール先ではなくホームのフォルダで始まるようにする。 -->
+    <StandardDirectory Id="TARGETDIR">
+      <Directory Id="USERPROFILEFOLDER" Name="UserProfile" />
+    </StandardDirectory>
+    <SetDirectory Id="USERPROFILEFOLDER" Value="[%USERPROFILE%]" />
+
+    <Feature Id="Main" Title="fantermo">
+      <ComponentGroupRef Id="ProgramFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="ProgramFiles" Directory="INSTALLFOLDER">
+      <Component Id="Executable" Guid="6B9953B5-5079-4F41-9A4E-98B3E32B925D">
+        <File Id="fantermo.exe" Source="$(var.StageDir)\fantermo.exe" KeyPath="no" />
+        <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+        <RemoveFolder Id="RemoveUserProgramsFolder" Directory="UserProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\fantermo\Installer" Name="Executable" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="License" Guid="CB613375-F9C7-4155-94AF-4761E1EC5614">
+        <File Id="LICENSE" Source="$(var.StageDir)\LICENSE" KeyPath="no" />
+        <RegistryValue Root="HKCU" Key="Software\fantermo\Installer" Name="License" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="ThirdPartyNotices" Guid="7AC3E9BE-D7EF-4E6A-BB39-0F7D9ECF55C5">
+        <File Id="THIRD_PARTY_NOTICES.txt" Source="$(var.StageDir)\THIRD-PARTY-NOTICES.txt" KeyPath="no" />
+        <RegistryValue Root="HKCU" Key="Software\fantermo\Installer" Name="ThirdPartyNotices" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="Readme" Guid="35866B00-C89E-4DE4-BC86-8203B2E4024D">
+        <File Id="README.md" Source="$(var.StageDir)\README.md" KeyPath="no" />
+        <RegistryValue Root="HKCU" Key="Software\fantermo\Installer" Name="Readme" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="7E8E86CE-FE58-4744-BEC5-84C06CBBA17A">
+        <Shortcut
+          Id="StartMenuFantermo"
+          Name="fantermo"
+          Description="fantermo"
+          Target="[INSTALLFOLDER]fantermo.exe"
+          WorkingDirectory="USERPROFILEFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\fantermo\Installer" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+  </Fragment>
+</Wix>

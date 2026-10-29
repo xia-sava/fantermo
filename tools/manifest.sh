@@ -6,13 +6,15 @@
 #
 #  例:
 #    ./tools/manifest.sh write 0.0.1 https://github.com/xia-sava/fantermo/releases/download/latest \
-#        out/latest.json zip=out/fantermo.zip
+#        out/latest.json zip=out/fantermo.zip msi=out/fantermo.msi
 #    ./tools/manifest.sh sign out/latest.json <秘密鍵の PEM> assets/manifest-public-key.der
 #    ./tools/manifest.sh verify out/latest.json out/latest.json.sig assets/manifest-public-key.der
 #
 #  write  <版> <置き場の URL> <出力> <種類>=<配布物>...
 #         版と、配布物ごとの URL（置き場の URL + 配布物のファイル名）と sha256 を書く:
-#           { "versionName": "0.0.1", "zip": { "url": "...", "sha256": "..." } }
+#           { "versionName": "0.0.1", "zip": { "url": "...", "sha256": "..." },
+#             "msi": { "url": "...", "sha256": "..." } }
+#         アプリは msi の sha256 で、ダウンロードした MSI を確かめる。
 #  sign   <latest.json> <秘密鍵> <公開鍵>
 #         latest.json の生バイトに ECDSA P-256（SHA256withECDSA）で署名し、DER の署名を base64 にした
 #         1 行を <latest.json>.sig に書く。書いたあと公開鍵で確かめる。秘密鍵は PKCS#8 の PEM、
@@ -23,7 +25,7 @@
 set -euo pipefail
 
 usage() {
-  sed -n '3,22p' "$0" >&2
+  sed -n '3,24p' "$0" >&2
   exit 2
 }
 

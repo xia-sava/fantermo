@@ -25,6 +25,7 @@ jobs:
       contents: read
     outputs:
       name: ${{ steps.compute.outputs.name }}
+      cargo: ${{ steps.compute.outputs.cargo }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,7 +33,7 @@ jobs:
 
       # 版はタグ名から v を除いたもの。Cargo の版（Cargo.toml の [workspace.package] の version）と
       # 食い違えば止める。食い違ったまま配ると、アプリが見せる版と配布物の版が合わなくなる。
-      # 配布しない手動実行は識別できる名前を付ける。
+      # 配布しない手動実行は識別できる名前を付ける。MSI の版には名前ではなく Cargo の版を使う。
       - name: Compute version
         id: compute
         run: |
@@ -57,6 +58,7 @@ jobs:
             name="dev-$(git rev-parse --short HEAD)"
           fi
           echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "cargo=$cargo_version" >> "$GITHUB_OUTPUT"
           echo "version=$name (Cargo: $cargo_version)"
 
   # 配布物を作る前に fmt・clippy・test を通す。ここが落ちればリリースまで進まない。
@@ -66,7 +68,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/ci.yml
 
-  # 手動実行でも組む。配布はしないが、手元で試すための zip を成果物として残す。
+  # 手動実行でも組む。配布はしないが、手元で試すための zip と MSI を成果物として残す。
   build:
     needs: [version, check]
     runs-on: windows-latest
@@ -99,14 +101,44 @@ jobs:
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           Compress-Archive -Path $stage -DestinationPath "artifacts/$name.zip"
 
-      # タグを打ったときの zip はリリースへ載るため、保持期間は release ジョブへ渡すまででよい。
-      # 手動実行の zip は成果物としてしか残らないため、手元へ落とすまでの猶予を置く。
+      # zip に詰めたのと同じフォルダから MSI を組む。WiX は .config/dotnet-tools.json で版を固定して入れる。
+      # WiX 7 は OSMF の EULA への同意がないとどのコマンドも止まるので、コマンドごとに -acceptEula を付ける。
+      - name: Pack msi
+        shell: pwsh
+        env:
+          VERSION_NAME: ${{ needs.version.outputs.name }}
+          CARGO_VERSION: ${{ needs.version.outputs.cargo }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = "fantermo-$env:VERSION_NAME-x64"
+          $stage = Join-Path $env:RUNNER_TEMP $name
+          dotnet tool restore
+          if ($LASTEXITCODE -ne 0) { throw "dotnet tool restore が失敗しました（$LASTEXITCODE）" }
+          dotnet tool run wix build -acceptEula wix7 -arch x64 `
+            -d "Version=$env:CARGO_VERSION" `
+            -d "StageDir=$stage" `
+            -d "IconFile=assets\icon\fantermo.ico" `
+            -o "artifacts/$name.msi" installer/fantermo.wxs
+          if ($LASTEXITCODE -ne 0) { throw "wix build が失敗しました（$LASTEXITCODE）" }
+          # wix build は ICE の検証をしないので、別に走らせる。誤りがあれば止める。
+          dotnet tool run wix msi validate -acceptEula wix7 "artifacts/$name.msi"
+          if ($LASTEXITCODE -ne 0) { throw "wix msi validate が失敗しました（$LASTEXITCODE）" }
+
+      # タグを打ったときの配布物はリリースへ載るため、保持期間は release ジョブへ渡すまででよい。
+      # 手動実行の配布物は成果物としてしか残らないため、手元へ落とすまでの猶予を置く。
       # Actions のストレージ枠はアカウント全体で共有していて、既定の 90 日で抱え続けると
       # 他のリポジトリの CI まで止まる。
       - uses: actions/upload-artifact@v4
         with:
           name: zip
           path: artifacts/*.zip
+          if-no-files-found: error
+          retention-days: ${{ github.ref_type == 'tag' && 1 || 3 }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msi
+          path: artifacts/*.msi
           if-no-files-found: error
           retention-days: ${{ github.ref_type == 'tag' && 1 || 3 }}
 
@@ -138,9 +170,10 @@ jobs:
           set -euo pipefail
           mkdir -p latest
           cp "artifacts/fantermo-${VERSION_NAME}-x64.zip" latest/fantermo.zip
+          cp "artifacts/fantermo-${VERSION_NAME}-x64.msi" latest/fantermo.msi
           ./tools/manifest.sh write "$VERSION_NAME" \
             "https://github.com/${REPOSITORY}/releases/download/latest" \
-            latest/latest.json zip=latest/fantermo.zip
+            latest/latest.json zip=latest/fantermo.zip msi=latest/fantermo.msi
           cat latest/latest.json
 
       # latest.json の生バイトへ署名し、リポジトリの公開鍵で確かめる。アプリは署名を確かめてからで
@@ -190,14 +223,18 @@ jobs:
           set -euo pipefail
           mkdir -p latest
           cp "artifacts/fantermo-${VERSION_NAME}-x64.zip" latest/fantermo.zip
+          cp "artifacts/fantermo-${VERSION_NAME}-x64.msi" latest/fantermo.msi
           cp artifacts/latest.json artifacts/latest.json.sig latest/
-          # latest.json の照合値と、latest に置く zip が同じものであることを確かめる。
-          expected=$(jq -r '.zip.sha256' latest/latest.json)
-          actual=$(sha256sum latest/fantermo.zip | cut -d' ' -f1)
-          if [ "$expected" != "$actual" ]; then
-            echo "latest.json の sha256 と zip が合いません" >&2
-            exit 1
-          fi
+          # latest.json の照合値と、latest に置く配布物が同じものであることを確かめる。
+          # アプリは msi の照合値でダウンロードした MSI を確かめる。
+          for kind in zip msi; do
+            expected=$(jq -r ".${kind}.sha256" latest/latest.json)
+            actual=$(sha256sum "latest/fantermo.${kind}" | cut -d' ' -f1)
+            if [ "$expected" != "$actual" ]; then
+              echo "latest.json の sha256 と ${kind} が合いません" >&2
+              exit 1
+            fi
+          done
 
       # 版ごとのリリース。配布物の実物が残るので、後からどの版で何を配ったかを辿れる。
       # 配布物を書き込む唯一の外部コードなので、可変タグではなくコミットで固定する。
@@ -209,8 +246,12 @@ jobs:
           body: |
             fantermo ${{ needs.version.outputs.name }}
 
-            zip を展開し、中の fantermo.exe を起動する。
+            MSI を開くと、ユーザー単位で %LOCALAPPDATA%\Programs\fantermo に入る（管理者権限は要らない）。
+            スタートメニューの fantermo から起動する。アプリの中から更新できるのは MSI で入れた版だけ。
+
+            zip は、展開して中の fantermo.exe を起動する。
           files: |
+            artifacts/fantermo-${{ needs.version.outputs.name }}-x64.msi
             artifacts/fantermo-${{ needs.version.outputs.name }}-x64.zip
 
       # 更新の取得先。アプリは latest から latest.json と配布物を引くため、置き場を動かさずに
@@ -224,6 +265,7 @@ jobs:
             配布中の版（${{ needs.version.outputs.name }}）。
           prerelease: true
           files: |
+            latest/fantermo.msi
             latest/fantermo.zip
             latest/latest.json
             latest/latest.json.sig
