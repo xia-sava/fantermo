@@ -9,7 +9,7 @@ use std::{
 
 use fantermo_core::{
     backend::{ExitCode, GridSize},
-    config::{Config, DEFAULT_FONT_FAMILIES, FontConfig, PasteConfirm, WideGlyph},
+    config::{Config, DEFAULT_FONT_FAMILIES, FontConfig, PasteConfig, PasteConfirm, WideGlyph},
     frame::{Frame, Rgb},
     link::Link,
     vt::{
@@ -1328,7 +1328,7 @@ impl App {
     /// グリフの描き方だけが変わったときは、セルの寸法は変わらないので、この場でアトラスだけを作り直す。
     /// 貼り付けの設定はすぐに入れ替える。`shell` は次に開く端末から使う。
     fn reload_config(&mut self) -> Option<u32> {
-        let config = config_file::load(self.config_path.as_deref());
+        let config = config_file::reload(self.config_path.as_deref(), &self.config_in_use());
         self.paste_confirm = config.paste.confirm;
         self.shell = config.shell;
         if config.font == self.font_config {
@@ -1346,6 +1346,17 @@ impl App {
         }
         self.font_config = config.font;
         Some(self.dpi)
+    }
+
+    /// いま使っている設定。フォントは、いまのフォントを探したときの設定。
+    fn config_in_use(&self) -> Config {
+        Config {
+            font: self.font_config.clone(),
+            shell: self.shell.clone(),
+            paste: PasteConfig {
+                confirm: self.paste_confirm,
+            },
+        }
     }
 
     /// セルより広いグリフの描き方を変え、グリフアトラスを作り直す。失敗したら前の描き方のまま。

@@ -1,7 +1,8 @@
 //! 設定ファイル（TOML）の型、既定値、解釈。
 //!
-//! 項目ごとに読む。型の誤りや範囲外の値はその項目だけを既定値にし、知らないキーは無視する。
-//! どちらも警告として返す。TOML として読めないときは、すべてを既定値にする。
+//! 項目ごとに読む。書いていない項目は既定値にする。型の誤りや範囲外の値はその項目だけを前の値の
+//! まま（起動したときは既定値）にし、知らないキーは無視する。どちらも、誤りのある行を添えた警告として
+//! 返す。TOML として読めないときは、すべてを前の値のままにする。
 //!
 //! ```toml
 //! # 起動するコマンドライン。fantermo の引数があれば、そちらを使う。
@@ -24,10 +25,13 @@
 //! confirm = "unsafe"
 //! ```
 
-use std::ops::RangeInclusive;
+use std::{collections::HashMap, ops::RangeInclusive};
 
 use serde::{Deserialize, de::DeserializeOwned};
-use toml::{Table, Value};
+use toml::{
+    Table, Value,
+    de::{DeTable, DeValue},
+};
 
 /// 既定のフォント。先頭から探す。
 pub const DEFAULT_FONT_FAMILIES: [&str; 3] = ["Bizin Gothic", "BIZ UDGothic", "Consolas"];
@@ -107,7 +111,65 @@ pub enum WideGlyph {
 #[derive(Debug)]
 pub struct Parsed {
     pub config: Config,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Warning>,
+    /// TOML として読めなかった。`config` は前の設定のままで、`warnings` はその誤りの一つだけ。
+    pub syntax_error: bool,
+}
+
+/// 設定ファイルの誤りについての警告。
+#[derive(Clone, Debug, PartialEq)]
+pub struct Warning {
+    /// 誤りのある行（1 から数える）。分からなければ `None`。
+    pub line: Option<usize>,
+    /// 何がおかしいか。
+    pub message: String,
+}
+
+/// 一つの項目を読んだ結果。
+enum Item<T> {
+    /// 書いていない。
+    Absent,
+    /// 読めなかった。警告は残してある。
+    Invalid,
+    Valid(T),
+}
+
+impl<T> Item<T> {
+    /// 読めた値を `field` に入れる。書いていなければ `default` を入れ、読めなければ `field` のまま。
+    fn apply(self, field: &mut T, default: T) {
+        match self {
+            Item::Absent => *field = default,
+            Item::Invalid => {}
+            Item::Valid(value) => *field = value,
+        }
+    }
+
+    fn map<U>(self, f: impl FnOnce(T) -> U) -> Item<U> {
+        match self {
+            Item::Absent => Item::Absent,
+            Item::Invalid => Item::Invalid,
+            Item::Valid(value) => Item::Valid(f(value)),
+        }
+    }
+
+    /// 読めた値を `check` で確かめる。`check` が警告の文を返したら、警告を残して読めなかったことにする。
+    fn check(
+        self,
+        reader: &mut Reader,
+        path: &str,
+        check: impl FnOnce(&T) -> Option<String>,
+    ) -> Item<T> {
+        let Item::Valid(value) = self else {
+            return self;
+        };
+        match check(&value) {
+            Some(message) => {
+                reader.warn(path, message);
+                Item::Invalid
+            }
+            None => Item::Valid(value),
+        }
+    }
 }
 
 /// `font.family` に書ける形。
@@ -118,113 +180,179 @@ enum FontFamilies {
     Many(Vec<String>),
 }
 
-/// 設定ファイルの中身を解釈する。
-pub fn parse(text: &str) -> Parsed {
-    let mut warnings = Vec::new();
+/// 設定ファイルの中身 `text` を解釈する。`previous` はいま使っている設定（起動したときは既定値）で、
+/// 読めなかった項目と、TOML として読めないときの全体はこれのままにする。
+pub fn parse(text: &str, previous: &Config) -> Parsed {
     // メモ帳などが UTF-8 の先頭に付ける BOM は、TOML の構文にない。
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut root = match toml::from_str::<Table>(text) {
         Ok(root) => root,
         Err(e) => {
-            warnings.push(format!(
-                "cannot parse the settings, using the defaults: {}",
-                message(&e)
-            ));
             return Parsed {
-                config: Config::default(),
-                warnings,
+                config: previous.clone(),
+                warnings: vec![syntax_warning(text, &e)],
+                syntax_error: true,
             };
         }
     };
 
-    let mut config = Config::default();
-    if let Some(mut font) = take::<Table>(&mut root, None, "font", &mut warnings) {
-        read_font(&mut font, &mut config.font, &mut warnings);
-        warn_unknown(&font, Some("font"), &mut warnings);
-    }
-    if let Some(shell) = take::<String>(&mut root, None, "shell", &mut warnings) {
-        if shell.trim().is_empty() {
-            warnings.push("ignoring shell: empty".to_owned());
-        } else {
-            config.shell = Some(shell);
+    let mut reader = Reader {
+        lines: key_lines(text),
+        warnings: Vec::new(),
+    };
+    let mut config = previous.clone();
+    match reader.take::<Table>(&mut root, None, "font") {
+        Item::Absent => config.font = FontConfig::default(),
+        Item::Invalid => {}
+        Item::Valid(mut font) => {
+            read_font(&mut reader, &mut font, &mut config.font);
+            reader.warn_unknown(&font, Some("font"));
         }
     }
-    if let Some(mut paste) = take::<Table>(&mut root, None, "paste", &mut warnings) {
-        const SECTION: Option<&str> = Some("paste");
-        if let Some(confirm) = take::<PasteConfirm>(&mut paste, SECTION, "confirm", &mut warnings) {
-            config.paste.confirm = confirm;
+    reader
+        .take::<String>(&mut root, None, "shell")
+        .check(&mut reader, "shell", |shell| {
+            shell
+                .trim()
+                .is_empty()
+                .then(|| "ignoring shell: empty".to_owned())
+        })
+        .map(Some)
+        .apply(&mut config.shell, None);
+    match reader.take::<Table>(&mut root, None, "paste") {
+        Item::Absent => config.paste = PasteConfig::default(),
+        Item::Invalid => {}
+        Item::Valid(mut paste) => {
+            const SECTION: Option<&str> = Some("paste");
+            reader
+                .take::<PasteConfirm>(&mut paste, SECTION, "confirm")
+                .apply(&mut config.paste.confirm, PasteConfirm::default());
+            reader.warn_unknown(&paste, SECTION);
         }
-        warn_unknown(&paste, SECTION, &mut warnings);
     }
-    warn_unknown(&root, None, &mut warnings);
-    Parsed { config, warnings }
+    reader.warn_unknown(&root, None);
+    Parsed {
+        config,
+        warnings: reader.warnings,
+        syntax_error: false,
+    }
 }
 
-fn read_font(table: &mut Table, font: &mut FontConfig, warnings: &mut Vec<String>) {
+fn read_font(reader: &mut Reader, table: &mut Table, font: &mut FontConfig) {
     const SECTION: Option<&str> = Some("font");
-    if let Some(families) = take::<FontFamilies>(table, SECTION, "family", warnings) {
-        let families = match families {
+    let defaults = FontConfig::default();
+    reader
+        .take::<FontFamilies>(table, SECTION, "family")
+        .map(|families| match families {
             FontFamilies::One(family) => vec![family],
             FontFamilies::Many(families) => families,
+        })
+        .check(reader, "font.family", |families| {
+            (families.is_empty() || families.iter().any(|family| family.trim().is_empty()))
+                .then(|| format!("ignoring font.family = {families:?}: names must not be empty"))
+        })
+        .apply(&mut font.families, defaults.families);
+    reader
+        .take::<f32>(table, SECTION, "size")
+        .check(reader, "font.size", |size| {
+            (!FONT_SIZE_RANGE_PT.contains(size)).then(|| {
+                format!(
+                    "ignoring font.size = {size}: must be between {} and {}",
+                    FONT_SIZE_RANGE_PT.start(),
+                    FONT_SIZE_RANGE_PT.end()
+                )
+            })
+        })
+        .apply(&mut font.size_pt, defaults.size_pt);
+    reader
+        .take::<WideGlyph>(table, SECTION, "wide_glyph")
+        .apply(&mut font.wide_glyph, defaults.wide_glyph);
+}
+
+/// 項目を読みながら、警告を誤りのある行と一緒に溜める。
+struct Reader {
+    /// キーの道筋（`font.size` など）から、そのキーを書いた行へ。
+    lines: HashMap<String, usize>,
+    warnings: Vec<Warning>,
+}
+
+impl Reader {
+    /// キー `path` についての警告を残す。
+    fn warn(&mut self, path: &str, message: String) {
+        self.warnings.push(Warning {
+            line: self.lines.get(path).copied(),
+            message,
+        });
+    }
+
+    /// `table` から `key` を取り出して `T` として読む。型が違えば警告する。`section` は `table` の
+    /// 表の名前（最上位なら `None`）。
+    fn take<T: DeserializeOwned>(
+        &mut self,
+        table: &mut Table,
+        section: Option<&str>,
+        key: &str,
+    ) -> Item<T> {
+        let Some(value) = table.remove(key) else {
+            return Item::Absent;
         };
-        if families.is_empty() || families.iter().any(|family| family.trim().is_empty()) {
-            warnings.push(format!(
-                "ignoring font.family = {families:?}: names must not be empty"
-            ));
-        } else {
-            font.families = families;
+        match value.try_into::<T>() {
+            Ok(value) => Item::Valid(value),
+            Err(e) => {
+                let path = key_path(section, key);
+                self.warn(&path, format!("ignoring {path}: {}", message(&e)));
+                Item::Invalid
+            }
         }
     }
-    if let Some(size) = take::<f32>(table, SECTION, "size", warnings) {
-        if FONT_SIZE_RANGE_PT.contains(&size) {
-            font.size_pt = size;
-        } else {
-            warnings.push(format!(
-                "ignoring font.size = {size}: must be between {} and {}",
-                FONT_SIZE_RANGE_PT.start(),
-                FONT_SIZE_RANGE_PT.end()
-            ));
+
+    /// 読み終えた `table` に残ったキーを、知らないものとして警告する。
+    fn warn_unknown(&mut self, table: &Table, section: Option<&str>) {
+        for (key, value) in table {
+            let kind = match value {
+                Value::Table(_) => "table",
+                _ => "setting",
+            };
+            let path = key_path(section, key);
+            self.warn(&path, format!("ignoring unknown {kind} {path}"));
         }
-    }
-    if let Some(wide_glyph) = take::<WideGlyph>(table, SECTION, "wide_glyph", warnings) {
-        font.wide_glyph = wide_glyph;
     }
 }
 
-/// `table` から `key` を取り出して `T` として読む。無ければ `None`、型が違えば警告して `None`。
-/// `section` は `table` の表の名前（最上位なら `None`）で、警告に使う。
-fn take<T: DeserializeOwned>(
-    table: &mut Table,
-    section: Option<&str>,
-    key: &str,
-    warnings: &mut Vec<String>,
-) -> Option<T> {
-    let value = table.remove(key)?;
-    match value.try_into::<T>() {
-        Ok(value) => Some(value),
-        Err(e) => {
-            warnings.push(format!(
-                "ignoring {}: {}",
-                key_path(section, key),
-                message(&e)
-            ));
-            None
-        }
+/// TOML として読めなかったことの警告。
+fn syntax_warning(text: &str, error: &toml::de::Error) -> Warning {
+    Warning {
+        line: error.span().map(|span| line_of(text, span.start)),
+        message: format!("cannot parse the settings: {}", error.message().trim_end()),
     }
 }
 
-/// 読み終えた `table` に残ったキーを、知らないものとして警告する。
-fn warn_unknown(table: &Table, section: Option<&str>, warnings: &mut Vec<String>) {
-    for (key, value) in table {
-        let kind = match value {
-            Value::Table(_) => "table",
-            _ => "setting",
-        };
-        warnings.push(format!(
-            "ignoring unknown {kind} {}",
-            key_path(section, key)
-        ));
+/// 最上位とその一段下の表のキーの道筋から、そのキーを書いた行へ。`[font]` のような表の見出しは、
+/// 見出しの行になる。
+fn key_lines(text: &str) -> HashMap<String, usize> {
+    let mut lines = HashMap::new();
+    let Ok(root) = DeTable::parse(text) else {
+        return lines;
+    };
+    for (key, value) in root.get_ref() {
+        let path = key.get_ref().to_string();
+        if let DeValue::Table(table) = value.get_ref() {
+            for inner in table.keys() {
+                lines.insert(
+                    format!("{path}.{}", inner.get_ref()),
+                    line_of(text, inner.span().start),
+                );
+            }
+        }
+        lines.insert(path, line_of(text, key.span().start));
     }
+    lines
+}
+
+/// `text` の `offset` バイト目がある行（1 から数える）。
+fn line_of(text: &str, offset: usize) -> usize {
+    let before = text.get(..offset).unwrap_or(text);
+    before.matches('\n').count() + 1
 }
 
 /// toml のエラーの文。末尾の改行を除く。
@@ -245,6 +373,104 @@ mod tests {
 
     fn families(names: &[&str]) -> Vec<String> {
         names.iter().map(|&name| name.to_owned()).collect()
+    }
+
+    /// 起動したときと同じく既定値を前の設定として読んだ結果。警告は文だけ。
+    struct Read {
+        config: Config,
+        warnings: Vec<String>,
+    }
+
+    fn parse(text: &str) -> Read {
+        let parsed = super::parse(text, &Config::default());
+        Read {
+            config: parsed.config,
+            warnings: parsed.warnings.into_iter().map(|w| w.message).collect(),
+        }
+    }
+
+    /// 既定値とどの項目も違う設定。
+    fn customized() -> Config {
+        Config {
+            font: FontConfig {
+                families: families(&["Cascadia Mono"]),
+                size_pt: 9.0,
+                wide_glyph: WideGlyph::Clip,
+            },
+            shell: Some("zsh -l".to_owned()),
+            paste: PasteConfig {
+                confirm: PasteConfirm::Never,
+            },
+        }
+    }
+
+    #[test]
+    fn syntax_errors_keep_the_previous_settings() {
+        let previous = customized();
+        let parsed = super::parse("[font]\nsize = 10\n[paste\n", &previous);
+        assert!(parsed.syntax_error);
+        assert_eq!(parsed.config, previous);
+        assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
+        assert_eq!(parsed.warnings[0].line, Some(3));
+        assert!(
+            parsed.warnings[0]
+                .message
+                .starts_with("cannot parse the settings: "),
+            "{:?}",
+            parsed.warnings
+        );
+        assert!(!parsed.warnings[0].message.contains('\n'));
+    }
+
+    #[test]
+    fn invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults() {
+        let previous = customized();
+        let parsed = super::parse(
+            "shell = ' '\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n",
+            &previous,
+        );
+        assert!(!parsed.syntax_error);
+        assert_eq!(parsed.config, previous);
+        assert_eq!(parsed.warnings.len(), 5, "{:?}", parsed.warnings);
+
+        let parsed = super::parse("[font]\nsize = 500\n", &previous);
+        assert_eq!(
+            parsed.config,
+            Config {
+                font: FontConfig {
+                    size_pt: 9.0,
+                    ..FontConfig::default()
+                },
+                ..Config::default()
+            }
+        );
+
+        let parsed = super::parse("font = 1\npaste = 2\n", &previous);
+        assert_eq!(parsed.config.font, previous.font);
+        assert_eq!(parsed.config.paste, previous.paste);
+        assert_eq!(parsed.config.shell, None);
+    }
+
+    #[test]
+    fn warnings_name_the_line() {
+        let parsed = super::parse(
+            "\u{feff}# comment\nshell = 1\n\n[font]\nfamily = 'Consolas'\nsize = 0\n[tabs]\nwidth = 3\n",
+            &Config::default(),
+        );
+        let mut lines: Vec<(Option<usize>, &str)> = parsed
+            .warnings
+            .iter()
+            .map(|w| (w.line, w.message.as_str()))
+            .collect();
+        lines.sort();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(lines[0].0, Some(2));
+        assert!(lines[0].1.starts_with("ignoring shell:"), "{lines:?}");
+        assert_eq!(
+            lines[1],
+            (Some(6), "ignoring font.size = 0: must be between 1 and 128")
+        );
+        assert_eq!(lines[2], (Some(7), "ignoring unknown table tabs"));
     }
 
     #[test]

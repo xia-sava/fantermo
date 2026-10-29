@@ -13,7 +13,7 @@ use std::{
     thread,
 };
 
-use fantermo_core::config::{self, Config};
+use fantermo_core::config::{self, Config, Warning};
 use windows::{
     Win32::{
         Foundation::HANDLE,
@@ -52,8 +52,20 @@ pub fn path() -> Option<PathBuf> {
     Some(path)
 }
 
-/// 設定ファイルを読む。無いときや読めないときは既定値。読めなかった項目は警告を残して既定値にする。
+/// 起動したときに設定ファイルを読む。無いときや読めないときは既定値。読めなかった項目は警告を残して
+/// 既定値にする。
 pub fn load(path: Option<&Path>) -> Config {
+    read(path, &Config::default())
+}
+
+/// 書き換えられた設定ファイルを読み直す。`previous` はいま使っている設定。無いときは既定値。読めない
+/// とき、TOML として読めないときは `previous` のまま。読めなかった項目は警告を残して `previous` の値に
+/// する。
+pub fn reload(path: Option<&Path>, previous: &Config) -> Config {
+    read(path, previous)
+}
+
+fn read(path: Option<&Path>, previous: &Config) -> Config {
     let Some(path) = path else {
         return Config::default();
     };
@@ -64,19 +76,28 @@ pub fn load(path: Option<&Path>) -> Config {
             return Config::default();
         }
         Err(e) => {
-            tracing::warn!(
-                "cannot read the settings file {}, using the defaults: {e}",
-                path.display()
-            );
-            return Config::default();
+            tracing::warn!("cannot read the settings file {}: {e}", path.display());
+            return previous.clone();
         }
     };
-    let parsed = config::parse(&text);
+    let parsed = config::parse(&text, previous);
     for warning in &parsed.warnings {
-        tracing::warn!("{}: {warning}", path.display());
+        tracing::warn!("{}", log_line(path, warning));
     }
-    tracing::info!("loaded the settings from {}", path.display());
+    if parsed.syntax_error {
+        tracing::warn!("kept the settings in use; {} was not read", path.display());
+    } else {
+        tracing::info!("loaded the settings from {}", path.display());
+    }
     parsed.config
+}
+
+/// ログに残す、警告の 1 行。ファイルの場所と行を添える。
+fn log_line(path: &Path, warning: &Warning) -> String {
+    match warning.line {
+        Some(line) => format!("{}:{line}: {}", path.display(), warning.message),
+        None => format!("{}: {}", path.display(), warning.message),
+    }
 }
 
 /// `path` のファイルが作られた・書き換えられた・消されたときに `notify` を呼ぶスレッドを立てる。
