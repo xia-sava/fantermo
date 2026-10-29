@@ -72,7 +72,7 @@ use windows::{
 };
 
 use crate::{
-    app_icon,
+    about, app_icon,
     background::DiskFiles,
     clipboard,
     config_file::{self, Loaded},
@@ -81,7 +81,7 @@ use crate::{
     font::{self, Font},
     ime::{self, CursorRect},
     keyboard::{self, KeyPosition, Utf16Assembler},
-    license, link_opener,
+    link_opener,
     notice::{self, Topic},
     paint::{Area, Paint, scale},
     paste_editor,
@@ -544,8 +544,8 @@ fn message_loop() -> u32 {
 enum Deferred {
     /// 改行を含む貼り付けの内容を、編集のダイアログで確かめる。
     EditPaste { text: String, font: Font },
-    /// ライセンスのダイアログを開く。`font` は端末のフォント。
-    ShowLicenses { font: Font },
+    /// 「fantermo について」のダイアログを開く。`font` は端末のフォント。
+    ShowAbout { font: Font },
     /// 設定ダイアログを開く。
     EditSettings,
     /// コンテキストメニューか、タブバーのメニューのボタンのメニューを出す。
@@ -2378,7 +2378,7 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
                     });
                 }
             }
-            Deferred::ShowLicenses { font } => license::show(hwnd, &font),
+            Deferred::ShowAbout { font } => about::show(hwnd, &font),
             Deferred::EditSettings => edit_settings(hwnd, with_app),
             Deferred::Menu(request) => match context_menu::show(hwnd, &request) {
                 Some(MenuCommand::Copy) => with_app(&mut |app| {
@@ -2394,8 +2394,8 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
                 }
                 Some(MenuCommand::EditSettings) => next = Some(Deferred::EditSettings),
                 Some(MenuCommand::OpenSettings) => with_app(&mut |app| app.open_settings()),
-                Some(MenuCommand::ShowLicenses) => with_app(&mut |app| {
-                    next = Some(Deferred::ShowLicenses {
+                Some(MenuCommand::ShowAbout) => with_app(&mut |app| {
+                    next = Some(Deferred::ShowAbout {
                         font: app.font.clone(),
                     })
                 }),

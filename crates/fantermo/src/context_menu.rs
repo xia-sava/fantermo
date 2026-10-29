@@ -26,7 +26,8 @@ pub enum MenuCommand {
     /// 設定ダイアログを開く。
     EditSettings,
     OpenSettings,
-    ShowLicenses,
+    /// 「fantermo について」のダイアログを開く。
+    ShowAbout,
     Exit,
 }
 
@@ -39,7 +40,7 @@ impl MenuCommand {
         MenuCommand::CloseTab,
         MenuCommand::EditSettings,
         MenuCommand::OpenSettings,
-        MenuCommand::ShowLicenses,
+        MenuCommand::ShowAbout,
         MenuCommand::Exit,
     ];
 
@@ -53,7 +54,7 @@ impl MenuCommand {
             MenuCommand::CloseTab => 5,
             MenuCommand::OpenSettings => 6,
             MenuCommand::Exit => 7,
-            MenuCommand::ShowLicenses => 8,
+            MenuCommand::ShowAbout => 8,
             MenuCommand::EditSettings => 9,
         }
     }
@@ -72,7 +73,7 @@ impl MenuCommand {
             MenuCommand::CloseTab => "タブを閉じる(&W)",
             MenuCommand::EditSettings => "設定(&S)…",
             MenuCommand::OpenSettings => "設定ファイルを開く(&F)",
-            MenuCommand::ShowLicenses => "ライセンス(&L)",
+            MenuCommand::ShowAbout => "fantermo について(&B)…",
             MenuCommand::Exit => "終了(&X)",
         }
     }
@@ -134,7 +135,7 @@ impl Menu {
                 None,
                 Some(EditSettings),
                 Some(OpenSettings),
-                Some(ShowLicenses),
+                Some(ShowAbout),
                 None,
                 Some(Exit),
             ],
@@ -283,15 +284,14 @@ mod tests {
         for command in MenuCommand::ALL {
             assert!(Menu::Main.items().contains(&Some(command)), "{command:?}");
         }
-        // コンテキストメニューには、設定、ライセンス、終了を入れない。
-        assert!(!Menu::Context.items().contains(&Some(MenuCommand::Exit)));
-        for command in [MenuCommand::EditSettings, MenuCommand::OpenSettings] {
+        // コンテキストメニューには、設定、「fantermo について」、終了を入れない。
+        for command in [
+            MenuCommand::EditSettings,
+            MenuCommand::OpenSettings,
+            MenuCommand::ShowAbout,
+            MenuCommand::Exit,
+        ] {
             assert!(!Menu::Context.items().contains(&Some(command)));
         }
-        assert!(
-            !Menu::Context
-                .items()
-                .contains(&Some(MenuCommand::ShowLicenses))
-        );
     }
 }

@@ -10,6 +10,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod about;
 mod app_icon;
 mod atlas;
 mod background;
@@ -26,7 +27,6 @@ mod ime;
 mod key_capture;
 mod keyboard;
 mod known_folder;
-mod license;
 mod link_opener;
 mod logging;
 mod modal;

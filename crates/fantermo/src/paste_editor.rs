@@ -18,11 +18,13 @@ const BUTTONS: [Button; 2] = [
         id: IDOK.0,
         label: "貼り付け(&P)",
         default: true,
+        enabled: true,
     },
     Button {
         id: IDCANCEL.0,
         label: "キャンセル",
         default: false,
+        enabled: true,
     },
 ];
 
@@ -30,6 +32,7 @@ const BUTTONS: [Button; 2] = [
 pub fn edit(owner: HWND, text: &str, font: &Font) -> Option<String> {
     let dialog = Dialog {
         title: TITLE,
+        header: &[],
         text,
         read_only: false,
         min_columns: None,

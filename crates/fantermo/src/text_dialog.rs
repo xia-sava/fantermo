@@ -1,7 +1,8 @@
-//! 複数行の入力欄とボタンを並べたダイアログ。
+//! 複数行の入力欄とボタンを並べたダイアログ。入力欄の上に、文の行とリンクの行を並べられる。
 //!
 //! 開いている間は呼び出し元の窓を無効にし、メッセージはこのダイアログのループで回す。IDOK のボタンを
-//! 押せば入力欄の文字列を返し、IDCANCEL のボタンや Esc なら何も返さない。
+//! 押せば入力欄の文字列を返し、IDCANCEL のボタンや Esc なら何も返さない。リンクを押せば既定のアプリで
+//! 開く。
 
 use std::{
     cell::{Cell, RefCell},
@@ -18,6 +19,10 @@ use windows::{
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
+            Controls::{
+                ICC_LINK_CLASS, INITCOMMONCONTROLSEX, InitCommonControlsEx, NM_CLICK, NM_RETURN,
+                NMHDR, WC_LINK,
+            },
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_CONTROL, VK_MENU},
             WindowsAndMessaging::{
@@ -28,21 +33,24 @@ use windows::{
                 IDC_ARROW, IDCANCEL, IDOK, LoadCursorW, MSG, MoveWindow, RegisterClassW, SW_SHOW,
                 SWP_NOZORDER, SendMessageW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
                 ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY,
-                WM_KEYDOWN, WM_NEXTDLGCTL, WM_SETFONT, WM_SIZE, WNDCLASSW, WS_CAPTION, WS_CHILD,
-                WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_HSCROLL, WS_POPUP,
-                WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
+                WM_KEYDOWN, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETFONT, WM_SIZE, WNDCLASSW, WS_CAPTION,
+                WS_CHILD, WS_DISABLED, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME,
+                WS_HSCROLL, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE,
+                WS_VSCROLL,
             },
         },
     },
     core::{HSTRING, PCWSTR, w},
 };
 
-use crate::{font::Font, modal};
+use crate::{font::Font, link_opener, modal, ui_font};
 
 const CLASS: PCWSTR = w!("fantermo-text-dialog");
 
-/// 入力欄の制御 ID。ボタンは IDOK と IDCANCEL を使う。
+/// 入力欄の制御 ID。閉じるボタンは IDOK と IDCANCEL を使う。
 const EDIT_ID: i32 = 100;
+/// 入力欄の上の行の制御 ID の始まり。上から順に 1 ずつ増やす。
+const HEADER_ID: i32 = 200;
 
 /// `EM_SETLIMITTEXT` と、その上限を外す値。
 const EM_SETLIMITTEXT: u32 = 0x00C5;
@@ -68,16 +76,28 @@ const FONT_RATIO: f32 = 0.75;
 
 /// ダイアログの下に右から並べるボタン。
 pub struct Button {
-    /// 押したときの制御 ID。IDOK か IDCANCEL。
+    /// 押したときの制御 ID。IDOK か IDCANCEL ならダイアログを閉じる。ほかの ID は押しても何もしない。
     pub id: i32,
     pub label: &'static str,
     /// Enter で押されるボタンとして描く。
     pub default: bool,
+    /// 押せる。偽なら灰色で見せる。
+    pub enabled: bool,
+}
+
+/// 入力欄の上に並べる 1 行。
+pub enum HeaderLine<'a> {
+    /// 文。
+    Text(&'a str),
+    /// リンク。URL をそのまま見せ、押せば既定のアプリで開く。
+    Link(&'a str),
 }
 
 /// 開くダイアログの中身。
 pub struct Dialog<'a> {
     pub title: &'a str,
+    /// 入力欄の上に、上から順に並べる行。Windows のメッセージのフォントで描く。
+    pub header: &'a [HeaderLine<'a>],
     /// 入力欄に入れる文字列。改行は `\n` で渡す。
     pub text: &'a str,
     /// 入力欄を読み取り専用にし、右端で折り返して見せる。選んでコピーはできる。
@@ -108,10 +128,11 @@ pub fn run(owner: HWND, dialog: &Dialog, font: &Font) -> Option<String> {
 
     run_modal(owner, hwnd, &state);
 
-    let created_font = state.font.get();
-    if !created_font.is_invalid() {
-        // SAFETY: フォントはダイアログのために作ったもので、ダイアログはもう閉じている。
-        unsafe { _ = DeleteObject(HGDIOBJ(created_font.0)) };
+    for created_font in [state.font.get(), state.header_font.get()] {
+        if !created_font.is_invalid() {
+            // SAFETY: フォントはダイアログのために作ったもので、ダイアログはもう閉じている。
+            unsafe { _ = DeleteObject(HGDIOBJ(created_font.0)) };
+        }
     }
     state.result.take().map(|text| from_crlf(&text))
 }
@@ -120,9 +141,17 @@ pub fn run(owner: HWND, dialog: &Dialog, font: &Font) -> Option<String> {
 #[derive(Default)]
 struct DialogState {
     edit: Cell<HWND>,
+    /// 入力欄の上の行。上から順に並べる。
+    header: RefCell<Vec<HWND>>,
+    /// リンクの行と、その URL。
+    links: RefCell<Vec<(HWND, String)>>,
+    /// 入力欄の上の行の 1 行の高さ（ピクセル）。
+    header_line_height: Cell<i32>,
     /// ボタン。左から順に並べる。
     buttons: RefCell<Vec<HWND>>,
     font: Cell<HFONT>,
+    /// 入力欄の上の行のフォント。行がなければ作らない。
+    header_font: Cell<HFONT>,
     /// 寸法の拡大率（窓の DPI / 96）。
     scale: Cell<f32>,
     result: RefCell<Option<String>>,
@@ -135,6 +164,14 @@ fn register_class() -> windows::core::Result<()> {
     static REGISTERED: OnceLock<()> = OnceLock::new();
     if REGISTERED.get().is_some() {
         return Ok(());
+    }
+    let controls = INITCOMMONCONTROLSEX {
+        dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+        dwICC: ICC_LINK_CLASS,
+    };
+    // SAFETY: controls は大きさを入れて初期化してある。
+    if !unsafe { InitCommonControlsEx(&controls) }.as_bool() {
+        tracing::warn!("failed to register the link control");
     }
     // SAFETY: 自分のモジュールのハンドルを問い合わせるだけ。
     let instance = unsafe { GetModuleHandleW(None)? };
@@ -203,7 +240,7 @@ fn create(
                 ex_style,
                 class,
                 &HSTRING::from(text),
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | style,
+                WS_CHILD | WS_VISIBLE | style,
                 0,
                 0,
                 0,
@@ -215,11 +252,32 @@ fn create(
             )
         }
     };
+    for (index, line) in dialog.header.iter().enumerate() {
+        let id = HEADER_ID + index as i32;
+        let control = match line {
+            HeaderLine::Text(text) => {
+                child(w!("STATIC"), text, WINDOW_STYLE(0), WINDOW_EX_STYLE(0), id)?
+            }
+            HeaderLine::Link(url) => {
+                let control = child(
+                    WC_LINK,
+                    &format!("<a href=\"{url}\">{url}</a>"),
+                    WS_TABSTOP,
+                    WINDOW_EX_STYLE(0),
+                    id,
+                )?;
+                state.links.borrow_mut().push((control, (*url).to_owned()));
+                control
+            }
+        };
+        state.header.borrow_mut().push(control);
+    }
     // 読み取り専用のときは、右端で折り返して見せ、Enter は既定のボタンに渡す。
     let edit_style = if dialog.read_only {
-        WS_VSCROLL | WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY) as u32)
+        WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY) as u32)
     } else {
-        WS_VSCROLL
+        WS_TABSTOP
+            | WS_VSCROLL
             | WS_HSCROLL
             | WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_WANTRETURN) as u32)
     };
@@ -231,15 +289,19 @@ fn create(
         EDIT_ID,
     )?);
     for button in dialog.buttons {
-        let style = if button.default {
-            BS_DEFPUSHBUTTON
-        } else {
-            BS_PUSHBUTTON
-        };
+        let mut style = WS_TABSTOP
+            | WINDOW_STYLE(if button.default {
+                BS_DEFPUSHBUTTON
+            } else {
+                BS_PUSHBUTTON
+            } as u32);
+        if !button.enabled {
+            style |= WS_DISABLED;
+        }
         let control = child(
             w!("BUTTON"),
             button.label,
-            WINDOW_STYLE(style as u32),
+            style,
             WINDOW_EX_STYLE(0),
             button.id,
         )?;
@@ -256,15 +318,10 @@ fn create(
     state.font.set(unsafe { CreateFontIndirectW(&logfont) });
     let controls = std::iter::once(state.edit.get()).chain(state.buttons.borrow().clone());
     for control in controls {
-        // SAFETY: control は hwnd の子で、フォントは hwnd が閉じるまで消さない。
-        unsafe {
-            SendMessageW(
-                control,
-                WM_SETFONT,
-                Some(WPARAM(state.font.get().0 as usize)),
-                Some(LPARAM(1)),
-            )
-        };
+        set_font(control, state.font.get());
+    }
+    if !dialog.header.is_empty() {
+        create_header_font(state, dpi);
     }
     // SAFETY: 入力欄は有効な窓。
     unsafe {
@@ -292,6 +349,62 @@ fn create(
         _ = SetFocus(Some(state.edit.get()));
     }
     Ok(hwnd)
+}
+
+/// `control` の文字のフォントを `font` にする。
+fn set_font(control: HWND, font: HFONT) {
+    // SAFETY: control はダイアログの子で、フォントはダイアログが閉じるまで消さない。
+    unsafe {
+        SendMessageW(
+            control,
+            WM_SETFONT,
+            Some(WPARAM(font.0 as usize)),
+            Some(LPARAM(1)),
+        )
+    };
+}
+
+/// 入力欄の上の行に、DPI が `dpi` のときの Windows のメッセージのフォントを付け、1 行の高さを測る。
+fn create_header_font(state: &DialogState, dpi: u32) {
+    let logfont = match ui_font::message_logfont(dpi) {
+        Ok(logfont) => logfont,
+        Err(e) => {
+            tracing::warn!("failed to read the message font: {e}");
+            return;
+        }
+    };
+    // SAFETY: logfont は初期化済み。作ったフォントはダイアログが閉じた後に消す。
+    let font = unsafe { CreateFontIndirectW(&logfont) };
+    state.header_font.set(font);
+    let header = state.header.borrow();
+    for &control in header.iter() {
+        set_font(control, font);
+    }
+    let Some(&first) = header.first() else {
+        return;
+    };
+    match line_height(first, font) {
+        Some(height) => state.header_line_height.set(height),
+        None => tracing::warn!("failed to measure the message font"),
+    }
+}
+
+/// `control` に `font` で文字を 1 行描いたときの高さ（ピクセル）。測れなければ `None`。
+fn line_height(control: HWND, font: HFONT) -> Option<i32> {
+    let sample: Vec<u16> = "Ag版".encode_utf16().collect();
+    // SAFETY: control は有効な窓。選んだフォントは戻し、DC は読み終えたら返す。
+    unsafe {
+        let dc = GetDC(Some(control));
+        if dc.is_invalid() {
+            return None;
+        }
+        let previous = SelectObject(dc, HGDIOBJ(font.0));
+        let mut size = SIZE::default();
+        let measured = GetTextExtentPoint32W(dc, &sample, &mut size).as_bool();
+        SelectObject(dc, previous);
+        ReleaseDC(Some(control), dc);
+        measured.then_some(size.cy)
+    }
 }
 
 /// 入力欄の文字を並べる幅に `columns` 桁が収まらなければ、足りない分だけダイアログを広げ、
@@ -411,7 +524,7 @@ fn is_select_all(msg: &MSG, edit: HWND) -> bool {
     pressed(VK_CONTROL.0) && !pressed(VK_MENU.0)
 }
 
-/// 入力欄を広く取り、ボタンを右下に並べる。
+/// 入力欄の上の行を上から並べ、入力欄を広く取り、ボタンを右下に並べる。
 fn layout(dialog: HWND, state: &DialogState) {
     let mut client = RECT::default();
     // SAFETY: dialog は有効な窓で、client は書き込める。
@@ -422,14 +535,33 @@ fn layout(dialog: HWND, state: &DialogState) {
     let px = |value: f32| (value * scale).round() as i32;
     let (margin, button_w, button_h) = (px(MARGIN), px(BUTTON_WIDTH), px(BUTTON_HEIGHT));
     let button_top = client.bottom - margin - button_h;
+    let line_height = state.header_line_height.get();
+    let mut top = margin;
+    for &line in state.header.borrow().iter() {
+        // SAFETY: line は dialog の子の有効な窓。
+        unsafe {
+            _ = MoveWindow(
+                line,
+                margin,
+                top,
+                client.right - 2 * margin,
+                line_height,
+                true,
+            )
+        };
+        top += line_height;
+    }
+    if !state.header.borrow().is_empty() {
+        top += margin;
+    }
     // SAFETY: 入力欄は dialog の子の有効な窓。
     unsafe {
         _ = MoveWindow(
             state.edit.get(),
             margin,
-            margin,
+            top,
             client.right - 2 * margin,
-            button_top - 2 * margin,
+            button_top - margin - top,
             true,
         );
     }
@@ -476,6 +608,17 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             if id == IDOK.0 || id == IDCANCEL.0 {
                 // SAFETY: hwnd はこのダイアログ。
                 unsafe { _ = DestroyWindow(hwnd) };
+            }
+            LRESULT(0)
+        }
+        WM_NOTIFY => {
+            // SAFETY: WM_NOTIFY の lparam は NMHDR で始まる構造体を指す。
+            let header = unsafe { &*(lparam.0 as *const NMHDR) };
+            if header.code == NM_CLICK || header.code == NM_RETURN {
+                let links = state.links.borrow();
+                if let Some((_, url)) = links.iter().find(|(link, _)| *link == header.hwndFrom) {
+                    link_opener::open(url);
+                }
             }
             LRESULT(0)
         }
