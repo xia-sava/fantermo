@@ -30,7 +30,7 @@ const TEXT: &str = concat!(
     include_str!("../../../THIRD-PARTY-NOTICES.txt"),
 );
 
-/// ライセンスの文を読み取り専用のテキストボックスで見せ、閉じるまで待つ。
+/// ライセンスの文を読み取り専用の入力欄で見せ、閉じるまで待つ。
 pub fn show(owner: HWND, font: &Font) {
     let dialog = Dialog {
         title: TITLE,

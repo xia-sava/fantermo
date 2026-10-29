@@ -1,7 +1,7 @@
-//! 複数行のテキストボックスとボタンを並べたダイアログ。
+//! 複数行の入力欄とボタンを並べたダイアログ。
 //!
 //! 開いている間は呼び出し元の窓を無効にし、メッセージはこのダイアログのループで回す。IDOK のボタンを
-//! 押せばテキストボックスの文字列を返し、IDCANCEL のボタンや Esc なら何も返さない。
+//! 押せば入力欄の文字列を返し、IDCANCEL のボタンや Esc なら何も返さない。
 
 use std::{
     cell::{Cell, RefCell},
@@ -42,13 +42,13 @@ use crate::font::Font;
 
 const CLASS: PCWSTR = w!("fantermo-text-dialog");
 
-/// テキストボックスの制御 ID。ボタンは IDOK と IDCANCEL を使う。
+/// 入力欄の制御 ID。ボタンは IDOK と IDCANCEL を使う。
 const EDIT_ID: i32 = 100;
 
 /// `EM_SETLIMITTEXT` と、その上限を外す値。
 const EM_SETLIMITTEXT: u32 = 0x00C5;
 const NO_TEXT_LIMIT: usize = 0;
-/// `EM_GETRECT`。テキストボックスの中で文字を並べる矩形を返す。
+/// `EM_GETRECT`。入力欄の中で文字を並べる矩形を返す。
 const EM_GETRECT: u32 = 0x00B2;
 /// `EM_SETSEL` と、すべてを選ぶときの範囲。
 const EM_SETSEL: u32 = 0x00B1;
@@ -64,7 +64,7 @@ const BUTTON_WIDTH: f32 = 112.0;
 const BUTTON_HEIGHT: f32 = 30.0;
 /// 呼び出し元の窓に対する、ダイアログの大きさの割合。
 const SIZE_RATIO: f32 = 0.7;
-/// 端末の文字に対する、テキストボックスの文字の大きさの割合。
+/// 端末の文字に対する、入力欄の文字の大きさの割合。
 const FONT_RATIO: f32 = 0.75;
 
 /// ダイアログの下に右から並べるボタン。
@@ -79,18 +79,18 @@ pub struct Button {
 /// 開くダイアログの中身。
 pub struct Dialog<'a> {
     pub title: &'a str,
-    /// テキストボックスに入れる文字列。改行は `\n` で渡す。
+    /// 入力欄に入れる文字列。改行は `\n` で渡す。
     pub text: &'a str,
-    /// テキストボックスを読み取り専用にし、右端で折り返して見せる。選んでコピーはできる。
+    /// 入力欄を読み取り専用にし、右端で折り返して見せる。選んでコピーはできる。
     pub read_only: bool,
-    /// テキストボックスに少なくともこの桁数が収まる幅で開く（モニターに収まる範囲で）。
+    /// 入力欄に少なくともこの桁数が収まる幅で開く（モニターに収まる範囲で）。
     pub min_columns: Option<u32>,
     /// 左から順に並べるボタン。
     pub buttons: &'a [Button],
 }
 
-/// `dialog` を開き、閉じるまで待つ。IDOK のボタンで閉じたら、テキストボックスの文字列を返す。
-/// 改行は `\n` で返す。`font` は端末のフォントで、テキストボックスはその書体を少し小さくして使う。
+/// `dialog` を開き、閉じるまで待つ。IDOK のボタンで閉じたら、入力欄の文字列を返す。
+/// 改行は `\n` で返す。`font` は端末のフォントで、入力欄はその書体を少し小さくして使う。
 pub fn run(owner: HWND, dialog: &Dialog, font: &Font) -> Option<String> {
     if let Err(e) = register_class() {
         tracing::warn!("failed to register the text dialog: {e}");
@@ -104,7 +104,7 @@ pub fn run(owner: HWND, dialog: &Dialog, font: &Font) -> Option<String> {
             return None;
         }
     };
-    // SAFETY: テキストボックスはこのダイアログの子で、文字列はこの呼び出しの間は生きている。
+    // SAFETY: 入力欄はこのダイアログの子で、文字列はこの呼び出しの間は生きている。
     unsafe { _ = SetWindowTextW(state.edit.get(), &HSTRING::from(to_crlf(dialog.text))) };
 
     run_modal(owner, hwnd, &state);
@@ -250,7 +250,7 @@ fn create(
         }
     }
 
-    // テキストボックスは端末と同じ書体にして、少し小さくする。
+    // 入力欄は端末と同じ書体にして、少し小さくする。
     let mut logfont = font.logfont();
     logfont.lfHeight = (logfont.lfHeight as f32 * FONT_RATIO) as i32;
     // SAFETY: logfont は初期化済み。作ったフォントはダイアログが閉じた後に消す。
@@ -267,7 +267,7 @@ fn create(
             )
         };
     }
-    // SAFETY: テキストボックスは有効な窓。
+    // SAFETY: 入力欄は有効な窓。
     unsafe {
         SendMessageW(
             state.edit.get(),
@@ -287,7 +287,7 @@ fn create(
     if let Some(columns) = dialog.min_columns {
         widen_for_columns(owner, &owner_rect, hwnd, state, columns);
     }
-    // SAFETY: hwnd とテキストボックスは有効な窓。
+    // SAFETY: hwnd と入力欄は有効な窓。
     unsafe {
         _ = ShowWindow(hwnd, SW_SHOW);
         _ = SetFocus(Some(state.edit.get()));
@@ -295,7 +295,7 @@ fn create(
     Ok(hwnd)
 }
 
-/// テキストボックスの文字を並べる幅に `columns` 桁が収まらなければ、足りない分だけダイアログを広げ、
+/// 入力欄の文字を並べる幅に `columns` 桁が収まらなければ、足りない分だけダイアログを広げ、
 /// 呼び出し元の窓 `owner`（場所は `owner_rect`）の真ん中に置き直す。モニターからははみ出させない。
 fn widen_for_columns(
     owner: HWND,
@@ -309,7 +309,7 @@ fn widen_for_columns(
         return;
     };
     let mut format = RECT::default();
-    // SAFETY: テキストボックスは有効な窓で、format は書き込める。
+    // SAFETY: 入力欄は有効な窓で、format は書き込める。
     unsafe {
         SendMessageW(
             state.edit.get(),
@@ -340,7 +340,7 @@ fn widen_for_columns(
     }
 }
 
-/// テキストボックスのフォントで `columns` 桁を並べた幅（ピクセル）。測れなければ `None`。
+/// 入力欄のフォントで `columns` 桁を並べた幅（ピクセル）。測れなければ `None`。
 fn text_width(state: &DialogState, columns: u32) -> Option<i32> {
     let edit = state.edit.get();
     // 平均の文字幅は実際の送り幅より小さいことがあるので、その桁数の文字列の幅を測る。
@@ -399,7 +399,7 @@ fn run_modal(owner: HWND, dialog: HWND, state: &DialogState) {
             break;
         }
         if is_select_all(&msg, state.edit.get()) {
-            // SAFETY: テキストボックスは有効な窓。
+            // SAFETY: 入力欄は有効な窓。
             unsafe {
                 SendMessageW(
                     state.edit.get(),
@@ -428,7 +428,7 @@ fn run_modal(owner: HWND, dialog: HWND, state: &DialogState) {
     }
 }
 
-/// `msg` がテキストボックス `edit` での Ctrl+A（Alt なし）か。複数行のテキストボックスは Ctrl+A で
+/// `msg` が入力欄 `edit` での Ctrl+A（Alt なし）か。複数行の入力欄は Ctrl+A で
 /// すべてを選ばないので、ループで受け持つ。
 fn is_select_all(msg: &MSG, edit: HWND) -> bool {
     if msg.hwnd != edit || msg.message != WM_KEYDOWN || msg.wParam.0 != VK_A {
@@ -439,7 +439,7 @@ fn is_select_all(msg: &MSG, edit: HWND) -> bool {
     pressed(VK_CONTROL.0) && !pressed(VK_MENU.0)
 }
 
-/// テキストボックスを広く取り、ボタンを右下に並べる。
+/// 入力欄を広く取り、ボタンを右下に並べる。
 fn layout(dialog: HWND, state: &DialogState) {
     let mut client = RECT::default();
     // SAFETY: dialog は有効な窓で、client は書き込める。
@@ -450,7 +450,7 @@ fn layout(dialog: HWND, state: &DialogState) {
     let px = |value: f32| (value * scale).round() as i32;
     let (margin, button_w, button_h) = (px(MARGIN), px(BUTTON_WIDTH), px(BUTTON_HEIGHT));
     let button_top = client.bottom - margin - button_h;
-    // SAFETY: テキストボックスは dialog の子の有効な窓。
+    // SAFETY: 入力欄は dialog の子の有効な窓。
     unsafe {
         _ = MoveWindow(
             state.edit.get(),
@@ -470,7 +470,7 @@ fn layout(dialog: HWND, state: &DialogState) {
 }
 
 fn read_text(edit: HWND) -> String {
-    // SAFETY: edit は有効なテキストボックス。
+    // SAFETY: edit は有効な入力欄。
     let length = unsafe { GetWindowTextLengthW(edit) }.max(0) as usize;
     let mut buffer = vec![0u16; length + 1];
     // SAFETY: buffer は length + 1 個の u16 を書き込める。
@@ -507,7 +507,7 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
             LRESULT(0)
         }
-        // Enter を自分で使わないテキストボックスは、既定のボタンをこの二つで問い合わせて押させる。
+        // Enter を自分で使わない入力欄は、既定のボタンをこの二つで問い合わせて押させる。
         DM_GETDEFID => match state.default_id.get() {
             Some(id) => LRESULT(((DC_HASDEFID as isize) << 16) | id as isize),
             None => LRESULT(0),
@@ -538,12 +538,12 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
     }
 }
 
-/// テキストボックスに見せるため、改行を `\r\n` にする。
+/// 入力欄に見せるため、改行を `\r\n` にする。
 fn to_crlf(text: &str) -> String {
     from_crlf(text).replace('\n', "\r\n")
 }
 
-/// テキストボックスやクリップボードの `\r\n` を `\n` にする。
+/// 入力欄やクリップボードの `\r\n` を `\n` にする。
 pub fn from_crlf(text: &str) -> String {
     text.replace("\r\n", "\n")
 }
