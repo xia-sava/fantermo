@@ -63,13 +63,33 @@ gh run list --workflow Release --limit 3
 
 `Release` ワークフローが走る。成功すると 2 つのリリースができている。
 
-- **`v0.0.2`** … 版ごとの記録。配布物の実物（`fantermo-0.0.2-x64.zip`）が残るので、後からどの版で
-  何を配ったか辿れる
-- **`latest`** … 更新の取得先（prerelease）。固定の名前の配布物（`fantermo.zip`）と、署名した
-  `latest.json`・`latest.json.sig` を置き換える
+- **`v0.0.2`** … 版ごとの記録。配布物の実物（`fantermo-0.0.2-x64.msi`・`fantermo-0.0.2-x64.zip`）が
+  残るので、後からどの版で何を配ったか辿れる
+- **`latest`** … 更新の取得先（prerelease）。固定の名前の配布物（`fantermo.msi`・`fantermo.zip`）と、
+  署名した `latest.json`・`latest.json.sig` を置き換える
 
 `latest.json` の署名は secret `FANTERMO_SIGNING_KEY` の鍵で作り、リポジトリの
 `assets/manifest-public-key.der` で確かめてから公開する。合わなければ `manifest` ジョブで止まる。
+`latest.json` の `msi.sha256`・`zip.sha256` が latest に置く配布物と合わなければ `release` ジョブで止まる。
+アプリの「更新を確認」は `latest.json` を読み、`latest/fantermo.msi` をダウンロードして `msi.sha256` で
+確かめてから入れる。
+
+## MSI
+
+`build` ジョブが `installer/fantermo.wxs` を WiX で組む。WiX は `.config/dotnet-tools.json` で版を固定し
+（7.0.1）、`dotnet tool restore` で入れる。WiX 7 は OSMF の EULA への同意がないと止まるので、
+コマンドに `-acceptEula wix7` を付けている。組んだあと `wix msi validate` で ICE の検証を通す。
+**MSI を組むのは GitHub Actions だけで、手元には WiX を入れない。**
+
+- 中身は zip と同じ（`fantermo.exe`・`LICENSE`・`THIRD-PARTY-NOTICES.txt`・`README.md`）。ユーザー単位で
+  `%LOCALAPPDATA%\Programs\fantermo\` に入れ、スタートメニューに「fantermo」を置く
+- 製品の版は Cargo の版。版を上げた MSI は `MajorUpgrade` で古い版を外してから入る。製品コードは
+  ビルドのたびに変わる
+- **UpgradeCode（`C4FC87EE-5E35-4A23-8EF4-BF71B422CB1D`）は変えない。** 変えると、入れてある版を
+  上書きできず二つ並び、アプリの中からの更新も届かなくなる
+- 部品の GUID（`Component` の `Guid`）も変えない。変えるなら、部品を足すときに新しい GUID を作る
+- WiX の版を上げるときは `.config/dotnet-tools.json` の `version` を変え、EULA の ID（`wix7`）が
+  変わっていないかを確かめる
 
 ## 気をつけること
 
@@ -84,6 +104,8 @@ gh run list --workflow Release --limit 3
 
 ## 配布せずに試したいとき
 
-`Release` ワークフローを **workflow_dispatch で手動実行**すると、zip が成果物として残るだけで、
+`Release` ワークフローを **workflow_dispatch で手動実行**すると、zip と MSI が成果物として残るだけで、
 リリースには一切触れない。**成果物は 3 日で消えるので、その間に落とす。** 版は `dev-<短い SHA>` の
-名前になり、中の fantermo はリリースのビルドとして扱わない（版は `0.0.2 (dev-<短い SHA>)` と見える）。
+名前になり、中の fantermo はリリースのビルドとして扱わない（版は `0.0.2 (dev-<短い SHA>)` と見え、
+「更新を確認」は押せない）。MSI の製品の版は Cargo の版のままなので、同じ版のリリースの MSI と
+入れ替えて試せる。
