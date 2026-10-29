@@ -43,23 +43,24 @@ use windows::{
                 WC_LISTBOXW,
             },
             HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow},
-            Input::KeyboardAndMouse::{EnableWindow, SetFocus},
+            Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled, SetFocus},
             WindowsAndMessaging::{
                 BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTORADIOBUTTON, BS_DEFPUSHBUTTON,
-                BS_PUSHBUTTON, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CBN_SELCHANGE,
-                CBS_DROPDOWNLIST, CW_USEDEFAULT, CreateWindowExW, DC_HASDEFID, DM_GETDEFID,
-                DefWindowProcW, DestroyWindow, EN_CHANGE, ES_AUTOHSCROLL, GWLP_USERDATA,
-                GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, HMENU,
-                IDC_ARROW, IDCANCEL, IDOK, IDYES, KillTimer, LB_ADDSTRING, LB_DELETESTRING,
-                LB_GETCURSEL, LB_INSERTSTRING, LB_RESETCONTENT, LB_SETCURSEL, LB_SETTABSTOPS,
-                LBN_DBLCLK, LBN_SELCHANGE, LBS_NOTIFY, LBS_USETABSTOPS, LoadCursorW,
-                MB_ICONQUESTION, MB_ICONWARNING, MB_OK, MB_YESNO, MessageBoxW, MoveWindow,
-                RegisterClassW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW,
-                SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-                WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY,
-                WM_DPICHANGED, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETFONT, WM_TIMER, WNDCLASSW,
-                WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME,
-                WS_GROUP, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+                BS_GROUPBOX, BS_PUSHBUTTON, CB_ADDSTRING, CB_DELETESTRING, CB_GETCURSEL,
+                CB_INSERTSTRING, CB_SETCURSEL, CBN_SELCHANGE, CBS_DROPDOWNLIST, CW_USEDEFAULT,
+                CreateWindowExW, DC_HASDEFID, DM_GETDEFID, DefWindowProcW, DestroyWindow,
+                EN_CHANGE, ES_AUTOHSCROLL, GWLP_USERDATA, GetWindowLongPtrW, GetWindowRect,
+                GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW, IDCANCEL, IDOK, IDYES,
+                KillTimer, LB_ADDSTRING, LB_DELETESTRING, LB_GETCURSEL, LB_INSERTSTRING,
+                LB_RESETCONTENT, LB_SETCURSEL, LB_SETTABSTOPS, LBN_DBLCLK, LBN_SELCHANGE,
+                LBS_NOTIFY, LBS_USETABSTOPS, LoadCursorW, MB_ICONQUESTION, MB_ICONWARNING, MB_OK,
+                MB_YESNO, MessageBoxW, MoveWindow, RegisterClassW, SW_HIDE, SW_SHOW,
+                SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetTimer, SetWindowLongPtrW,
+                SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE,
+                WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_NEXTDLGCTL, WM_NOTIFY,
+                WM_SETFONT, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE,
+                WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_GROUP, WS_POPUP, WS_SYSMENU,
+                WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
             },
         },
     },
@@ -107,6 +108,9 @@ const ID_BACKGROUND_FIT: i32 = 456;
 const ID_BACKGROUND_ITEM_FIT: i32 = 457;
 const ID_BACKGROUND_ITEM_OPACITY: i32 = 458;
 const ID_BACKGROUND_ITEM_OPACITY_SPIN: i32 = 459;
+/// 項目の不透明度の「既定」と「指定」のラジオボタン。
+const ID_BACKGROUND_ITEM_OPACITY_DEFAULT: i32 = 460;
+const ID_BACKGROUND_ITEM_OPACITY_CUSTOM: i32 = 461;
 const ID_KEYS: i32 = 500;
 const ID_KEY_ADD: i32 = 501;
 const ID_KEY_CHANGE: i32 = 502;
@@ -215,31 +219,49 @@ fn default_profile_name(profiles: &[Profile], index: usize, base: Option<&str>) 
     profiles.get(index).map(|profile| profile.name.clone())
 }
 
-/// 背景画像の一覧の高さ。
+/// 背景のページの枠（グループボックス）の、枠の線から中のコントロールまでの幅。上は見出しの分を足す。
+const GROUP_PADDING: i32 = 10;
+const GROUP_CAPTION_HEIGHT: i32 = 20;
+/// 背景のページの枠の中の、見出しの列の幅。コントロールはその右に置く。
+const BACKGROUND_LABEL_WIDTH: i32 = 190;
+/// 背景画像の一覧の高さと、その右に並べるボタンの幅。
 const BACKGROUND_LIST_HEIGHT: i32 = 106;
-/// 背景画像の濃さを、上下の矢印で動かす幅。
+const BACKGROUND_BUTTON_WIDTH: i32 = 124;
+/// 項目の不透明度の「指定」のラジオボタンの幅。入力欄はその右に置く。
+const CUSTOM_OPACITY_WIDTH: i32 = 56;
+/// 背景画像の不透明度を、上下の矢印で動かす幅。
 const OPACITY_STEP: f32 = 0.05;
 
-/// `background.fit` の選択肢の表示。[`BackgroundFit::ALL`] の順。
+/// `background.fit` の選択肢の表示。[`BackgroundFit::ALL`] の順。Windows の壁紙の設定と同じ語。
 const BACKGROUND_FIT_LABELS: [&str; 5] = [
-    "縦横比を保って端末を覆う（はみ出しを切る）",
-    "縦横比を保って端末に収める",
-    "端末に合わせて引き伸ばす",
-    "元の大きさで敷き詰める",
-    "元の大きさで真ん中に置く",
+    "ページ幅に合わせる",
+    "画面のサイズに合わせる",
+    "拡大して表示",
+    "並べて表示",
+    "中央に表示",
 ];
 
-/// 一覧の項目の収め方と濃さで、全体の値に任せることの表示。
-const FOLLOW_BACKGROUND_LABEL: &str = "全体の設定に従う";
+/// `fit` の表示。
+fn fit_label(fit: BackgroundFit) -> &'static str {
+    BackgroundFit::ALL
+        .iter()
+        .position(|&value| value == fit)
+        .map_or("", |index| BACKGROUND_FIT_LABELS[index])
+}
 
-/// 一覧の項目の収め方のコンボボックスで、`fit` の位置。先頭は [`FOLLOW_BACKGROUND_LABEL`]、続いて
+/// 一覧の項目の値を `[background]` の値に任せることの表示。`value` は任せる先の値の表示。
+fn default_choice_label(value: &str) -> String {
+    format!("既定（{value}）")
+}
+
+/// 一覧の項目の表示方法のコンボボックスで、`fit` の位置。先頭は既定に任せること、続いて
 /// [`BackgroundFit::ALL`] の順。
 fn item_fit_choice(fit: Option<BackgroundFit>) -> usize {
     fit.and_then(|fit| BackgroundFit::ALL.iter().position(|&value| value == fit))
         .map_or(0, |index| index + 1)
 }
 
-/// 一覧の項目の収め方のコンボボックスの `choice` 番目の値。範囲の外なら `None`。
+/// 一覧の項目の表示方法のコンボボックスの `choice` 番目の値。範囲の外なら `None`。
 fn item_fit_from_choice(choice: usize) -> Option<Option<BackgroundFit>> {
     match choice {
         0 => Some(None),
@@ -247,27 +269,23 @@ fn item_fit_from_choice(choice: usize) -> Option<Option<BackgroundFit>> {
     }
 }
 
-/// 背景画像の一覧の行。パスと、項目に書いた収め方と濃さ（「C:\a.png — tile、0.3」）。
+/// 背景画像の一覧の行。パスと、項目に書いた表示方法と不透明度（「C:\a.png（並べて表示、不透明度
+/// 0.3）」）。
 fn background_row_text(image: &BackgroundImage) -> String {
     let settings: Vec<String> = image
         .fit
-        .map(|fit| fit.name().to_owned())
+        .map(|fit| fit_label(fit).to_owned())
         .into_iter()
-        .chain(image.image_opacity.map(format_opacity))
+        .chain(
+            image
+                .image_opacity
+                .map(|opacity| format!("不透明度 {}", format_opacity(opacity))),
+        )
         .collect();
     if settings.is_empty() {
         return image.path.clone();
     }
-    format!("{} — {}", image.path, settings.join("、"))
-}
-
-/// 入力された文字列を、一覧の項目の濃さとして読む。空（空白だけ）なら全体の値に任せる（`Some(None)`）。
-/// 読めなければ `None`。
-fn parse_item_opacity(text: &str) -> Option<Option<f32>> {
-    if text.trim().is_empty() {
-        return Some(None);
-    }
-    config::parse_image_opacity(text).map(Some)
+    format!("{}（{}）", image.path, settings.join("、"))
 }
 
 /// 色のページのコントロールの ID の始まり。色ごとに [`COLOR_ID_STRIDE`] ずつ、見本・値・選ぶ・既定に
@@ -616,13 +634,17 @@ struct Controls {
     profile_command: HWND,
     /// 背景画像の一覧。
     background_images: HWND,
-    /// 背景画像の一覧の「外す」のボタン。
+    /// 背景画像の一覧の「削除」のボタン。
     background_remove: HWND,
+    /// 既定の不透明度と表示方法。
     background_opacity: HWND,
     background_opacity_spin: HWND,
     background_fit: HWND,
-    /// 一覧で選んでいる項目の収め方と濃さ。
+    /// 一覧で選んでいる項目の表示方法。
     background_item_fit: HWND,
+    /// 一覧で選んでいる項目の不透明度の「既定」と「指定」のラジオボタンと、「指定」の値。
+    background_item_opacity_default: HWND,
+    background_item_opacity_custom: HWND,
     background_item_opacity: HWND,
     background_item_opacity_spin: HWND,
     /// 配色のラジオボタン。[`ColorScheme::ALL`] の順。
@@ -946,191 +968,48 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         Some(rect),
     )?);
 
-    // 背景
+    // 背景。上に既定の値の枠、下に背景画像の一覧と選択した項目の値の枠。
     let mut background_page = Vec::new();
-    let (class, text, rect) = label(
-        "画像(&I):",
-        [page_left, row(0) + LABEL_OFFSET, page_width, ROW_HEIGHT],
-    );
-    background_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let list_top = row(0) + ROW_HEIGHT;
-    let background_images = child(
-        WC_LISTBOXW,
-        "",
-        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(LBS_NOTIFY as u32),
-        WS_EX_CLIENTEDGE,
-        ID_BACKGROUND_IMAGES,
-        Some([page_left, list_top, page_width, BACKGROUND_LIST_HEIGHT]),
-    )?;
-    background_page.push(background_images);
-    let image_buttons_top = list_top + BACKGROUND_LIST_HEIGHT + BUTTON_GAP;
-    let image_button_width = (page_width - 2 * BUTTON_GAP) / 3;
-    let mut image_buttons = [HWND::default(); 3];
-    for (index, (id, text)) in [
-        (ID_BACKGROUND_ADD_FILES, "ファイルを追加(&L)…"),
-        (ID_BACKGROUND_ADD_FOLDER, "フォルダを追加(&O)…"),
-        (ID_BACKGROUND_REMOVE, "外す(&V)"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        image_buttons[index] = child(
-            w!("BUTTON"),
-            text,
-            WS_GROUP | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-            none,
-            id,
-            Some([
-                page_left + index as i32 * (image_button_width + BUTTON_GAP),
-                image_buttons_top,
-                image_button_width,
-                BUTTON_HEIGHT,
-            ]),
-        )?;
-        background_page.push(image_buttons[index]);
-    }
-    let item_fit_row = image_buttons_top + BUTTON_HEIGHT + MARGIN;
-    let (class, text, rect) = label("選んだ画像の収め方(&N):", label_rect(item_fit_row));
-    background_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let background_item_fit = child(
-        WC_COMBOBOXW,
-        "",
-        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
-        none,
-        ID_BACKGROUND_ITEM_FIT,
-        Some([control_left, item_fit_row, control_width, ROW_HEIGHT]),
-    )?;
-    background_page.push(background_item_fit);
-    for text in std::iter::once(FOLLOW_BACKGROUND_LABEL).chain(BACKGROUND_FIT_LABELS) {
-        // SAFETY: background_item_fit は有効なコンボボックスで、文字列はこの呼び出しの間は生きている。
-        unsafe {
-            SendMessageW(
-                background_item_fit,
-                CB_ADDSTRING,
-                None,
-                Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
-            )
-        };
-    }
-    let item_opacity_row = item_fit_row + ROW_HEIGHT + MARGIN;
-    let (class, text, rect) = label("選んだ画像の濃さ(&H):", label_rect(item_opacity_row));
-    background_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let background_item_opacity = child(
-        w!("EDIT"),
-        "",
-        edit_style,
-        WS_EX_CLIENTEDGE,
-        ID_BACKGROUND_ITEM_OPACITY,
-        Some([control_left, item_opacity_row, NUMBER_WIDTH, ROW_HEIGHT]),
-    )?;
-    background_page.push(background_item_opacity);
-    let background_item_opacity_spin = child(
-        UPDOWN_CLASSW,
-        "",
-        spin_style,
-        none,
-        ID_BACKGROUND_ITEM_OPACITY_SPIN,
-        None,
-    )?;
-    background_page.push(background_item_opacity_spin);
-    let (class, text, rect) = label(
-        "0〜1。空なら全体の設定に従う",
+    let group_style = WINDOW_STYLE(BS_GROUPBOX as u32);
+    let inner_left = page_left + GROUP_PADDING;
+    let inner_width = page_width - 2 * GROUP_PADDING;
+    let background_control_left = inner_left + BACKGROUND_LABEL_WIDTH;
+    let background_control_width = inner_left + inner_width - background_control_left;
+    let background_label_rect = |top: i32| {
         [
-            control_left + NUMBER_WIDTH + BUTTON_GAP,
-            item_opacity_row + LABEL_OFFSET,
-            control_width - NUMBER_WIDTH - BUTTON_GAP,
+            inner_left,
+            top + LABEL_OFFSET,
+            BACKGROUND_LABEL_WIDTH,
             ROW_HEIGHT,
-        ],
-    );
-    background_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let images_note_top = item_opacity_row + ROW_HEIGHT + BUTTON_GAP;
-    let (class, text, rect) = label(
-        "新しいタブを開くたびに、一覧からランダムに一枚選ぶ。フォルダは、その中の画像（png、jpg、bmp、gif、webp）から選ぶ。設定ファイルには「*」「?」のワイルドカードも書ける。",
-        [page_left, images_note_top, page_width, 2 * ROW_HEIGHT],
-    );
-    background_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let opacity_row = images_note_top + 2 * ROW_HEIGHT + MARGIN;
-    let (class, text, rect) = label("全体の画像の濃さ(&Y):", label_rect(opacity_row));
-    background_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let background_opacity = child(
-        w!("EDIT"),
-        "",
-        edit_style,
-        WS_EX_CLIENTEDGE,
-        ID_BACKGROUND_OPACITY,
-        Some([control_left, opacity_row, NUMBER_WIDTH, ROW_HEIGHT]),
-    )?;
-    background_page.push(background_opacity);
-    let background_opacity_spin = child(
-        UPDOWN_CLASSW,
-        "",
-        spin_style,
-        none,
-        ID_BACKGROUND_OPACITY_SPIN,
-        None,
-    )?;
-    background_page.push(background_opacity_spin);
-    let (class, text, rect) = label(
-        "0〜1。1 は画像をそのまま見せ、0 は消す",
+        ]
+    };
+    let opacity_note_rect = |top: i32, left: i32| {
         [
-            control_left + NUMBER_WIDTH + BUTTON_GAP,
-            opacity_row + LABEL_OFFSET,
-            control_width - NUMBER_WIDTH - BUTTON_GAP,
+            left + NUMBER_WIDTH + BUTTON_GAP,
+            top + LABEL_OFFSET,
+            inner_left + inner_width - left - NUMBER_WIDTH - BUTTON_GAP,
             ROW_HEIGHT,
-        ],
-    );
+        ]
+    };
+
+    let defaults_top = row(0);
+    let fit_row = defaults_top + GROUP_CAPTION_HEIGHT;
+    let opacity_row = fit_row + ROW_HEIGHT + BUTTON_GAP;
+    let defaults_bottom = opacity_row + ROW_HEIGHT + GROUP_PADDING;
     background_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
+        w!("BUTTON"),
+        "既定",
+        group_style,
         none,
         ID_LABEL,
-        Some(rect),
+        Some([
+            page_left,
+            defaults_top,
+            page_width,
+            defaults_bottom - defaults_top,
+        ]),
     )?);
-    let fit_row = opacity_row + ROW_HEIGHT + MARGIN;
-    let (class, text, rect) = label("全体の収め方(&T):", label_rect(fit_row));
+    let (class, text, rect) = label("表示方法(&T):", background_label_rect(fit_row));
     background_page.push(child(
         class,
         &text,
@@ -1145,7 +1024,12 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
         none,
         ID_BACKGROUND_FIT,
-        Some([control_left, fit_row, control_width, ROW_HEIGHT]),
+        Some([
+            background_control_left,
+            fit_row,
+            background_control_width,
+            ROW_HEIGHT,
+        ]),
     )?;
     background_page.push(background_fit);
     for text in BACKGROUND_FIT_LABELS {
@@ -1159,11 +1043,223 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             )
         };
     }
+    let (class, text, rect) = label("不透明度(&Y):", background_label_rect(opacity_row));
+    background_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let background_opacity = child(
+        w!("EDIT"),
+        "",
+        edit_style,
+        WS_EX_CLIENTEDGE,
+        ID_BACKGROUND_OPACITY,
+        Some([
+            background_control_left,
+            opacity_row,
+            NUMBER_WIDTH,
+            ROW_HEIGHT,
+        ]),
+    )?;
+    background_page.push(background_opacity);
+    let background_opacity_spin = child(
+        UPDOWN_CLASSW,
+        "",
+        spin_style,
+        none,
+        ID_BACKGROUND_OPACITY_SPIN,
+        None,
+    )?;
+    background_page.push(background_opacity_spin);
     let (class, text, rect) = label(
-        "画像は端末の画面と余白に敷き、その上に端末の背景色を重ねて濃さのとおりに薄める。アプリが背景色を付けた文字、反転した文字、選択範囲は、その色で塗りつぶす。",
+        "0（消す）〜1（そのまま）",
+        opacity_note_rect(opacity_row, background_control_left),
+    );
+    background_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+
+    let images_top = defaults_bottom + BUTTON_GAP;
+    let list_top = images_top + GROUP_CAPTION_HEIGHT;
+    let item_fit_row = list_top + BACKGROUND_LIST_HEIGHT + BUTTON_GAP;
+    let item_opacity_row = item_fit_row + ROW_HEIGHT + BUTTON_GAP;
+    let custom_opacity_row = item_opacity_row + ROW_HEIGHT;
+    let images_bottom = custom_opacity_row + ROW_HEIGHT + GROUP_PADDING;
+    background_page.push(child(
+        w!("BUTTON"),
+        "背景画像の一覧(&I)",
+        group_style,
+        none,
+        ID_LABEL,
+        Some([
+            page_left,
+            images_top,
+            page_width,
+            images_bottom - images_top,
+        ]),
+    )?);
+    let list_width = inner_width - BUTTON_GAP - BACKGROUND_BUTTON_WIDTH;
+    let background_images = child(
+        WC_LISTBOXW,
+        "",
+        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(LBS_NOTIFY as u32),
+        WS_EX_CLIENTEDGE,
+        ID_BACKGROUND_IMAGES,
+        Some([inner_left, list_top, list_width, BACKGROUND_LIST_HEIGHT]),
+    )?;
+    background_page.push(background_images);
+    let mut image_buttons = [HWND::default(); 3];
+    for (index, (id, text)) in [
+        (ID_BACKGROUND_ADD_FILES, "ファイルを追加(&L)…"),
+        (ID_BACKGROUND_ADD_FOLDER, "フォルダを追加(&O)…"),
+        (ID_BACKGROUND_REMOVE, "削除(&D)"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        image_buttons[index] = child(
+            w!("BUTTON"),
+            text,
+            WS_GROUP | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+            none,
+            id,
+            Some([
+                inner_left + list_width + BUTTON_GAP,
+                list_top + index as i32 * (BUTTON_HEIGHT + BUTTON_GAP),
+                BACKGROUND_BUTTON_WIDTH,
+                BUTTON_HEIGHT,
+            ]),
+        )?;
+        background_page.push(image_buttons[index]);
+    }
+    let (class, text, rect) = label(
+        "選択した項目の表示方法(&N):",
+        background_label_rect(item_fit_row),
+    );
+    background_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let background_item_fit = child(
+        WC_COMBOBOXW,
+        "",
+        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
+        none,
+        ID_BACKGROUND_ITEM_FIT,
+        Some([
+            background_control_left,
+            item_fit_row,
+            background_control_width,
+            ROW_HEIGHT,
+        ]),
+    )?;
+    background_page.push(background_item_fit);
+    // 先頭の「既定（…）」は、既定の表示方法を入れるときに書き直す。
+    for text in std::iter::once("").chain(BACKGROUND_FIT_LABELS) {
+        // SAFETY: background_item_fit は有効なコンボボックスで、文字列はこの呼び出しの間は生きている。
+        unsafe {
+            SendMessageW(
+                background_item_fit,
+                CB_ADDSTRING,
+                None,
+                Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
+            )
+        };
+    }
+    let (class, text, rect) = label(
+        "選択した項目の不透明度(&H):",
+        background_label_rect(item_opacity_row),
+    );
+    background_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let background_item_opacity_default = child(
+        w!("BUTTON"),
+        "",
+        radio(true),
+        none,
+        ID_BACKGROUND_ITEM_OPACITY_DEFAULT,
+        Some([
+            background_control_left,
+            item_opacity_row,
+            background_control_width,
+            ROW_HEIGHT,
+        ]),
+    )?;
+    background_page.push(background_item_opacity_default);
+    let background_item_opacity_custom = child(
+        w!("BUTTON"),
+        "指定",
+        radio(false),
+        none,
+        ID_BACKGROUND_ITEM_OPACITY_CUSTOM,
+        Some([
+            background_control_left,
+            custom_opacity_row,
+            CUSTOM_OPACITY_WIDTH,
+            ROW_HEIGHT,
+        ]),
+    )?;
+    background_page.push(background_item_opacity_custom);
+    let custom_opacity_left = background_control_left + CUSTOM_OPACITY_WIDTH;
+    let background_item_opacity = child(
+        w!("EDIT"),
+        "",
+        edit_style,
+        WS_EX_CLIENTEDGE,
+        ID_BACKGROUND_ITEM_OPACITY,
+        Some([
+            custom_opacity_left,
+            custom_opacity_row,
+            NUMBER_WIDTH,
+            ROW_HEIGHT,
+        ]),
+    )?;
+    background_page.push(background_item_opacity);
+    let background_item_opacity_spin = child(
+        UPDOWN_CLASSW,
+        "",
+        spin_style,
+        none,
+        ID_BACKGROUND_ITEM_OPACITY_SPIN,
+        None,
+    )?;
+    background_page.push(background_item_opacity_spin);
+    let (class, text, rect) = label(
+        "0〜1",
+        opacity_note_rect(custom_opacity_row, custom_opacity_left),
+    );
+    background_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let (class, text, rect) = label(
+        "新しいタブを開くたびに、一覧からランダムに一枚選ぶ（フォルダはその中の画像から）。画像には端末の背景色を重ね、不透明度のとおりに薄める。",
         [
             page_left,
-            fit_row + ROW_HEIGHT + MARGIN,
+            images_bottom + BUTTON_GAP,
             page_width,
             2 * ROW_HEIGHT,
         ],
@@ -1592,6 +1688,8 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             background_opacity_spin,
             background_fit,
             background_item_fit,
+            background_item_opacity_default,
+            background_item_opacity_custom,
             background_item_opacity,
             background_item_opacity_spin,
             color_scheme,
@@ -1668,8 +1766,6 @@ impl State<'_> {
         *self.profiles.borrow_mut() = config.profiles.clone();
         self.default_profile.set(config.default_profile_index());
         self.refresh_profiles(config.default_profile_index());
-        *self.background_images.borrow_mut() = config.background.images.clone();
-        self.refresh_background_images(None);
         set_text(
             c.background_opacity,
             &format_opacity(config.background.image_opacity),
@@ -1681,6 +1777,9 @@ impl State<'_> {
             // SAFETY: コンボボックスは有効なウィンドウ。
             unsafe { SendMessageW(c.background_fit, CB_SETCURSEL, Some(WPARAM(fit)), None) };
         }
+        self.refresh_background_defaults();
+        *self.background_images.borrow_mut() = config.background.images.clone();
+        self.refresh_background_images(None);
         *self.keys.borrow_mut() = config.keys.clone();
         self.refresh_keys(None);
         *self.colors.borrow_mut() = config.colors.clone();
@@ -1994,8 +2093,8 @@ impl State<'_> {
             .filter(|&index| index < self.background_images.borrow().len())
     }
 
-    /// 背景画像の一覧で選んでいるときだけ「外す」と項目の収め方・濃さを触れるようにし、収め方と濃さに
-    /// 選んでいる項目の値を見せる。
+    /// 背景画像の一覧で選んでいるときだけ「削除」と項目の表示方法・不透明度を触れるようにし、表示方法と
+    /// 不透明度に選んでいる項目の値を見せる。不透明度の入力欄は「指定」のときだけ触れる。
     fn update_background_buttons(&self) {
         let c = &self.controls;
         let selected = self
@@ -2004,24 +2103,99 @@ impl State<'_> {
         for control in [
             c.background_remove,
             c.background_item_fit,
-            c.background_item_opacity,
-            c.background_item_opacity_spin,
+            c.background_item_opacity_default,
+            c.background_item_opacity_custom,
         ] {
             // SAFETY: control はダイアログの子の有効なウィンドウ。
             unsafe { _ = EnableWindow(control, selected.is_some()) };
         }
         let (fit, opacity) = match &selected {
-            Some(image) => (
-                item_fit_choice(image.fit),
-                image.image_opacity.map(format_opacity).unwrap_or_default(),
-            ),
+            Some(image) => (item_fit_choice(image.fit), Some(image.image_opacity)),
             // 何も選ばない。
-            None => (usize::MAX, String::new()),
+            None => (usize::MAX, None),
         };
         // SAFETY: コンボボックスは有効なウィンドウ。
         unsafe { SendMessageW(c.background_item_fit, CB_SETCURSEL, Some(WPARAM(fit)), None) };
+        let custom = opacity.flatten();
+        let choice = opacity.map(|opacity| usize::from(opacity.is_some()));
+        check_one(
+            &[
+                c.background_item_opacity_default,
+                c.background_item_opacity_custom,
+            ],
+            choice,
+        );
+        self.enable_item_opacity(custom.is_some());
         // 借用は持っていない（入力欄の EN_CHANGE はこの中で届く）。
-        set_text(c.background_item_opacity, &opacity);
+        set_text(
+            c.background_item_opacity,
+            &custom.map(format_opacity).unwrap_or_default(),
+        );
+    }
+
+    /// 項目の不透明度の入力欄と上下の矢印を、`enabled` なら触れるようにする。
+    fn enable_item_opacity(&self, enabled: bool) {
+        let c = &self.controls;
+        for control in [c.background_item_opacity, c.background_item_opacity_spin] {
+            // SAFETY: control はダイアログの子の有効なウィンドウ。
+            unsafe { _ = EnableWindow(control, enabled) };
+        }
+    }
+
+    /// 項目の不透明度で「指定」を選んでいるか。
+    fn custom_item_opacity(&self) -> bool {
+        checked(&[self.controls.background_item_opacity_custom]).is_some()
+    }
+
+    /// 編集中の既定の表示方法。
+    fn default_fit(&self) -> BackgroundFit {
+        // SAFETY: コンボボックスは有効なウィンドウ。
+        let choice =
+            unsafe { SendMessageW(self.controls.background_fit, CB_GETCURSEL, None, None) }.0;
+        usize::try_from(choice)
+            .ok()
+            .and_then(|choice| BackgroundFit::ALL.get(choice).copied())
+            .unwrap_or(self.base.borrow().background.fit)
+    }
+
+    /// 編集中の既定の不透明度。読めなければ `None`。
+    fn default_opacity(&self) -> Option<f32> {
+        config::parse_image_opacity(&get_text(self.controls.background_opacity))
+    }
+
+    /// 項目の表示方法の先頭の選択肢と、不透明度の「既定」のラジオボタンに、編集中の既定の値を添える。
+    /// 既定の不透明度が読めなければ、ラジオボタンは前の添え書きのままにする。
+    fn refresh_background_defaults(&self) {
+        let c = &self.controls;
+        let fit = default_choice_label(fit_label(self.default_fit()));
+        // SAFETY: コンボボックスは有効なウィンドウで、文字列はこの呼び出しの間は生きている。
+        unsafe {
+            let selected = SendMessageW(c.background_item_fit, CB_GETCURSEL, None, None).0;
+            SendMessageW(
+                c.background_item_fit,
+                CB_DELETESTRING,
+                Some(WPARAM(0)),
+                None,
+            );
+            SendMessageW(
+                c.background_item_fit,
+                CB_INSERTSTRING,
+                Some(WPARAM(0)),
+                Some(LPARAM(HSTRING::from(fit).as_ptr() as isize)),
+            );
+            SendMessageW(
+                c.background_item_fit,
+                CB_SETCURSEL,
+                Some(WPARAM(selected as usize)),
+                None,
+            );
+        }
+        if let Some(opacity) = self.default_opacity() {
+            set_text(
+                c.background_item_opacity_default,
+                &default_choice_label(&format_opacity(opacity)),
+            );
+        }
     }
 
     /// 背景画像の一覧の `index` 番目の行を、編集中の項目に合わせて書き直す（選んだままにする）。
@@ -2048,7 +2222,7 @@ impl State<'_> {
         }
     }
 
-    /// 一覧で選んでいる項目の収め方のコンボボックスが変わった。
+    /// 一覧で選んでいる項目の表示方法のコンボボックスが変わった。
     fn on_background_item_fit(&self) {
         let Some(index) = self.selected_background_image() else {
             return;
@@ -2064,24 +2238,53 @@ impl State<'_> {
         self.preview();
     }
 
-    /// 一覧で選んでいる項目の濃さの入力欄が変わった。読めれば項目に入れる。端末への反映は少し待つ
-    /// （読めなければ、反映するときにエラーを見せる）。
+    /// 一覧で選んでいる項目の不透明度の入力欄が変わった。「指定」で読めれば項目に入れる。端末への反映は
+    /// 少し待つ（読めなければ、反映するときにエラーを見せる）。
     fn on_background_item_opacity(&self) {
         if let Some(index) = self.selected_background_image()
+            && self.custom_item_opacity()
             && let Some(opacity) =
-                parse_item_opacity(&get_text(self.controls.background_item_opacity))
+                config::parse_image_opacity(&get_text(self.controls.background_item_opacity))
         {
-            let changed = {
-                let mut images = self.background_images.borrow_mut();
-                let changed = images[index].image_opacity != opacity;
-                images[index].image_opacity = opacity;
-                changed
-            };
-            if changed {
-                self.refresh_background_row(index);
-            }
+            self.set_item_opacity(index, Some(opacity));
         }
         self.schedule_preview();
+    }
+
+    /// 一覧で選んでいる項目の不透明度の「既定」か「指定」が選ばれた。「指定」で入力欄が読めなければ、
+    /// 既定の不透明度を入れる。
+    fn on_background_item_opacity_choice(&self) {
+        let Some(index) = self.selected_background_image() else {
+            return;
+        };
+        let c = &self.controls;
+        let custom = self.custom_item_opacity();
+        self.enable_item_opacity(custom);
+        if custom {
+            let opacity = config::parse_image_opacity(&get_text(c.background_item_opacity))
+                .or_else(|| self.default_opacity())
+                .unwrap_or(self.base.borrow().background.image_opacity);
+            // 借用は持っていない（入力欄の EN_CHANGE はこの中で届く）。
+            set_text(c.background_item_opacity, &format_opacity(opacity));
+            self.set_item_opacity(index, Some(opacity));
+        } else {
+            set_text(c.background_item_opacity, "");
+            self.set_item_opacity(index, None);
+        }
+        self.preview();
+    }
+
+    /// 一覧の `index` 番目の項目の不透明度を `opacity` にし、変わったら一覧の行を書き直す。
+    fn set_item_opacity(&self, index: usize, opacity: Option<f32>) {
+        let changed = {
+            let mut images = self.background_images.borrow_mut();
+            let changed = images[index].image_opacity != opacity;
+            images[index].image_opacity = opacity;
+            changed
+        };
+        if changed {
+            self.refresh_background_row(index);
+        }
     }
 
     /// 背景画像の一覧のボタン `id` が押された。
@@ -2375,6 +2578,8 @@ impl State<'_> {
                     None,
                     Some(LPARAM(((SPIN_RANGE.0 + SPIN_RANGE.1) / 2) as isize)),
                 );
+                // 付け直すと矢印が触れるようになるので、相手の入力欄に合わせる。
+                _ = EnableWindow(spin, IsWindowEnabled(buddy).as_bool());
             }
         }
     }
@@ -2447,19 +2652,19 @@ impl State<'_> {
         );
         config.profiles = profiles;
         if self.selected_background_image().is_some()
-            && parse_item_opacity(&get_text(c.background_item_opacity)).is_none()
+            && self.custom_item_opacity()
+            && config::parse_image_opacity(&get_text(c.background_item_opacity)).is_none()
         {
             return Err((
-                "選んだ画像の濃さは、0 から 1 までの数で書くか、空にしてください。",
+                "選択した項目の不透明度は、0 から 1 までの数で書いてください。",
                 c.background_item_opacity,
             ));
         }
         config.background.images = self.background_images.borrow().clone();
-        config.background.image_opacity =
-            config::parse_image_opacity(&get_text(c.background_opacity)).ok_or((
-                "画像の濃さは、0 から 1 までの数で書いてください。",
-                c.background_opacity,
-            ))?;
+        config.background.image_opacity = self.default_opacity().ok_or((
+            "不透明度は、0 から 1 までの数で書いてください。",
+            c.background_opacity,
+        ))?;
         // SAFETY: コンボボックスは有効なウィンドウ。
         let fit = unsafe { SendMessageW(c.background_fit, CB_GETCURSEL, None, None) }.0;
         if let Some(&fit) = usize::try_from(fit)
@@ -2612,10 +2817,9 @@ impl State<'_> {
                 &format_opacity(step_opacity(current, delta)),
             );
         } else if spin == c.background_item_opacity_spin {
-            // 空（全体の設定に従う）なら、全体の濃さから動かす。
-            let current = parse_item_opacity(&get_text(c.background_item_opacity))
-                .flatten()
-                .or_else(|| config::parse_image_opacity(&get_text(c.background_opacity)))
+            // 読めなければ、既定の不透明度から動かす。
+            let current = config::parse_image_opacity(&get_text(c.background_item_opacity))
+                .or_else(|| self.default_opacity())
                 .unwrap_or(self.base.borrow().background.image_opacity);
             set_text(
                 c.background_item_opacity,
@@ -2676,7 +2880,7 @@ fn format_size(size_pt: f32) -> String {
     size_pt.to_string()
 }
 
-/// 画像の濃さを、矢印で一つ動かした値。[`OPACITY_STEP`] の倍数へ動かし、範囲の端で止める。
+/// 画像の不透明度を、矢印で一つ動かした値。[`OPACITY_STEP`] の倍数へ動かし、範囲の端で止める。
 fn step_opacity(current: f32, delta: i32) -> f32 {
     // 0.35 のように刻みの倍数を書いた値が、f32 の誤差で倍数の手前に見えないようにする。
     const TOLERANCE: f32 = 1e-3;
@@ -2694,7 +2898,7 @@ fn step_opacity(current: f32, delta: i32) -> f32 {
     )
 }
 
-/// 入力欄に見せる、画像の濃さ。
+/// 入力欄に見せる、画像の不透明度。
 fn format_opacity(opacity: f32) -> String {
     opacity.to_string()
 }
@@ -2800,10 +3004,19 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     BN_CLICKED,
                 ) => state.on_background_button(id),
                 (ID_BACKGROUND_FIT, CBN_SELCHANGE) => {
+                    state.refresh_background_defaults();
                     state.preview();
+                }
+                (ID_BACKGROUND_OPACITY, EN_CHANGE) => {
+                    state.refresh_background_defaults();
+                    state.schedule_preview();
                 }
                 (ID_BACKGROUND_ITEM_FIT, CBN_SELCHANGE) => state.on_background_item_fit(),
                 (ID_BACKGROUND_ITEM_OPACITY, EN_CHANGE) => state.on_background_item_opacity(),
+                (
+                    ID_BACKGROUND_ITEM_OPACITY_DEFAULT | ID_BACKGROUND_ITEM_OPACITY_CUSTOM,
+                    BN_CLICKED,
+                ) => state.on_background_item_opacity_choice(),
                 (ID_KEYS, LBN_SELCHANGE) => state.update_key_buttons(),
                 (ID_KEYS, LBN_DBLCLK) => state.on_key_button(ID_KEY_CHANGE),
                 (ID_KEY_ADD | ID_KEY_CHANGE | ID_KEY_REMOVE | ID_KEY_RESET, BN_CLICKED) => {
@@ -2816,9 +3029,7 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 {
                     state.on_color_scheme();
                 }
-                (ID_SIZE | ID_SCROLL_BAR_WIDTH | ID_PADDING | ID_BACKGROUND_OPACITY, EN_CHANGE) => {
-                    state.schedule_preview()
-                }
+                (ID_SIZE | ID_SCROLL_BAR_WIDTH | ID_PADDING, EN_CHANGE) => state.schedule_preview(),
                 (id, BN_CLICKED)
                     if (ID_WIDE_GLYPH..ID_WIDE_GLYPH + WideGlyph::ALL.len() as i32)
                         .contains(&id)
@@ -3078,12 +3289,15 @@ mod tests {
     fn background_rows_show_the_item_settings() {
         let mut image = BackgroundImage::new(r"C:\a.png");
         assert_eq!(background_row_text(&image), r"C:\a.png");
-        image.fit = Some(BackgroundFit::Tile);
-        assert_eq!(background_row_text(&image), r"C:\a.png — tile");
+        image.fit = Some(BackgroundFit::Stretch);
+        assert_eq!(background_row_text(&image), r"C:\a.png（拡大して表示）");
         image.image_opacity = Some(0.3);
-        assert_eq!(background_row_text(&image), r"C:\a.png — tile、0.3");
+        assert_eq!(
+            background_row_text(&image),
+            r"C:\a.png（拡大して表示、不透明度 0.3）"
+        );
         image.fit = None;
-        assert_eq!(background_row_text(&image), r"C:\a.png — 0.3");
+        assert_eq!(background_row_text(&image), r"C:\a.png（不透明度 0.3）");
     }
 
     #[test]
@@ -3095,9 +3309,11 @@ mod tests {
             assert_eq!(item_fit_from_choice(index + 1), Some(Some(fit)));
         }
         assert_eq!(item_fit_from_choice(BackgroundFit::ALL.len() + 1), None);
-        assert_eq!(parse_item_opacity(" "), Some(None));
-        assert_eq!(parse_item_opacity("0.4"), Some(Some(0.4)));
-        assert_eq!(parse_item_opacity("2"), None);
+        assert_eq!(
+            default_choice_label(fit_label(BackgroundFit::Tile)),
+            "既定（並べて表示）"
+        );
+        assert_eq!(default_choice_label(&format_opacity(0.5)), "既定（0.5）");
     }
 
     #[test]
