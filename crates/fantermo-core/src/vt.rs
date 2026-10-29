@@ -119,6 +119,18 @@ pub struct KeyInput<'a> {
     pub text: Option<&'a str>,
 }
 
+/// 表示している範囲の、スクロールバックを含む全体の中での位置（行の数）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScrollPosition {
+    /// スクロールバックと画面を合わせた全体の行数。
+    pub total: usize,
+    /// 表示している範囲の先頭の、全体の先頭からの行数。いちばん新しい行を表示しているときは
+    /// `total - len`。
+    pub offset: usize,
+    /// 表示している範囲の行数。
+    pub len: usize,
+}
+
 /// スクロールバックに残す行数。
 const SCROLLBACK_LINES: usize = 10_000;
 
@@ -531,6 +543,29 @@ impl Vt {
     /// 表示する範囲を、いちばん新しい行（カーソルのある画面）に戻す。
     pub fn scroll_to_bottom(&mut self) {
         self.terminal.scroll_viewport(ScrollViewport::Bottom);
+    }
+
+    /// 表示する範囲を、スクロールバックのいちばん古い行からにする。
+    pub fn scroll_to_top(&mut self) {
+        self.terminal.scroll_viewport(ScrollViewport::Top);
+    }
+
+    /// 表示する範囲の先頭を、全体の先頭から `row` 行目（[`ScrollPosition::offset`] と同じ数え方）に
+    /// する。範囲を越える値は、いちばん新しい行までに収まる。
+    pub fn scroll_to_row(&mut self, row: usize) {
+        self.terminal.scroll_viewport(ScrollViewport::Row(row));
+    }
+
+    /// 表示している範囲の、スクロールバックを含む全体の中での位置。代替画面にはスクロールバックが
+    /// ないので、全体が表示している範囲と同じになる。
+    pub fn scroll_position(&self) -> Result<ScrollPosition, VtError> {
+        let scrollbar = self.terminal.scrollbar()?;
+        let to_usize = |value: u64| usize::try_from(value).unwrap_or(usize::MAX);
+        Ok(ScrollPosition {
+            total: to_usize(scrollbar.total),
+            offset: to_usize(scrollbar.offset),
+            len: to_usize(scrollbar.len),
+        })
     }
 
     /// カーソルのある桁と行（0 始まり）。
@@ -1186,6 +1221,59 @@ mod tests {
         assert!(vt.frame().unwrap().cursor.is_none());
         vt.scroll_to_bottom();
         assert_eq!(first_row_text(&mut vt), "line16");
+    }
+
+    fn position(total: usize, offset: usize, len: usize) -> ScrollPosition {
+        ScrollPosition { total, offset, len }
+    }
+
+    #[test]
+    fn the_scroll_position_counts_rows_from_the_oldest_line() {
+        let mut vt = new_vt();
+        // スクロールバックがなければ、全体は画面だけ。
+        assert_eq!(vt.scroll_position().unwrap(), position(5, 0, 5));
+        for line in 0..20 {
+            vt.feed(format!("line{line:02}\r\n").as_bytes());
+        }
+        // 21 行（最後は空のプロンプトの行）のうち、いちばん新しい 5 行を表示している。
+        assert_eq!(vt.scroll_position().unwrap(), position(21, 16, 5));
+        vt.scroll(-10);
+        assert_eq!(vt.scroll_position().unwrap(), position(21, 6, 5));
+        vt.scroll_to_top();
+        assert_eq!(vt.scroll_position().unwrap(), position(21, 0, 5));
+        assert_eq!(first_row_text(&mut vt), "line00");
+        vt.scroll_to_bottom();
+        assert_eq!(vt.scroll_position().unwrap(), position(21, 16, 5));
+    }
+
+    #[test]
+    fn scrolling_to_a_row_uses_the_same_count_as_the_offset() {
+        let mut vt = new_vt();
+        for line in 0..20 {
+            vt.feed(format!("line{line:02}\r\n").as_bytes());
+        }
+        vt.scroll_to_row(3);
+        assert_eq!(vt.scroll_position().unwrap().offset, 3);
+        assert_eq!(first_row_text(&mut vt), "line03");
+        // いちばん新しい行より先は、いちばん新しい行までに収まる。
+        vt.scroll_to_row(1000);
+        assert_eq!(vt.scroll_position().unwrap(), position(21, 16, 5));
+        assert_eq!(first_row_text(&mut vt), "line16");
+    }
+
+    #[test]
+    fn the_alternate_screen_has_no_scrollback() {
+        let mut vt = new_vt();
+        for line in 0..20 {
+            vt.feed(format!("line{line:02}\r\n").as_bytes());
+        }
+        vt.feed(b"\x1b[?1049h");
+        assert_eq!(vt.scroll_position().unwrap(), position(5, 0, 5));
+        vt.scroll(-3);
+        assert_eq!(vt.scroll_position().unwrap(), position(5, 0, 5));
+        // 代替画面を抜ければ、スクロールバックが戻る。
+        vt.feed(b"\x1b[?1049l");
+        assert_eq!(vt.scroll_position().unwrap(), position(21, 16, 5));
     }
 
     /// `col` 桁目・`row` 行目のセルの、左から `fraction` の割合の位置を指す。

@@ -30,6 +30,7 @@ mod paint;
 mod paste_editor;
 mod pipeline;
 mod renderer;
+mod scroll_bar;
 mod session;
 mod shader;
 mod tab_bar;

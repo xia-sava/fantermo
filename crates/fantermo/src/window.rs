@@ -52,13 +52,14 @@ use windows::{
                 SWP_NOACTIVATE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW,
                 SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
                 SystemParametersInfoW, TranslateMessage, WA_INACTIVE, WHEEL_DELTA, WINDOW_EX_STYLE,
-                WM_ACTIVATE, WM_APP, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU, WM_DEADCHAR, WM_DESTROY,
-                WM_DPICHANGED, WM_ENDSESSION, WM_GETDPISCALEDSIZE, WM_IME_COMPOSITION,
+                WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU, WM_DEADCHAR,
+                WM_DESTROY, WM_DPICHANGED, WM_ENDSESSION, WM_GETDPISCALEDSIZE, WM_IME_COMPOSITION,
                 WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN,
                 WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
                 WM_NCDESTROY, WM_PAINT, WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP,
                 WM_SETCURSOR, WM_SIZE, WM_SYSCHAR, WM_SYSCOLORCHANGE, WM_SYSDEADCHAR,
-                WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+                WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_VSCROLL, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+                WS_VSCROLL,
             },
         },
     },
@@ -78,6 +79,7 @@ use crate::{
     paint::{Area, Paint},
     paste_editor,
     renderer::Renderer,
+    scroll_bar,
     session::{Session, SessionId},
     tab_bar::{self, Hit, TabView},
     text_dialog,
@@ -87,6 +89,9 @@ use crate::{
 
 const WINDOW_CLASS: PCWSTR = w!("fantermo");
 const WINDOW_TITLE: &str = "fantermo";
+
+/// 窓のスタイル。右端に縦のスクロールバーを常に出す（[`scroll_bar`]）。
+const MAIN_WINDOW_STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0 | WS_VSCROLL.0);
 
 /// 端末の出力が届いたときと子プロセスが終了したときに、読むためのスレッドなどが窓のスレッドを
 /// 起こすメッセージ。`wparam` はその端末の [`SessionId`]。
@@ -348,7 +353,7 @@ fn area_to_client(area: Area, x: i32, y: i32) -> (i32, i32) {
     (x + area.x as i32, y + area.y as i32)
 }
 
-/// クライアント領域の大きさが `client` になる、DPI が `dpi` の窓の大きさ（枠を含む）。
+/// クライアント領域の大きさが `client` になる、DPI が `dpi` の窓の大きさ（枠とスクロールバーを含む）。
 fn window_size(client: SIZE, dpi: u32) -> windows::core::Result<SIZE> {
     let mut rect = RECT {
         left: 0,
@@ -358,16 +363,11 @@ fn window_size(client: SIZE, dpi: u32) -> windows::core::Result<SIZE> {
     };
     // SAFETY: rect は書き込める。
     unsafe {
-        AdjustWindowRectExForDpi(
-            &mut rect,
-            WS_OVERLAPPEDWINDOW,
-            false,
-            WINDOW_EX_STYLE(0),
-            dpi,
-        )?
+        AdjustWindowRectExForDpi(&mut rect, MAIN_WINDOW_STYLE, false, WINDOW_EX_STYLE(0), dpi)?
     };
+    // AdjustWindowRectExForDpi は、スタイルに WS_VSCROLL があってもスクロールバーの幅を足さない。
     Ok(SIZE {
-        cx: rect.right - rect.left,
+        cx: rect.right - rect.left + scroll_bar::width(dpi),
         cy: rect.bottom - rect.top,
     })
 }
@@ -398,12 +398,12 @@ fn create_window(font: &Font, dpi: u32) -> windows::core::Result<HWND> {
     )?;
 
     // SAFETY: クラスは登録済みで、文字列はこの呼び出しの間は生きている。
-    unsafe {
+    let hwnd = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
             WINDOW_CLASS,
             &HSTRING::from(WINDOW_TITLE),
-            WS_OVERLAPPEDWINDOW,
+            MAIN_WINDOW_STYLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             size.cx,
@@ -413,7 +413,10 @@ fn create_window(font: &Font, dpi: u32) -> windows::core::Result<HWND> {
             Some(instance.into()),
             None,
         )
-    }
+    }?;
+    // 端末を開くまでは表示している範囲がないので、押せない形にしておく。
+    scroll_bar::set_empty(hwnd);
+    Ok(hwnd)
 }
 
 fn message_loop() -> u32 {
@@ -516,6 +519,8 @@ struct App {
     blink_visible: bool,
     /// 点滅のタイマーを動かしている。
     blink_timer_running: bool,
+    /// スクロールバーに最後に渡した値。変わったときだけ渡し直す。
+    scroll_range: Option<scroll_bar::Range>,
 }
 
 impl App {
@@ -598,6 +603,7 @@ impl App {
             window_active: false,
             blink_visible: true,
             blink_timer_running: false,
+            scroll_range: None,
         })
     }
 
@@ -1321,6 +1327,10 @@ impl App {
             return;
         }
         self.session_mut().vt.scroll_to_bottom();
+        // シェルが何も返さないキーでも、戻した範囲を描き、つまみを合わせる。
+        if self.update_scroll_bar() {
+            self.invalidate();
+        }
         self.refresh_hovered_link_now();
         self.clear_selection();
         self.session_mut().write(data);
@@ -1364,8 +1374,54 @@ impl App {
         }
         // 奥へ回すと過去（上）へ。
         self.session_mut().vt.scroll(-(lines as isize));
+        self.on_viewport_moved();
+    }
+
+    /// スクロールバーが操作された（WM_VSCROLL）。アプリがマウスを求めていても、表示する範囲を動かす。
+    fn on_scroll_bar(&mut self, request: scroll_bar::Request) {
+        let page = self.session().vt.size().rows as isize;
+        let hwnd = self.hwnd;
+        let vt = &mut self.session_mut().vt;
+        match request {
+            scroll_bar::Request::Lines(lines) => vt.scroll(lines),
+            scroll_bar::Request::Pages(pages) => vt.scroll(pages * page),
+            scroll_bar::Request::Top => vt.scroll_to_top(),
+            scroll_bar::Request::Bottom => vt.scroll_to_bottom(),
+            scroll_bar::Request::Track => match scroll_bar::track_position(hwnd) {
+                Ok(row) => vt.scroll_to_row(row.max(0) as usize),
+                Err(e) => {
+                    tracing::warn!("failed to read the scroll bar thumb position: {e}");
+                    return;
+                }
+            },
+        }
+        self.on_viewport_moved();
+    }
+
+    /// 表示する範囲を動かした。マウスの下のリンクを探し直し、つまみを合わせて描き直す。
+    fn on_viewport_moved(&mut self) {
         self.refresh_hovered_link_now();
+        self.update_scroll_bar();
         self.invalidate();
+    }
+
+    /// スクロールバーのつまみを、表示している端末の表示している範囲に合わせる。値が変わったときだけ
+    /// 渡し、変わったら `true` を返す。
+    fn update_scroll_bar(&mut self) -> bool {
+        let position = match self.session().vt.scroll_position() {
+            Ok(position) => position,
+            Err(e) => {
+                tracing::warn!("failed to read the scroll position: {e}");
+                return false;
+            }
+        };
+        let range = scroll_bar::range(position);
+        if self.scroll_range == Some(range) {
+            return false;
+        }
+        scroll_bar::set(self.hwnd, range);
+        self.scroll_range = Some(range);
+        true
     }
 
     /// 端末 `id` に出力が届いたか、子プロセスが終わった。出力を流し込み、タイトルとベルを反映する。
@@ -1609,9 +1665,11 @@ impl App {
         self.render_to(Some(&frame_path));
     }
 
-    /// 表示している端末を端末を描く領域に、タブバーをその上に描いて表示する。
+    /// 表示している端末を端末を描く領域に、タブバーをその上に描いて表示する。スクロールバーのつまみも
+    /// 合わせる（出力、窓の大きさの変更、タブの切り替えなど、描き直すことはどれもつまみを動かしうる）。
     /// `capture` を渡すと、表示する前の画面を PNG で書き出す。
     fn render_to(&mut self, capture: Option<&std::path::Path>) {
+        self.update_scroll_bar();
         let mut frame = match self.session_mut().vt.frame() {
             Ok(frame) => frame,
             Err(e) => {
@@ -2186,6 +2244,13 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         WM_MOUSEWHEEL => {
             let delta = i32::from(((wparam.0 >> 16) & 0xffff) as u16 as i16);
             with_app(&mut |app| app.on_wheel(delta, lparam, wparam));
+            LRESULT(0)
+        }
+        // スクロールバーの操作。下位の語が操作の種類（SB_LINEUP など）。
+        WM_VSCROLL => {
+            if let Some(request) = scroll_bar::request((wparam.0 & 0xffff) as i32) {
+                with_app(&mut |app| app.on_scroll_bar(request));
+            }
             LRESULT(0)
         }
         WM_CHAR | WM_SYSCHAR => {
