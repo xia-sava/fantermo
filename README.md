@@ -2,14 +2,15 @@
 
 Windows 用の端末アプリです．エスケープシーケンスの解釈と端末の状態管理に [libghostty-vt](https://github.com/ghostty-org/ghostty)（Ghostty の端末エミュレーションのライブラリ）を使い，ウィンドウ・描画・入力・IME を Windows 向けに作ります．
 
-名前はエスペラントの fantomo（幽霊）と terminalo（端末）から．
+読み方は /fanˈtermo/（ファンテルモ）．
 
 ## 構成
 
-Rust の workspace（edition 2024）で，2 つのクレートに分かれています．
+Rust の workspace（edition 2024）で，3 つのクレートに分かれています．
 
-- **`fantermo-core`** … UI に依存しない層．libghostty-vt の上に載せた端末の状態，バックエンドの trait，設定，ブリッジ（シェルとの間を中継する補助プログラム）とのプロトコル．
-- **`fantermo`** … 実行ファイル．ウィンドウ（Win32），描画（Direct3D 11 + DirectWrite），キー入力，IME，ConPTY．
+- **`fantermo-core`** … UI に依存しない層．libghostty-vt の上に載せた端末の状態，バックエンドの trait，設定の読み書き，キーの割り当て，ウィンドウの状態，背景画像の選び方．
+- **`fantermo`** … 実行ファイル．ウィンドウ（Win32），描画（Direct3D 11 + DirectWrite），キー入力，IME，ConPTY，設定ダイアログ，更新の確認．
+- **`run-hidden`** … 開発用の道具．画面に出ないデスクトップでプログラムを起動し，決めた時間が過ぎたら終わらせる．
 
 libghostty-vt は [libghostty-rs](https://github.com/uzaaft/libghostty-rs) のバインディングを，git の依存としてコミットで固定して使います．
 
@@ -22,11 +23,7 @@ libghostty-vt は [libghostty-rs](https://github.com/uzaaft/libghostty-rs) の�
 
 設定ファイルとウィンドウの状態は `%APPDATA%\fantermo\` に，ログは `%LOCALAPPDATA%\fantermo\logs\` に置きます．どちらもアンインストールしても消さないので，要らなければ手で消してください．
 
-設定の書き方を改めたときは，前のバージョンの書き方で書いた設定ファイルを，起動したときと読み直したときに今の書き方に直して書き戻します．書き換えるのは直したところだけで，コメントは残します．何をどう直したかはログに残ります．たとえば背景画像の一覧は `[[background.images]]` のテーブルを並べる書き方にしたので，`images = ['…', …]` と書いた一覧はテーブルに直します．
-
-インストーラで入れたバージョンは，タブバーのメニューのボタン（≡）の「fantermo について…」の「更新を確認」で，新しいバージョンを確かめて更新できます．zip から展開したものでは押せません．
-
-バージョンと，ビルドしたコミットは，タブバーのメニューのボタン（≡）の「fantermo について…」で見られます．
+タブバーのメニューのボタン（≡）の「fantermo について…」で，バージョンとビルドしたコミットを見られます．インストーラで入れたバージョンは，ここの「更新を確認」で新しいバージョンを確かめて更新できます（zip から展開したものでは押せません）．
 
 ## ビルド
 
@@ -38,14 +35,10 @@ Windows + Rust（edition 2024）+ MSVC ツールチェインと，Zig が必要�
 ./tools/dev.sh test
 ```
 
-ビルドの途中で Zig が作る補助の exe はパスが深くなるため，cargo の出力先を深い場所に移すと，Windows のパスの上限（260 文字）を超えてビルドが失敗します．出力先は既定のリポジトリ直下の `target/` のままにしてください．
-
-## アイコン
-
-アイコンの図案は `assets/icon/` の SVG です（`fantermo.svg` が 32 px 以上，`fantermo-small.svg` が 24 px 以下）．図案を変えたら `./tools/icon.sh` で `assets/icon/fantermo.ico` を作り直してください．SVG を描くのに Microsoft Edge を，ICO にまとめるのに Python の Pillow を使います．ICO はビルドのたびには作らず，作り直したものをコミットします．
+ビルドの途中で Zig が作る補助の exe は，cargo の出力先の下の深いパスに置かれます．出力先（既定はリポジトリ直下の `target/`）のパスが長いと，Windows のパスの上限（260 文字）を超えてビルドが失敗するので，リポジトリは浅いパスに置いてください．
 
 ## ライセンス
 
 [MIT](LICENSE)
 
-fantermo に含まれる第三者のソフトウェアのライセンスは [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) にまとめています．このファイルと LICENSE は実行ファイルに埋め込んであり，タブバーのメニューのボタン（≡）の「fantermo について…」で見られます．Rust の crate は [cargo-about](https://github.com/EmbarkStudios/cargo-about) で集め，libghostty-vt に静的にリンクされる Zig 側のライブラリは手で確かめて `tools/licenses/zig-notices.txt` に書いています．依存を変えたら `./tools/licenses.sh` で作り直してください．
+fantermo に含まれる第三者のソフトウェアのライセンスは [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) にまとめています．アプリの「fantermo について…」でも見られます．
