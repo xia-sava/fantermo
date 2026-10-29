@@ -229,6 +229,12 @@ pub fn stored_size(image: (u32, u32), cover: (u32, u32), max_side: u32) -> (u32,
     (shrink(width), shrink(height))
 }
 
+/// 濃さ `image_opacity`（0〜1）の画像を見せるために、画像の上に重ねる端末の背景色の濃さ（不透明度）。
+/// 範囲の外は端に寄せる。
+pub fn overlay_opacity(image_opacity: f32) -> f32 {
+    (1.0 - image_opacity).clamp(0.0, 1.0)
+}
+
 /// ピクセルの矩形（左上の x, y と幅, 高さ）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
@@ -599,6 +605,15 @@ mod tests {
         // 辺の上限。
         assert_eq!(stored_size((40000, 100), (0, 0), 16384), (16384, 41));
         assert_eq!(stored_size((0, 10), (1920, 1080), 16384), (0, 10));
+    }
+
+    #[test]
+    fn the_background_color_is_laid_over_the_image_by_the_rest_of_its_opacity() {
+        assert_eq!(overlay_opacity(1.0), 0.0);
+        assert_eq!(overlay_opacity(0.0), 1.0);
+        assert_eq!(overlay_opacity(0.25), 0.75);
+        assert_eq!(overlay_opacity(1.5), 0.0);
+        assert_eq!(overlay_opacity(-1.0), 1.0);
     }
 
     #[test]

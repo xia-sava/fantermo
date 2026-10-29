@@ -33,7 +33,7 @@ enum Setting {
     ScrollBarWidth,
     ColorScheme,
     BackgroundImages,
-    BackgroundOpacity,
+    BackgroundImageOpacity,
     BackgroundFit,
 }
 
@@ -47,7 +47,7 @@ impl Setting {
         Setting::ScrollBarWidth,
         Setting::ColorScheme,
         Setting::BackgroundImages,
-        Setting::BackgroundOpacity,
+        Setting::BackgroundImageOpacity,
         Setting::BackgroundFit,
     ];
 
@@ -59,9 +59,9 @@ impl Setting {
             Setting::PasteConfirm => &["paste"],
             Setting::ScrollBarWidth => &["scroll_bar"],
             Setting::ColorScheme => &["colors"],
-            Setting::BackgroundImages | Setting::BackgroundOpacity | Setting::BackgroundFit => {
-                &["background"]
-            }
+            Setting::BackgroundImages
+            | Setting::BackgroundImageOpacity
+            | Setting::BackgroundFit => &["background"],
         }
     }
 
@@ -75,7 +75,7 @@ impl Setting {
             Setting::ScrollBarWidth => "width",
             Setting::ColorScheme => "scheme",
             Setting::BackgroundImages => "images",
-            Setting::BackgroundOpacity => "opacity",
+            Setting::BackgroundImageOpacity => "image_opacity",
             Setting::BackgroundFit => "fit",
         }
     }
@@ -98,7 +98,7 @@ impl Setting {
                     .map(String::as_str)
                     .collect::<Array>(),
             )),
-            Setting::BackgroundOpacity => Some(number_value(config.background.opacity)),
+            Setting::BackgroundImageOpacity => Some(number_value(config.background.image_opacity)),
             Setting::BackgroundFit => Some(Value::from(config.background.fit.name())),
         }
     }
@@ -115,7 +115,7 @@ fn families_value(families: &[String]) -> Value {
     }
 }
 
-/// フォントの大きさや背景色の濃さの数。整数なら整数で、そうでなければ小数で書く（`f32` を `f64` に
+/// フォントの大きさや画像の濃さの数。整数なら整数で、そうでなければ小数で書く（`f32` を `f64` に
 /// 広げた端数を出さないように、`f32` の短い表記から読み直す）。
 fn number_value(number: f32) -> Value {
     if number.fract() == 0.0 {
@@ -805,7 +805,7 @@ mod tests {
             colors: ColorsConfig::default(),
             background: BackgroundConfig {
                 images: vec![r"C:\walls".to_owned(), r"D:\pics\*.png".to_owned()],
-                opacity: 0.65,
+                image_opacity: 0.65,
                 fit: BackgroundFit::Center,
             },
             keys: {
@@ -848,7 +848,7 @@ mod tests {
                 r"
 images = ['C:\walls', 'D:\pics\*.png']",
             )
-            .replace("# opacity = 0.8", "opacity = 0.65")
+            .replace("# image_opacity = 0.2", "image_opacity = 0.65")
             .replace(r#"# fit = "fill""#, r#"fit = "center""#)
             .replace(
                 "\n# \"ctrl+tab\" = \"next_tab\"",
@@ -872,7 +872,7 @@ images = ['C:\walls', 'D:\pics\*.png']",
         let defaults = Config::default();
         let steps: [fn(&mut Config, &Config); 9] = [
             |c, d| c.font.size_pt = d.font.size_pt,
-            |c, d| c.background.opacity = d.background.opacity,
+            |c, d| c.background.image_opacity = d.background.image_opacity,
             |c, d| {
                 c.background.images = d.background.images.clone();
                 c.background.fit = d.background.fit;
@@ -1037,18 +1037,18 @@ images = ['C:\walls', 'D:\pics\*.png']",
         let base = config::parse(text, &Config::default()).config;
         let mut edited = base.clone();
         edited.background.images = vec![r"C:\walls".to_owned()];
-        edited.background.opacity = 1.0;
+        edited.background.image_opacity = 1.0;
         let updated = update(text, &base, &edited).unwrap();
         assert_eq!(
             updated,
-            "[font]\nsize = 9\n\n[background]\nimages = ['C:\\walls']\nopacity = 1\n"
+            "[font]\nsize = 9\n\n[background]\nimages = ['C:\\walls']\nimage_opacity = 1\n"
         );
         assert_reads_as(&updated, &edited);
         // 一覧を空に戻すと、既定値をコメントにした行にする。
         let back = update(&updated, &edited, &base).unwrap();
         assert_eq!(
             back,
-            "[font]\nsize = 9\n\n[background]\n# images = []\n# opacity = 0.8\n"
+            "[font]\nsize = 9\n\n[background]\n# images = []\n# image_opacity = 0.2\n"
         );
     }
 

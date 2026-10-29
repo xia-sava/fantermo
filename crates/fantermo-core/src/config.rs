@@ -34,11 +34,11 @@ pub const DEFAULT_SCROLL_BAR_WIDTH: u32 = 12;
 /// スクロールバーの幅として受け付ける範囲（96 DPI でのピクセル）。
 pub const SCROLL_BAR_WIDTH_RANGE: RangeInclusive<u32> = 4..=64;
 
-/// 背景画像の上に重ねる端末の背景色の、既定の濃さ（不透明度）。
-pub const DEFAULT_BACKGROUND_OPACITY: f32 = 0.8;
+/// 背景画像の既定の濃さ（不透明度）。
+pub const DEFAULT_IMAGE_OPACITY: f32 = 0.2;
 
-/// 背景画像の上に重ねる端末の背景色の濃さとして受け付ける範囲。
-pub const BACKGROUND_OPACITY_RANGE: RangeInclusive<f32> = 0.0..=1.0;
+/// 背景画像の濃さとして受け付ける範囲。
+pub const IMAGE_OPACITY_RANGE: RangeInclusive<f32> = 0.0..=1.0;
 
 /// 設定ファイルが無いときに作る中身。どの項目も既定値のままコメントにして並べ、利用者が `#` を消して
 /// 書き換えられるようにする。`shell` の値だけは既定値ではなく例（既定では書かない）。
@@ -114,9 +114,10 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # 例: images = ['C:\画像\壁紙', 'C:\画像\*.jpg']
 # images = []
 
-# 画像の上に重ねる端末の背景色の濃さ。0 から 1 まで。0 は画像をそのまま見せ、1 は背景色で画像を隠す。
-# アプリが背景色を付けた文字、反転した文字、選んだ範囲は、その色で塗りつぶす。
-# opacity = 0.8
+# 画像の濃さ。0 から 1 まで。1 は画像をそのまま見せ、0 は画像を消して端末の背景色だけにする。間の値は、
+# 画像の上に端末の背景色を重ねて薄める。アプリが背景色を付けた文字、反転した文字、選んだ範囲は、その色で
+# 塗りつぶす。
+# image_opacity = 0.2
 
 # 画像の収め方。"fill" は縦横比を保って端末を覆い、はみ出しを切る、"fit" は縦横比を保って端末に収め、余りは
 # 背景色にする、"stretch" は端末に合わせて引き伸ばす、"tile" は元の大きさで敷き詰める、"center" は元の大きさで
@@ -165,8 +166,8 @@ pub struct Config {
 pub struct BackgroundConfig {
     /// 画像のファイル・フォルダ・ワイルドカードの一覧（書いたまま）。空なら画像を敷かない。
     pub images: Vec<String>,
-    /// 画像の上に重ねる端末の背景色の濃さ（0 で画像をそのまま見せ、1 で隠す）。
-    pub opacity: f32,
+    /// 画像の濃さ（1 で画像をそのまま見せ、0 で消す）。
+    pub image_opacity: f32,
     pub fit: BackgroundFit,
 }
 
@@ -174,7 +175,7 @@ impl Default for BackgroundConfig {
     fn default() -> Self {
         Self {
             images: Vec::new(),
-            opacity: DEFAULT_BACKGROUND_OPACITY,
+            image_opacity: DEFAULT_IMAGE_OPACITY,
             fit: BackgroundFit::default(),
         }
     }
@@ -554,13 +555,11 @@ pub fn parse_scroll_bar_width(text: &str) -> Option<u32> {
     SCROLL_BAR_WIDTH_RANGE.contains(&width).then_some(width)
 }
 
-/// 入力された文字列を、背景画像の上に重ねる背景色の濃さとして読む。前後の空白は除く。数でないか、
-/// [`BACKGROUND_OPACITY_RANGE`] の外なら `None`。
-pub fn parse_background_opacity(text: &str) -> Option<f32> {
+/// 入力された文字列を、背景画像の濃さとして読む。前後の空白は除く。数でないか、
+/// [`IMAGE_OPACITY_RANGE`] の外なら `None`。
+pub fn parse_image_opacity(text: &str) -> Option<f32> {
     let opacity: f32 = text.trim().parse().ok()?;
-    BACKGROUND_OPACITY_RANGE
-        .contains(&opacity)
-        .then_some(opacity)
+    IMAGE_OPACITY_RANGE.contains(&opacity).then_some(opacity)
 }
 
 /// 入力された文字列を、`shell` の値にする。前後の空白は除き、空なら書かない（既定のシェル）。
@@ -816,17 +815,17 @@ fn read_background(reader: &mut Reader, table: &mut Table, background: &mut Back
         })
         .apply(&mut background.images, defaults.images);
     reader
-        .take::<f32>(table, SECTION, "opacity")
-        .check(reader, "background.opacity", |opacity| {
-            (!BACKGROUND_OPACITY_RANGE.contains(opacity)).then(|| {
+        .take::<f32>(table, SECTION, "image_opacity")
+        .check(reader, "background.image_opacity", |opacity| {
+            (!IMAGE_OPACITY_RANGE.contains(opacity)).then(|| {
                 format!(
-                    "ignoring background.opacity = {opacity}: must be between {} and {}",
-                    BACKGROUND_OPACITY_RANGE.start(),
-                    BACKGROUND_OPACITY_RANGE.end()
+                    "ignoring background.image_opacity = {opacity}: must be between {} and {}",
+                    IMAGE_OPACITY_RANGE.start(),
+                    IMAGE_OPACITY_RANGE.end()
                 )
             })
         })
-        .apply(&mut background.opacity, defaults.opacity);
+        .apply(&mut background.image_opacity, defaults.image_opacity);
     reader
         .take::<BackgroundFit>(table, SECTION, "fit")
         .apply(&mut background.fit, defaults.fit);
@@ -1077,7 +1076,7 @@ mod tests {
             },
             background: BackgroundConfig {
                 images: vec![r"C:\walls".to_owned()],
-                opacity: 0.5,
+                image_opacity: 0.5,
                 fit: BackgroundFit::Tile,
             },
             keys: {
@@ -1096,22 +1095,29 @@ mod tests {
     #[test]
     fn background_is_read() {
         let parsed = parse(
-            "[background]\nimages = ['C:\\walls', 'D:\\a\\*.png']\nopacity = 0.65\nfit = \"center\"\n",
+            "[background]\nimages = ['C:\\walls', 'D:\\a\\*.png']\nimage_opacity = 0.65\nfit = \"center\"\n",
         );
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
         assert_eq!(
             parsed.config.background,
             BackgroundConfig {
                 images: vec![r"C:\walls".to_owned(), r"D:\a\*.png".to_owned()],
-                opacity: 0.65,
+                image_opacity: 0.65,
                 fit: BackgroundFit::Center,
             }
         );
         // 一つなら文字列でもよく、濃さは整数でもよい。
-        let parsed = parse("[background]\nimages = 'C:\\one.png'\nopacity = 1\n");
+        let parsed = parse("[background]\nimages = 'C:\\one.png'\nimage_opacity = 1\n");
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
         assert_eq!(parsed.config.background.images, [r"C:\one.png"]);
-        assert_eq!(parsed.config.background.opacity, 1.0);
+        assert_eq!(parsed.config.background.image_opacity, 1.0);
+        // `opacity` は知らないキー。
+        let parsed = parse("[background]\nopacity = 0.8\n");
+        assert_eq!(parsed.config.background, BackgroundConfig::default());
+        assert_eq!(
+            parsed.warnings,
+            ["ignoring unknown setting background.opacity"]
+        );
         for fit in BackgroundFit::ALL {
             let parsed = parse(&format!("[background]\nfit = '{}'\n", fit.name()));
             assert_eq!(parsed.config.background.fit, fit);
@@ -1122,7 +1128,7 @@ mod tests {
     fn invalid_background_values_keep_the_previous_values_with_their_lines() {
         let previous = customized();
         let parsed = super::parse(
-            "[background]\nimages = ['C:\\ok', ' ']\nopacity = 1.5\nfit = 'cover'\nblur = 3\n",
+            "[background]\nimages = ['C:\\ok', ' ']\nimage_opacity = 1.5\nfit = 'cover'\nblur = 3\n",
             &previous,
         );
         assert_eq!(parsed.config.background, previous.background);
@@ -1153,10 +1159,13 @@ mod tests {
         let parsed = super::parse("[font]\n", &previous);
         assert_eq!(parsed.config.background, BackgroundConfig::default());
         // 濃さの範囲の外と、数でないもの。
-        let parsed = parse("[background]\nopacity = -0.1\n");
-        assert_eq!(parsed.config.background.opacity, DEFAULT_BACKGROUND_OPACITY);
+        let parsed = parse("[background]\nimage_opacity = -0.1\n");
+        assert_eq!(
+            parsed.config.background.image_opacity,
+            DEFAULT_IMAGE_OPACITY
+        );
         assert_eq!(parsed.warnings.len(), 1);
-        let parsed = parse("[background]\nopacity = nan\nimages = 3\n");
+        let parsed = parse("[background]\nimage_opacity = nan\nimages = 3\n");
         assert_eq!(parsed.config.background, BackgroundConfig::default());
         assert_eq!(parsed.warnings.len(), 2, "{:?}", parsed.warnings);
     }
@@ -1520,7 +1529,7 @@ mod tests {
     fn invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults() {
         let previous = customized();
         let parsed = super::parse(
-            "shell = ' '\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[scroll_bar]\nwidth = 2\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors]\nscheme = 'sepia'\nforeground = 'blue'\n[colors.tab_bar]\nbar = 'red'\n[background]\nimages = ''\nopacity = 2\nfit = 0\n",
+            "shell = ' '\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[scroll_bar]\nwidth = 2\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors]\nscheme = 'sepia'\nforeground = 'blue'\n[colors.tab_bar]\nbar = 'red'\n[background]\nimages = ''\nimage_opacity = 2\nfit = 0\n",
             &previous,
         );
         assert!(!parsed.syntax_error);
@@ -1813,11 +1822,11 @@ mod tests {
         for text in ["", "0", "0.5", "129", "nan", "inf", "12pt", "-3"] {
             assert_eq!(parse_font_size(text), None, "{text:?}");
         }
-        assert_eq!(parse_background_opacity(" 0.75 "), Some(0.75));
-        assert_eq!(parse_background_opacity("0"), Some(0.0));
-        assert_eq!(parse_background_opacity("1"), Some(1.0));
+        assert_eq!(parse_image_opacity(" 0.75 "), Some(0.75));
+        assert_eq!(parse_image_opacity("0"), Some(0.0));
+        assert_eq!(parse_image_opacity("1"), Some(1.0));
         for text in ["", "-0.01", "1.01", "nan", "80%"] {
-            assert_eq!(parse_background_opacity(text), None, "{text:?}");
+            assert_eq!(parse_image_opacity(text), None, "{text:?}");
         }
         assert_eq!(parse_scroll_bar_width(" 16 "), Some(16));
         assert_eq!(parse_scroll_bar_width("4"), Some(4));

@@ -129,7 +129,7 @@ const PAGES: [&str; 6] = ["外観", "背景", "動作", "シェル", "キー", "
 
 /// 背景画像の一覧の高さ。
 const BACKGROUND_LIST_HEIGHT: i32 = 150;
-/// 背景画像の上に重ねる背景色の濃さを、上下の矢印で動かす幅。
+/// 背景画像の濃さを、上下の矢印で動かす幅。
 const OPACITY_STEP: f32 = 0.05;
 
 /// `background.fit` の選択肢の表示。[`BackgroundFit::ALL`] の順。
@@ -816,7 +816,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         Some(rect),
     )?);
     let opacity_row = images_note_top + 2 * ROW_HEIGHT + MARGIN;
-    let (class, text, rect) = label("背景色の濃さ(&Y):", label_rect(opacity_row));
+    let (class, text, rect) = label("画像の濃さ(&Y):", label_rect(opacity_row));
     background_page.push(child(
         class,
         &text,
@@ -844,7 +844,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     )?;
     background_page.push(background_opacity_spin);
     let (class, text, rect) = label(
-        "0〜1。0 は画像をそのまま見せ、1 は背景色で隠す",
+        "0〜1。1 は画像をそのまま見せ、0 は消す",
         [
             control_left + NUMBER_WIDTH + BUTTON_GAP,
             opacity_row + LABEL_OFFSET,
@@ -891,7 +891,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         };
     }
     let (class, text, rect) = label(
-        "画像は端末の画面と余白に敷き、その上に端末の背景色をこの濃さで重ねる。アプリが背景色を付けた文字、反転した文字、選んだ範囲は、その色で塗りつぶす。",
+        "画像は端末の画面と余白に敷き、その上に端末の背景色を重ねて濃さのとおりに薄める。アプリが背景色を付けた文字、反転した文字、選んだ範囲は、その色で塗りつぶす。",
         [
             page_left,
             fit_row + ROW_HEIGHT + MARGIN,
@@ -1316,7 +1316,7 @@ impl State<'_> {
         self.refresh_background_images(None);
         set_text(
             c.background_opacity,
-            &format_opacity(config.background.opacity),
+            &format_opacity(config.background.image_opacity),
         );
         let fit = BackgroundFit::ALL
             .iter()
@@ -1814,9 +1814,9 @@ impl State<'_> {
         }
         config.shell = config::shell_from_input(&get_text(c.shell));
         config.background.images = self.background_images.borrow().clone();
-        config.background.opacity =
-            config::parse_background_opacity(&get_text(c.background_opacity)).ok_or((
-                "背景色の濃さは、0 から 1 までの数で書いてください。",
+        config.background.image_opacity =
+            config::parse_image_opacity(&get_text(c.background_opacity)).ok_or((
+                "画像の濃さは、0 から 1 までの数で書いてください。",
                 c.background_opacity,
             ))?;
         // SAFETY: コンボボックスは有効な窓。
@@ -1954,8 +1954,8 @@ impl State<'_> {
             set_text(c.scroll_bar_width, &step_width(current, delta).to_string());
         } else if spin == c.background_opacity_spin {
             let text = get_text(c.background_opacity);
-            let current = config::parse_background_opacity(&text)
-                .unwrap_or(self.base.borrow().background.opacity);
+            let current = config::parse_image_opacity(&text)
+                .unwrap_or(self.base.borrow().background.image_opacity);
             set_text(
                 c.background_opacity,
                 &format_opacity(step_opacity(current, delta)),
@@ -2018,7 +2018,7 @@ fn format_size(size_pt: f32) -> String {
     size_pt.to_string()
 }
 
-/// 背景色の濃さを、矢印で一つ動かした値。[`OPACITY_STEP`] の倍数へ動かし、範囲の端で止める。
+/// 画像の濃さを、矢印で一つ動かした値。[`OPACITY_STEP`] の倍数へ動かし、範囲の端で止める。
 fn step_opacity(current: f32, delta: i32) -> f32 {
     // 0.35 のように刻みの倍数を書いた値が、f32 の誤差で倍数の手前に見えないようにする。
     const TOLERANCE: f32 = 1e-3;
@@ -2031,12 +2031,12 @@ fn step_opacity(current: f32, delta: i32) -> f32 {
     // 刻みの倍数を f32 で掛けた端数（0.35000002 など）を出さないように、百分の一に丸める。
     let next = (next * OPACITY_STEP * 100.0).round() / 100.0;
     next.clamp(
-        *config::BACKGROUND_OPACITY_RANGE.start(),
-        *config::BACKGROUND_OPACITY_RANGE.end(),
+        *config::IMAGE_OPACITY_RANGE.start(),
+        *config::IMAGE_OPACITY_RANGE.end(),
     )
 }
 
-/// 入力欄に見せる、背景色の濃さ。
+/// 入力欄に見せる、画像の濃さ。
 fn format_opacity(opacity: f32) -> String {
     opacity.to_string()
 }
@@ -2329,6 +2329,8 @@ mod tests {
 
     #[test]
     fn arrows_step_the_opacity_by_twentieths_within_the_range() {
+        assert_eq!(step_opacity(0.2, 1), 0.25);
+        assert_eq!(step_opacity(0.2, -1), 0.15);
         assert_eq!(step_opacity(0.8, 1), 0.85);
         assert_eq!(step_opacity(0.8, -1), 0.75);
         assert_eq!(step_opacity(0.35, 1), 0.4);

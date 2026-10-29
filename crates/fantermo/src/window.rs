@@ -2140,7 +2140,7 @@ impl App {
                 image,
                 region: self.backdrop_area,
                 fit: self.background.fit,
-                opacity: self.background.opacity,
+                image_opacity: self.background.image_opacity,
             });
         if let Err(e) = self.renderer.render(
             &[(&frame, self.terminal_area)],

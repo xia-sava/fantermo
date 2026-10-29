@@ -82,8 +82,8 @@ pub struct Backdrop<'a> {
     /// 画像を敷く範囲（端末の画面と余白）。
     pub region: Area,
     pub fit: BackgroundFit,
-    /// 画像の上に重ねる端末の背景色の濃さ（0〜1）。
-    pub opacity: f32,
+    /// 画像の濃さ（0〜1。1 で画像をそのまま見せる）。
+    pub image_opacity: f32,
 }
 
 impl Renderer {
@@ -257,7 +257,8 @@ impl Renderer {
     /// 順に描いて表示する。それぞれの領域はその画面の背景色で塗ってから描き、どの領域にも入らない
     /// ところは最初の画面の背景色で塗る。
     ///
-    /// `backdrop` があれば、最初に画像を描き、その範囲に最初の画面の背景色を `opacity` の濃さで重ねる。
+    /// `backdrop` があれば、最初に画像を描き、その範囲に最初の画面の背景色を、画像が `image_opacity` の
+    /// 濃さに見える濃さ（[`background::overlay_opacity`]）で重ねる。
     /// 画面の領域は塗らず、背景色を持つセルだけを塗る。
     ///
     /// `capture` を渡すと、表示する前のバックバッファを PNG で書き出す。
@@ -291,7 +292,7 @@ impl Renderer {
             instances.push(translucent(
                 area_rect(backdrop.region),
                 first.background,
-                backdrop.opacity,
+                background::overlay_opacity(backdrop.image_opacity),
             ));
         }
         let fill_areas = placed.is_none();
