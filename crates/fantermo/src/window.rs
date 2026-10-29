@@ -61,7 +61,7 @@ use windows::{
 use crate::{
     clipboard,
     config_file::{self, Loaded},
-    context_menu::{self, MenuCommand},
+    context_menu::{self, Menu, MenuCommand, MenuRequest},
     dump::{DUMP_INTERVAL, ScreenDump},
     font::{self, Font},
     ime::{self, CursorRect},
@@ -363,9 +363,9 @@ fn message_loop() -> u32 {
 enum Deferred {
     /// 改行を含む貼り付けの内容を、編集のダイアログで確かめる。
     EditPaste { text: String, font: Font },
-    /// 画面の (`x`, `y`) にコンテキストメニューを出す。
-    ContextMenu { x: i32, y: i32, can_copy: bool },
-    /// 窓を閉じる。最後の端末を閉じたときに使う。
+    /// コンテキストメニューか、タブバーのメニューのボタンのメニューを出す。
+    Menu(MenuRequest),
+    /// 窓を閉じる。最後の端末を閉じたときと、メニューで終了を選んだときに使う。
     CloseWindow,
     /// `topic` についての警告 `text` を見せる。
     Warn { topic: Topic, text: String },
@@ -1055,6 +1055,7 @@ impl App {
                         self.open_session();
                         None
                     }
+                    Hit::Menu => Some(self.main_menu()),
                     Hit::Tab(_) => None,
                 }
             }
@@ -1073,10 +1074,41 @@ impl App {
     /// 窓のクライアント領域の中の (`x`, `y`) にコンテキストメニューを出すよう返す。
     fn context_menu(&self, x: i32, y: i32) -> Deferred {
         let (screen_x, screen_y) = self.client_to_screen(x, y);
-        Deferred::ContextMenu {
+        Deferred::Menu(MenuRequest {
+            menu: Menu::Context,
             x: screen_x,
             y: screen_y,
+            exclude: None,
             can_copy: self.has_selection(),
+            can_open_settings: self.config_path.is_some(),
+        })
+    }
+
+    /// タブバーのメニューのボタンの下に、ボタンを隠さずにメニューを出すよう返す。
+    fn main_menu(&self) -> Deferred {
+        let button = self.tab_bar_layout().menu();
+        let (left, top) = self.client_to_screen(button.x as i32, button.y as i32);
+        let (right, bottom) = self.client_to_screen(button.right() as i32, button.bottom() as i32);
+        Deferred::Menu(MenuRequest {
+            menu: Menu::Main,
+            x: left,
+            y: bottom,
+            exclude: Some(RECT {
+                left,
+                top,
+                right,
+                bottom,
+            }),
+            can_copy: self.has_selection(),
+            can_open_settings: self.config_path.is_some(),
+        })
+    }
+
+    /// 設定ファイルを既定のアプリで開く。
+    fn open_settings(&self) {
+        match &self.config_path {
+            Some(path) => link_opener::open_settings(path.clone()),
+            None => tracing::warn!("the settings file location is unknown"),
         }
     }
 
@@ -1661,22 +1693,22 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
                     });
                 }
             }
-            Deferred::ContextMenu { x, y, can_copy } => {
-                match context_menu::show(hwnd, x, y, can_copy) {
-                    Some(MenuCommand::Copy) => with_app(&mut |app| {
-                        app.copy_selection();
-                    }),
-                    Some(MenuCommand::Paste) => with_app(&mut |app| next = app.paste_clipboard()),
-                    Some(MenuCommand::SelectAll) => with_app(&mut |app| app.select_all()),
-                    Some(MenuCommand::NewTab) => {
-                        with_app(&mut |app| next = app.run_tab_command(TabCommand::New))
-                    }
-                    Some(MenuCommand::CloseTab) => {
-                        with_app(&mut |app| next = app.run_tab_command(TabCommand::Close))
-                    }
-                    None => {}
+            Deferred::Menu(request) => match context_menu::show(hwnd, &request) {
+                Some(MenuCommand::Copy) => with_app(&mut |app| {
+                    app.copy_selection();
+                }),
+                Some(MenuCommand::Paste) => with_app(&mut |app| next = app.paste_clipboard()),
+                Some(MenuCommand::SelectAll) => with_app(&mut |app| app.select_all()),
+                Some(MenuCommand::NewTab) => {
+                    with_app(&mut |app| next = app.run_tab_command(TabCommand::New))
                 }
-            }
+                Some(MenuCommand::CloseTab) => {
+                    with_app(&mut |app| next = app.run_tab_command(TabCommand::Close))
+                }
+                Some(MenuCommand::OpenSettings) => with_app(&mut |app| app.open_settings()),
+                Some(MenuCommand::Exit) => next = Some(Deferred::CloseWindow),
+                None => {}
+            },
             // DestroyWindow はこの場で WM_DESTROY を送るので、借用を手放してから呼ぶ。
             Deferred::CloseWindow => destroy_window(hwnd),
             Deferred::Warn { topic, text } => notice::warn(hwnd, topic, text),

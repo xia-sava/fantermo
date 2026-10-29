@@ -100,12 +100,12 @@ impl Metrics {
         (self.cell_height / 3).max(1)
     }
 
-    /// 新しいタブのボタン（丸い地）の直径。
-    fn new_tab_button(self) -> u32 {
+    /// 新しいタブのボタンとメニューのボタン（丸い地）の直径。
+    fn button(self) -> u32 {
         self.cell_height.max(1)
     }
 
-    /// 新しいタブのボタンの「+」の一辺。
+    /// 新しいタブのボタンの「+」と、メニューのボタンの「≡」の一辺。
     fn plus_mark(self) -> u32 {
         (self.cell_height * 2 / 5).max(1)
     }
@@ -132,6 +132,8 @@ pub struct Layout {
     tabs: Vec<TabSlot>,
     /// 新しいタブのボタン。タブの並びの右に置く。
     new_tab: Area,
+    /// メニューのボタン。左端に置く。
+    menu: Area,
 }
 
 /// タブバーの上の、押して働くもの。
@@ -143,6 +145,8 @@ pub enum Hit {
     Close(usize),
     /// 新しいタブのボタン。
     NewTab,
+    /// メニューのボタン。
+    Menu,
 }
 
 impl Hit {
@@ -150,36 +154,41 @@ impl Hit {
     pub fn tab(self) -> Option<usize> {
         match self {
             Hit::Tab(index) | Hit::Close(index) => Some(index),
-            Hit::NewTab => None,
+            Hit::NewTab | Hit::Menu => None,
         }
     }
 }
 
-/// 幅 `width` のタブバーに、`tabs` 個のタブを左から並べ、その右に新しいタブのボタンを置く。タブは
-/// 同じ幅で、上限はセル [`MAX_TAB_CELLS`] 個分。多ければ [`MIN_TAB_CELLS`] 個分まで縮め、それでも
-/// 入りきらなければ、表示しているタブ `active` を含む続きのタブだけを並べる。
+/// 幅 `width` のタブバーの左端にメニューのボタンを置き、その右に `tabs` 個のタブを並べ、さらに右に
+/// 新しいタブのボタンを置く。タブは同じ幅で、上限はセル [`MAX_TAB_CELLS`] 個分。多ければ
+/// [`MIN_TAB_CELLS`] 個分まで縮め、それでも入りきらなければ、表示しているタブ `active` を含む続きの
+/// タブだけを並べる。
 pub fn layout(metrics: Metrics, width: u32, tabs: usize, active: usize) -> Layout {
     let top = metrics.margin();
     let tab_height = metrics.bar_height() - top;
-    let start = metrics.padding();
-    let new_tab_size = metrics.new_tab_button();
-    let new_tab_at = |x: u32| Area {
+    // ボタンは、タブの高さの真ん中に置く。
+    let button_size = metrics.button();
+    let button_at = |x: u32| Area {
         x,
-        y: top + tab_height.saturating_sub(new_tab_size) / 2,
-        width: new_tab_size,
-        height: new_tab_size,
+        y: top + tab_height.saturating_sub(button_size) / 2,
+        width: button_size,
+        height: button_size,
     };
+    // ボタンの左右とタブとの間には、上の余白と同じすき間を空ける。
+    let menu = button_at(top);
+    let start = menu.right() + top;
     let mut layout = Layout {
         metrics,
         width,
         tabs: Vec::new(),
-        new_tab: new_tab_at(start),
+        new_tab: button_at(start),
+        menu,
     };
     if tabs == 0 {
         return layout;
     }
     // 新しいタブのボタンと、タブとの間のすき間の分を右に残す。
-    let end = width.saturating_sub(metrics.padding() + top + new_tab_size);
+    let end = width.saturating_sub(metrics.padding() + top + button_size);
     let room = end.saturating_sub(start);
     let min_width = MIN_TAB_CELLS * metrics.cell_width.max(1);
     let max_width = MAX_TAB_CELLS * metrics.cell_width.max(1);
@@ -221,12 +230,17 @@ pub fn layout(metrics: Metrics, width: u32, tabs: usize, active: usize) -> Layou
         })
         .collect();
     if let Some(last) = layout.tabs.last() {
-        layout.new_tab = new_tab_at(last.area.right() + top);
+        layout.new_tab = button_at(last.area.right() + top);
     }
     layout
 }
 
 impl Layout {
+    /// メニューのボタン。
+    pub fn menu(&self) -> Area {
+        self.menu
+    }
+
     /// 描くタブ。
     #[cfg(test)]
     fn tabs(&self) -> &[TabSlot] {
@@ -246,9 +260,18 @@ impl Layout {
         {
             return Some(Hit::Tab(tab.index));
         }
-        column(self.new_tab, self.metrics)
+        if column(self.new_tab, self.metrics).contains(x, y) {
+            return Some(Hit::NewTab);
+        }
+        // メニューのボタンは、窓の左端からとみなす。
+        let menu = Area {
+            x: 0,
+            width: self.menu.right(),
+            ..self.menu
+        };
+        column(menu, self.metrics)
             .contains(x, y)
-            .then_some(Hit::NewTab)
+            .then_some(Hit::Menu)
     }
 }
 
@@ -514,21 +537,26 @@ pub fn paints(
             );
         }
     }
-    let plus_color = if highlight.hovered == Some(Hit::NewTab) {
-        colors.active_title
-    } else {
-        colors.inactive_title
-    };
-    push_button(
-        &mut paints,
-        &colors,
-        Button {
-            area: layout.new_tab,
-            mark: (Icon::Plus, metrics.plus_mark(), plus_color),
-            state: highlight.state(Hit::NewTab),
-            base: colors.bar,
-        },
-    );
+    for (hit, area, icon) in [
+        (Hit::NewTab, layout.new_tab, Icon::Plus),
+        (Hit::Menu, layout.menu, Icon::Menu),
+    ] {
+        let mark_color = if highlight.hovered == Some(hit) {
+            colors.active_title
+        } else {
+            colors.inactive_title
+        };
+        push_button(
+            &mut paints,
+            &colors,
+            Button {
+                area,
+                mark: (icon, metrics.plus_mark(), mark_color),
+                state: highlight.state(hit),
+                base: colors.bar,
+            },
+        );
+    }
     paints
 }
 
@@ -684,39 +712,43 @@ mod tests {
     #[test]
     fn a_single_tab_is_laid_out() {
         let layout = layout(METRICS, WIDTH, 1, 0);
-        assert_eq!(xs(&layout), vec![(0, 16, 24 * 16)]);
+        // メニューのボタンは、左端に上の余白と同じすき間を空けて、タブの高さの真ん中に置く。
+        assert_eq!(layout.menu(), square(8, 12, 32));
+        // タブは、メニューのボタンの右に同じすき間を空けて置く。
+        assert_eq!(xs(&layout), vec![(0, 48, 24 * 16)]);
         let tab = layout.tabs()[0];
         // 上の余白の下から、タブバーの下の辺まで。
         assert_eq!((tab.area.y, tab.area.bottom()), (8, 48));
         // 閉じるボタンは右の余白の半分を残してタブの右端に、高さの真ん中に置く。
-        assert_eq!(tab.close, square(368, 16, 24));
-        // 新しいタブのボタンは、タブの右に上の余白と同じすき間を空けて置く。
-        assert_eq!(layout.new_tab, square(408, 12, 32));
+        assert_eq!(tab.close, square(400, 16, 24));
+        // 新しいタブのボタンは、タブの右に同じすき間を空けて置く。
+        assert_eq!(layout.new_tab, square(440, 12, 32));
     }
 
     #[test]
     fn few_tabs_have_the_widest_width() {
         let layout = layout(METRICS, WIDTH, 2, 1);
-        assert_eq!(xs(&layout), vec![(0, 16, 384), (1, 400, 384)]);
-        assert_eq!(layout.new_tab.x, 792);
+        assert_eq!(xs(&layout), vec![(0, 48, 384), (1, 432, 384)]);
+        assert_eq!(layout.new_tab.x, 824);
     }
 
     #[test]
     fn many_tabs_share_the_bar_equally() {
-        // 左の余白と、右の余白・すき間・新しいタブのボタンを除いた 1528 ピクセルを 5 等分する。
+        // メニューのボタンまでと、右の余白・すき間・新しいタブのボタンを除いた 1496 ピクセルを
+        // 5 等分する。
         let layout = layout(METRICS, WIDTH, 5, 0);
         assert_eq!(layout.tabs().len(), 5);
-        assert!(layout.tabs().iter().all(|tab| tab.area.width == 305));
+        assert!(layout.tabs().iter().all(|tab| tab.area.width == 299));
         assert!(layout.new_tab.right() <= WIDTH - 16);
     }
 
     #[test]
     fn tabs_that_do_not_fit_leave_the_active_one_shown() {
-        // 1528 ピクセルにはセル 6 個分（96）のタブが 15 個まで入る。
+        // 1496 ピクセルにはセル 6 個分（96）のタブが 15 個まで入る。
         let first = layout(METRICS, WIDTH, 40, 0);
         assert_eq!(first.tabs().len(), 15);
         assert_eq!(first.tabs()[0].index, 0);
-        assert!(first.tabs().iter().all(|tab| tab.area.width == 101));
+        assert!(first.tabs().iter().all(|tab| tab.area.width == 99));
         assert!(first.new_tab.right() <= WIDTH - 16);
         // 入りきらない位置のタブを表示していれば、それが右端に来るまで並びをずらす。
         let middle = layout(METRICS, WIDTH, 40, 20);
@@ -730,36 +762,40 @@ mod tests {
 
     #[test]
     fn a_narrow_bar_still_shows_one_tab() {
-        let layout = layout(METRICS, 112, 3, 2);
-        assert_eq!(xs(&layout), vec![(2, 16, 40)]);
+        let layout = layout(METRICS, 144, 3, 2);
+        assert_eq!(xs(&layout), vec![(2, 48, 40)]);
         // 閉じるボタンはタブからはみ出さない。
-        assert_eq!(layout.tabs()[0].close, square(24, 16, 24));
-        assert_eq!(super::layout(METRICS, 72, 3, 0).tabs(), &[]);
+        assert_eq!(layout.tabs()[0].close, square(56, 16, 24));
+        assert_eq!(super::layout(METRICS, 104, 3, 0).tabs(), &[]);
         assert_eq!(super::layout(METRICS, WIDTH, 0, 0).tabs(), &[]);
     }
 
     #[test]
     fn positions_map_to_tabs_and_buttons() {
         let layout = layout(METRICS, WIDTH, 2, 0);
-        assert_eq!(layout.hit(16, 20), Some(Hit::Tab(0)));
+        assert_eq!(layout.hit(48, 20), Some(Hit::Tab(0)));
         // タブの上の余白もそのタブ。
-        assert_eq!(layout.hit(399, 0), Some(Hit::Tab(0)));
-        assert_eq!(layout.hit(400, 47), Some(Hit::Tab(1)));
+        assert_eq!(layout.hit(431, 0), Some(Hit::Tab(0)));
+        assert_eq!(layout.hit(432, 47), Some(Hit::Tab(1)));
         // 閉じるボタンと、その上下はタブ。
-        assert_eq!(layout.hit(368, 16), Some(Hit::Close(0)));
-        assert_eq!(layout.hit(391, 39), Some(Hit::Close(0)));
-        assert_eq!(layout.hit(380, 15), Some(Hit::Tab(0)));
-        assert_eq!(layout.hit(760, 30), Some(Hit::Close(1)));
+        assert_eq!(layout.hit(400, 16), Some(Hit::Close(0)));
+        assert_eq!(layout.hit(423, 39), Some(Hit::Close(0)));
+        assert_eq!(layout.hit(410, 15), Some(Hit::Tab(0)));
+        assert_eq!(layout.hit(790, 30), Some(Hit::Close(1)));
         // 新しいタブのボタンは、上から下まで。
-        assert_eq!(layout.hit(792, 0), Some(Hit::NewTab));
-        assert_eq!(layout.hit(823, 47), Some(Hit::NewTab));
-        // 左の余白、タブとボタンの間、右の空き、タブバーの下。
-        assert_eq!(layout.hit(15, 20), None);
-        assert_eq!(layout.hit(784, 20), None);
-        assert_eq!(layout.hit(824, 20), None);
-        assert_eq!(layout.hit(400, 48), None);
+        assert_eq!(layout.hit(824, 0), Some(Hit::NewTab));
+        assert_eq!(layout.hit(855, 47), Some(Hit::NewTab));
+        // メニューのボタンは、窓の左端から、上から下まで。
+        assert_eq!(layout.hit(0, 0), Some(Hit::Menu));
+        assert_eq!(layout.hit(39, 47), Some(Hit::Menu));
+        // メニューのボタンとタブの間、タブとボタンの間、右の空き、タブバーの下。
+        assert_eq!(layout.hit(44, 20), None);
+        assert_eq!(layout.hit(816, 20), None);
+        assert_eq!(layout.hit(856, 20), None);
+        assert_eq!(layout.hit(432, 48), None);
         assert_eq!(Hit::Close(1).tab(), Some(1));
         assert_eq!(Hit::NewTab.tab(), None);
+        assert_eq!(Hit::Menu.tab(), None);
     }
 
     #[test]
@@ -891,17 +927,17 @@ mod tests {
         let layout = layout(METRICS, WIDTH, 2, 1);
         let paints = paints(&layout, &tabs, 1, Highlight::default(), BLACK, WHITE);
         assert_eq!(dots(&paints).len(), 1);
-        assert!(dots(&paints)[0].right() <= 400);
+        assert!(dots(&paints)[0].right() <= 432);
         let first: String = titles(&paints)
             .iter()
-            .filter(|(x, ..)| *x < 400)
+            .filter(|(x, ..)| *x < 432)
             .map(|(_, text, ..)| text.as_str())
             .collect();
         assert_eq!(first, r"C:\WINDOWS\System3…");
         // 印のないタブのタイトルは、印の分だけ長い。
         let second: String = titles(&paints)
             .iter()
-            .filter(|(x, ..)| *x >= 400)
+            .filter(|(x, ..)| *x >= 432)
             .map(|(_, text, ..)| text.as_str())
             .collect();
         assert_eq!(second, r"C:\WINDOWS\System32\…");
@@ -963,22 +999,27 @@ mod tests {
         assert_eq!(
             icons,
             vec![
-                (Icon::Corner(Corner::TopLeft), square(400, 8, 8)),
-                (Icon::Corner(Corner::TopRight), square(776, 8, 8)),
-                (Icon::Flare(Side::Left), square(392, 40, 8)),
-                (Icon::Flare(Side::Right), square(784, 40, 8)),
+                (Icon::Corner(Corner::TopLeft), square(432, 8, 8)),
+                (Icon::Corner(Corner::TopRight), square(808, 8, 8)),
+                (Icon::Flare(Side::Left), square(424, 40, 8)),
+                (Icon::Flare(Side::Right), square(816, 40, 8)),
             ]
         );
         // 表示しているタブのタイトルは太字で端末の文字の色、ほかは薄い色。
         assert_eq!(
             titles(&paints),
             vec![
-                (32, "o".to_owned(), false, colors.inactive_title),
-                (48, "n".to_owned(), false, colors.inactive_title),
-                (64, "e".to_owned(), false, colors.inactive_title),
-                (416, "端".to_owned(), true, WHITE),
-                (448, "末".to_owned(), true, WHITE),
+                (64, "o".to_owned(), false, colors.inactive_title),
+                (80, "n".to_owned(), false, colors.inactive_title),
+                (96, "e".to_owned(), false, colors.inactive_title),
+                (448, "端".to_owned(), true, WHITE),
+                (480, "末".to_owned(), true, WHITE),
             ]
+        );
+        // メニューのボタンの「≡」は、一辺 12 でボタンの真ん中に。
+        assert_eq!(
+            icons_of(&paints, Icon::Menu),
+            vec![(square(18, 22, 12), colors.inactive_title)]
         );
     }
 
@@ -1058,7 +1099,7 @@ mod tests {
             corners,
             vec![
                 (square(layout.tabs()[2].area.x, 8, 8), colors.hovered_tab),
-                (square(16, 8, 8), BLACK),
+                (square(48, 8, 8), BLACK),
             ]
         );
         let flares: Vec<(Area, Rgb)> = [Side::Left, Side::Right]

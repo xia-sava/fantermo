@@ -83,6 +83,8 @@ pub enum Icon {
     Close,
     /// 新しいタブのボタンの「+」。
     Plus,
+    /// メニューのボタンの「≡」（横線 3 本）。
+    Menu,
 }
 
 impl Icon {
@@ -117,6 +119,15 @@ impl Icon {
                     rect(0.0, y, width, y + thickness),
                     rect(x, 0.0, x + thickness, height),
                 ]
+            }
+            Icon::Menu => {
+                let thickness = stroke(width.min(height)).round();
+                let middle = ((height - thickness) / 2.0).round();
+                let bottom = height - thickness;
+                [0.0, middle, bottom]
+                    .into_iter()
+                    .map(|top| rect(0.0, top, width, top + thickness))
+                    .collect()
             }
             Icon::Dot => {
                 let radius = width.min(height) / 2.0;
@@ -293,6 +304,18 @@ mod tests {
         assert_eq!(
             Icon::Plus.shapes(13.0, 13.0),
             vec![rect(0.0, 6.0, 13.0, 8.0), rect(6.0, 0.0, 8.0, 13.0)]
+        );
+    }
+
+    #[test]
+    fn the_menu_mark_has_three_bars() {
+        assert_eq!(
+            Icon::Menu.shapes(12.0, 12.0),
+            vec![
+                rect(0.0, 0.0, 12.0, 2.0),
+                rect(0.0, 5.0, 12.0, 7.0),
+                rect(0.0, 10.0, 12.0, 12.0),
+            ]
         );
     }
 
