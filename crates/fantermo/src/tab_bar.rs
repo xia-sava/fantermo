@@ -6,7 +6,7 @@
 //! 並べ方（どこがどのタブか、タイトルの省略、ベルの印の位置）と、描くもの（[`Paint`]）の組み立ては、
 //! 窓や描画に依存しない関数にしてある。
 
-use fantermo_core::{frame::Rgb, vt};
+use fantermo_core::{config::TAB_BAR_COLOR_KEYS, frame::Rgb, vt};
 
 use crate::paint::{Area, Corner, Icon, Paint, mix, scale};
 
@@ -496,6 +496,31 @@ impl Palette {
             idle_mark: system.gray_text,
             bell: BELL_COLOR,
         }
+    }
+
+    /// 設定の色 `colors`（[`TAB_BAR_COLOR_KEYS`] の順）のうち、書いた色だけで上書きした色。
+    pub fn with_colors(mut self, colors: &[Option<Rgb>]) -> Self {
+        for (field, color) in self.fields_mut().into_iter().zip(colors) {
+            if let Some(color) = color {
+                *field = *color;
+            }
+        }
+        self
+    }
+
+    /// 色の欄。[`TAB_BAR_COLOR_KEYS`] の順。
+    fn fields_mut(&mut self) -> [&mut Rgb; TAB_BAR_COLOR_KEYS.len()] {
+        [
+            &mut self.bar,
+            &mut self.active_tab,
+            &mut self.active_border,
+            &mut self.active_title,
+            &mut self.inactive_title,
+            &mut self.separator,
+            &mut self.hovered_tab,
+            &mut self.idle_mark,
+            &mut self.bell,
+        ]
     }
 
     /// 色 `base` の上に、色 `ink` の印で描くボタンの丸い地の色。`pressed` なら押しているとき、
@@ -1136,6 +1161,63 @@ mod tests {
         for (slot, dot) in layout.tabs().iter().step_by(2).zip(dots(&paints)) {
             assert!(dot.x >= slot.area.x && dot.right() <= slot.area.right());
         }
+    }
+
+    /// 設定のキーと、その色の欄。
+    type ColorField = (&'static str, fn(&Palette) -> Rgb);
+
+    const COLOR_FIELDS: [ColorField; 9] = [
+        ("bar", |p| p.bar),
+        ("active_tab", |p| p.active_tab),
+        ("active_border", |p| p.active_border),
+        ("active_title", |p| p.active_title),
+        ("inactive_title", |p| p.inactive_title),
+        ("separator", |p| p.separator),
+        ("hovered_tab", |p| p.hovered_tab),
+        ("idle_mark", |p| p.idle_mark),
+        ("bell", |p| p.bell),
+    ];
+
+    #[test]
+    fn colors_from_the_settings_replace_only_the_written_ones() {
+        let fields = COLOR_FIELDS;
+        let written = Rgb { r: 1, g: 2, b: 3 };
+        for (index, (name, field)) in fields.iter().enumerate() {
+            assert_eq!(TAB_BAR_COLOR_KEYS[index], *name);
+            let mut colors = [None; TAB_BAR_COLOR_KEYS.len()];
+            colors[index] = Some(written);
+            let palette = palette().with_colors(&colors);
+            assert_eq!(field(&palette), written, "{name}");
+            for (other, (_, other_field)) in fields.iter().enumerate() {
+                if other != index {
+                    assert_eq!(other_field(&palette), other_field(&super::tests::palette()));
+                }
+            }
+        }
+        assert_eq!(palette().with_colors(&[None; 9]), palette());
+    }
+
+    #[test]
+    fn template_examples_are_the_windows_11_defaults() {
+        let windows_11 = Palette::from_system(SystemColors {
+            face: gray(0xf0),
+            text: gray(0),
+            gray_text: gray(0x6d),
+            shadow: gray(0xa0),
+            window: gray(0xff),
+            window_text: gray(0),
+        });
+        let examples: Vec<String> = COLOR_FIELDS
+            .iter()
+            .map(|(_, field)| fantermo_core::config::format_color(field(&windows_11)))
+            .collect();
+        assert_eq!(
+            examples,
+            [
+                "#cccccc", "#ffffff", "#a0a0a0", "#000000", "#000000", "#a0a0a0", "#e6e6e6",
+                "#6d6d6d", "#f0b030"
+            ]
+        );
     }
 
     #[test]

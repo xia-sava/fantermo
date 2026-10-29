@@ -6,7 +6,7 @@
 //! ない（代替画面も）ときはつまみを描かない。寸法は DPI に比例させ、色は [`Palette`] にまとめる。
 //! つまみの位置と長さの計算と、描くもの（[`Paint`]）の組み立ては、窓や描画に依存しない関数にしてある。
 
-use fantermo_core::{frame::Rgb, vt::ScrollPosition};
+use fantermo_core::{config::SCROLL_BAR_COLOR_KEYS, frame::Rgb, vt::ScrollPosition};
 
 use crate::paint::{Area, Icon, Paint, mix, scale};
 
@@ -200,6 +200,26 @@ impl Palette {
             hovered_thumb: toward_text(HOVERED_THUMB_TINT),
             dragged_thumb: toward_text(DRAGGED_THUMB_TINT),
         }
+    }
+
+    /// 設定の色 `colors`（[`SCROLL_BAR_COLOR_KEYS`] の順）のうち、書いた色だけで上書きした色。
+    pub fn with_colors(mut self, colors: &[Option<Rgb>]) -> Self {
+        for (field, color) in self.fields_mut().into_iter().zip(colors) {
+            if let Some(color) = color {
+                *field = *color;
+            }
+        }
+        self
+    }
+
+    /// 色の欄。[`SCROLL_BAR_COLOR_KEYS`] の順。
+    fn fields_mut(&mut self) -> [&mut Rgb; SCROLL_BAR_COLOR_KEYS.len()] {
+        [
+            &mut self.track,
+            &mut self.thumb,
+            &mut self.hovered_thumb,
+            &mut self.dragged_thumb,
+        ]
     }
 }
 
@@ -581,5 +601,44 @@ mod tests {
         assert!(gray(colors.thumb) < gray(colors.hovered_thumb));
         assert!(gray(colors.hovered_thumb) < gray(colors.dragged_thumb));
         assert!(gray(colors.dragged_thumb) < 255);
+    }
+
+    /// 設定のキーと、その色の欄。
+    type ColorField = (&'static str, fn(&Palette) -> Rgb);
+
+    #[test]
+    fn colors_from_the_settings_replace_only_the_written_ones() {
+        let fields: [ColorField; 4] = [
+            ("track", |p| p.track),
+            ("thumb", |p| p.thumb),
+            ("hovered_thumb", |p| p.hovered_thumb),
+            ("dragged_thumb", |p| p.dragged_thumb),
+        ];
+        let black = Rgb { r: 0, g: 0, b: 0 };
+        let white = Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let defaults = Palette::from_terminal(black, white);
+        let written = Rgb { r: 1, g: 2, b: 3 };
+        for (index, (name, field)) in fields.iter().enumerate() {
+            assert_eq!(SCROLL_BAR_COLOR_KEYS[index], *name);
+            let mut colors = [None; SCROLL_BAR_COLOR_KEYS.len()];
+            colors[index] = Some(written);
+            let palette = defaults.with_colors(&colors);
+            assert_eq!(field(&palette), written, "{name}");
+            for (other, (_, other_field)) in fields.iter().enumerate() {
+                if other != index {
+                    assert_eq!(other_field(&palette), other_field(&defaults));
+                }
+            }
+        }
+        // ひな形に例として書いた値は、黒の背景と白の文字のときの既定の色。
+        let examples: Vec<String> = fields
+            .iter()
+            .map(|(_, field)| fantermo_core::config::format_color(field(&defaults)))
+            .collect();
+        assert_eq!(examples, ["#0f0f0f", "#595959", "#808080", "#a6a6a6"]);
     }
 }

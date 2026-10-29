@@ -14,7 +14,10 @@ use toml::{
     de::{DeTable, DeValue},
 };
 
-use crate::keymap::{self, KeyCombo, Keymap};
+use crate::{
+    frame::Rgb,
+    keymap::{self, KeyCombo, Keymap},
+};
 
 /// 既定のフォント。先頭から探す。
 pub const DEFAULT_FONT_FAMILIES: [&str; 3] = ["Bizin Gothic", "BIZ UDGothic", "Consolas"];
@@ -33,7 +36,7 @@ pub const SCROLL_BAR_WIDTH_RANGE: RangeInclusive<u32> = 4..=64;
 
 /// 設定ファイルが無いときに作る中身。どの項目も既定値のままコメントにして並べ、利用者が `#` を消して
 /// 書き換えられるようにする。`shell` の値だけは既定値ではなく例（既定では書かない）。
-pub const TEMPLATE: &str = r#"# fantermo の設定ファイル。
+pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # 行頭の「#」を消して値を書き換え、保存すると読み直す。書いていない項目は既定値になる。
 
 # 起動するコマンドライン。fantermo を引数つきで起動したときは、引数のほうを使う。
@@ -63,6 +66,31 @@ pub const TEMPLATE: &str = r#"# fantermo の設定ファイル。
 # 書き換えたら、端末の桁数と行数を保ったまま窓の幅を変える。
 # width = 12
 
+[colors.tab_bar]
+# タブバーの色。"#rrggbb" の形で書く。書かない色は Windows のシステムの色から決める（下の値は Windows 11
+# の既定の色のときのもの）。bar は地、active_tab は表示しているタブ、active_border はその左・右・上の縁の
+# 線、active_title はその文字と閉じるボタンの「×」、inactive_title は表示していないタブの文字と「×」と
+# マウスの下の「+」「≡」、separator は表示していないタブの間の区切りの線、hovered_tab はマウスの下の
+# 表示していないタブ、idle_mark はマウスの下にない「+」「≡」、bell はベルが鳴ったタブの印。
+# bar = "#cccccc"
+# active_tab = "#ffffff"
+# active_border = "#a0a0a0"
+# active_title = "#000000"
+# inactive_title = "#000000"
+# separator = "#a0a0a0"
+# hovered_tab = "#e6e6e6"
+# idle_mark = "#6d6d6d"
+# bell = "#f0b030"
+
+[colors.scroll_bar]
+# スクロールバーの色。"#rrggbb" の形で書く。書かない色は端末の背景色と文字の色から決める（下の値は既定の
+# 黒の背景と白の文字のときのもの）。track はマウスを載せている間とドラッグしている間のトラック、thumb は
+# つまみ、hovered_thumb はマウスを載せているつまみ、dragged_thumb はドラッグしているつまみ。
+# track = "#0f0f0f"
+# thumb = "#595959"
+# hovered_thumb = "#808080"
+# dragged_thumb = "#a6a6a6"
+
 [keys]
 # キーの組み合わせと、押したときの動作。書いた組み合わせだけ、下に並べた既定の割り当てを変える。
 # 組み合わせは、修飾キー（ctrl、shift、alt、win）とキーを「+」でつなぐ。キーの名前はキーボードの上の
@@ -84,7 +112,7 @@ pub const TEMPLATE: &str = r#"# fantermo の設定ファイル。
 # "ctrl+shift+w" = "close_tab"
 # "ctrl+tab" = "next_tab"
 # "ctrl+shift+tab" = "prev_tab"
-"#;
+"##;
 
 /// 設定の全体。
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -94,8 +122,99 @@ pub struct Config {
     pub shell: Option<String>,
     pub paste: PasteConfig,
     pub scroll_bar: ScrollBarConfig,
+    pub colors: ColorsConfig,
     /// キーの割り当て。`[keys]` に書いた組み合わせを、既定の割り当てに重ねたもの。
     pub keys: Keymap,
+}
+
+/// 色を書く表（`[colors.<名前>]`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorTable {
+    /// タブバーの色。
+    TabBar,
+    /// スクロールバーの色。
+    ScrollBar,
+}
+
+impl ColorTable {
+    /// すべての表。設定ファイルの順。
+    pub const ALL: [ColorTable; 2] = [ColorTable::TabBar, ColorTable::ScrollBar];
+
+    /// `[colors]` の中の表の名前。
+    pub fn name(self) -> &'static str {
+        match self {
+            ColorTable::TabBar => "tab_bar",
+            ColorTable::ScrollBar => "scroll_bar",
+        }
+    }
+
+    /// 表に書ける色のキー。設定ファイルの順。
+    pub fn keys(self) -> &'static [&'static str] {
+        match self {
+            ColorTable::TabBar => &TAB_BAR_COLOR_KEYS,
+            ColorTable::ScrollBar => &SCROLL_BAR_COLOR_KEYS,
+        }
+    }
+}
+
+/// `[colors.tab_bar]` に書ける色のキー。
+pub const TAB_BAR_COLOR_KEYS: [&str; 9] = [
+    "bar",
+    "active_tab",
+    "active_border",
+    "active_title",
+    "inactive_title",
+    "separator",
+    "hovered_tab",
+    "idle_mark",
+    "bell",
+];
+
+/// `[colors.scroll_bar]` に書ける色のキー。
+pub const SCROLL_BAR_COLOR_KEYS: [&str; 4] = ["track", "thumb", "hovered_thumb", "dragged_thumb"];
+
+/// `[colors]` の設定。書いた色だけを持ち、書いていない色（`None`）は既定の色（システムの色や端末の
+/// 色から決めるもの）を使う。並びはそれぞれのキーの並び（[`ColorTable::keys`]）の順。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ColorsConfig {
+    pub tab_bar: [Option<Rgb>; TAB_BAR_COLOR_KEYS.len()],
+    pub scroll_bar: [Option<Rgb>; SCROLL_BAR_COLOR_KEYS.len()],
+}
+
+impl ColorsConfig {
+    /// 表 `table` の色。キーの並びの順。
+    pub fn table(&self, table: ColorTable) -> &[Option<Rgb>] {
+        match table {
+            ColorTable::TabBar => &self.tab_bar,
+            ColorTable::ScrollBar => &self.scroll_bar,
+        }
+    }
+
+    pub fn table_mut(&mut self, table: ColorTable) -> &mut [Option<Rgb>] {
+        match table {
+            ColorTable::TabBar => &mut self.tab_bar,
+            ColorTable::ScrollBar => &mut self.scroll_bar,
+        }
+    }
+}
+
+/// `"#rrggbb"` の形の色を読む。16 進の数字の大文字小文字は区別しない。ほかの形なら `None`。
+pub fn parse_color(text: &str) -> Option<Rgb> {
+    let hex = text.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let channel = |index: usize| u8::from_str_radix(&hex[index..index + 2], 16).ok();
+    Some(Rgb {
+        r: channel(0)?,
+        g: channel(2)?,
+        b: channel(4)?,
+    })
+}
+
+/// 色を `"#rrggbb"` の形（小文字）にする。
+pub fn format_color(color: Rgb) -> String {
+    format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b)
 }
 
 /// `[scroll_bar]` の設定。
@@ -266,6 +385,27 @@ impl<T> Item<T> {
         }
     }
 
+    /// 読めた値を `parse` で別の型にする。`parse` が警告の文を返したら、警告を残して読めなかったことに
+    /// する。
+    fn parse<U>(
+        self,
+        reader: &mut Reader,
+        path: &str,
+        parse: impl FnOnce(T) -> Result<U, String>,
+    ) -> Item<U> {
+        match self {
+            Item::Absent => Item::Absent,
+            Item::Invalid => Item::Invalid,
+            Item::Valid(value) => match parse(value) {
+                Ok(value) => Item::Valid(value),
+                Err(message) => {
+                    reader.warn(path, message);
+                    Item::Invalid
+                }
+            },
+        }
+    }
+
     /// 読めた値を `check` で確かめる。`check` が警告の文を返したら、警告を残して読めなかったことにする。
     fn check(
         self,
@@ -364,6 +504,14 @@ pub fn parse(text: &str, previous: &Config) -> Parsed {
             reader.warn_unknown(&scroll_bar, SECTION);
         }
     }
+    match reader.take::<Table>(&mut root, None, "colors") {
+        Item::Absent => config.colors = ColorsConfig::default(),
+        Item::Invalid => {}
+        Item::Valid(mut colors) => {
+            read_colors(&mut reader, &mut colors, &mut config.colors);
+            reader.warn_unknown(&colors, Some("colors"));
+        }
+    }
     match reader.take::<Table>(&mut root, None, "keys") {
         Item::Absent => config.keys = Keymap::default(),
         Item::Invalid => {}
@@ -410,6 +558,33 @@ fn read_font(reader: &mut Reader, table: &mut Table, font: &mut FontConfig) {
     reader
         .take::<WideGlyph>(table, SECTION, "wide_glyph")
         .apply(&mut font.wide_glyph, defaults.wide_glyph);
+}
+
+/// `[colors]` の中の色の表を読む。
+fn read_colors(reader: &mut Reader, colors: &mut Table, config: &mut ColorsConfig) {
+    for table in ColorTable::ALL {
+        let section = key_path(Some("colors"), table.name());
+        match reader.take::<Table>(colors, Some("colors"), table.name()) {
+            Item::Absent => config.table_mut(table).fill(None),
+            Item::Invalid => {}
+            Item::Valid(mut values) => {
+                let slots = config.table_mut(table);
+                for (slot, key) in slots.iter_mut().zip(table.keys()) {
+                    let path = key_path(Some(&section), key);
+                    reader
+                        .take::<String>(&mut values, Some(&section), key)
+                        .parse(reader, &path, |text| {
+                            parse_color(&text).ok_or_else(|| {
+                                format!("ignoring {path} = {text:?}: expected \"#rrggbb\"")
+                            })
+                        })
+                        .map(Some)
+                        .apply(slot, None);
+                }
+                reader.warn_unknown(&values, Some(&section));
+            }
+        }
+    }
 }
 
 /// `[keys]` の表を、既定の割り当てに上から順に重ねる。組み合わせを読めない行は飛ばす。動作を読めない
@@ -599,6 +774,14 @@ mod tests {
                 confirm: PasteConfirm::Never,
             },
             scroll_bar: ScrollBarConfig { width: 20 },
+            colors: ColorsConfig {
+                tab_bar: {
+                    let mut colors = [None; TAB_BAR_COLOR_KEYS.len()];
+                    colors[0] = Some(Rgb { r: 1, g: 2, b: 3 });
+                    colors
+                },
+                ..ColorsConfig::default()
+            },
             keys: {
                 let mut keys = Keymap::default();
                 keys.bind(combo("ctrl+tab"), None);
@@ -648,10 +831,20 @@ mod tests {
         let text = uncomment_settings(TEMPLATE);
         let parsed = parse(&text);
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        // 色の値は既定の色の例。
+        let hex = |text: &str| parse_color(text);
         assert_eq!(
             parsed.config,
             Config {
                 shell: Some(r"C:\cygwin64\bin\zsh.exe -l".to_owned()),
+                colors: ColorsConfig {
+                    tab_bar: [
+                        "#cccccc", "#ffffff", "#a0a0a0", "#000000", "#000000", "#a0a0a0",
+                        "#e6e6e6", "#6d6d6d", "#f0b030"
+                    ]
+                    .map(hex),
+                    scroll_bar: ["#0f0f0f", "#595959", "#808080", "#a6a6a6"].map(hex),
+                },
                 ..Config::default()
             }
         );
@@ -660,7 +853,125 @@ mod tests {
             .lines()
             .filter(|line| !line.starts_with('#') && line.contains(" = "))
             .count();
-        assert_eq!(settings, 6 + 9, "{text}");
+        assert_eq!(settings, 6 + 9 + 13, "{text}");
+    }
+
+    #[test]
+    fn colors_are_read_as_written() {
+        let parsed = parse(
+            "[colors.tab_bar]\nbar = \"#FF0000\"\nbell = '#00ff7f'\n[colors.scroll_bar]\nthumb = \"#123456\"\n",
+        );
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        let colors = &parsed.config.colors;
+        assert_eq!(colors.tab_bar[0], Some(Rgb { r: 255, g: 0, b: 0 }));
+        assert_eq!(
+            colors.tab_bar[8],
+            Some(Rgb {
+                r: 0,
+                g: 255,
+                b: 127
+            })
+        );
+        assert_eq!(
+            colors
+                .tab_bar
+                .iter()
+                .filter(|color| color.is_some())
+                .count(),
+            2
+        );
+        assert_eq!(
+            colors.scroll_bar,
+            [
+                None,
+                Some(Rgb {
+                    r: 0x12,
+                    g: 0x34,
+                    b: 0x56
+                }),
+                None,
+                None
+            ]
+        );
+        // 点で区切ったキーとインラインの表でも書ける。
+        let parsed = parse("colors.scroll_bar.track = '#010203'\n");
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        assert_eq!(
+            parsed.config.colors.scroll_bar[0],
+            Some(Rgb { r: 1, g: 2, b: 3 })
+        );
+    }
+
+    #[test]
+    fn invalid_colors_keep_the_previous_values_with_their_lines() {
+        let previous = customized();
+        let parsed = super::parse(
+            "[colors.tab_bar]\nbar = '#12345'\nactive_tab = 5\nseparator = '#00ff00'\nshade = '#000000'\n[colors.scroll_bar]\nthumb = 'gray'\n[colors]\nscheme = 'dark'\n",
+            &previous,
+        );
+        let warnings: Vec<(Option<usize>, &str)> = parsed
+            .warnings
+            .iter()
+            .map(|w| (w.line, w.message.as_str()))
+            .collect();
+        assert_eq!(warnings.len(), 5, "{warnings:?}");
+        assert_eq!(
+            warnings[0],
+            (
+                Some(2),
+                "ignoring colors.tab_bar.bar = \"#12345\": expected \"#rrggbb\""
+            )
+        );
+        assert_eq!(warnings[1].0, Some(3));
+        assert!(
+            warnings[1]
+                .1
+                .starts_with("ignoring colors.tab_bar.active_tab:"),
+            "{warnings:?}"
+        );
+        assert_eq!(
+            warnings[2],
+            (Some(5), "ignoring unknown setting colors.tab_bar.shade")
+        );
+        assert_eq!(
+            warnings[3],
+            (
+                Some(7),
+                "ignoring colors.scroll_bar.thumb = \"gray\": expected \"#rrggbb\""
+            )
+        );
+        assert_eq!(
+            warnings[4],
+            (Some(9), "ignoring unknown setting colors.scheme")
+        );
+        // 誤りの色は前の値のまま、書いた色は読む。
+        let colors = &parsed.config.colors;
+        assert_eq!(colors.tab_bar[0], previous.colors.tab_bar[0]);
+        assert_eq!(colors.tab_bar[5], Some(Rgb { r: 0, g: 255, b: 0 }));
+        assert_eq!(colors.scroll_bar, [None; 4]);
+        // 書いていない表は既定の色に戻る。
+        assert_eq!(parse("[font]\n").config.colors, ColorsConfig::default());
+    }
+
+    #[test]
+    fn colors_are_written_back_as_read() {
+        for text in ["#000000", "#ffffff", "#a0b1c2"] {
+            assert_eq!(parse_color(text).map(format_color).as_deref(), Some(text));
+        }
+        assert_eq!(parse_color("#A0B1C2"), parse_color("#a0b1c2"));
+        for text in [
+            "",
+            "#",
+            "#fff",
+            "#12345",
+            "#1234567",
+            "#12345678",
+            "123456",
+            "#12345g",
+            "#ｆｆｆｆｆｆ",
+        ] {
+            assert_eq!(parse_color(text), None, "{text:?}");
+        }
     }
 
     #[test]
@@ -781,12 +1092,12 @@ mod tests {
     fn invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults() {
         let previous = customized();
         let parsed = super::parse(
-            "shell = ' '\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[scroll_bar]\nwidth = 2\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n",
+            "shell = ' '\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[scroll_bar]\nwidth = 2\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors.tab_bar]\nbar = 'red'\n",
             &previous,
         );
         assert!(!parsed.syntax_error);
         assert_eq!(parsed.config, previous);
-        assert_eq!(parsed.warnings.len(), 8, "{:?}", parsed.warnings);
+        assert_eq!(parsed.warnings.len(), 9, "{:?}", parsed.warnings);
 
         let parsed = super::parse("[font]\nsize = 500\n", &previous);
         assert_eq!(

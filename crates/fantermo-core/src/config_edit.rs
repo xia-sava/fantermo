@@ -9,6 +9,7 @@
 //!   表の最後に足す。表がなければ、ファイルの最後に表ごと足す。
 //! - 既定値に戻した項目は、その行を既定値の `# キー = …` のコメントの行にする（`shell` は既定値が
 //!   ないので、それまでの値をコメントにする）。上に書いた説明のコメントは残る。
+//! - `[colors.…]` の色は既定の色を一つに書けないので、既定に戻した色はそれまでの値をコメントにする。
 //! - `[keys]` の組み合わせは、書き方（大文字小文字、修飾キーの順）によらず同じ組み合わせの行を探す。
 //!   既定の割り当てに戻した組み合わせは、既定の割り当ての `# "…" = "…"` のコメントの行にし、既定で
 //!   割り当てていない組み合わせは行を消す。
@@ -16,7 +17,7 @@
 use toml_edit::{Array, Decor, DocumentMut, Item, Key, Table, Value};
 
 use crate::{
-    config::Config,
+    config::{ColorTable, Config, format_color},
     keymap::{self, Action, KeyCombo},
 };
 
@@ -181,12 +182,38 @@ pub fn update(text: &str, base: &Config, edited: &Config) -> Result<String, Stri
             }
         }
     }
+    update_colors(&mut doc, base, edited)?;
     update_keys(&mut doc, base, edited)?;
     let mut out = doc.to_string();
     if crlf {
         out = out.replace("\r\n", "\n").replace('\n', "\r\n");
     }
     Ok(format!("{bom}{out}"))
+}
+
+/// `[colors.…]` の表で、`base` と `edited` で違う色を書き換える。既定の色に戻した色は、既定の色が
+/// システムの色などで決まり一つに書けないので、それまでの値をコメントにする。
+fn update_colors(doc: &mut DocumentMut, base: &Config, edited: &Config) -> Result<(), String> {
+    for table in ColorTable::ALL {
+        let path = ["colors", table.name()];
+        let old = base.colors.table(table);
+        let new = edited.colors.table(table);
+        for (index, key) in table.keys().iter().enumerate() {
+            if old[index] == new[index] {
+                continue;
+            }
+            let matches = |name: &str| name == *key;
+            let target = Target {
+                name: (*key).to_owned(),
+                matches: &matches,
+            };
+            match new[index] {
+                Some(color) => set(doc, &path, &target, Value::from(format_color(color)))?,
+                None => reset(doc, &path, &target, Reset::CommentOld)?,
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `[keys]` の表で、`base` と `edited` で割り当てが違う組み合わせを書き換える。
@@ -611,10 +638,70 @@ mod tests {
     use super::*;
     use crate::{
         config::{
-            self, FontConfig, PasteConfig, PasteConfirm, ScrollBarConfig, TEMPLATE, WideGlyph,
+            self, ColorsConfig, FontConfig, PasteConfig, PasteConfirm, ScrollBarConfig, TEMPLATE,
+            WideGlyph,
         },
+        frame::Rgb,
         keymap::Keymap,
     };
+
+    const RED: Rgb = Rgb { r: 255, g: 0, b: 0 };
+    const BLUE: Rgb = Rgb { r: 0, g: 0, b: 255 };
+
+    #[test]
+    fn colors_replace_the_commented_lines_and_are_commented_out_when_reset() {
+        let mut edited = Config::default();
+        edited.colors.tab_bar[0] = Some(RED);
+        edited.colors.scroll_bar[1] = Some(BLUE);
+        let text = update(TEMPLATE, &Config::default(), &edited).unwrap();
+        assert_reads_as(&text, &edited);
+        assert_eq!(
+            text,
+            TEMPLATE
+                .replace("# bar = \"#cccccc\"", "bar = \"#ff0000\"")
+                .replace("# thumb = \"#595959\"", "thumb = \"#0000ff\"")
+        );
+        // 既定の色に戻すと、それまでの値をコメントにする。
+        let back = update(&text, &edited, &Config::default()).unwrap();
+        assert_reads_as(&back, &Config::default());
+        assert_eq!(
+            back,
+            TEMPLATE
+                .replace("# bar = \"#cccccc\"", "# bar = \"#ff0000\"")
+                .replace("# thumb = \"#595959\"", "# thumb = \"#0000ff\"")
+        );
+    }
+
+    #[test]
+    fn color_tables_are_added_without_a_colors_header() {
+        let mut edited = Config::default();
+        edited.colors.scroll_bar[0] = Some(RED);
+        let updated = update("[font]\nsize = 12\n", &Config::default(), &edited).unwrap();
+        assert_eq!(
+            updated,
+            "[font]\nsize = 12\n\n[colors.scroll_bar]\ntrack = \"#ff0000\"\n"
+        );
+        let updated = update("", &Config::default(), &edited).unwrap();
+        assert_eq!(updated, "[colors.scroll_bar]\ntrack = \"#ff0000\"\n");
+        assert_reads_as(&updated, &edited);
+    }
+
+    #[test]
+    fn nested_tables_keep_their_place_between_other_tables() {
+        let text =
+            "[font]\nsize = 9\n\n[colors.tab_bar]\nbar = '#000000'\n\n[paste]\nconfirm = 'never'\n";
+        let base = config::parse(text, &Config::default()).config;
+        let mut edited = base.clone();
+        edited.colors.tab_bar[1] = Some(RED);
+        edited.font.wide_glyph = WideGlyph::Clip;
+        edited.colors.tab_bar[0] = None;
+        let updated = update(text, &base, &edited).unwrap();
+        assert_eq!(
+            updated,
+            "[font]\nsize = 9\nwide_glyph = \"clip\"\n\n[colors.tab_bar]\nactive_tab = \"#ff0000\"\n# bar = '#000000'\n\n[paste]\nconfirm = 'never'\n"
+        );
+        assert_reads_as(&updated, &edited);
+    }
 
     fn families(names: &[&str]) -> Vec<String> {
         names.iter().map(|&name| name.to_owned()).collect()
@@ -637,6 +724,8 @@ mod tests {
                 confirm: PasteConfirm::Never,
             },
             scroll_bar: ScrollBarConfig { width: 20 },
+            // 色は既定に戻すとひな形と違う行になるので、色の書き戻しは別に確かめる。
+            colors: ColorsConfig::default(),
             keys: {
                 let mut keys = Keymap::default();
                 keys.bind(combo("ctrl+tab"), None);

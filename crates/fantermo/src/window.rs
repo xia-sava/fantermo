@@ -11,8 +11,8 @@ use std::{
 use fantermo_core::{
     backend::{ExitCode, GridSize},
     config::{
-        Config, DEFAULT_FONT_FAMILIES, FontConfig, PasteConfig, PasteConfirm, ScrollBarConfig,
-        WideGlyph,
+        ColorsConfig, Config, DEFAULT_FONT_FAMILIES, FontConfig, PasteConfig, PasteConfirm,
+        ScrollBarConfig, WideGlyph,
     },
     frame::Rgb,
     keymap::{self, Keymap},
@@ -588,6 +588,8 @@ struct App {
     pointer_in_window: Option<(i32, i32)>,
     /// fantermo が受け持つキーの割り当て。
     keymap: Keymap,
+    /// 設定で書いたタブバーとスクロールバーの色。
+    colors: ColorsConfig,
     /// 割り当ての動作に使ったので、離したときにも端末へ送らないキー。タブを切り替えたあとに
     /// 離したことが届くので、端末ごとではなく窓に持つ。
     suppressed_release: Option<Key>,
@@ -700,6 +702,7 @@ impl App {
             clock: Instant::now(),
             pointer_in_window: None,
             keymap: config.keys,
+            colors: config.colors,
             suppressed_release: None,
             tab_bar_press: None,
             tab_bar_hover: None,
@@ -1867,6 +1870,10 @@ impl App {
         self.paste_confirm = config.paste.confirm;
         self.shell = config.shell;
         self.keymap = config.keys;
+        if config.colors != self.colors {
+            self.colors = config.colors;
+            self.invalidate();
+        }
         let scroll_bar_resized = config.scroll_bar.width != self.scroll_bar_width;
         self.scroll_bar_width = config.scroll_bar.width;
         let font_changed = self.apply_font_config(config.font);
@@ -1903,6 +1910,7 @@ impl App {
             scroll_bar: ScrollBarConfig {
                 width: self.scroll_bar_width,
             },
+            colors: self.colors.clone(),
             keys: self.keymap.clone(),
         }
     }
@@ -2004,10 +2012,10 @@ impl App {
             frame.hide_blinking_text();
         }
         let mut paints = self.tab_bar_paints();
-        paints.extend(self.scroll_bar_paints(&scroll_bar::Palette::from_terminal(
-            frame.background,
-            frame.foreground,
-        )));
+        let scroll_bar_colors =
+            scroll_bar::Palette::from_terminal(frame.background, frame.foreground)
+                .with_colors(&self.colors.scroll_bar);
+        paints.extend(self.scroll_bar_paints(&scroll_bar_colors));
         if let Err(e) = self
             .renderer
             .render(&[(&frame, self.terminal_area)], &paints, capture)
@@ -2016,7 +2024,7 @@ impl App {
         }
     }
 
-    /// タブバーに描くもの。色は Windows のシステムの色から決める。
+    /// タブバーに描くもの。色は Windows のシステムの色から決め、設定で書いた色を上書きする。
     fn tab_bar_paints(&self) -> Vec<Paint> {
         let tabs: Vec<TabView> = self
             .sessions
@@ -2038,7 +2046,7 @@ impl App {
                 hovered: self.tab_bar_hover,
                 pressed,
             },
-            &tab_bar::Palette::from_system(system_colors()),
+            &tab_bar::Palette::from_system(system_colors()).with_colors(&self.colors.tab_bar),
             &*self.ui_font,
         )
     }
