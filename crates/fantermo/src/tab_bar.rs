@@ -1,8 +1,9 @@
 //! タブバー。窓の上端に、端末ごとのタブを並べる。端末が一つのときも出す。
 //!
 //! 寸法は端末のフォントによらず DPI から決め、セルの格子によらずピクセルの位置で並べる。色は
-//! [`Palette`] にまとめ、既定では地と表示していないタブを Windows のコントロールの色、表示している
-//! タブを窓の地の色（白）で上の角を丸めて描く。タブバーと端末の画面の間には少し空きを置く。並べ方
+//! [`Palette`] にまとめ、既定では地と表示していないタブを Windows のコントロールの色より少し濃い
+//! グレー、表示しているタブを窓の地の色（白）で上の角を丸め、左・右・上に細い縁の線を引いて描く。
+//! タブバーと端末の画面の間には少し空きを置く。並べ方
 //! （どこがどのタブか、タイトルの省略、ベルの印の位置）と、描くもの（[`Paint`]）の組み立ては、窓や
 //! 描画に依存しない関数にしてある。
 
@@ -23,8 +24,11 @@ const TERMINAL_GAP: u32 = 4;
 /// タブバーの上の辺（窓のタイトルバーの下）からタブの上の辺までの空き。
 const TOP_MARGIN: u32 = 2;
 
-/// 表示しているタブとマウスの下のタブの、上の角の半径。
+/// 表示しているタブとマウスの下のタブの、上の角の半径。表示しているタブの縁の線の外側の半径。
 const CORNER_RADIUS: u32 = 5;
+
+/// 表示しているタブの左・右・上の縁の線の太さ。線はタブの矩形の内側に引く。
+const ACTIVE_TAB_BORDER: u32 = 1;
 
 /// 窓の左端とメニューのボタンの間、ボタンとタブの間のすき間。
 const MARGIN: u32 = 6;
@@ -72,8 +76,12 @@ const BELL_COLOR: Rgb = Rgb {
     b: 0x30,
 };
 
-/// マウスの下の、表示していないタブの色を、コントロールの地の色から文字の色へ寄せる割合。
-const HOVERED_TAB_TINT: f32 = 0.08;
+/// タブバーの地の色を、コントロールの地の色から文字の色へ寄せる割合。表示しているタブ（窓の地の
+/// 色）との差を大きくする。
+const BAR_TINT: f32 = 0.15;
+
+/// マウスの下の、表示していないタブの色を、タブバーの地の色から窓の地の色へ寄せる割合。
+const HOVERED_TAB_TINT: f32 = 0.5;
 
 /// マウスの下のボタン（×、+、≡）の丸い地の色を、ボタンの下の色から文字の色へ寄せる割合。
 const HOVERED_BUTTON_TINT: f32 = 0.15;
@@ -124,6 +132,11 @@ impl Metrics {
     /// 表示しているタブとマウスの下のタブの、上の角の半径。
     fn corner_radius(self) -> u32 {
         self.scale(CORNER_RADIUS)
+    }
+
+    /// 表示しているタブの縁の線の太さ。
+    fn active_border(self) -> u32 {
+        self.scale(ACTIVE_TAB_BORDER)
     }
 
     /// 窓の左端とメニューのボタンの間、ボタンとタブの間のすき間。
@@ -464,6 +477,8 @@ pub struct Palette {
     pub bar: Rgb,
     /// 表示しているタブ。
     pub active_tab: Rgb,
+    /// 表示しているタブの左・右・上の縁の線。
+    pub active_border: Rgb,
     /// 表示しているタブのタイトルと閉じるボタンの「×」。
     pub active_title: Rgb,
     /// 表示していないタブのタイトルと閉じるボタンの「×」、マウスの下の「+」と「≡」。
@@ -479,16 +494,19 @@ pub struct Palette {
 }
 
 impl Palette {
-    /// Windows のシステムの色から決める既定の色。地と表示していないタブはコントロールの色、表示して
-    /// いるタブは窓の地と文字の色。
+    /// Windows のシステムの色から決める既定の色。地と表示していないタブはコントロールの地の色を文字の
+    /// 色へ少し寄せた色、表示しているタブは窓の地と文字の色で、縁の線はコントロールの暗い縁の色。
+    /// マウスの下のタブは、地と窓の地の間の色。
     pub fn from_system(system: SystemColors) -> Self {
+        let bar = mix(system.face, system.text, BAR_TINT);
         Self {
-            bar: system.face,
+            bar,
             active_tab: system.window,
+            active_border: system.shadow,
             active_title: system.window_text,
             inactive_title: system.text,
             separator: system.shadow,
-            hovered_tab: mix(system.face, system.text, HOVERED_TAB_TINT),
+            hovered_tab: mix(bar, system.window, HOVERED_TAB_TINT),
             idle_mark: system.gray_text,
             bell: BELL_COLOR,
         }
@@ -584,10 +602,15 @@ pub fn paints(
         .iter()
         .find(|tab| Some(tab.index) == hovered && tab.index != active)
     {
-        push_raised_tab(&mut paints, metrics, tab.area, colors.hovered_tab);
+        push_raised_tab(
+            &mut paints,
+            tab.area,
+            metrics.corner_radius(),
+            colors.hovered_tab,
+        );
     }
     if let Some(tab) = layout.tabs.iter().find(|tab| tab.index == active) {
-        push_raised_tab(&mut paints, metrics, tab.area, colors.active_tab);
+        push_active_tab(&mut paints, metrics, tab.area, colors);
     }
     for slot in &layout.tabs {
         let Some(tab) = tabs.get(slot.index) else {
@@ -698,10 +721,33 @@ fn push_button(paints: &mut Vec<Paint>, colors: &Palette, button: Button) {
     });
 }
 
-/// 矩形 `area` に、上の角を丸めたタブを `color` で描く。下の辺はまっすぐ。
-fn push_raised_tab(paints: &mut Vec<Paint>, metrics: Metrics, area: Area, color: Rgb) {
+/// 矩形 `area` に、表示しているタブを描く。左・右・上の縁の線を矩形の内側に引き、その内側を
+/// 表示しているタブの色で塗る。縁の線の角は、タブの丸めた角に沿わせる（内側の角の半径を線の太さの
+/// 分だけ小さくし、同じ中心の円にする）。下の辺には線を引かない。
+fn push_active_tab(paints: &mut Vec<Paint>, metrics: Metrics, area: Area, colors: &Palette) {
     let radius = metrics.corner_radius();
-    if area.width < radius * 2 || area.height < radius {
+    let border = metrics.active_border();
+    push_raised_tab(paints, area, radius, colors.active_border);
+    let inner = Area {
+        x: area.x + border,
+        y: area.y + border,
+        width: area.width.saturating_sub(border * 2),
+        height: area.height.saturating_sub(border),
+    };
+    push_raised_tab(
+        paints,
+        inner,
+        radius.saturating_sub(border),
+        colors.active_tab,
+    );
+}
+
+/// 矩形 `area` に、上の角を半径 `radius` で丸めたタブを `color` で描く。下の辺はまっすぐ。
+fn push_raised_tab(paints: &mut Vec<Paint>, area: Area, radius: u32, color: Rgb) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    if radius == 0 || area.width < radius * 2 || area.height < radius {
         paints.push(Paint::Fill { area, color });
         return;
     }
@@ -1121,17 +1167,34 @@ mod tests {
     #[test]
     fn default_colours_come_from_the_system() {
         let colors = palette();
-        assert_eq!(colors.bar, SYSTEM.face);
+        // 地はコントロールの地の色を、文字の色へ 15% 寄せる。
+        assert_eq!(colors.bar, mix(SYSTEM.face, SYSTEM.text, BAR_TINT));
+        assert!(colors.bar.r < SYSTEM.face.r && colors.bar.r > SYSTEM.text.r);
         assert_eq!(
             (colors.active_tab, colors.active_title),
             (WINDOW, WINDOW_TEXT)
         );
+        assert_eq!(colors.active_border, SYSTEM.shadow);
         assert_eq!(colors.inactive_title, SYSTEM.text);
         assert_eq!(colors.separator, SYSTEM.shadow);
         assert_eq!(colors.idle_mark, SYSTEM.gray_text);
         assert_eq!(colors.bell, BELL_COLOR);
-        // マウスの下のタブは、地より文字の色へ少し寄せる。
-        assert!(colors.hovered_tab.r < SYSTEM.face.r && colors.hovered_tab.r > SYSTEM.text.r);
+        // マウスの下のタブは、地と窓の地の間。
+        assert!(colors.hovered_tab.r > colors.bar.r && colors.hovered_tab.r < WINDOW.r);
+    }
+
+    #[test]
+    fn windows_11_colours_make_a_darker_bar() {
+        let colors = Palette::from_system(SystemColors {
+            face: gray(0xf0),
+            text: gray(0x00),
+            gray_text: gray(0x6d),
+            shadow: gray(0xa0),
+            window: gray(0xff),
+            window_text: gray(0x00),
+        });
+        assert_eq!(colors.bar, gray(0xcc));
+        assert_eq!(colors.hovered_tab, gray(0xe6));
     }
 
     #[test]
@@ -1169,30 +1232,34 @@ mod tests {
                 color: colors.bar
             }
         );
-        // 表示しているタブは窓の地の色で、上の角を丸める。下の辺はまっすぐで、タブバーの下の辺まで。
-        let icons: Vec<(Icon, Area)> = paints
-            .iter()
-            .filter_map(|paint| match paint {
-                Paint::Icon { icon, area, color } if *color == WINDOW => Some((*icon, *area)),
-                _ => None,
-            })
-            .collect();
+        let icons = |wanted: Rgb| -> Vec<(Icon, Area)> {
+            paints
+                .iter()
+                .filter_map(|paint| match paint {
+                    Paint::Icon { icon, area, color } if *color == wanted => Some((*icon, *area)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let fills = |wanted: Rgb| -> Vec<Area> {
+            paints
+                .iter()
+                .filter_map(|paint| match paint {
+                    Paint::Fill { area, color } if *color == wanted => Some(*area),
+                    _ => None,
+                })
+                .collect()
+        };
+        // 表示しているタブは、まず縁の線の色でタブの矩形の全体を、上の角を半径 10 で丸めて塗る。
         assert_eq!(
-            icons,
+            icons(colors.active_border),
             vec![
                 (Icon::Corner(Corner::TopLeft), square(540, 4, 10)),
                 (Icon::Corner(Corner::TopRight), square(1010, 4, 10)),
             ]
         );
-        let fills: Vec<Area> = paints
-            .iter()
-            .filter_map(|paint| match paint {
-                Paint::Fill { area, color } if *color == WINDOW => Some(*area),
-                _ => None,
-            })
-            .collect();
         assert_eq!(
-            fills,
+            fills(colors.active_border),
             vec![
                 Area {
                     x: 550,
@@ -1208,6 +1275,40 @@ mod tests {
                 },
             ]
         );
+        // その内側を、左・右・上を線の太さ 2 だけ空けて窓の地の色で塗る。角は同じ中心 (550, 14) と
+        // (1010, 14) の半径 8 の円。下の辺はまっすぐで、タブバーの下の辺まで（下には線がない）。
+        assert_eq!(
+            icons(WINDOW),
+            vec![
+                (Icon::Corner(Corner::TopLeft), square(542, 6, 8)),
+                (Icon::Corner(Corner::TopRight), square(1010, 6, 8)),
+            ]
+        );
+        assert_eq!(
+            fills(WINDOW),
+            vec![
+                Area {
+                    x: 550,
+                    y: 6,
+                    width: 460,
+                    height: 8
+                },
+                Area {
+                    x: 542,
+                    y: 14,
+                    width: 476,
+                    height: 38
+                },
+            ]
+        );
+        // 縁の線を先に、窓の地の色を後に描く。
+        let first_window = paints
+            .iter()
+            .position(|paint| matches!(paint, Paint::Fill { color, .. } if *color == WINDOW));
+        let last_border = paints.iter().rposition(
+            |paint| matches!(paint, Paint::Icon { color, .. } if *color == colors.active_border),
+        );
+        assert!(last_border < first_window);
         // どれもタブバーの中に描く。
         assert!(paints.iter().all(|paint| match paint {
             Paint::Fill { area, .. } | Paint::Icon { area, .. } => area.bottom() <= 52,
@@ -1241,7 +1342,12 @@ mod tests {
             paints(&layout, &tabs, 1, highlight, &colors, &FixedWidth)
                 .iter()
                 .filter_map(|paint| match paint {
-                    Paint::Fill { area, color } if *color == colors.separator => Some(area.x),
+                    // 表示しているタブの縁の線も同じ色なので、太さ 2 の線だけを数える。
+                    Paint::Fill { area, color }
+                        if *color == colors.separator && area.width == 2 =>
+                    {
+                        Some(area.x)
+                    }
                     _ => None,
                 })
                 .collect()
@@ -1305,7 +1411,8 @@ mod tests {
             corners,
             vec![
                 (square(layout.tabs()[2].area.x, 4, 10), colors.hovered_tab),
-                (square(60, 4, 10), WINDOW),
+                (square(60, 4, 10), colors.active_border),
+                (square(62, 6, 8), WINDOW),
             ]
         );
     }
