@@ -9,10 +9,7 @@
 
 use fantermo_core::{frame::Rgb, vt};
 
-use crate::paint::{Area, Corner, Icon, Paint};
-
-/// 寸法の定数を決めた DPI。定数はこの DPI でのピクセルで、窓の DPI に比例させて使う。
-const BASE_DPI: u32 = 96;
+use crate::paint::{Area, Corner, Icon, Paint, scale};
 
 /// タブバーの高さ。端末の画面との間の空き（[`TERMINAL_GAP`]）は含まない。
 const BAR_HEIGHT: u32 = 26;
@@ -88,11 +85,6 @@ const HOVERED_BUTTON_TINT: f32 = 0.15;
 
 /// 押しているボタンの丸い地の色を、ボタンの下の色から文字の色へ寄せる割合。
 const PRESSED_BUTTON_TINT: f32 = 0.28;
-
-/// DPI が `dpi` の窓での、[`BASE_DPI`] のときに `px` ピクセルの長さ。少なくとも 1 ピクセル。
-fn scale(px: u32, dpi: u32) -> u32 {
-    ((px * dpi + BASE_DPI / 2) / BASE_DPI).max(1)
-}
 
 /// DPI が `dpi` の窓での、タブバーの高さに端末の画面との間の空きを足したもの（ピクセル）。端末の
 /// 画面はここから下に描く。

@@ -17,7 +17,7 @@ use fantermo_core::{
     state::State,
     vt::{
         self, Key, KeyAction, KeyInput, Mods, MouseAction, MouseButton, MouseInput, PasteOutcome,
-        PointerPosition,
+        PointerPosition, ScrollPosition,
     },
 };
 use windows::{
@@ -58,8 +58,7 @@ use windows::{
                 WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
                 WM_NCDESTROY, WM_PAINT, WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP,
                 WM_SETCURSOR, WM_SIZE, WM_SYSCHAR, WM_SYSCOLORCHANGE, WM_SYSDEADCHAR,
-                WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_VSCROLL, WNDCLASSW, WS_OVERLAPPEDWINDOW,
-                WS_VSCROLL,
+                WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -90,8 +89,8 @@ use crate::{
 const WINDOW_CLASS: PCWSTR = w!("fantermo");
 const WINDOW_TITLE: &str = "fantermo";
 
-/// 窓のスタイル。右端に縦のスクロールバーを常に出す（[`scroll_bar`]）。
-const MAIN_WINDOW_STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0 | WS_VSCROLL.0);
+/// 窓のスタイル。
+const MAIN_WINDOW_STYLE: WINDOW_STYLE = WS_OVERLAPPEDWINDOW;
 
 /// 端末の出力が届いたときと子プロセスが終了したときに、読むためのスレッドなどが窓のスレッドを
 /// 起こすメッセージ。`wparam` はその端末の [`SessionId`]。
@@ -322,24 +321,54 @@ fn grid_pixels(font: &Font, cols: u16, rows: u16) -> SIZE {
     }
 }
 
-/// 大きさが `width` × `height` のクライアント領域のうち、表示している端末を描く領域。上端の高さ
-/// `tab_bar_height` のタブバー（端末との間の空きを含む。[`tab_bar::height`]）を除いた残りの全体に描く。
-fn terminal_area_in_client(width: u32, height: u32, tab_bar_height: u32) -> Area {
-    let tab_bar_height = tab_bar_height.min(height);
+/// 窓のクライアント領域のうち、端末の画面の上と右に取る場所の寸法。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Insets {
+    /// 上端のタブバーの高さ（端末との間の空きを含む。[`tab_bar::height`]）。
+    tab_bar_height: u32,
+    /// 右端のスクロールバーの幅（[`scroll_bar::width`]）。
+    scroll_bar_width: u32,
+}
+
+impl Insets {
+    /// DPI が `dpi` の窓での寸法。
+    fn for_dpi(dpi: u32) -> Self {
+        Self {
+            tab_bar_height: tab_bar::height(dpi),
+            scroll_bar_width: scroll_bar::width(dpi),
+        }
+    }
+}
+
+/// 大きさが `width` × `height` のクライアント領域のうち、表示している端末を描く領域。上端のタブバーと
+/// 右端のスクロールバー（寸法は `insets`）を除いた残りの全体に描く。
+fn terminal_area_in_client(width: u32, height: u32, insets: Insets) -> Area {
+    let tab_bar_height = insets.tab_bar_height.min(height);
     Area {
         x: 0,
         y: tab_bar_height,
-        width,
+        width: width.saturating_sub(insets.scroll_bar_width),
         height: height - tab_bar_height,
+    }
+}
+
+/// 大きさが `width` × `height` のクライアント領域のうち、スクロールバーを描く領域。端末を描く領域
+/// `terminal` の右から、クライアント領域の右端まで。
+fn scroll_bar_area_in_client(width: u32, terminal: Area) -> Area {
+    Area {
+        x: terminal.right(),
+        y: terminal.y,
+        width: width - terminal.right(),
+        height: terminal.height,
     }
 }
 
 /// 端末を描く領域の大きさが `terminal` になるクライアント領域の大きさ。[`terminal_area_in_client`] と
 /// 対になる。
-fn client_size_for_terminal(terminal: SIZE, tab_bar_height: u32) -> SIZE {
+fn client_size_for_terminal(terminal: SIZE, insets: Insets) -> SIZE {
     SIZE {
-        cx: terminal.cx,
-        cy: terminal.cy + tab_bar_height as i32,
+        cx: terminal.cx + insets.scroll_bar_width as i32,
+        cy: terminal.cy + insets.tab_bar_height as i32,
     }
 }
 
@@ -353,7 +382,7 @@ fn area_to_client(area: Area, x: i32, y: i32) -> (i32, i32) {
     (x + area.x as i32, y + area.y as i32)
 }
 
-/// クライアント領域の大きさが `client` になる、DPI が `dpi` の窓の大きさ（枠とスクロールバーを含む）。
+/// クライアント領域の大きさが `client` になる、DPI が `dpi` の窓の大きさ（枠を含む）。
 fn window_size(client: SIZE, dpi: u32) -> windows::core::Result<SIZE> {
     let mut rect = RECT {
         left: 0,
@@ -365,9 +394,8 @@ fn window_size(client: SIZE, dpi: u32) -> windows::core::Result<SIZE> {
     unsafe {
         AdjustWindowRectExForDpi(&mut rect, MAIN_WINDOW_STYLE, false, WINDOW_EX_STYLE(0), dpi)?
     };
-    // AdjustWindowRectExForDpi は、スタイルに WS_VSCROLL があってもスクロールバーの幅を足さない。
     Ok(SIZE {
-        cx: rect.right - rect.left + scroll_bar::width(dpi),
+        cx: rect.right - rect.left,
         cy: rect.bottom - rect.top,
     })
 }
@@ -392,7 +420,7 @@ fn create_window(font: &Font, dpi: u32) -> windows::core::Result<HWND> {
     let size = window_size(
         client_size_for_terminal(
             grid_pixels(font, INITIAL_COLS, INITIAL_ROWS),
-            tab_bar::height(dpi),
+            Insets::for_dpi(dpi),
         ),
         dpi,
     )?;
@@ -414,8 +442,6 @@ fn create_window(font: &Font, dpi: u32) -> windows::core::Result<HWND> {
             None,
         )
     }?;
-    // 端末を開くまでは表示している範囲がないので、押せない形にしておく。
-    scroll_bar::set_empty(hwnd);
     Ok(hwnd)
 }
 
@@ -519,8 +545,10 @@ struct App {
     blink_visible: bool,
     /// 点滅のタイマーを動かしている。
     blink_timer_running: bool,
-    /// スクロールバーに最後に渡した値。変わったときだけ渡し直す。
-    scroll_range: Option<scroll_bar::Range>,
+    /// 窓のクライアント領域のうち、スクロールバーを描く領域。
+    scroll_bar_area: Area,
+    /// 表示している端末の、最後に描いたときの表示している範囲の位置。変わったら描き直す。
+    scroll_position: Option<ScrollPosition>,
 }
 
 impl App {
@@ -535,7 +563,8 @@ impl App {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let font_config = config.font;
         let (width, height) = client_size(hwnd);
-        let terminal_area = terminal_area_in_client(width, height, tab_bar::height(dpi));
+        let terminal_area = terminal_area_in_client(width, height, Insets::for_dpi(dpi));
+        let scroll_bar_area = scroll_bar_area_in_client(width, terminal_area);
         let size = grid_size(&font, terminal_area);
         let ui_font = Rc::new(UiFont::for_dpi(&dwrite, dpi)?);
         log_ui_font(&ui_font, dpi);
@@ -603,7 +632,8 @@ impl App {
             window_active: false,
             blink_visible: true,
             blink_timer_running: false,
-            scroll_range: None,
+            scroll_bar_area,
+            scroll_position: None,
         })
     }
 
@@ -1328,7 +1358,7 @@ impl App {
         }
         self.session_mut().vt.scroll_to_bottom();
         // シェルが何も返さないキーでも、戻した範囲を描き、つまみを合わせる。
-        if self.update_scroll_bar() {
+        if self.update_scroll_position() {
             self.invalidate();
         }
         self.refresh_hovered_link_now();
@@ -1377,37 +1407,16 @@ impl App {
         self.on_viewport_moved();
     }
 
-    /// スクロールバーが操作された（WM_VSCROLL）。アプリがマウスを求めていても、表示する範囲を動かす。
-    fn on_scroll_bar(&mut self, request: scroll_bar::Request) {
-        let page = self.session().vt.size().rows as isize;
-        let hwnd = self.hwnd;
-        let vt = &mut self.session_mut().vt;
-        match request {
-            scroll_bar::Request::Lines(lines) => vt.scroll(lines),
-            scroll_bar::Request::Pages(pages) => vt.scroll(pages * page),
-            scroll_bar::Request::Top => vt.scroll_to_top(),
-            scroll_bar::Request::Bottom => vt.scroll_to_bottom(),
-            scroll_bar::Request::Track => match scroll_bar::track_position(hwnd) {
-                Ok(row) => vt.scroll_to_row(row.max(0) as usize),
-                Err(e) => {
-                    tracing::warn!("failed to read the scroll bar thumb position: {e}");
-                    return;
-                }
-            },
-        }
-        self.on_viewport_moved();
-    }
-
-    /// 表示する範囲を動かした。マウスの下のリンクを探し直し、つまみを合わせて描き直す。
+    /// 表示する範囲を動かした。マウスの下のリンクを探し直し、描き直す。
     fn on_viewport_moved(&mut self) {
         self.refresh_hovered_link_now();
-        self.update_scroll_bar();
+        self.update_scroll_position();
         self.invalidate();
     }
 
-    /// スクロールバーのつまみを、表示している端末の表示している範囲に合わせる。値が変わったときだけ
-    /// 渡し、変わったら `true` を返す。
-    fn update_scroll_bar(&mut self) -> bool {
+    /// 表示している端末の表示している範囲の位置を読み直す。最後に描いたときから変わったら `true` を
+    /// 返す。
+    fn update_scroll_position(&mut self) -> bool {
         let position = match self.session().vt.scroll_position() {
             Ok(position) => position,
             Err(e) => {
@@ -1415,12 +1424,10 @@ impl App {
                 return false;
             }
         };
-        let range = scroll_bar::range(position);
-        if self.scroll_range == Some(range) {
+        if self.scroll_position == Some(position) {
             return false;
         }
-        scroll_bar::set(self.hwnd, range);
-        self.scroll_range = Some(range);
+        self.scroll_position = Some(position);
         true
     }
 
@@ -1511,7 +1518,8 @@ impl App {
 
     /// クライアント領域の大きさが `width` × `height` のときの、端末を描く領域に合わせる。
     fn layout(&mut self, width: u32, height: u32) {
-        self.terminal_area = terminal_area_in_client(width, height, tab_bar::height(self.dpi));
+        self.terminal_area = terminal_area_in_client(width, height, Insets::for_dpi(self.dpi));
+        self.scroll_bar_area = scroll_bar_area_in_client(width, self.terminal_area);
         self.resize_sessions();
         self.update_tab_bar_hover();
     }
@@ -1638,7 +1646,7 @@ impl App {
         let size = self.session().vt.size();
         Ok(client_size_for_terminal(
             grid_pixels(&font, size.cols, size.rows),
-            tab_bar::height(dpi),
+            Insets::for_dpi(dpi),
         ))
     }
 
@@ -1665,11 +1673,11 @@ impl App {
         self.render_to(Some(&frame_path));
     }
 
-    /// 表示している端末を端末を描く領域に、タブバーをその上に描いて表示する。スクロールバーのつまみも
-    /// 合わせる（出力、窓の大きさの変更、タブの切り替えなど、描き直すことはどれもつまみを動かしうる）。
+    /// 表示している端末を端末を描く領域に、タブバーをその上に描いて表示する。表示している範囲の位置も
+    /// 読み直す（出力、窓の大きさの変更、タブの切り替えなど、描き直すことはどれも位置を動かしうる）。
     /// `capture` を渡すと、表示する前の画面を PNG で書き出す。
     fn render_to(&mut self, capture: Option<&std::path::Path>) {
-        self.update_scroll_bar();
+        self.update_scroll_position();
         let mut frame = match self.session_mut().vt.frame() {
             Ok(frame) => frame,
             Err(e) => {
@@ -1717,12 +1725,13 @@ impl App {
         )
     }
 
-    /// タブバーを描く領域。端末を描く領域の上の、窓の幅いっぱい。端末との間の空きも含む。
+    /// タブバーを描く領域。端末を描く領域とスクロールバーの上の、窓の幅いっぱい。端末との間の空きも
+    /// 含む。
     fn tab_bar_area(&self) -> Area {
         Area {
             x: 0,
             y: 0,
-            width: self.terminal_area.width,
+            width: self.scroll_bar_area.right(),
             height: self.terminal_area.y,
         }
     }
@@ -2246,13 +2255,6 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             with_app(&mut |app| app.on_wheel(delta, lparam, wparam));
             LRESULT(0)
         }
-        // スクロールバーの操作。下位の語が操作の種類（SB_LINEUP など）。
-        WM_VSCROLL => {
-            if let Some(request) = scroll_bar::request((wparam.0 & 0xffff) as i32) {
-                with_app(&mut |app| app.on_scroll_bar(request));
-            }
-            LRESULT(0)
-        }
         WM_CHAR | WM_SYSCHAR => {
             with_app(&mut |app| app.on_text_unit(wparam.0 as u16));
             LRESULT(0)
@@ -2442,12 +2444,14 @@ mod tests {
 
     #[test]
     fn the_terminal_starts_below_the_tab_bar_and_its_gap() {
-        // 96 DPI ではタブバーの 26 と空きの 4、192 DPI では 52 と 8 の下から。
-        for (dpi, top) in [(96, 30), (192, 60)] {
+        // 96 DPI ではタブバーの 26 と空きの 4、192 DPI では 52 と 8 の下から。右端のスクロールバーは
+        // 96 DPI で 12、192 DPI で 24。
+        for (dpi, top, bar) in [(96, 30, 12), (192, 60, 24)] {
+            let insets = Insets::for_dpi(dpi);
             let terminal = SIZE { cx: 800, cy: 480 };
-            let client = client_size_for_terminal(terminal, tab_bar::height(dpi));
-            assert_eq!((client.cx, client.cy), (800, 480 + top as i32));
-            let area = terminal_area_in_client(800, client.cy as u32, tab_bar::height(dpi));
+            let client = client_size_for_terminal(terminal, insets);
+            assert_eq!((client.cx, client.cy), (800 + bar as i32, 480 + top as i32));
+            let area = terminal_area_in_client(client.cx as u32, client.cy as u32, insets);
             assert_eq!(
                 area,
                 Area {
@@ -2457,13 +2461,31 @@ mod tests {
                     height: 480
                 }
             );
+            // スクロールバーは端末の右からクライアント領域の右端まで、タブバーの下だけ。
+            assert_eq!(
+                scroll_bar_area_in_client(client.cx as u32, area),
+                Area {
+                    x: 800,
+                    y: top,
+                    width: bar,
+                    height: 480
+                }
+            );
             // 端末の左上のセルの左上は、クライアント領域の (0, top)。空きの中は端末より上。
             assert_eq!(client_to_area(area, 0, top as i32), (0, 0));
             assert_eq!(client_to_area(area, 5, top as i32 - 1), (5, -1));
             assert_eq!(area_to_client(area, 16, 32), (16, 32 + top as i32));
         }
-        // タブバーより低いクライアント領域では、端末を描く領域は空。
-        assert_eq!(terminal_area_in_client(800, 20, 36).height, 0);
+        // タブバーより低いクライアント領域では、端末を描く領域は空。スクロールバーより狭ければ、
+        // 端末の幅は 0 で、スクロールバーがクライアント領域の幅いっぱい。
+        let insets = Insets {
+            tab_bar_height: 36,
+            scroll_bar_width: 12,
+        };
+        assert_eq!(terminal_area_in_client(800, 20, insets).height, 0);
+        let narrow = terminal_area_in_client(8, 100, insets);
+        assert_eq!(narrow.width, 0);
+        assert_eq!(scroll_bar_area_in_client(8, narrow).width, 8);
     }
 
     #[test]
