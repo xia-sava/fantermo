@@ -1357,7 +1357,7 @@ impl App {
     /// グリフの描き方だけが変わったときは、セルの寸法は変わらないので、この場でアトラスだけを作り直す。
     /// 貼り付けの設定はすぐに入れ替える。`shell` は次に開く端末から使う。
     /// 誤りがあれば、それを見せることを返す（借用を手放してから [`run_deferred`] で見せる）。誤りが
-    /// なければ、まだ見せていない設定の警告を取り下げる。
+    /// なければ、設定の警告を取り下げる（開いているメッセージボックスも閉じさせる）。
     fn reload_config(&mut self) -> (Option<u32>, Option<Deferred>) {
         let Loaded { config, notice } =
             config_file::reload(self.config_path.as_deref(), &self.config_in_use());
@@ -1367,7 +1367,7 @@ impl App {
                 text,
             }),
             None => {
-                notice::withdraw(Topic::Settings);
+                notice::withdraw(self.hwnd, Topic::Settings);
                 None
             }
         };
