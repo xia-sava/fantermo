@@ -9,10 +9,16 @@
 //!   表の最後に足す。表がなければ、ファイルの最後に表ごと足す。
 //! - 既定値に戻した項目は、その行を既定値の `# キー = …` のコメントの行にする（`shell` は既定値が
 //!   ないので、それまでの値をコメントにする）。上に書いた説明のコメントは残る。
+//! - `[keys]` の組み合わせは、書き方（大文字小文字、修飾キーの順）によらず同じ組み合わせの行を探す。
+//!   既定の割り当てに戻した組み合わせは、既定の割り当ての `# "…" = "…"` のコメントの行にし、既定で
+//!   割り当てていない組み合わせは行を消す。
 
 use toml_edit::{Array, Decor, DocumentMut, Item, Key, Table, Value};
 
-use crate::config::Config;
+use crate::{
+    config::Config,
+    keymap::{self, Action, KeyCombo},
+};
 
 /// 書き換える項目。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,13 +41,13 @@ impl Setting {
         Setting::ScrollBarWidth,
     ];
 
-    /// 項目を置く表の名前。最上位なら `None`。
-    fn section(self) -> Option<&'static str> {
+    /// 項目を置く表の道筋。最上位なら空。
+    fn path(self) -> &'static [&'static str] {
         match self {
-            Setting::Shell => None,
-            Setting::FontFamily | Setting::FontSize | Setting::WideGlyph => Some("font"),
-            Setting::PasteConfirm => Some("paste"),
-            Setting::ScrollBarWidth => Some("scroll_bar"),
+            Setting::Shell => &[],
+            Setting::FontFamily | Setting::FontSize | Setting::WideGlyph => &["font"],
+            Setting::PasteConfirm => &["paste"],
+            Setting::ScrollBarWidth => &["scroll_bar"],
         }
     }
 
@@ -69,6 +75,9 @@ impl Setting {
     }
 }
 
+/// `[keys]` の表の道筋。
+const KEYS_PATH: &[&str] = &["keys"];
+
 /// フォントの名前の並び。一つなら文字列、二つ以上なら配列。
 fn families_value(families: &[String]) -> Value {
     match families {
@@ -87,6 +96,11 @@ fn size_value(size_pt: f32) -> Value {
     Value::from(size)
 }
 
+/// 組み合わせに割り当てる値。動作の名前か、外すなら [`keymap::UNBOUND`]。
+fn action_value(action: Option<Action>) -> Value {
+    Value::from(action.map_or(keymap::UNBOUND, Action::name))
+}
+
 /// 値を書いたときの文字列。前後の空白やコメントは含めない。
 fn bare_repr(value: &Value) -> String {
     let mut value = value.clone();
@@ -96,6 +110,36 @@ fn bare_repr(value: &Value) -> String {
 
 fn same(a: &Option<Value>, b: &Option<Value>) -> bool {
     a.as_ref().map(bare_repr) == b.as_ref().map(bare_repr)
+}
+
+/// 書き換える項目の、表の中のキー。
+struct Target<'a> {
+    /// 足すときに書くキーの名前。
+    name: String,
+    /// 表のキーの名前が、この項目のものか。
+    matches: &'a dyn Fn(&str) -> bool,
+}
+
+impl Target<'_> {
+    /// 足すときに書くキー。
+    fn key(&self) -> Key {
+        Key::new(self.name.as_str())
+    }
+
+    /// 足すときに書くキーを、ファイルに書いたときの形。
+    fn repr(&self) -> String {
+        self.key().display_repr().into_owned()
+    }
+}
+
+/// 既定値に戻した項目の行をどうするか。
+enum Reset {
+    /// 既定値をコメントにした行にする。
+    Comment(Value),
+    /// それまでの値をコメントにした行にする。
+    CommentOld,
+    /// 行を消す（上に書いた説明のコメントは残す）。
+    Remove,
 }
 
 /// 設定ファイルの中身 `text` を、`base` から `edited` へ変えた項目だけ書き換えて返す。`base` は
@@ -117,19 +161,64 @@ pub fn update(text: &str, base: &Config, edited: &Config) -> Result<String, Stri
         if same(&setting.value(base), &new) {
             continue;
         }
+        let key = setting.key();
+        let matches = |name: &str| name == key;
+        let target = Target {
+            name: key.to_owned(),
+            matches: &matches,
+        };
         let default = setting.value(&defaults);
         match new {
             Some(value) if !same(&Some(value.clone()), &default) => {
-                set(&mut doc, setting.section(), setting.key(), value)?;
+                set(&mut doc, setting.path(), &target, value)?;
             }
-            _ => reset(&mut doc, setting.section(), setting.key(), default)?,
+            _ => {
+                let reset = match default {
+                    Some(default) => Reset::Comment(default),
+                    None => Reset::CommentOld,
+                };
+                self::reset(&mut doc, setting.path(), &target, reset)?;
+            }
         }
     }
+    update_keys(&mut doc, base, edited)?;
     let mut out = doc.to_string();
     if crlf {
         out = out.replace("\r\n", "\n").replace('\n', "\r\n");
     }
     Ok(format!("{bom}{out}"))
+}
+
+/// `[keys]` の表で、`base` と `edited` で割り当てが違う組み合わせを書き換える。
+fn update_keys(doc: &mut DocumentMut, base: &Config, edited: &Config) -> Result<(), String> {
+    let mut combos: Vec<KeyCombo> = keymap::default_combos().collect();
+    for (combo, _) in edited.keys.bindings().iter().chain(base.keys.bindings()) {
+        if !combos.contains(combo) {
+            combos.push(*combo);
+        }
+    }
+    for combo in combos {
+        let new = edited.keys.lookup_combo(combo);
+        if base.keys.lookup_combo(combo) == new {
+            continue;
+        }
+        let matches = |name: &str| KeyCombo::parse(name) == Ok(combo);
+        let target = Target {
+            name: combo.to_string(),
+            matches: &matches,
+        };
+        let default = keymap::default_action(combo);
+        if new == default {
+            let reset = match default {
+                Some(action) => Reset::Comment(action_value(Some(action))),
+                None => Reset::Remove,
+            };
+            self::reset(doc, KEYS_PATH, &target, reset)?;
+        } else {
+            set(doc, KEYS_PATH, &target, action_value(new))?;
+        }
+    }
+    Ok(())
 }
 
 /// 表のうち、ほかの表の見出しとファイルの最後との位置関係で扱えるもの（`[font]` の形の見出しを
@@ -138,83 +227,129 @@ fn is_standard(table: &Table) -> bool {
     !table.is_dotted()
 }
 
-/// `section` の表。無ければ、`create` なら最後に作る。表でないものが書いてあれば誤り。
-fn section_mut<'a>(
-    doc: &'a mut DocumentMut,
-    section: Option<&str>,
-    create: bool,
-) -> Result<Option<&'a mut Table>, String> {
-    let Some(section) = section else {
-        return Ok(Some(doc.as_table_mut()));
-    };
-    if !doc.contains_key(section) {
-        if !create {
-            return Ok(None);
-        }
-        let last = tables(doc)
-            .iter()
-            .filter_map(|(_, p)| *p)
-            .max()
-            .unwrap_or(0);
-        let mut table = Table::new();
-        table.set_position(Some(last + 1));
-        doc.insert(section, Item::Table(table));
-    }
-    match doc.get_mut(section) {
-        Some(Item::Table(table)) => Ok(Some(table)),
-        _ => Err(format!("{section} is not a table")),
-    }
+fn path_name(path: &[&str]) -> String {
+    path.join(".")
 }
 
-/// 最上位に書いた表の名前と、ファイルの中の位置。
-fn tables(doc: &DocumentMut) -> Vec<(String, Option<isize>)> {
-    doc.iter()
-        .filter_map(|(name, item)| {
-            let table = item.as_table()?;
-            is_standard(table).then(|| (name.to_owned(), table.position()))
-        })
-        .collect()
+/// 道筋 `path` の表。
+fn table_at<'a>(doc: &'a DocumentMut, path: &[&str]) -> Option<&'a Table> {
+    let mut table = doc.as_table();
+    for name in path {
+        table = table.get(name)?.as_table()?;
+    }
+    Some(table)
+}
+
+fn table_at_mut<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> Option<&'a mut Table> {
+    let mut table = doc.as_table_mut();
+    for name in path {
+        table = table.get_mut(name)?.as_table_mut()?;
+    }
+    Some(table)
+}
+
+/// 道筋 `path` の表。無ければ、`create` なら最後に作る（途中の表は見出しを書かない表にする）。表で
+/// ないものが書いてあれば誤り。
+fn section_mut<'a>(
+    doc: &'a mut DocumentMut,
+    path: &[&str],
+    create: bool,
+) -> Result<Option<&'a mut Table>, String> {
+    let last = tables(doc)
+        .iter()
+        .filter_map(|(_, p)| *p)
+        .max()
+        .unwrap_or(0);
+    let mut table = doc.as_table_mut();
+    for (depth, name) in path.iter().enumerate() {
+        if !table.contains_key(name) {
+            if !create {
+                return Ok(None);
+            }
+            let mut inner = Table::new();
+            if depth + 1 == path.len() {
+                inner.set_position(Some(last + 1));
+            } else {
+                inner.set_implicit(true);
+            }
+            table.insert(name, Item::Table(inner));
+        }
+        table = match table.get_mut(name) {
+            Some(Item::Table(inner)) => inner,
+            _ => return Err(format!("{} is not a table", path_name(&path[..=depth]))),
+        };
+    }
+    Ok(Some(table))
+}
+
+/// 見出しを書いた表の道筋と、ファイルの中の位置。見出しを書かない表（`[colors.tab_bar]` の `colors`
+/// など）は含めず、その中の表を含める。
+fn tables(doc: &DocumentMut) -> Vec<(Vec<String>, Option<isize>)> {
+    let mut found = Vec::new();
+    collect_tables(doc.as_table(), &mut Vec::new(), &mut found);
+    found
+}
+
+fn collect_tables(
+    table: &Table,
+    path: &mut Vec<String>,
+    found: &mut Vec<(Vec<String>, Option<isize>)>,
+) {
+    for (name, item) in table.iter() {
+        let Some(inner) = item.as_table() else {
+            continue;
+        };
+        if !is_standard(inner) {
+            continue;
+        }
+        path.push(name.to_owned());
+        if !inner.is_implicit() {
+            found.push((path.clone(), inner.position()));
+        }
+        collect_tables(inner, path, found);
+        path.pop();
+    }
 }
 
 /// 表の値の行のあとに続く場所。次の表の見出しの前か、ファイルの最後。
 #[derive(Debug)]
 enum Following {
-    Table(String),
+    Table(Vec<String>),
     End,
 }
 
-/// `section` の表の最後の値の行のあとに続く場所。
-fn following(doc: &DocumentMut, section: Option<&str>) -> Following {
-    let after = match section {
-        None => None,
-        Some(name) => doc
-            .get(name)
-            .and_then(Item::as_table)
-            .and_then(Table::position),
+/// `path` の表の最後の値の行のあとに続く場所。
+fn following(doc: &DocumentMut, path: &[&str]) -> Following {
+    let after = if path.is_empty() {
+        None
+    } else {
+        table_at(doc, path).and_then(Table::position)
     };
     tables(doc)
         .into_iter()
-        .filter(|(name, position)| Some(name.as_str()) != section && position.is_some())
+        .filter(|(other, position)| *other != path && position.is_some())
         .filter(|(_, position)| after.is_none_or(|after| position.is_some_and(|p| p > after)))
         .min_by_key(|(_, position)| *position)
-        .map_or(Following::End, |(name, _)| Following::Table(name))
+        .map_or(Following::End, |(other, _)| Following::Table(other))
 }
 
 fn following_prefix(doc: &DocumentMut, following: &Following) -> String {
     match following {
-        Following::Table(name) => doc
-            .get(name)
-            .and_then(Item::as_table)
-            .map(|table| decor_prefix(table.decor()))
-            .unwrap_or_default(),
+        Following::Table(path) => {
+            let path: Vec<&str> = path.iter().map(String::as_str).collect();
+            table_at(doc, &path)
+                .map(|table| decor_prefix(table.decor()))
+                .unwrap_or_default()
+        }
         Following::End => doc.trailing().as_str().unwrap_or_default().to_owned(),
     }
 }
 
 fn set_following_prefix(doc: &mut DocumentMut, following: &Following, prefix: String) {
     match following {
-        Following::Table(name) => {
-            if let Some(Item::Table(table)) = doc.get_mut(name) {
+        Following::Table(path) => {
+            let path: Vec<&str> = path.iter().map(String::as_str).collect();
+            if let Some(table) = table_at_mut(doc, &path) {
                 table.decor_mut().set_prefix(prefix);
             }
         }
@@ -250,11 +385,20 @@ fn value_prefixes(table: &Table) -> Vec<(String, String)> {
         .collect()
 }
 
-/// `text` の中の、`key` の値をコメントにした行（`# key = …`）を探し、その行の前と後ろに分ける。
-fn split_at_commented(text: &str, key: &str) -> Option<(String, String)> {
+/// 表の値の行のうち、`target` のもの。行の順。
+fn matching_names(table: &Table, target: &Target) -> Vec<String> {
+    table
+        .iter()
+        .filter(|(name, item)| item.is_value() && (target.matches)(name))
+        .map(|(name, _)| name.to_owned())
+        .collect()
+}
+
+/// `text` の中の、`target` の値をコメントにした行（`# キー = …`）を探し、その行の前と後ろに分ける。
+fn split_at_commented(text: &str, target: &Target) -> Option<(String, String)> {
     let mut start = 0;
     for line in text.split_inclusive('\n') {
-        if is_commented_setting(line, key) {
+        if commented_key(line).is_some_and(|name| (target.matches)(&name)) {
             let end = start + line.len();
             return Some((text[..start].to_owned(), text[end..].to_owned()));
         }
@@ -263,34 +407,37 @@ fn split_at_commented(text: &str, key: &str) -> Option<(String, String)> {
     None
 }
 
-fn is_commented_setting(line: &str, key: &str) -> bool {
-    let Some(rest) = line.trim_start().strip_prefix('#') else {
-        return false;
-    };
-    let Some(rest) = rest.trim_start().strip_prefix(key) else {
-        return false;
-    };
-    rest.trim_start().starts_with('=')
+/// 値をコメントにした行（`# キー = …`）のキーの名前。キーを引用符で囲んでいれば外す。
+fn commented_key(line: &str) -> Option<String> {
+    let rest = line.trim_start().strip_prefix('#')?;
+    let (key, _) = rest.split_once('=')?;
+    let key = key.trim();
+    let unquoted = ['"', '\'']
+        .iter()
+        .find_map(|quote| key.strip_prefix(*quote)?.strip_suffix(*quote));
+    let name = unquoted.unwrap_or(key);
+    (!name.is_empty()).then(|| name.to_owned())
 }
 
-/// `key` の値を `value` にする。
-fn set(
-    doc: &mut DocumentMut,
-    section: Option<&str>,
-    key: &str,
-    value: Value,
-) -> Result<(), String> {
-    let table = section_mut(doc, section, true)?.expect("created");
-    if let Some(item) = table.get_mut(key) {
+/// `target` の値を `value` にする。同じ項目の行が二つ以上あれば、最初の行を書き換え、ほかは消す。
+fn set(doc: &mut DocumentMut, path: &[&str], target: &Target, value: Value) -> Result<(), String> {
+    let existed = table_at(doc, path).is_some();
+    let table = section_mut(doc, path, true)?.expect("created");
+    let names = matching_names(table, target);
+    if let Some((first, rest)) = names.split_first() {
+        let item = table.get_mut(first).expect("the key exists");
         let mut value = value;
         if let Some(old) = item.as_value() {
             *value.decor_mut() = old.decor().clone();
         }
         *item = Item::Value(value);
+        for name in rest {
+            replace_line(doc, path, name, None);
+        }
         return Ok(());
     }
     if !is_standard(table) {
-        table.insert(key, Item::Value(value));
+        table.insert(&target.name, Item::Value(value));
         return Ok(());
     }
     let prefixes = value_prefixes(table);
@@ -298,33 +445,42 @@ fn set(
         .iter()
         .enumerate()
         .find_map(|(index, (_, prefix))| {
-            split_at_commented(prefix, key).map(|split| (index, split))
+            split_at_commented(prefix, target).map(|split| (index, split))
         });
     if let Some((index, (before, after))) = found {
         let (next, _) = &prefixes[index];
         if let Some(mut next_key) = table.key_mut(next) {
             next_key.leaf_decor_mut().set_prefix(after);
         }
-        insert_at(table, index, key_with_prefix(key, before), value);
+        insert_at(table, index, key_with_prefix(target.key(), before), value);
         return Ok(());
     }
-    let following = following(doc, section);
+    let following = following(doc, path);
     let after_values = following_prefix(doc, &following);
-    let table = section_mut(doc, section, false)?.expect("exists");
-    match split_at_commented(&after_values, key) {
+    let table = section_mut(doc, path, false)?.expect("exists");
+    match split_at_commented(&after_values, target) {
         Some((before, after)) => {
-            table.insert_formatted(&key_with_prefix(key, before), Item::Value(value));
+            table.insert_formatted(&key_with_prefix(target.key(), before), Item::Value(value));
             set_following_prefix(doc, &following, after);
         }
-        None if section.is_none() && prefixes.is_empty() => {
+        None if path.is_empty() && prefixes.is_empty() => {
             // 最上位の値の行は表の見出しより前に出るので、ファイルの先頭のコメントより上に来ないよう、
             // 空行で見出しと離れたところまでをこの行の前に移す。
             let (before, after) = split_after_last_blank_line(&after_values);
-            table.insert_formatted(&key_with_prefix(key, before), Item::Value(value));
+            table.insert_formatted(&key_with_prefix(target.key(), before), Item::Value(value));
             set_following_prefix(doc, &following, after);
         }
+        None if existed && matches!(following, Following::End) && !path.is_empty() => {
+            // ファイルの最後の表なら、その後ろのコメント（ひな形の説明や既定の割り当ての一覧）は
+            // この表のものなので、足す行はそれより後ろに置く。
+            table.insert_formatted(
+                &key_with_prefix(target.key(), after_values),
+                Item::Value(value),
+            );
+            set_following_prefix(doc, &following, String::new());
+        }
         None => {
-            table.insert(key, Item::Value(value));
+            table.insert_formatted(&target.key(), Item::Value(value));
         }
     }
     Ok(())
@@ -343,8 +499,8 @@ fn split_after_last_blank_line(text: &str) -> (String, String) {
     (text[..end].to_owned(), text[end..].to_owned())
 }
 
-fn key_with_prefix(key: &str, prefix: String) -> Key {
-    Key::new(key).with_leaf_decor(Decor::new(prefix, " "))
+fn key_with_prefix(key: Key, prefix: String) -> Key {
+    key.with_leaf_decor(Decor::new(prefix, " "))
 }
 
 /// 表の値の行の `index` 番目の前に、`key` の行を入れる。
@@ -364,63 +520,108 @@ fn insert_at(table: &mut Table, index: usize, key: Key, value: Value) {
     }
 }
 
-/// `key` を既定値に戻す。書いてあれば、その行を `# key = <default>` のコメントの行にする。`default`
-/// が `None` なら、それまでの値をコメントにする。
+/// `target` を既定値に戻す。書いてあれば、最初の行を `reset` のとおりにし、同じ項目のほかの行は消す。
 fn reset(
     doc: &mut DocumentMut,
-    section: Option<&str>,
-    key: &str,
-    default: Option<Value>,
+    path: &[&str],
+    target: &Target,
+    reset: Reset,
 ) -> Result<(), String> {
-    let Some(table) = section_mut(doc, section, false)? else {
+    let Some(table) = section_mut(doc, path, false)? else {
         return Ok(());
     };
-    let Some(item) = table.get(key) else {
-        return Ok(());
-    };
-    let Some(old) = item.as_value().cloned() else {
-        table.remove(key);
+    let names = matching_names(table, target);
+    let Some((first, rest)) = names.split_first() else {
+        // 値でないもの（表など）が書いてあれば消す。
+        if table.contains_key(&target.name) {
+            table.remove(&target.name);
+        }
         return Ok(());
     };
     if !is_standard(table) {
-        table.remove(key);
+        for name in &names {
+            table.remove(name);
+        }
         return Ok(());
     }
-    let prefixes = value_prefixes(table);
-    let index = prefixes
-        .iter()
-        .position(|(name, _)| name == key)
+    let old = table
+        .get(first)
+        .and_then(Item::as_value)
+        .cloned()
         .expect("the key is a value");
-    let (removed, _) = table.remove_entry(key).expect("the key exists");
-    let shown = bare_repr(default.as_ref().unwrap_or(&old));
-    let line = format!(
-        "{}# {key} = {shown}{}\n",
+    let line = match reset {
+        Reset::Comment(default) => Some(comment_line(&target.repr(), &default, &old)),
+        Reset::CommentOld => {
+            let repr = table
+                .key(first)
+                .map_or_else(|| target.repr(), |key| key.display_repr().into_owned());
+            Some(comment_line(&repr, &old, &old))
+        }
+        Reset::Remove => None,
+    };
+    for name in rest {
+        replace_line(doc, path, name, None);
+    }
+    replace_line(doc, path, first, line);
+    Ok(())
+}
+
+/// `# key = value` の行。行末のコメントは `old` のものを残す。
+fn comment_line(key: &str, value: &Value, old: &Value) -> String {
+    format!(
+        "# {key} = {}{}\n",
+        bare_repr(value),
+        decor_suffix(old.decor())
+    )
+}
+
+/// 表 `path` の値の行 `name` を消し、その行の前に書いたもの（コメントと空行）と `line` を、次の値の
+/// 行の前（なければ表の後ろ）に置く。
+fn replace_line(doc: &mut DocumentMut, path: &[&str], name: &str, line: Option<String>) {
+    let Some(table) = table_at_mut(doc, path) else {
+        return;
+    };
+    let prefixes = value_prefixes(table);
+    let Some(index) = prefixes.iter().position(|(other, _)| other == name) else {
+        return;
+    };
+    let Some((removed, _)) = table.remove_entry(name) else {
+        return;
+    };
+    let kept = format!(
+        "{}{}",
         decor_prefix(removed.leaf_decor()),
-        decor_suffix(old.decor()),
+        line.unwrap_or_default()
     );
     if let Some((next, prefix)) = prefixes.get(index + 1) {
         if let Some(mut next_key) = table.key_mut(next) {
             next_key
                 .leaf_decor_mut()
-                .set_prefix(format!("{line}{prefix}"));
+                .set_prefix(format!("{kept}{prefix}"));
         }
-        return Ok(());
+        return;
     }
-    let following = following(doc, section);
+    let following = following(doc, path);
     let after_values = following_prefix(doc, &following);
-    set_following_prefix(doc, &following, format!("{line}{after_values}"));
-    Ok(())
+    set_following_prefix(doc, &following, format!("{kept}{after_values}"));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{
-        self, FontConfig, PasteConfig, PasteConfirm, ScrollBarConfig, TEMPLATE, WideGlyph,
+    use crate::{
+        config::{
+            self, FontConfig, PasteConfig, PasteConfirm, ScrollBarConfig, TEMPLATE, WideGlyph,
+        },
+        keymap::Keymap,
     };
 
     fn families(names: &[&str]) -> Vec<String> {
         names.iter().map(|&name| name.to_owned()).collect()
+    }
+
+    fn combo(text: &str) -> KeyCombo {
+        KeyCombo::parse(text).unwrap()
     }
 
     /// 既定値とどの項目も違う設定。
@@ -436,6 +637,12 @@ mod tests {
                 confirm: PasteConfirm::Never,
             },
             scroll_bar: ScrollBarConfig { width: 20 },
+            keys: {
+                let mut keys = Keymap::default();
+                keys.bind(combo("ctrl+tab"), None);
+                keys.bind(combo("ctrl+page_down"), Some(Action::NextTab));
+                keys
+            },
         }
     }
 
@@ -451,7 +658,7 @@ mod tests {
         let edited = customized();
         let text = update(TEMPLATE, &Config::default(), &edited).unwrap();
         assert_reads_as(&text, &edited);
-        // 説明の行はそのまま、コメントにした行が値の行になる。
+        // 説明の行はそのまま、コメントにした行が値の行になる。足した組み合わせは表の最後。
         let expected = TEMPLATE
             .replace(
                 r"# shell = 'C:\cygwin64\bin\zsh.exe -l'",
@@ -464,7 +671,12 @@ mod tests {
             .replace("# size = 12", "size = 10.5")
             .replace(r#"# wide_glyph = "shrink""#, r#"wide_glyph = "overflow""#)
             .replace(r#"# confirm = "unsafe""#, r#"confirm = "never""#)
-            .replace("# width = 12", "width = 20");
+            .replace("# width = 12", "width = 20")
+            .replace(
+                "\n# \"ctrl+tab\" = \"next_tab\"",
+                "\n\"ctrl+tab\" = \"none\"",
+            )
+            + "\"ctrl+page_down\" = \"next_tab\"\n";
         assert_eq!(text, expected);
     }
 
@@ -480,13 +692,17 @@ mod tests {
         let mut current = edited.clone();
         let mut text = text;
         let defaults = Config::default();
-        let steps: [fn(&mut Config, &Config); 6] = [
+        let steps: [fn(&mut Config, &Config); 7] = [
             |c, d| c.font.size_pt = d.font.size_pt,
             |c, d| c.shell = d.shell.clone(),
+            |c, _| c.keys.bind(combo("ctrl+tab"), Some(Action::NextTab)),
             |c, d| c.scroll_bar = d.scroll_bar.clone(),
             |c, d| c.font.families = d.font.families.clone(),
-            |c, d| c.paste = d.paste.clone(),
-            |c, d| c.font.wide_glyph = d.font.wide_glyph,
+            |c, d| c.keys = d.keys.clone(),
+            |c, d| {
+                c.paste = d.paste.clone();
+                c.font.wide_glyph = d.font.wide_glyph;
+            },
         ];
         for step in steps {
             let mut next = current.clone();
@@ -568,6 +784,48 @@ mod tests {
     }
 
     #[test]
+    fn keys_are_found_however_they_are_written() {
+        let text = "[keys]\n\"Shift + Ctrl + T\" = 'close_tab' # mine\n\"ctrl+page_down\" = \"next_tab\"\n'CTRL+PAGE_DOWN' = \"prev_tab\"\n";
+        let base = config::parse(text, &Config::default()).config;
+        assert_eq!(
+            base.keys.lookup_combo(combo("ctrl+page_down")),
+            Some(Action::NextTab)
+        );
+        let mut edited = base.clone();
+        edited.keys.bind(combo("ctrl+shift+t"), None);
+        edited
+            .keys
+            .bind(combo("ctrl+page_down"), Some(Action::PrevTab));
+        let updated = update(text, &base, &edited).unwrap();
+        // 書いてある行の値だけを替え、同じ組み合わせの二つ目の行は消す。
+        assert_eq!(
+            updated,
+            "[keys]\n\"Shift + Ctrl + T\" = \"none\" # mine\n\"ctrl+page_down\" = \"prev_tab\"\n"
+        );
+        assert_reads_as(&updated, &edited);
+
+        // 既定に戻すと、既定の割り当てがあればそのコメントの行に、なければ行を消す。
+        let back = update(&updated, &edited, &Config::default()).unwrap();
+        assert_eq!(back, "[keys]\n# \"ctrl+shift+t\" = \"new_tab\" # mine\n");
+        assert_reads_as(&back, &Config::default());
+    }
+
+    #[test]
+    fn keys_table_is_added_when_missing() {
+        let text = "[font]\nsize = 9\n";
+        let base = config::parse(text, &Config::default()).config;
+        let mut edited = base.clone();
+        edited.keys.bind(combo("ctrl+tab"), None);
+        edited.keys.bind(combo("alt+t"), Some(Action::NewTab));
+        let updated = update(text, &base, &edited).unwrap();
+        assert_eq!(
+            updated,
+            "[font]\nsize = 9\n\n[keys]\n\"ctrl+tab\" = \"none\"\n\"alt+t\" = \"new_tab\"\n"
+        );
+        assert_reads_as(&updated, &edited);
+    }
+
+    #[test]
     fn line_endings_and_byte_order_mark_are_kept() {
         let text = "\u{feff}# a\r\n[font]\r\nsize = 9\r\n";
         let base = config::parse(text, &Config::default()).config;
@@ -594,6 +852,26 @@ mod tests {
             bare_repr(&families_value(&families(&["Consolas"]))),
             "\"Consolas\""
         );
+    }
+
+    #[test]
+    fn commented_keys_are_read_with_or_without_quotes() {
+        assert_eq!(commented_key("# size = 12\n"), Some("size".to_owned()));
+        assert_eq!(commented_key("  #size=12"), Some("size".to_owned()));
+        assert_eq!(
+            commented_key("# \"ctrl+tab\" = \"next_tab\"\n"),
+            Some("ctrl+tab".to_owned())
+        );
+        assert_eq!(
+            commented_key("# 'ctrl+tab' = 'none'"),
+            Some("ctrl+tab".to_owned())
+        );
+        assert_eq!(
+            commented_key("# 例: \"ctrl+tab\" = \"none\""),
+            Some("例: \"ctrl+tab\"".to_owned())
+        );
+        assert_eq!(commented_key("# 説明の行。"), None);
+        assert_eq!(commented_key("size = 12"), None);
     }
 
     #[test]

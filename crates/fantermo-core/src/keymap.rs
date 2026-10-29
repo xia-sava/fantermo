@@ -46,6 +46,17 @@ const ACTION_NAMES: [(Action, &str); 7] = [
 ];
 
 impl Action {
+    /// すべての動作。設定ファイルの説明と設定ダイアログの一覧の順。
+    pub const ALL: [Action; 7] = [
+        Action::Copy,
+        Action::Paste,
+        Action::ContextMenu,
+        Action::NewTab,
+        Action::CloseTab,
+        Action::NextTab,
+        Action::PrevTab,
+    ];
+
     /// 設定ファイルに書く名前。
     pub fn name(self) -> &'static str {
         ACTION_NAMES
@@ -252,6 +263,45 @@ impl KeyCombo {
         };
         Ok(Self::new(mods, *key))
     }
+
+    /// キーが名前を持つ（設定ファイルに書ける）か。
+    pub fn is_nameable(&self) -> bool {
+        key_name(self.key).is_some()
+    }
+
+    /// メニューやダイアログに見せる形。`Ctrl+Shift+PageUp` のように、修飾キーとキーの名前の語の頭を
+    /// 大文字にし、キーの名前の `_` を除く。
+    pub fn label(&self) -> String {
+        let mut label = String::new();
+        for (flag, name) in MOD_NAMES {
+            if self.mods.contains(flag) {
+                label.push_str(&capitalize(name));
+                label.push('+');
+            }
+        }
+        match key_name(self.key) {
+            Some(name) => label.extend(name.split('_').map(capitalize)),
+            None => label.push_str(&format!("{:?}", self.key)),
+        }
+        label
+    }
+}
+
+/// キー `key` の名前。名前を持たないキーなら `None`。
+fn key_name(key: Key) -> Option<&'static str> {
+    KEY_NAMES
+        .iter()
+        .find(|(candidate, _)| *candidate == key)
+        .map(|(_, name)| *name)
+}
+
+/// 語の頭の文字を大文字にする。
+fn capitalize(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 impl fmt::Display for KeyCombo {
@@ -261,8 +311,8 @@ impl fmt::Display for KeyCombo {
                 write!(f, "{name}+")?;
             }
         }
-        match KEY_NAMES.iter().find(|(key, _)| *key == self.key) {
-            Some((_, name)) => f.write_str(name),
+        match key_name(self.key) {
+            Some(name) => f.write_str(name),
             None => write!(f, "{:?}", self.key),
         }
     }
@@ -287,11 +337,36 @@ const DEFAULT_BINDINGS: [(KeyCombo, Action); 9] = {
     ]
 };
 
-/// キーの組み合わせから動作を引く表。
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// 組み合わせ `combo` の既定の動作。既定で割り当てていなければ `None`。
+pub fn default_action(combo: KeyCombo) -> Option<Action> {
+    DEFAULT_BINDINGS
+        .iter()
+        .find(|(bound, _)| *bound == combo)
+        .map(|(_, action)| *action)
+}
+
+/// 既定の割り当ての組み合わせ。既定の表の順。
+pub fn default_combos() -> impl Iterator<Item = KeyCombo> {
+    DEFAULT_BINDINGS.iter().map(|(combo, _)| *combo)
+}
+
+/// キーの組み合わせから動作を引く表。組み合わせ一つに動作は一つで、並びの順は比べない。
+#[derive(Clone, Debug)]
 pub struct Keymap {
     bindings: Vec<(KeyCombo, Action)>,
 }
+
+impl PartialEq for Keymap {
+    fn eq(&self, other: &Self) -> bool {
+        self.bindings.len() == other.bindings.len()
+            && self
+                .bindings
+                .iter()
+                .all(|(combo, action)| other.lookup_combo(*combo) == Some(*action))
+    }
+}
+
+impl Eq for Keymap {}
 
 impl Default for Keymap {
     fn default() -> Self {
@@ -305,11 +380,35 @@ impl Keymap {
     /// キー `key` を修飾キー `mods` とともに押したときの動作の候補。ロックの状態と左右の別は見ない。
     /// ほかの修飾キーを足した組み合わせは別の組み合わせとして扱う。
     pub fn lookup(&self, key: Key, mods: Mods) -> Option<Action> {
-        let combo = KeyCombo::new(mods, key);
+        self.lookup_combo(KeyCombo::new(mods, key))
+    }
+
+    /// 組み合わせ `combo` に割り当てた動作。
+    pub fn lookup_combo(&self, combo: KeyCombo) -> Option<Action> {
         self.bindings
             .iter()
             .find(|(bound, _)| *bound == combo)
             .map(|(_, action)| *action)
+    }
+
+    /// 動作 `action` に割り当てた組み合わせ。割り当てた順。
+    pub fn combos_of(&self, action: Action) -> Vec<KeyCombo> {
+        self.bindings
+            .iter()
+            .filter(|(_, bound)| *bound == action)
+            .map(|(combo, _)| *combo)
+            .collect()
+    }
+
+    /// 動作 `action` の割り当てを既定に戻す。ほかの組み合わせからは外し、既定の組み合わせは（ほかの
+    /// 動作に割り当て直していても）この動作に戻す。
+    pub fn reset_action(&mut self, action: Action) {
+        self.bindings.retain(|(_, bound)| *bound != action);
+        for (combo, default) in DEFAULT_BINDINGS {
+            if default == action {
+                self.bind(combo, Some(action));
+            }
+        }
     }
 
     /// `combo` の割り当てを `action` にする。`None` なら外す。
@@ -508,5 +607,55 @@ mod tests {
         assert_eq!(keymap.lookup(Key::C, Mods::CTRL), Some(Action::Paste));
         // ほかの割り当てはそのまま。
         assert_eq!(keymap.lookup(Key::Tab, CTRL_SHIFT), Some(Action::PrevTab));
+    }
+
+    #[test]
+    fn keymaps_compare_regardless_of_order() {
+        let mut a = Keymap::default();
+        a.bind(KeyCombo::new(Mods::CTRL, Key::Tab), None);
+        a.bind(KeyCombo::new(Mods::CTRL, Key::Tab), Some(Action::NextTab));
+        assert_eq!(a, Keymap::default());
+        a.bind(
+            KeyCombo::new(Mods::CTRL, Key::PageDown),
+            Some(Action::NextTab),
+        );
+        assert_ne!(a, Keymap::default());
+    }
+
+    #[test]
+    fn resetting_an_action_restores_its_default_keys() {
+        let mut keymap = Keymap::default();
+        let ctrl_tab = KeyCombo::new(Mods::CTRL, Key::Tab);
+        let ctrl_page_down = KeyCombo::new(Mods::CTRL, Key::PageDown);
+        keymap.bind(ctrl_tab, Some(Action::NewTab));
+        keymap.bind(ctrl_page_down, Some(Action::NextTab));
+        assert_eq!(keymap.combos_of(Action::NextTab), [ctrl_page_down]);
+        keymap.reset_action(Action::NextTab);
+        assert_eq!(keymap.combos_of(Action::NextTab), [ctrl_tab]);
+        assert_eq!(keymap.lookup_combo(ctrl_page_down), None);
+        // 既定の組み合わせを取り戻された動作には、ほかの組み合わせが残る。
+        keymap.reset_action(Action::NewTab);
+        assert_eq!(keymap, Keymap::default());
+        assert_eq!(default_action(ctrl_tab), Some(Action::NextTab));
+        assert_eq!(default_action(ctrl_page_down), None);
+    }
+
+    #[test]
+    fn labels_capitalize_each_word() {
+        let label = |text: &str| KeyCombo::parse(text).unwrap().label();
+        assert_eq!(label("shift+ctrl+t"), "Ctrl+Shift+T");
+        assert_eq!(label("ctrl+page_up"), "Ctrl+PageUp");
+        assert_eq!(label("win+alt+f10"), "Alt+Win+F10");
+        assert_eq!(label("context_menu"), "ContextMenu");
+        assert!(KeyCombo::new(Mods::CTRL, Key::T).is_nameable());
+        assert!(!KeyCombo::new(Mods::CTRL, Key::ShiftLeft).is_nameable());
+    }
+
+    #[test]
+    fn every_action_is_listed_once() {
+        assert_eq!(Action::ALL.len(), ACTION_NAMES.len());
+        for (action, (named, _)) in Action::ALL.iter().zip(ACTION_NAMES) {
+            assert_eq!(*action, named);
+        }
     }
 }

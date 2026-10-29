@@ -699,7 +699,7 @@ impl App {
             wheel_lines_per_notch: wheel_lines_per_notch(),
             clock: Instant::now(),
             pointer_in_window: None,
-            keymap: Keymap::default(),
+            keymap: config.keys,
             suppressed_release: None,
             tab_bar_press: None,
             tab_bar_hover: None,
@@ -1437,6 +1437,7 @@ impl App {
     fn context_menu(&self, x: i32, y: i32) -> Deferred {
         let (screen_x, screen_y) = self.client_to_screen(x, y);
         Deferred::Menu(MenuRequest {
+            keys: self.keymap.clone(),
             menu: Menu::Context,
             x: screen_x,
             y: screen_y,
@@ -1452,6 +1453,7 @@ impl App {
         let (left, top) = self.client_to_screen(button.x as i32, button.y as i32);
         let (right, bottom) = self.client_to_screen(button.right() as i32, button.bottom() as i32);
         Deferred::Menu(MenuRequest {
+            keys: self.keymap.clone(),
             menu: Menu::Main,
             x: left,
             y: bottom,
@@ -1864,6 +1866,7 @@ impl App {
     fn apply_config(&mut self, config: Config) -> Option<u32> {
         self.paste_confirm = config.paste.confirm;
         self.shell = config.shell;
+        self.keymap = config.keys;
         let scroll_bar_resized = config.scroll_bar.width != self.scroll_bar_width;
         self.scroll_bar_width = config.scroll_bar.width;
         let font_changed = self.apply_font_config(config.font);
@@ -1900,6 +1903,7 @@ impl App {
             scroll_bar: ScrollBarConfig {
                 width: self.scroll_bar_width,
             },
+            keys: self.keymap.clone(),
         }
     }
 

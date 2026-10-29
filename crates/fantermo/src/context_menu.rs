@@ -13,6 +13,8 @@ use windows::{
     core::HSTRING,
 };
 
+use fantermo_core::keymap::{Action, KeyCombo, Keymap};
+
 /// メニューで選ばれた操作。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuCommand {
@@ -60,18 +62,41 @@ impl MenuCommand {
         Self::ALL.into_iter().find(|command| command.id() == id)
     }
 
-    /// 項目の表示。タブの後ろはショートカットとして右に寄せて出る。
-    fn label(self) -> &'static str {
+    /// 項目の名前。
+    fn name(self) -> &'static str {
         match self {
-            MenuCommand::Copy => "コピー(&C)\tCtrl+C",
-            MenuCommand::Paste => "貼り付け(&P)\tShift+Insert",
+            MenuCommand::Copy => "コピー(&C)",
+            MenuCommand::Paste => "貼り付け(&P)",
             MenuCommand::SelectAll => "すべて選択(&A)",
-            MenuCommand::NewTab => "新しいタブ(&T)\tCtrl+Shift+T",
-            MenuCommand::CloseTab => "タブを閉じる(&W)\tCtrl+Shift+W",
+            MenuCommand::NewTab => "新しいタブ(&T)",
+            MenuCommand::CloseTab => "タブを閉じる(&W)",
             MenuCommand::EditSettings => "設定(&S)…",
             MenuCommand::OpenSettings => "設定ファイルを開く(&F)",
             MenuCommand::ShowLicenses => "ライセンス(&L)",
             MenuCommand::Exit => "終了(&X)",
+        }
+    }
+
+    /// 同じことをするキーの割り当ての動作。
+    fn action(self) -> Option<Action> {
+        match self {
+            MenuCommand::Copy => Some(Action::Copy),
+            MenuCommand::Paste => Some(Action::Paste),
+            MenuCommand::NewTab => Some(Action::NewTab),
+            MenuCommand::CloseTab => Some(Action::CloseTab),
+            _ => None,
+        }
+    }
+
+    /// 項目の表示。キーを割り当てていれば、タブの後ろに最初の組み合わせを書く（ショートカットとして
+    /// 右に寄せて出る）。
+    fn label(self, keys: &Keymap) -> String {
+        let shortcut = self
+            .action()
+            .and_then(|action| keys.combos_of(action).first().map(KeyCombo::label));
+        match shortcut {
+            Some(shortcut) => format!("{}\t{shortcut}", self.name()),
+            None => self.name().to_owned(),
         }
     }
 }
@@ -118,8 +143,10 @@ impl Menu {
 }
 
 /// メニューを出す場所と、押せない項目を決めるもの。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct MenuRequest {
+    /// キーの割り当て。項目に添えるキーの組み合わせを決める。
+    pub keys: Keymap,
     pub menu: Menu,
     /// 左上を置く画面の位置。
     pub x: i32,
@@ -189,7 +216,11 @@ fn build(request: &MenuRequest) -> windows::core::Result<HMENU> {
                 } else {
                     MF_STRING | MF_GRAYED
                 };
-                (flags, command.id(), Some(HSTRING::from(command.label())))
+                (
+                    flags,
+                    command.id(),
+                    Some(HSTRING::from(command.label(&request.keys))),
+                )
             }
             None => (MF_SEPARATOR, 0, None),
         };
@@ -222,6 +253,29 @@ mod tests {
             assert_eq!(MenuCommand::from_id(command.id()), Some(command));
         }
         assert_eq!(MenuCommand::from_id(0), None);
+    }
+
+    #[test]
+    fn labels_show_the_first_bound_keys() {
+        let mut keys = Keymap::default();
+        assert_eq!(MenuCommand::Copy.label(&keys), "コピー(&C)\tCtrl+C");
+        assert_eq!(
+            MenuCommand::Paste.label(&keys),
+            "貼り付け(&P)\tShift+Insert"
+        );
+        assert_eq!(
+            MenuCommand::NewTab.label(&keys),
+            "新しいタブ(&T)\tCtrl+Shift+T"
+        );
+        assert_eq!(
+            MenuCommand::CloseTab.label(&keys),
+            "タブを閉じる(&W)\tCtrl+Shift+W"
+        );
+        assert_eq!(MenuCommand::Exit.label(&keys), "終了(&X)");
+        keys.bind(KeyCombo::parse("ctrl+shift+t").unwrap(), None);
+        assert_eq!(MenuCommand::NewTab.label(&keys), "新しいタブ(&T)");
+        keys.bind(KeyCombo::parse("alt+t").unwrap(), Some(Action::NewTab));
+        assert_eq!(MenuCommand::NewTab.label(&keys), "新しいタブ(&T)\tAlt+T");
     }
 
     #[test]

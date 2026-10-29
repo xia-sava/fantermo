@@ -14,6 +14,8 @@ use toml::{
     de::{DeTable, DeValue},
 };
 
+use crate::keymap::{self, KeyCombo, Keymap};
+
 /// 既定のフォント。先頭から探す。
 pub const DEFAULT_FONT_FAMILIES: [&str; 3] = ["Bizin Gothic", "BIZ UDGothic", "Consolas"];
 
@@ -60,6 +62,28 @@ pub const TEMPLATE: &str = r#"# fantermo の設定ファイル。
 # 端末の右のスクロールバーの幅（96 DPI でのピクセル。画面の拡大率に合わせて広げる）。4 から 64 まで。
 # 書き換えたら、端末の桁数と行数を保ったまま窓の幅を変える。
 # width = 12
+
+[keys]
+# キーの組み合わせと、押したときの動作。書いた組み合わせだけ、下に並べた既定の割り当てを変える。
+# 組み合わせは、修飾キー（ctrl、shift、alt、win）とキーを「+」でつなぐ。キーの名前はキーボードの上の
+# 位置の名前で、a〜z、digit_0〜digit_9、f1〜f24、tab、enter、space、escape、backspace、insert、delete、
+# home、end、page_up、page_down、arrow_up、arrow_down、arrow_left、arrow_right、context_menu、
+# numpad_0〜numpad_9 など。
+# 動作は copy、paste、context_menu、new_tab、close_tab、next_tab、prev_tab。"none" は割り当てを外し、
+# キーをシェルへ送る。同じ動作に複数の組み合わせを割り当ててもよい。
+# 例: Ctrl+Tab をシェルへ送り、Ctrl+PageDown で次のタブにするなら、次の 2 行を書く。
+# 例: "ctrl+tab" = "none"
+# 例: "ctrl+page_down" = "next_tab"
+# 既定の割り当て:
+# "ctrl+c" = "copy"
+# "ctrl+insert" = "copy"
+# "shift+insert" = "paste"
+# "context_menu" = "context_menu"
+# "shift+f10" = "context_menu"
+# "ctrl+shift+t" = "new_tab"
+# "ctrl+shift+w" = "close_tab"
+# "ctrl+tab" = "next_tab"
+# "ctrl+shift+tab" = "prev_tab"
 "#;
 
 /// 設定の全体。
@@ -70,6 +94,8 @@ pub struct Config {
     pub shell: Option<String>,
     pub paste: PasteConfig,
     pub scroll_bar: ScrollBarConfig,
+    /// キーの割り当て。`[keys]` に書いた組み合わせを、既定の割り当てに重ねたもの。
+    pub keys: Keymap,
 }
 
 /// `[scroll_bar]` の設定。
@@ -338,6 +364,11 @@ pub fn parse(text: &str, previous: &Config) -> Parsed {
             reader.warn_unknown(&scroll_bar, SECTION);
         }
     }
+    match reader.take::<Table>(&mut root, None, "keys") {
+        Item::Absent => config.keys = Keymap::default(),
+        Item::Invalid => {}
+        Item::Valid(keys) => config.keys = read_keys(&mut reader, keys, &previous.keys),
+    }
     reader.warn_unknown(&root, None);
     // ファイルの上から順に読めるように、行の順に並べる。
     reader
@@ -379,6 +410,55 @@ fn read_font(reader: &mut Reader, table: &mut Table, font: &mut FontConfig) {
     reader
         .take::<WideGlyph>(table, SECTION, "wide_glyph")
         .apply(&mut font.wide_glyph, defaults.wide_glyph);
+}
+
+/// `[keys]` の表を、既定の割り当てに上から順に重ねる。組み合わせを読めない行は飛ばす。動作を読めない
+/// 行は、その組み合わせを前の割り当て（`previous`）のままにする。同じ組み合わせを二度書いたら、後の行を
+/// 飛ばす。
+fn read_keys(reader: &mut Reader, keys: Table, previous: &Keymap) -> Keymap {
+    let mut entries: Vec<(String, Value)> = keys.into_iter().collect();
+    entries.sort_by_key(|(name, _)| {
+        reader
+            .lines
+            .get(&key_path(Some("keys"), name))
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
+    let mut keymap = Keymap::default();
+    let mut written: Vec<(KeyCombo, String)> = Vec::new();
+    for (name, value) in entries {
+        let path = key_path(Some("keys"), &name);
+        let combo = match KeyCombo::parse(&name) {
+            Ok(combo) => combo,
+            Err(e) => {
+                reader.warn(&path, format!("ignoring keys.\"{name}\": {e}"));
+                continue;
+            }
+        };
+        if let Some((_, first)) = written.iter().find(|(seen, _)| *seen == combo) {
+            reader.warn(
+                &path,
+                format!("ignoring keys.\"{name}\": the same keys as \"{first}\" above"),
+            );
+            continue;
+        }
+        written.push((combo, name.clone()));
+        let action = match value {
+            Value::String(action) => keymap::parse_action(&action),
+            _ => Err(format!(
+                "expected an action name or \"{}\"",
+                keymap::UNBOUND
+            )),
+        };
+        match action {
+            Ok(action) => keymap.bind(combo, action),
+            Err(e) => {
+                reader.warn(&path, format!("ignoring keys.\"{name}\": {e}"));
+                keymap.bind(combo, previous.lookup_combo(combo));
+            }
+        }
+    }
+    keymap
 }
 
 /// 項目を読みながら、警告を誤りのある行と一緒に溜める。
@@ -439,26 +519,30 @@ fn syntax_warning(text: &str, error: &toml::de::Error) -> Warning {
     }
 }
 
-/// 最上位とその一段下の表のキーの道筋から、そのキーを書いた行へ。`[font]` のような表の見出しは、
-/// 見出しの行になる。
+/// 表のキーの道筋（`font.size`、`colors.tab_bar.bar` など。キーは引用符を外した名前）から、そのキーを
+/// 書いた行へ。`[font]` のような表の見出しは、見出しの行になる。
 fn key_lines(text: &str) -> HashMap<String, usize> {
     let mut lines = HashMap::new();
     let Ok(root) = DeTable::parse(text) else {
         return lines;
     };
-    for (key, value) in root.get_ref() {
-        let path = key.get_ref().to_string();
-        if let DeValue::Table(table) = value.get_ref() {
-            for inner in table.keys() {
-                lines.insert(
-                    format!("{path}.{}", inner.get_ref()),
-                    line_of(text, inner.span().start),
-                );
-            }
+    collect_key_lines(text, root.get_ref(), None, &mut lines);
+    lines
+}
+
+fn collect_key_lines(
+    text: &str,
+    table: &DeTable,
+    section: Option<&str>,
+    lines: &mut HashMap<String, usize>,
+) {
+    for (key, value) in table {
+        let path = key_path(section, key.get_ref());
+        if let DeValue::Table(inner) = value.get_ref() {
+            collect_key_lines(text, inner, Some(&path), lines);
         }
         lines.insert(path, line_of(text, key.span().start));
     }
-    lines
 }
 
 /// `text` の `offset` バイト目がある行（1 から数える）。
@@ -482,6 +566,7 @@ fn key_path(section: Option<&str>, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keymap::Action;
 
     fn families(names: &[&str]) -> Vec<String> {
         names.iter().map(|&name| name.to_owned()).collect()
@@ -514,7 +599,17 @@ mod tests {
                 confirm: PasteConfirm::Never,
             },
             scroll_bar: ScrollBarConfig { width: 20 },
+            keys: {
+                let mut keys = Keymap::default();
+                keys.bind(combo("ctrl+tab"), None);
+                keys.bind(combo("ctrl+page_down"), Some(Action::NextTab));
+                keys
+            },
         }
+    }
+
+    fn combo(text: &str) -> KeyCombo {
+        KeyCombo::parse(text).unwrap()
     }
 
     #[test]
@@ -525,7 +620,8 @@ mod tests {
         assert_eq!(parsed.config, Config::default());
     }
 
-    /// 行頭の `# ` に続けて `キー = ` と書いた行の `# ` を外す。
+    /// 行頭の `# ` に続けて `キー = ` と書いた行の `# ` を外す。キーは英小文字と `_` か、`"` で囲んだ
+    /// キーの組み合わせ。
     fn uncomment_settings(text: &str) -> String {
         text.lines()
             .map(|line| {
@@ -533,7 +629,13 @@ mod tests {
                     return line.to_owned();
                 };
                 let is_setting = rest.split_once(" = ").is_some_and(|(key, _)| {
-                    !key.is_empty() && key.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                    let bare =
+                        !key.is_empty() && key.chars().all(|c| c.is_ascii_lowercase() || c == '_');
+                    let combo = key
+                        .strip_prefix('"')
+                        .and_then(|key| key.strip_suffix('"'))
+                        .is_some_and(|key| KeyCombo::parse(key).is_ok());
+                    bare || combo
                 });
                 if is_setting { rest } else { line }.to_owned()
             })
@@ -558,7 +660,103 @@ mod tests {
             .lines()
             .filter(|line| !line.starts_with('#') && line.contains(" = "))
             .count();
-        assert_eq!(settings, 6, "{text}");
+        assert_eq!(settings, 6 + 9, "{text}");
+    }
+
+    #[test]
+    fn template_lists_the_default_keys() {
+        let listed: Vec<String> = TEMPLATE
+            .lines()
+            .skip_while(|line| *line != "[keys]")
+            .filter_map(|line| line.strip_prefix("# \""))
+            .map(|line| format!("\"{line}"))
+            .collect();
+        let expected: Vec<String> = Keymap::default()
+            .bindings()
+            .iter()
+            .map(|(combo, action)| format!("\"{combo}\" = \"{}\"", action.name()))
+            .collect();
+        assert_eq!(listed, expected);
+    }
+
+    #[test]
+    fn keys_are_laid_over_the_defaults() {
+        let parsed = parse(
+            "[keys]\n\"ctrl+tab\" = \"none\"\n\"Ctrl + Page_Down\" = \"next_tab\"\n\"ctrl+shift+n\" = \"new_tab\"\n",
+        );
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        let keys = &parsed.config.keys;
+        assert_eq!(keys.lookup_combo(combo("ctrl+tab")), None);
+        assert_eq!(
+            keys.lookup_combo(combo("ctrl+page_down")),
+            Some(Action::NextTab)
+        );
+        // 同じ動作に複数の組み合わせ。既定の Ctrl+Shift+T も残る。
+        assert_eq!(
+            keys.combos_of(Action::NewTab),
+            [combo("ctrl+shift+t"), combo("ctrl+shift+n")]
+        );
+        assert_eq!(
+            keys.lookup_combo(combo("ctrl+shift+tab")),
+            Some(Action::PrevTab)
+        );
+        // 既定の組み合わせを別の動作に割り当て直す。
+        let parsed = parse("[keys]\n\"ctrl+c\" = \"paste\"\n");
+        assert_eq!(
+            parsed.config.keys.lookup_combo(combo("ctrl+c")),
+            Some(Action::Paste)
+        );
+        assert_eq!(parse("[keys]\n").config.keys, Keymap::default());
+    }
+
+    #[test]
+    fn invalid_key_lines_are_skipped_with_their_lines() {
+        let previous = customized();
+        let parsed = super::parse(
+            "[keys]\n\"ctrl+tabb\" = \"new_tab\"\n\"ctrl+tab\" = \"next\"\n\"ctrl+page_down\" = 1\n\"ctrl+shift+n\" = \"new_tab\"\n\"Shift+Ctrl+N\" = \"close_tab\"\n",
+            &previous,
+        );
+        let warnings: Vec<(Option<usize>, &str)> = parsed
+            .warnings
+            .iter()
+            .map(|w| (w.line, w.message.as_str()))
+            .collect();
+        assert_eq!(
+            warnings,
+            [
+                (
+                    Some(2),
+                    "ignoring keys.\"ctrl+tabb\": unknown key `tabb` in `ctrl+tabb`"
+                ),
+                (Some(3), "ignoring keys.\"ctrl+tab\": unknown action `next`"),
+                (
+                    Some(4),
+                    "ignoring keys.\"ctrl+page_down\": expected an action name or \"none\""
+                ),
+                (
+                    Some(6),
+                    "ignoring keys.\"Shift+Ctrl+N\": the same keys as \"ctrl+shift+n\" above"
+                ),
+            ]
+        );
+        let keys = &parsed.config.keys;
+        // 動作を読めない組み合わせは前の割り当てのまま。
+        assert_eq!(keys.lookup_combo(combo("ctrl+tab")), None);
+        assert_eq!(
+            keys.lookup_combo(combo("ctrl+page_down")),
+            Some(Action::NextTab)
+        );
+        assert_eq!(
+            keys.lookup_combo(combo("ctrl+shift+n")),
+            Some(Action::NewTab)
+        );
+        // 起動したときは既定の割り当て。
+        let parsed = parse("[keys]\n\"ctrl+tab\" = \"next\"\n");
+        assert_eq!(parsed.config.keys, Keymap::default());
+        // 表でなければ全体が前のまま。
+        let parsed = super::parse("keys = 1\n", &previous);
+        assert_eq!(parsed.config.keys, previous.keys);
+        assert_eq!(parsed.warnings.len(), 1);
     }
 
     #[test]
@@ -583,12 +781,12 @@ mod tests {
     fn invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults() {
         let previous = customized();
         let parsed = super::parse(
-            "shell = ' '\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[scroll_bar]\nwidth = 2\n",
+            "shell = ' '\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[scroll_bar]\nwidth = 2\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n",
             &previous,
         );
         assert!(!parsed.syntax_error);
         assert_eq!(parsed.config, previous);
-        assert_eq!(parsed.warnings.len(), 6, "{:?}", parsed.warnings);
+        assert_eq!(parsed.warnings.len(), 8, "{:?}", parsed.warnings);
 
         let parsed = super::parse("[font]\nsize = 500\n", &previous);
         assert_eq!(
@@ -705,6 +903,7 @@ mod tests {
                     confirm: PasteConfirm::Never,
                 },
                 scroll_bar: ScrollBarConfig { width: 8 },
+                ..Config::default()
             }
         );
     }
