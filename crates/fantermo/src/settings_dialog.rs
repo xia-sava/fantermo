@@ -1243,7 +1243,7 @@ impl State<'_> {
     }
 
     /// 組み合わせ `new` を動作 `action` に割り当てる。`replacing` があれば、その組み合わせを外す。`new`
-    /// をほかの動作に割り当てていれば、付け替えるかを尋ね、やめたら `false`。
+    /// をほかの動作に割り当てていれば、割り当て直すかを尋ね、やめたら `false`。
     fn assign(&self, action: Action, new: KeyCombo, replacing: Option<KeyCombo>) -> bool {
         let bound = self.keys.borrow().lookup_combo(new);
         if bound == Some(action) && replacing.is_none_or(|old| old == new) {
@@ -1253,7 +1253,7 @@ impl State<'_> {
             && other != action
         {
             let text = format!(
-                "{} は「{}」に割り当てています。「{}」に付け替えますか？",
+                "{} は「{}」に割り当てています。「{}」に割り当て直しますか？",
                 new.label(),
                 action_label(other),
                 action_label(action)
