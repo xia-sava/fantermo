@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- fantermo のアイコン（32 px 以上）。黄色の地に、裾が波の黒い画面。中に黄色の「%」 -->
+  <defs>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffdb4d"/>
+      <stop offset="1" stop-color="#f2b200"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="224" height="224" rx="52" fill="url(#ground)"/>
+  <path d="M68 48 H188 A20 20 0 0 1 208 68 V184 Q194.7 210 181.3 184 Q168 158 154.7 184 Q141.3 210 128 184 Q114.7 158 101.3 184 Q88 210 74.7 184 Q61.3 158 48 184 V68 A20 20 0 0 1 68 48 Z"
+        fill="#2a2a2a"/>
+  <!-- 「%」: 二つの輪と斜めの棒 -->
+  <g fill="none" stroke="#ffd23f" stroke-width="12">
+    <ellipse cx="113" cy="95" rx="10.5" ry="12"/>
+    <ellipse cx="143" cy="143" rx="10.5" ry="12"/>
+  </g>
+  <path d="M150 78 H163 L106 160 H93 Z" fill="#ffd23f"/>
+</svg>
