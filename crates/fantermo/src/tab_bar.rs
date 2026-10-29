@@ -3,20 +3,15 @@
 //! 寸法は端末のフォントによらず DPI から決め、セルの格子によらずピクセルの位置で並べる。色は
 //! [`Palette`] にまとめ、既定では地と表示していないタブを Windows のコントロールの色より少し濃い
 //! グレー、表示しているタブを窓の地の色（白）で上の角を丸め、左・右・上に細い縁の線を引いて描く。
-//! タブバーと端末の画面の間には少し空きを置く。並べ方
-//! （どこがどのタブか、タイトルの省略、ベルの印の位置）と、描くもの（[`Paint`]）の組み立ては、窓や
-//! 描画に依存しない関数にしてある。
+//! 並べ方（どこがどのタブか、タイトルの省略、ベルの印の位置）と、描くもの（[`Paint`]）の組み立ては、
+//! 窓や描画に依存しない関数にしてある。
 
 use fantermo_core::{frame::Rgb, vt};
 
 use crate::paint::{Area, Corner, Icon, Paint, mix, scale};
 
-/// タブバーの高さ。端末の画面との間の空き（[`TERMINAL_GAP`]）は含まない。
+/// タブバーの高さ。
 const BAR_HEIGHT: u32 = 26;
-
-/// タブバーの下の辺と端末の画面の間の空き。何も描かず、描画が端末の背景色で塗るところに任せる
-/// （`Renderer::render` はどの領域にも入らないところを端末の背景色で塗る）。
-const TERMINAL_GAP: u32 = 4;
 
 /// タブバーの上の辺（窓のタイトルバーの下）からタブの上の辺までの空き。
 const TOP_MARGIN: u32 = 2;
@@ -86,10 +81,9 @@ const HOVERED_BUTTON_TINT: f32 = 0.15;
 /// 押しているボタンの丸い地の色を、ボタンの下の色から文字の色へ寄せる割合。
 const PRESSED_BUTTON_TINT: f32 = 0.28;
 
-/// DPI が `dpi` の窓での、タブバーの高さに端末の画面との間の空きを足したもの（ピクセル）。端末の
-/// 画面はここから下に描く。
+/// DPI が `dpi` の窓での、タブバーの高さ（ピクセル）。
 pub fn height(dpi: u32) -> u32 {
-    scale(BAR_HEIGHT, dpi) + scale(TERMINAL_GAP, dpi)
+    Metrics { dpi }.bar_height()
 }
 
 /// タブバーの寸法を決めるもの。寸法は窓の DPI に比例させる。
@@ -111,7 +105,7 @@ impl Metrics {
         scale(px, self.dpi)
     }
 
-    /// タブバーの高さ。端末の画面との間の空きは含まない。
+    /// タブバーの高さ。
     fn bar_height(self) -> u32 {
         self.scale(BAR_HEIGHT)
     }
@@ -539,7 +533,7 @@ impl Highlight {
 /// `layout` のとおりに並べたタブバーに描くもの。`tabs` は端末の並びの順のタブ、`active` は表示して
 /// いるタブの位置、`highlight` はマウスの下にあるものと押しているもの。色は `colors`、タイトルの幅は
 /// `measure` で測る。閉じるボタンは、表示しているタブと
-/// マウスの下のタブにだけ出す。描くのはタブバーの高さまでで、端末の画面との間の空きには描かない。
+/// マウスの下のタブにだけ出す。描くのはタブバーの高さまでで、その下の端末の画面の余白には描かない。
 pub fn paints(
     layout: &Layout,
     tabs: &[TabView],
@@ -798,8 +792,8 @@ mod tests {
         Palette::from_system(SYSTEM)
     }
 
-    /// 192 DPI の寸法。タブバーの高さ 52（端末との空き 8 は別）、上の空き 4、角の半径 10、すき間 12、
-    /// 余白 20、ボタン 36、閉じるボタン 32、ベルの印 12、印のすき間 12、タブの幅 144〜480。
+    /// 192 DPI の寸法。タブバーの高さ 52（その下の端末の画面の上の余白 8 は別）、上の空き 4、角の半径
+    /// 10、すき間 12、余白 20、ボタン 36、閉じるボタン 32、ベルの印 12、印のすき間 12、タブの幅 144〜480。
     const METRICS: Metrics = Metrics { dpi: 192 };
 
     /// セルの幅が 16 ピクセルの 100 桁の窓のタブバーの幅。
@@ -840,12 +834,12 @@ mod tests {
 
     #[test]
     fn the_bar_height_follows_the_dpi() {
-        // タブバーの高さ 26 と、端末の画面との空き 4。
-        assert_eq!(height(96), 30);
-        assert_eq!(height(144), 45);
-        assert_eq!(height(192), 60);
-        assert_eq!(height(120), 38);
-        assert_eq!(height(1), 2);
+        // 96 DPI でタブバーの高さ 26。
+        assert_eq!(height(96), 26);
+        assert_eq!(height(144), 39);
+        assert_eq!(height(192), 52);
+        assert_eq!(height(120), 33);
+        assert_eq!(height(1), 1);
         assert_eq!(METRICS.bar_height(), 52);
         let base = Metrics { dpi: 96 };
         assert_eq!((base.button(), METRICS.button()), (18, 36));
@@ -952,7 +946,7 @@ mod tests {
         // メニューのボタンは、窓の左端から、上から下まで。
         assert_eq!(layout.hit(0, 0), Some(Hit::Menu));
         assert_eq!(layout.hit(47, 51), Some(Hit::Menu));
-        // メニューのボタンとタブの間、タブとボタンの間、右の空き、端末の画面との間の空き。
+        // メニューのボタンとタブの間、タブとボタンの間、右の空き、その下の端末の画面の余白。
         assert_eq!(layout.hit(54, 30), None);
         assert_eq!(layout.hit(1025, 30), None);
         assert_eq!(layout.hit(1068, 30), None);
@@ -1199,7 +1193,7 @@ mod tests {
             &colors,
             &FixedWidth,
         );
-        // 地はタブバーの全体で、端末の画面との間の空きは含まない。
+        // 地はタブバーの全体で、その下の端末の画面の余白は含まない。
         assert_eq!(
             paints[0],
             Paint::Fill {
