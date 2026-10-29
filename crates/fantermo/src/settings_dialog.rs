@@ -91,7 +91,6 @@ const ID_PADDING: i32 = 230;
 const ID_PADDING_SPIN: i32 = 231;
 /// `paste.confirm` のラジオボタン。[`PasteConfirm::ALL`] の順に ID が続く。
 const ID_PASTE_CONFIRM: i32 = 300;
-const ID_SHELL: i32 = 400;
 const ID_BACKGROUND_IMAGES: i32 = 450;
 const ID_BACKGROUND_ADD_FILES: i32 = 451;
 const ID_BACKGROUND_ADD_FOLDER: i32 = 452;
@@ -131,7 +130,7 @@ const SPIN_RANGE: (i32, i32) = (0, 1000);
 const VISIBLE_FONTS: usize = 16;
 
 /// ページ。一覧の順。
-const PAGES: [&str; 6] = ["外観", "背景", "動作", "シェル", "キー", "色"];
+const PAGES: [&str; 5] = ["外観", "背景", "動作", "キー", "色"];
 
 /// 背景画像の一覧の高さ。
 const BACKGROUND_LIST_HEIGHT: i32 = 106;
@@ -518,7 +517,6 @@ struct Controls {
     padding: HWND,
     padding_spin: HWND,
     paste_confirm: [HWND; 3],
-    shell: HWND,
     /// 背景画像の一覧。
     background_images: HWND,
     /// 背景画像の一覧の「外す」のボタン。
@@ -1117,47 +1115,6 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         Some(rect),
     )?);
 
-    // シェル
-    let mut shell_page = Vec::new();
-    let (class, text, rect) = label(
-        "起動するコマンドライン(&C):",
-        [page_left, row(0), page_width, ROW_HEIGHT],
-    );
-    shell_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let shell = child(
-        w!("EDIT"),
-        "",
-        edit_style,
-        WS_EX_CLIENTEDGE,
-        ID_SHELL,
-        Some([page_left, row(0) + ROW_HEIGHT, page_width, ROW_HEIGHT]),
-    )?;
-    shell_page.push(shell);
-    let (class, text, rect) = label(
-        "空にすると PowerShell を起動する。fantermo を引数つきで起動したときは、引数のほうを使う。書き換えたら、次に開くタブから使う。",
-        [
-            page_left,
-            row(0) + 2 * ROW_HEIGHT + MARGIN,
-            page_width,
-            3 * ROW_HEIGHT,
-        ],
-    );
-    shell_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-
     // キー
     let mut keys_page = Vec::new();
     let (class, text, rect) = label(
@@ -1391,7 +1348,6 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
                 appearance,
                 background_page,
                 behavior,
-                shell_page,
                 keys_page,
                 colors_page,
             ],
@@ -1404,7 +1360,6 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             padding,
             padding_spin,
             paste_confirm,
-            shell,
             background_images,
             background_remove: image_buttons[2],
             background_opacity,
@@ -1484,7 +1439,6 @@ impl State<'_> {
             .iter()
             .position(|&value| value == config.paste.confirm);
         check_one(&c.paste_confirm, paste_confirm);
-        set_text(c.shell, config.shell.as_deref().unwrap_or_default());
         *self.background_images.borrow_mut() = config.background.images.clone();
         self.refresh_background_images(None);
         set_text(
@@ -2079,7 +2033,6 @@ impl State<'_> {
         if let Some(index) = checked(&c.paste_confirm) {
             config.paste.confirm = PasteConfirm::ALL[index];
         }
-        config.shell = config::shell_from_input(&get_text(c.shell));
         if self.selected_background_image().is_some()
             && parse_item_opacity(&get_text(c.background_item_opacity)).is_none()
         {
@@ -2445,10 +2398,9 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 {
                     state.on_color_scheme();
                 }
-                (
-                    ID_SIZE | ID_SCROLL_BAR_WIDTH | ID_PADDING | ID_SHELL | ID_BACKGROUND_OPACITY,
-                    EN_CHANGE,
-                ) => state.schedule_preview(),
+                (ID_SIZE | ID_SCROLL_BAR_WIDTH | ID_PADDING | ID_BACKGROUND_OPACITY, EN_CHANGE) => {
+                    state.schedule_preview()
+                }
                 (id, BN_CLICKED)
                     if (ID_WIDE_GLYPH..ID_WIDE_GLYPH + WideGlyph::ALL.len() as i32)
                         .contains(&id)

@@ -1,8 +1,8 @@
 //! fantermo — libghostty-vt を端末エミュレーションに使う Windows 用の端末。
 //!
 //! 引数があれば、それを子プロセスのコマンドラインにする（例: `fantermo.exe C:\app\cygwin\bin\zsh.exe -l`）。
-//! 引数がなければ設定ファイルの `shell` を、それもなければ PowerShell を起動する。新しいタブも同じ
-//! 決め方で起動する。設定ファイルは `%APPDATA%\fantermo\config.toml`（`config_file`）。
+//! 引数がなければ設定ファイルの既定のプロファイルを、プロファイルを書いていなければ PowerShell を起動する。
+//! 新しいタブも同じ決め方で起動する。設定ファイルは `%APPDATA%\fantermo\config.toml`（`config_file`）。
 //! 窓の位置・大きさ・最大化は、閉じるときに同じフォルダの `state.toml` に書き、次に起動したときに戻す
 //! （`window_state`）。
 //!

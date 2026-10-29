@@ -13,8 +13,8 @@ use fantermo_core::{
     backend::{ExitCode, GridSize},
     background::{Candidate, Random},
     config::{
-        BackgroundConfig, ColorsConfig, Config, DEFAULT_FONT_FAMILIES, FontConfig, PasteConfig,
-        PasteConfirm, ScrollBarConfig, WideGlyph, WindowConfig,
+        self, BackgroundConfig, ColorsConfig, Config, DEFAULT_FONT_FAMILIES, FontConfig,
+        PasteConfig, PasteConfirm, Profile, ScrollBarConfig, WideGlyph, WindowConfig,
     },
     frame::Rgb,
     keymap::{self, Keymap},
@@ -146,15 +146,18 @@ const INITIAL_ROWS: u16 = 30;
 /// 作り直しを、モニタを使わずに確かめるために使う。
 const DPI_ENV: &str = "FANTERMO_DPI";
 
-/// 引数も設定ファイルの `shell` もないときに起動するコマンドライン。
-const DEFAULT_COMMAND_LINE: &str = "powershell.exe -NoLogo";
-
-/// 端末を開くときに起動するコマンドライン。fantermo の引数 `arguments` があればそれ、なければ設定の
-/// `shell`、それもなければ既定のシェル。
-fn command_line_for(arguments: Option<&str>, shell: Option<&str>) -> String {
-    arguments
-        .or(shell)
-        .unwrap_or(DEFAULT_COMMAND_LINE)
+/// 端末を開くときに起動するコマンドライン。fantermo の引数 `arguments` があればそれ、なければ既定の
+/// プロファイル（`profiles` の `default` 番目）のもの。
+fn command_line_for(arguments: Option<&str>, profiles: &[Profile], default: usize) -> String {
+    if let Some(arguments) = arguments {
+        return arguments.to_owned();
+    }
+    profiles
+        .get(default)
+        .or(profiles.first())
+        .map_or(config::DEFAULT_COMMAND_LINE, |profile| {
+            profile.command.as_str()
+        })
         .to_owned()
 }
 
@@ -606,8 +609,10 @@ struct App {
     paste_confirm: PasteConfirm,
     /// fantermo の引数（子プロセスのコマンドライン）。
     arguments: Option<String>,
-    /// 設定の `shell`。
-    shell: Option<String>,
+    /// 設定のプロファイル。少なくとも一つある。
+    profiles: Vec<Profile>,
+    /// 設定の既定のプロファイルの名前。`None` なら先頭。
+    default_profile: Option<String>,
     /// 窓が持つ端末。タブの並びの順。少なくとも一つある。
     sessions: Vec<Session>,
     /// 表示している端末の、`sessions` の中の位置。
@@ -715,7 +720,11 @@ impl App {
         let first_id = SessionId(0);
         let session = Session::spawn(
             first_id,
-            &command_line_for(arguments.as_deref(), config.shell.as_deref()),
+            &command_line_for(
+                arguments.as_deref(),
+                &config.profiles,
+                config::default_profile_index(&config.profiles, config.default_profile.as_deref()),
+            ),
             size,
             &config.colors.terminal_colors(),
             Arc::new(poster(hwnd, WM_APP_WAKE, WPARAM(first_id.0))),
@@ -749,7 +758,8 @@ impl App {
             font_config,
             paste_confirm: config.paste.confirm,
             arguments,
-            shell: config.shell,
+            profiles: config.profiles,
+            default_profile: config.default_profile,
             sessions: vec![session],
             active: 0,
             next_session_id: first_id.0 + 1,
@@ -952,7 +962,11 @@ impl App {
     /// 新しい端末を開き、タブの並びの最後に足して表示する。起動できなければ警告を残して何もしない。
     fn open_session(&mut self) {
         let id = SessionId(self.next_session_id);
-        let command_line = command_line_for(self.arguments.as_deref(), self.shell.as_deref());
+        let command_line = command_line_for(
+            self.arguments.as_deref(),
+            &self.profiles,
+            config::default_profile_index(&self.profiles, self.default_profile.as_deref()),
+        );
         let size = grid_size(&self.font, self.terminal_area);
         let mut session = match Session::spawn(
             id,
@@ -1974,7 +1988,7 @@ impl App {
     /// スクロールバーの幅や余白が変わったときも、端末の桁数と行数を保って窓の大きさを変えるので、同じく
     /// 返す。
     /// グリフの描き方だけが変わったときは、セルの寸法は変わらないので、この場でアトラスだけを作り直す。
-    /// 貼り付けの設定はすぐに入れ替える。`shell` は次に開く端末から使う。
+    /// 貼り付けの設定はすぐに入れ替える。プロファイルは次に開く端末から使う。
     /// 誤りがあれば、それを見せることを返す（借用を手放してから [`run_deferred`] で見せる）。誤りが
     /// なければ、設定の警告を取り下げる（開いているメッセージボックスも閉じさせる）。
     ///
@@ -2012,7 +2026,8 @@ impl App {
     /// 返す（[`App::reload_config`]）。
     fn apply_config(&mut self, config: Config) -> Option<u32> {
         self.paste_confirm = config.paste.confirm;
-        self.shell = config.shell;
+        self.profiles = config.profiles;
+        self.default_profile = config.default_profile;
         self.keymap = config.keys;
         if config.background != self.background {
             // 項目ごとの収め方と濃さだけが変わったなら、選んだ画像のまま描き直す（描くときに項目から
@@ -2067,7 +2082,8 @@ impl App {
     fn config_in_use(&self) -> Config {
         Config {
             font: self.font_config.clone(),
-            shell: self.shell.clone(),
+            profiles: self.profiles.clone(),
+            default_profile: self.default_profile.clone(),
             paste: PasteConfig {
                 confirm: self.paste_confirm,
             },
@@ -3087,10 +3103,15 @@ mod tests {
     }
 
     #[test]
-    fn command_line_prefers_arguments_then_the_shell_setting() {
-        assert_eq!(command_line_for(Some("zsh -l"), Some("cmd.exe")), "zsh -l");
-        assert_eq!(command_line_for(None, Some("cmd.exe")), "cmd.exe");
-        assert_eq!(command_line_for(None, None), DEFAULT_COMMAND_LINE);
+    fn command_line_prefers_arguments_then_the_default_profile() {
+        let profiles = [Profile::builtin(), Profile::from_shell("zsh -l")];
+        let line = |arguments, default| command_line_for(arguments, &profiles, default);
+        assert_eq!(line(Some("cmd.exe"), 1), "cmd.exe");
+        assert_eq!(line(None, 1), "zsh -l");
+        assert_eq!(line(None, 0), "powershell.exe -NoLogo");
+        // 並びの外なら先頭。
+        assert_eq!(line(None, 5), "powershell.exe -NoLogo");
+        assert_eq!(command_line_for(None, &[], 0), config::DEFAULT_COMMAND_LINE);
     }
 
     #[test]

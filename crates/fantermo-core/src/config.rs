@@ -46,14 +46,29 @@ pub const DEFAULT_IMAGE_OPACITY: f32 = 0.2;
 /// 背景画像の濃さとして受け付ける範囲。
 pub const IMAGE_OPACITY_RANGE: RangeInclusive<f32> = 0.0..=1.0;
 
+/// プロファイルを書いていないときの、既定のプロファイルの名前。
+pub const DEFAULT_PROFILE_NAME: &str = "PowerShell";
+
+/// プロファイルを書いていないときに起動するコマンドライン。
+pub const DEFAULT_COMMAND_LINE: &str = "powershell.exe -NoLogo";
+
 /// 設定ファイルが無いときに作る中身。どの項目も既定値のままコメントにして並べ、利用者が `#` を消して
-/// 書き換えられるようにする。`shell` の値だけは既定値ではなく例（既定では書かない）。
+/// 書き換えられるようにする。プロファイルの表は例として載せる。
 pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # 行頭の「#」を消して値を書き換え、保存すると読み直す。書いていない項目は既定値になる。
 
-# 起動するコマンドライン。fantermo を引数つきで起動したときは、引数のほうを使う。
-# 書かなければ PowerShell を起動する。書き換えたら、次に開くタブから使う。
-# shell = 'C:\cygwin64\bin\zsh.exe -l'
+# 新しいタブで起動するプロファイル。[[profiles]] の表を並べ、name に名前、command に起動するコマンドラインを
+# 書く。backend はシェルとのつなぎ方で、"conpty"（Windows の疑似コンソール）だけを書ける。書かなければ "conpty"。
+# タブバーの「+」は既定のプロファイルを開き、その右の「▾」か「+」の右クリックで一覧から選んで開く。fantermo を
+# 引数つきで起動したときは、「+」とキーとメニューの「新しいタブ」も引数のコマンドラインを使う。
+# 書かなければ PowerShell（powershell.exe -NoLogo）を起動する。書き換えたら、次に開くタブから使う。
+# プロファイルを書かずに、最上位に shell = 'コマンドライン' と一つだけ書いてもよい（名前は実行ファイルの名前）。
+# default_profile は「+」で開くプロファイルの名前。書かなければ先頭のプロファイル。[[profiles]] より前に書く。
+# default_profile = "PowerShell"
+
+# 例: [[profiles]]
+# 例: name = "zsh"
+# 例: command = 'C:\cygwin64\bin\zsh.exe -l'
 
 [font]
 # フォントの名前。先頭から探し、最初に見つかったものを使う。名前一つだけでもよい。
@@ -162,11 +177,14 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 "##;
 
 /// 設定の全体。
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub font: FontConfig,
-    /// 起動するコマンドライン。`None` なら fantermo の既定。
-    pub shell: Option<String>,
+    /// 新しいタブで起動するプロファイル。書いた順。少なくとも一つある（書いていなければ、最上位の
+    /// `shell` から作った一つか、既定のプロファイル）。名前はどれも違う。
+    pub profiles: Vec<Profile>,
+    /// 既定のプロファイルの名前。`profiles` のどれかの名前で、`None` なら先頭のプロファイル。
+    pub default_profile: Option<String>,
     pub paste: PasteConfig,
     pub scroll_bar: ScrollBarConfig,
     pub window: WindowConfig,
@@ -174,6 +192,114 @@ pub struct Config {
     pub background: BackgroundConfig,
     /// キーの割り当て。`[keys]` に書いた組み合わせを、既定の割り当てに重ねたもの。
     pub keys: Keymap,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            font: FontConfig::default(),
+            profiles: vec![Profile::builtin()],
+            default_profile: None,
+            paste: PasteConfig::default(),
+            scroll_bar: ScrollBarConfig::default(),
+            window: WindowConfig::default(),
+            colors: ColorsConfig::default(),
+            background: BackgroundConfig::default(),
+            keys: Keymap::default(),
+        }
+    }
+}
+
+impl Config {
+    /// 既定のプロファイルの、`profiles` の中の位置。
+    pub fn default_profile_index(&self) -> usize {
+        default_profile_index(&self.profiles, self.default_profile.as_deref())
+    }
+}
+
+/// プロファイルの並び `profiles` のうち、名前が `default` のものの位置。`None` か、その名前のものが
+/// なければ先頭。
+pub fn default_profile_index(profiles: &[Profile], default: Option<&str>) -> usize {
+    default
+        .and_then(|name| profiles.iter().position(|profile| profile.name == name))
+        .unwrap_or(0)
+}
+
+/// 新しいタブで起動するもの（`[[profiles]]` の表一つ）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Profile {
+    /// タブバーの一覧に見せる名前。空ではない。
+    pub name: String,
+    /// 起動するコマンドライン。空ではない。
+    pub command: String,
+    pub backend: BackendKind,
+}
+
+impl Profile {
+    /// プロファイルも `shell` も書いていないときのプロファイル。
+    pub fn builtin() -> Self {
+        Self {
+            name: DEFAULT_PROFILE_NAME.to_owned(),
+            command: DEFAULT_COMMAND_LINE.to_owned(),
+            backend: BackendKind::default(),
+        }
+    }
+
+    /// 最上位の `shell` に書いたコマンドライン `command` のプロファイル。名前は実行ファイルの名前。
+    pub fn from_shell(command: &str) -> Self {
+        Self {
+            name: program_name(command),
+            command: command.to_owned(),
+            backend: BackendKind::default(),
+        }
+    }
+}
+
+/// コマンドライン `command` の実行ファイルの名前（フォルダと `.exe` を除く）。読めなければ `shell`。
+fn program_name(command: &str) -> String {
+    const EXE: &str = ".exe";
+    let command = command.trim_start();
+    let program = match command.strip_prefix('"') {
+        Some(quoted) => quoted.split('"').next().unwrap_or_default(),
+        None => command.split_whitespace().next().unwrap_or_default(),
+    };
+    let file = program.rsplit(['\\', '/']).next().unwrap_or(program);
+    let stem = match file.len().checked_sub(EXE.len()) {
+        Some(end) if file.is_char_boundary(end) && file[end..].eq_ignore_ascii_case(EXE) => {
+            &file[..end]
+        }
+        _ => file,
+    };
+    if stem.is_empty() {
+        "shell".to_owned()
+    } else {
+        stem.to_owned()
+    }
+}
+
+/// プロファイルのシェルとのつなぎ方（`profiles[].backend`）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BackendKind {
+    /// Windows の疑似コンソール（ConPTY）。
+    #[default]
+    Conpty,
+}
+
+impl BackendKind {
+    /// 書ける値のすべて。
+    pub const ALL: [BackendKind; 1] = [BackendKind::Conpty];
+
+    /// 設定ファイルに書く名前。
+    pub fn name(self) -> &'static str {
+        match self {
+            BackendKind::Conpty => "conpty",
+        }
+    }
+
+    /// 設定ファイルに書く名前 `name` の値。
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.name() == name)
+    }
 }
 
 /// `[background]` の設定。
@@ -661,12 +787,6 @@ pub fn parse_image_opacity(text: &str) -> Option<f32> {
     IMAGE_OPACITY_RANGE.contains(&opacity).then_some(opacity)
 }
 
-/// 入力された文字列を、`shell` の値にする。前後の空白は除き、空なら書かない（既定のシェル）。
-pub fn shell_from_input(text: &str) -> Option<String> {
-    let shell = text.trim();
-    (!shell.is_empty()).then(|| shell.to_owned())
-}
-
 /// 解釈した設定と、読めなかった項目についての警告。
 #[derive(Debug)]
 pub struct Parsed {
@@ -799,16 +919,7 @@ pub fn parse(text: &str, previous: &Config) -> Parsed {
             reader.warn_unknown(&font, Some("font"));
         }
     }
-    reader
-        .take::<String>(&mut root, None, "shell")
-        .check(&mut reader, "shell", |shell| {
-            shell
-                .trim()
-                .is_empty()
-                .then(|| "ignoring shell: empty".to_owned())
-        })
-        .map(Some)
-        .apply(&mut config.shell, None);
+    read_profiles(&mut reader, &mut root, &mut config);
     match reader.take::<Table>(&mut root, None, "paste") {
         Item::Absent => config.paste = PasteConfig::default(),
         Item::Invalid => {}
@@ -891,6 +1002,148 @@ pub fn parse(text: &str, previous: &Config) -> Parsed {
         warnings: reader.warnings,
         syntax_error: false,
     }
+}
+
+/// 最上位の `profiles`・`shell`・`default_profile` を読む。`profiles` に使えるプロファイルがあれば
+/// それを使い、`shell` は警告して使わない。なければ `shell` から作った一つ、それもなければ既定の
+/// プロファイル。`profiles` が読めなければ（配列でなければ）、前のプロファイルのまま。
+fn read_profiles(reader: &mut Reader, root: &mut Table, config: &mut Config) {
+    const PROFILES: &str = "profiles";
+    const SHELL: &str = "shell";
+    let profiles = match reader.take::<Value>(root, None, PROFILES) {
+        Item::Valid(Value::Array(items)) => {
+            if items.is_empty() {
+                reader.warn(
+                    PROFILES,
+                    format!("ignoring {PROFILES}: no profiles are written"),
+                );
+            }
+            let mut profiles: Vec<Profile> = Vec::new();
+            for (index, item) in items.into_iter().enumerate() {
+                let path = format!("{PROFILES}[{index}]");
+                let Some(profile) = read_profile(reader, &path, item) else {
+                    continue;
+                };
+                if profiles.iter().any(|other| other.name == profile.name) {
+                    reader.warn(
+                        &key_path(Some(&path), "name"),
+                        format!(
+                            "ignoring {path}: the name {:?} is already used above",
+                            profile.name
+                        ),
+                    );
+                    continue;
+                }
+                profiles.push(profile);
+            }
+            Item::Valid(profiles)
+        }
+        Item::Valid(_) => {
+            reader.warn(
+                PROFILES,
+                format!("ignoring {PROFILES}: expected an array of tables ([[{PROFILES}]])"),
+            );
+            Item::Invalid
+        }
+        Item::Absent => Item::Absent,
+        Item::Invalid => Item::Invalid,
+    };
+    let shell = reader
+        .take::<String>(root, None, SHELL)
+        .check(reader, SHELL, |shell| {
+            shell
+                .trim()
+                .is_empty()
+                .then(|| format!("ignoring {SHELL}: empty"))
+        });
+    match profiles {
+        Item::Valid(profiles) if !profiles.is_empty() => {
+            if let Item::Valid(_) = shell {
+                reader.warn(
+                    SHELL,
+                    format!("ignoring {SHELL}: {PROFILES} are written, so they are used"),
+                );
+            }
+            config.profiles = profiles;
+        }
+        Item::Invalid => {}
+        Item::Valid(_) | Item::Absent => match shell {
+            Item::Valid(shell) => config.profiles = vec![Profile::from_shell(&shell)],
+            Item::Absent => config.profiles = vec![Profile::builtin()],
+            Item::Invalid => {}
+        },
+    }
+    const DEFAULT_PROFILE: &str = "default_profile";
+    let names = |config: &Config, name: &str| config.profiles.iter().any(|p| p.name == name);
+    match reader.take::<String>(root, None, DEFAULT_PROFILE) {
+        Item::Valid(name) if names(config, &name) => config.default_profile = Some(name),
+        Item::Valid(name) => {
+            reader.warn(
+                DEFAULT_PROFILE,
+                format!("ignoring {DEFAULT_PROFILE} = {name:?}: no profile has that name"),
+            );
+            config.default_profile = None;
+        }
+        Item::Absent => config.default_profile = None,
+        Item::Invalid => {
+            // 前の名前が、読んだプロファイルにもあればそのまま。
+            if let Some(name) = config.default_profile.take()
+                && names(config, &name)
+            {
+                config.default_profile = Some(name);
+            }
+        }
+    }
+}
+
+/// `profiles` の項目一つ（道筋は `path`）を読む。表で、`name` と `command` が空でない文字列で、`backend`
+/// が書いていないか知っている名前なら、そのプロファイル。そうでなければ警告して `None`。
+fn read_profile(reader: &mut Reader, path: &str, value: Value) -> Option<Profile> {
+    let Value::Table(mut table) = value else {
+        reader.warn(path, format!("ignoring {path}: expected a table"));
+        return None;
+    };
+    let section = Some(path);
+    let text = |reader: &mut Reader, table: &mut Table, key: &str| -> Option<String> {
+        match reader.take::<String>(table, section, key) {
+            Item::Valid(text) if !text.trim().is_empty() => Some(text),
+            Item::Valid(_) => {
+                reader.warn(
+                    &key_path(section, key),
+                    format!("ignoring {path}: {key} must not be empty"),
+                );
+                None
+            }
+            Item::Absent => {
+                reader.warn(path, format!("ignoring {path}: expected a {key}"));
+                None
+            }
+            Item::Invalid => None,
+        }
+    };
+    let name = text(reader, &mut table, "name");
+    let command = text(reader, &mut table, "command");
+    let backend = match reader.take::<String>(&mut table, section, "backend") {
+        Item::Valid(name) => match BackendKind::from_name(&name) {
+            Some(kind) => Some(kind),
+            None => {
+                let known: Vec<&str> = BackendKind::ALL.iter().map(|kind| kind.name()).collect();
+                reader.warn(
+                    &key_path(section, "backend"),
+                    format!("ignoring {path}: unknown backend {name:?}, expected one of {known:?}"),
+                );
+                None
+            }
+        },
+        Item::Absent => Some(BackendKind::default()),
+        Item::Invalid => None,
+    };
+    reader.warn_unknown(&table, section);
+    Some(Profile {
+        name: name?,
+        command: command?,
+        backend: backend?,
+    })
 }
 
 fn read_font(reader: &mut Reader, table: &mut Table, font: &mut FontConfig) {
@@ -1272,7 +1525,8 @@ mod tests {
                 size_pt: 9.0,
                 wide_glyph: WideGlyph::Clip,
             },
-            shell: Some("zsh -l".to_owned()),
+            profiles: vec![Profile::from_shell("zsh -l"), Profile::builtin()],
+            default_profile: Some(DEFAULT_PROFILE_NAME.to_owned()),
             paste: PasteConfig {
                 confirm: PasteConfirm::Never,
             },
@@ -1550,7 +1804,7 @@ mod tests {
         assert_eq!(
             parsed.config,
             Config {
-                shell: Some(r"C:\cygwin64\bin\zsh.exe -l".to_owned()),
+                default_profile: Some(DEFAULT_PROFILE_NAME.to_owned()),
                 colors: ColorsConfig {
                     terminal: ["#000000", "#ffffff"].map(hex),
                     tab_bar: [
@@ -1868,12 +2122,17 @@ mod tests {
     fn invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults() {
         let previous = customized();
         let parsed = super::parse(
-            "shell = ' '\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[scroll_bar]\nwidth = 2\n[window]\npadding = 65\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors]\nscheme = 'sepia'\nforeground = 'blue'\n[colors.tab_bar]\nbar = 'red'\n[background]\nimages = ''\nimage_opacity = 2\nfit = 0\n",
+            "shell = ' '\ndefault_profile = 3\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[scroll_bar]\nwidth = 2\n[window]\npadding = 65\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors]\nscheme = 'sepia'\nforeground = 'blue'\n[colors.tab_bar]\nbar = 'red'\n[background]\nimages = ''\nimage_opacity = 2\nfit = 0\n",
             &previous,
         );
         assert!(!parsed.syntax_error);
         assert_eq!(parsed.config, previous);
-        assert_eq!(parsed.warnings.len(), 15, "{:?}", parsed.warnings);
+        assert_eq!(parsed.warnings.len(), 16, "{:?}", parsed.warnings);
+        // 配列でない profiles も、前のプロファイルのまま。
+        let parsed = super::parse("profiles = 'zsh'\ndefault_profile = 'zsh'\n", &previous);
+        assert_eq!(parsed.config.profiles, previous.profiles);
+        assert_eq!(parsed.config.default_profile.as_deref(), Some("zsh"));
+        assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
 
         let parsed = super::parse("[font]\nsize = 500\n", &previous);
         assert_eq!(
@@ -1891,7 +2150,7 @@ mod tests {
         assert_eq!(parsed.config.font, previous.font);
         assert_eq!(parsed.config.paste, previous.paste);
         assert_eq!(parsed.config.scroll_bar, previous.scroll_bar);
-        assert_eq!(parsed.config.shell, None);
+        assert_eq!(parsed.config.profiles, [Profile::builtin()]);
     }
 
     #[test]
@@ -1978,7 +2237,15 @@ mod tests {
             families(&["Bizin Gothic", "BIZ UDGothic", "Consolas"])
         );
         assert_eq!(parsed.config.font.size_pt, 12.0);
-        assert_eq!(parsed.config.shell, None);
+        assert_eq!(
+            parsed.config.profiles,
+            [Profile {
+                name: "PowerShell".to_owned(),
+                command: "powershell.exe -NoLogo".to_owned(),
+                backend: BackendKind::Conpty,
+            }]
+        );
+        assert_eq!(parsed.config.default_profile_index(), 0);
     }
 
     #[test]
@@ -2007,7 +2274,11 @@ mod tests {
                     size_pt: 10.5,
                     wide_glyph: WideGlyph::Overflow,
                 },
-                shell: Some(r"C:\cygwin64\bin\zsh.exe -l".to_owned()),
+                profiles: vec![Profile {
+                    name: "zsh".to_owned(),
+                    command: r"C:\cygwin64\bin\zsh.exe -l".to_owned(),
+                    backend: BackendKind::Conpty,
+                }],
                 paste: PasteConfig {
                     confirm: PasteConfirm::Never,
                 },
@@ -2038,7 +2309,7 @@ mod tests {
         let parsed = parse("shell = 1\n[font]\nfamily = \"Consolas\"\nsize = \"big\"\n");
         assert_eq!(parsed.config.font.families, families(&["Consolas"]));
         assert_eq!(parsed.config.font.size_pt, DEFAULT_FONT_SIZE_PT);
-        assert_eq!(parsed.config.shell, None);
+        assert_eq!(parsed.config.profiles, [Profile::builtin()]);
         assert_eq!(parsed.warnings.len(), 2, "{:?}", parsed.warnings);
         assert!(parsed.warnings.iter().any(|w| w.contains("font.size")));
         assert!(parsed.warnings.iter().any(|w| w.contains("shell")));
@@ -2203,8 +2474,134 @@ mod tests {
         for text in ["", "3", "65", "12.5", "-1", "wide"] {
             assert_eq!(parse_scroll_bar_width(text), None, "{text:?}");
         }
-        assert_eq!(shell_from_input("  zsh -l "), Some("zsh -l".to_owned()));
-        assert_eq!(shell_from_input(" \t"), None);
+    }
+
+    #[test]
+    fn profiles_are_read_in_order() {
+        let parsed = parse(
+            r#"
+default_profile = "zsh"
+
+# いつもの
+[[profiles]]
+name = "PowerShell"
+command = "powershell.exe -NoLogo"
+
+[[profiles]]
+name = "zsh"
+command = 'C:\cygwin64\bin\zsh.exe -l'
+backend = "conpty"
+
+[[profiles]]
+name = "WSL"
+command = "wsl.exe"
+
+[font]
+size = 10
+"#,
+        );
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        let names: Vec<&str> = parsed
+            .config
+            .profiles
+            .iter()
+            .map(|profile| profile.name.as_str())
+            .collect();
+        assert_eq!(names, ["PowerShell", "zsh", "WSL"]);
+        assert_eq!(
+            parsed.config.profiles[1].command,
+            r"C:\cygwin64\bin\zsh.exe -l"
+        );
+        assert_eq!(parsed.config.default_profile.as_deref(), Some("zsh"));
+        assert_eq!(parsed.config.default_profile_index(), 1);
+        assert_eq!(parsed.config.font.size_pt, 10.0);
+        // インラインの配列でも書ける。
+        let parsed = parse("profiles = [{ name = 'a', command = 'cmd.exe' }]\n");
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        assert_eq!(parsed.config.profiles[0].name, "a");
+        assert_eq!(parsed.config.default_profile_index(), 0);
+    }
+
+    #[test]
+    fn unusable_profiles_are_skipped_with_their_lines() {
+        let parsed = super::parse(
+            "default_profile = 'gone'\n[[profiles]]\nname = 'a'\ncommand = 'cmd.exe'\n[[profiles]]\nname = 'b'\ncommand = 'wsl.exe'\nbackend = 'bridge'\n[[profiles]]\nname = ''\ncommand = 'x'\n[[profiles]]\ncommand = 'y'\n[[profiles]]\nname = 'a'\ncommand = 'z'\ncolor = 'red'\n[[profiles]]\nname = 'c'\ncommand = 'pwsh.exe'\ncolor = 'red'\n",
+            &Config::default(),
+        );
+        let names: Vec<&str> = parsed
+            .config
+            .profiles
+            .iter()
+            .map(|profile| profile.name.as_str())
+            .collect();
+        assert_eq!(names, ["a", "c"]);
+        assert_eq!(parsed.config.default_profile, None);
+        let warnings: Vec<(Option<usize>, &str)> = parsed
+            .warnings
+            .iter()
+            .map(|w| (w.line, w.message.as_str()))
+            .collect();
+        assert_eq!(
+            warnings,
+            [
+                (
+                    Some(1),
+                    "ignoring default_profile = \"gone\": no profile has that name"
+                ),
+                (
+                    Some(8),
+                    "ignoring profiles[1]: unknown backend \"bridge\", expected one of [\"conpty\"]"
+                ),
+                (Some(10), "ignoring profiles[2]: name must not be empty"),
+                (Some(12), "ignoring profiles[3]: expected a name"),
+                (
+                    Some(15),
+                    "ignoring profiles[4]: the name \"a\" is already used above"
+                ),
+                (Some(17), "ignoring unknown setting profiles[4].color"),
+                (Some(21), "ignoring unknown setting profiles[5].color"),
+            ]
+        );
+    }
+
+    #[test]
+    fn shell_makes_a_single_profile_unless_profiles_are_written() {
+        let parsed = parse(r#"shell = '"C:\Program Files\PowerShell\7\pwsh.EXE" -NoLogo'"#);
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        assert_eq!(
+            parsed.config.profiles,
+            [Profile {
+                name: "pwsh".to_owned(),
+                command: r#""C:\Program Files\PowerShell\7\pwsh.EXE" -NoLogo"#.to_owned(),
+                backend: BackendKind::Conpty,
+            }]
+        );
+        assert_eq!(Profile::from_shell("zsh -l").name, "zsh");
+        assert_eq!(Profile::from_shell(r"C:\cygwin64\bin\zsh.exe").name, "zsh");
+        assert_eq!(Profile::from_shell("\"\" x").name, "shell");
+        // shell の名前でも既定にできる。
+        let parsed = parse("shell = 'zsh -l'\ndefault_profile = 'zsh'\n");
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        assert_eq!(parsed.config.default_profile.as_deref(), Some("zsh"));
+
+        // 両方あれば profiles を使い、shell は警告して使わない。
+        let parsed = super::parse(
+            "shell = 'zsh -l'\n[[profiles]]\nname = 'cmd'\ncommand = 'cmd.exe'\n",
+            &Config::default(),
+        );
+        assert_eq!(parsed.config.profiles.len(), 1);
+        assert_eq!(parsed.config.profiles[0].name, "cmd");
+        assert_eq!(parsed.warnings.len(), 1);
+        assert_eq!(parsed.warnings[0].line, Some(1));
+        assert!(parsed.warnings[0].message.starts_with("ignoring shell:"));
+
+        // 使えるプロファイルが一つもなければ、shell、それもなければ既定のプロファイル。
+        let parsed = parse("shell = 'zsh -l'\nprofiles = []\n");
+        assert_eq!(parsed.config.profiles, [Profile::from_shell("zsh -l")]);
+        assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
+        let parsed = parse("[[profiles]]\nname = 'a'\n");
+        assert_eq!(parsed.config.profiles, [Profile::builtin()]);
+        assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
     }
 
     #[test]

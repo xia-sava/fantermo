@@ -7,8 +7,12 @@
 //! - 書いていない項目は、その表の中に `# キー = …` とコメントにした行があれば、その行を置き換えて
 //!   書く（[`TEMPLATE`](crate::config::TEMPLATE) から作ったファイルで、説明の行の下に入る）。なければ
 //!   表の最後に足す。表がなければ、ファイルの最後に表ごと足す。
-//! - 既定値に戻した項目は、その行を既定値の `# キー = …` のコメントの行にする（`shell` は既定値が
-//!   ないので、それまでの値をコメントにする）。上に書いた説明のコメントは残る。
+//! - 既定値に戻した項目は、その行を既定値の `# キー = …` のコメントの行にする（`default_profile` は
+//!   既定値を一つに書けないので、それまでの値をコメントにする）。上に書いた説明のコメントは残る。
+//! - プロファイル（`[[profiles]]`）は、名前で突き合わせて変えた値だけを書き換え、なくなった表を消し、
+//!   増えた表を最後に足す（名前を変えた表は、突き合わなかった表と順に組にする）。表がなければ最初の表の
+//!   見出しの前に足す。プロファイルを書いたら、最上位の `shell` の行はコメントにする。既定のプロファイル
+//!   だけに戻したら、表を消す。
 //! - `[colors]` と `[colors.…]` の色は既定の色を一つに書けないので、既定に戻した色はそれまでの値を
 //!   コメントにする。
 //! - `[keys]` の組み合わせは、書き方（大文字小文字、修飾キーの順）によらず同じ組み合わせの行を探す。
@@ -18,14 +22,17 @@
 use toml_edit::{Array, Decor, DocumentMut, InlineTable, Item, Key, Table, Value};
 
 use crate::{
-    config::{self, BackgroundFit, BackgroundImage, ColorTable, Config, format_color},
+    config::{
+        self, BackendKind, BackgroundFit, BackgroundImage, ColorTable, Config, Profile,
+        format_color,
+    },
     keymap::{self, Action, KeyCombo},
 };
 
 /// 書き換える項目。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Setting {
-    Shell,
+    DefaultProfile,
     FontFamily,
     FontSize,
     WideGlyph,
@@ -40,7 +47,7 @@ enum Setting {
 
 impl Setting {
     const ALL: [Setting; 11] = [
-        Setting::Shell,
+        Setting::DefaultProfile,
         Setting::FontFamily,
         Setting::FontSize,
         Setting::WideGlyph,
@@ -56,7 +63,7 @@ impl Setting {
     /// 項目を置く表の道筋。最上位なら空。
     fn path(self) -> &'static [&'static str] {
         match self {
-            Setting::Shell => &[],
+            Setting::DefaultProfile => &[],
             Setting::FontFamily | Setting::FontSize | Setting::WideGlyph => &["font"],
             Setting::PasteConfirm => &["paste"],
             Setting::ScrollBarWidth => &["scroll_bar"],
@@ -70,7 +77,7 @@ impl Setting {
 
     fn key(self) -> &'static str {
         match self {
-            Setting::Shell => "shell",
+            Setting::DefaultProfile => DEFAULT_PROFILE_KEY,
             Setting::FontFamily => "family",
             Setting::FontSize => "size",
             Setting::WideGlyph => "wide_glyph",
@@ -84,10 +91,10 @@ impl Setting {
         }
     }
 
-    /// `config` でのこの項目の値。書かないことを表す値（`shell` の `None`）なら `None`。
+    /// `config` でのこの項目の値。書かないことを表す値（`default_profile` の `None`）なら `None`。
     fn value(self, config: &Config) -> Option<Value> {
         match self {
-            Setting::Shell => config.shell.as_deref().map(Value::from),
+            Setting::DefaultProfile => config.default_profile.as_deref().map(Value::from),
             Setting::FontFamily => Some(families_value(&config.font.families)),
             Setting::FontSize => Some(number_value(config.font.size_pt)),
             Setting::WideGlyph => Some(Value::from(config.font.wide_glyph.name())),
@@ -111,6 +118,16 @@ impl Setting {
 
 /// `[keys]` の表の道筋。
 const KEYS_PATH: &[&str] = &["keys"];
+
+/// 最上位のキーの名前。
+const DEFAULT_PROFILE_KEY: &str = "default_profile";
+const PROFILES_KEY: &str = "profiles";
+const SHELL_KEY: &str = "shell";
+
+/// `[[profiles]]` の表のキー。
+const PROFILE_NAME: &str = "name";
+const PROFILE_COMMAND: &str = "command";
+const PROFILE_BACKEND: &str = "backend";
 
 /// フォントの名前の並び。一つなら文字列、二つ以上なら配列。
 fn families_value(families: &[String]) -> Value {
@@ -383,6 +400,7 @@ pub fn update(text: &str, base: &Config, edited: &Config) -> Result<String, Stri
             }
         }
     }
+    update_profiles(&mut doc, base, edited)?;
     update_colors(&mut doc, base, edited)?;
     update_keys(&mut doc, base, edited)?;
     let mut out = doc.to_string();
@@ -456,6 +474,222 @@ fn update_keys(doc: &mut DocumentMut, base: &Config, edited: &Config) -> Result<
     Ok(())
 }
 
+/// プロファイルが `base` と `edited` で違えば書き換える。最上位の `shell` の行はコメントにする（書いた
+/// プロファイルが使われ、`shell` は使われないため）。既定のプロファイルだけに戻したら、表を消す。
+fn update_profiles(doc: &mut DocumentMut, base: &Config, edited: &Config) -> Result<(), String> {
+    if base.profiles == edited.profiles {
+        return Ok(());
+    }
+    let shell = |name: &str| name == SHELL_KEY;
+    reset(
+        doc,
+        &[],
+        &Target {
+            name: SHELL_KEY.to_owned(),
+            matches: &shell,
+        },
+        Reset::CommentOld,
+    )?;
+    let wanted: &[Profile] = if edited.profiles == Config::default().profiles {
+        &[]
+    } else {
+        &edited.profiles
+    };
+    match doc.get(PROFILES_KEY) {
+        None if wanted.is_empty() => Ok(()),
+        None | Some(Item::ArrayOfTables(_)) => {
+            merge_profile_tables(doc, wanted);
+            Ok(())
+        }
+        Some(Item::Value(Value::Array(_))) => {
+            let matches = |name: &str| name == PROFILES_KEY;
+            let target = Target {
+                name: PROFILES_KEY.to_owned(),
+                matches: &matches,
+            };
+            if wanted.is_empty() {
+                return reset(doc, &[], &target, Reset::Remove);
+            }
+            let array: Array = wanted.iter().map(profile_inline_table).collect();
+            set(doc, &[], &target, Value::Array(array))
+        }
+        Some(_) => Err(format!("{PROFILES_KEY} is not an array of tables")),
+    }
+}
+
+/// プロファイル一つの、インラインの表。
+fn profile_inline_table(profile: &Profile) -> Value {
+    let mut table = InlineTable::new();
+    table.insert(PROFILE_NAME, Value::from(profile.name.as_str()));
+    table.insert(PROFILE_COMMAND, Value::from(profile.command.as_str()));
+    if profile.backend != BackendKind::default() {
+        table.insert(PROFILE_BACKEND, Value::from(profile.backend.name()));
+    }
+    table.fmt();
+    Value::InlineTable(table)
+}
+
+/// `[[profiles]]` の表を、`wanted` に合わせて書き換える。名前で突き合わせ、残りは前から順に組にする。
+/// 名前のない表（読めない表）はそのまま残す。
+fn merge_profile_tables(doc: &mut DocumentMut, wanted: &[Profile]) {
+    let written: Vec<Option<String>> = match doc.get(PROFILES_KEY) {
+        Some(Item::ArrayOfTables(array)) => array
+            .iter()
+            .map(|table| {
+                table
+                    .get(PROFILE_NAME)
+                    .and_then(Item::as_str)
+                    .map(str::to_owned)
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    // wanted の位置から、書いてある表の位置へ。
+    let mut pairs: Vec<Option<usize>> = vec![None; wanted.len()];
+    let mut used = vec![false; written.len()];
+    for (want, pair) in wanted.iter().zip(pairs.iter_mut()) {
+        if let Some(index) = (0..written.len())
+            .find(|&index| !used[index] && written[index].as_deref() == Some(want.name.as_str()))
+        {
+            used[index] = true;
+            *pair = Some(index);
+        }
+    }
+    for pair in pairs.iter_mut().filter(|pair| pair.is_none()) {
+        if let Some(index) =
+            (0..written.len()).find(|&index| !used[index] && written[index].is_some())
+        {
+            used[index] = true;
+            *pair = Some(index);
+        }
+    }
+    // プロファイルの表の後ろに続く表（プロファイルの表がなければ、最初の表）。
+    let me = Header {
+        path: vec![PROFILES_KEY.to_owned()],
+        index: None,
+    };
+    let positions: Vec<isize> = tables(doc)
+        .into_iter()
+        .filter(|(header, _)| header.path == me.path)
+        .filter_map(|(_, position)| position)
+        .collect();
+    let following = first_after(doc, &me, positions.iter().max().copied());
+    let following_position = match &following {
+        Following::Table(header) => header.table(doc).and_then(Table::position),
+        Following::End => None,
+    };
+    let root_has_values = doc.as_table().iter().any(|(_, item)| item.is_value());
+
+    if !matches!(doc.get(PROFILES_KEY), Some(Item::ArrayOfTables(_))) {
+        doc.as_table_mut()
+            .insert(PROFILES_KEY, Item::ArrayOfTables(Default::default()));
+    }
+    let Some(Item::ArrayOfTables(array)) = doc.get_mut(PROFILES_KEY) else {
+        return;
+    };
+    for (want, pair) in wanted.iter().zip(&pairs) {
+        if let Some(table) = pair.and_then(|index| array.get_mut(index)) {
+            update_profile_table(table, want);
+        }
+    }
+    // 突き合わなかった名前のある表を後ろから消す。先頭の表の前のコメント（ファイルの先頭のコメントなど）
+    // は、次の表へ移す。表がなくなれば、続く表へ返す。
+    let mut orphaned_prefix = None;
+    for index in (0..written.len()).rev() {
+        if used[index] || written[index].is_none() {
+            continue;
+        }
+        let removed_prefix = array
+            .get(index)
+            .map(|table| decor_prefix(table.decor()))
+            .unwrap_or_default();
+        array.remove(index);
+        if index != 0 {
+            continue;
+        }
+        match array.get_mut(0) {
+            Some(next) => next.decor_mut().set_prefix(removed_prefix),
+            None => orphaned_prefix = Some(removed_prefix),
+        }
+    }
+    // 増えたプロファイルを最後に足す。表が一つもなければ、続く表の前のコメントのうち、空行で見出しと
+    // 離れたところまでを最初の表の前に移す。
+    let was_empty = array.is_empty();
+    // 足す表は、書いてあるプロファイルの最後の表と同じ位置（同じ位置の表は配列の順に並ぶ）か、続く表の
+    // すぐ前。
+    let position = array
+        .iter()
+        .filter_map(Table::position)
+        .max()
+        .or(following_position.map(|position| position - 1))
+        .unwrap_or(0);
+    for (want, pair) in wanted.iter().zip(&pairs) {
+        if pair.is_some() {
+            continue;
+        }
+        let mut table = Table::new();
+        table.set_position(Some(position));
+        update_profile_table(&mut table, want);
+        let prefix = if array.is_empty() { "" } else { "\n" };
+        table.decor_mut().set_prefix(prefix);
+        array.push(table);
+    }
+    if array.is_empty() {
+        doc.as_table_mut().remove(PROFILES_KEY);
+        if let Some(removed) = orphaned_prefix {
+            let after = following_prefix(doc, &following);
+            let rest = after.strip_prefix('\n').unwrap_or(&after);
+            set_following_prefix(doc, &following, format!("{removed}{rest}"));
+        }
+        return;
+    }
+    if was_empty {
+        // ファイルの最後のコメントは、表の後ろに残す。
+        let mut before = String::new();
+        if let Following::Table(_) = following {
+            let after = following_prefix(doc, &following);
+            let (moved, rest) = split_after_last_blank_line(&after);
+            before = moved;
+            set_following_prefix(doc, &following, format!("\n{rest}"));
+        }
+        if before.is_empty() && root_has_values {
+            before = "\n".to_owned();
+        }
+        if let Some(Item::ArrayOfTables(array)) = doc.get_mut(PROFILES_KEY)
+            && let Some(first) = array.get_mut(0)
+        {
+            first.decor_mut().set_prefix(before);
+        }
+    }
+}
+
+fn update_profile_table(table: &mut Table, profile: &Profile) {
+    set_table_text(table, PROFILE_NAME, &profile.name);
+    set_table_text(table, PROFILE_COMMAND, &profile.command);
+    if table.contains_key(PROFILE_BACKEND) || profile.backend != BackendKind::default() {
+        set_table_text(table, PROFILE_BACKEND, profile.backend.name());
+    }
+}
+
+/// 表 `table` の `key` の値を文字列 `text` にする。同じなら（引用符の種類も）変えない。行のコメントは残す。
+fn set_table_text(table: &mut Table, key: &str, text: &str) {
+    if table.get(key).and_then(Item::as_str) == Some(text) {
+        return;
+    }
+    let mut value = Value::from(text);
+    match table.get_mut(key) {
+        Some(item) => {
+            if let Some(old) = item.as_value() {
+                *value.decor_mut() = old.decor().clone();
+            }
+            *item = Item::Value(value);
+        }
+        None => {
+            table.insert(key, Item::Value(value));
+        }
+    }
+}
+
 /// 表のうち、ほかの表の見出しとファイルの最後との位置関係で扱えるもの（`[font]` の形の見出しを
 /// 持つ表と最上位）か。`font.size = 9` のような点で区切ったキーや、インラインの表は違う。
 fn is_standard(table: &Table) -> bool {
@@ -517,20 +751,67 @@ fn section_mut<'a>(
     Ok(Some(table))
 }
 
-/// 見出しを書いた表の道筋と、ファイルの中の位置。見出しを書かない表（`[colors.tab_bar]` の `colors`
-/// など）は含めず、その中の表を含める。
-fn tables(doc: &DocumentMut) -> Vec<(Vec<String>, Option<isize>)> {
+/// 見出しを書いた表一つ。表の配列（`[[profiles]]` など）の表なら、`index` はその中の位置。
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Header {
+    path: Vec<String>,
+    index: Option<usize>,
+}
+
+impl Header {
+    fn table<'a>(&self, doc: &'a DocumentMut) -> Option<&'a Table> {
+        let path: Vec<&str> = self.path.iter().map(String::as_str).collect();
+        match self.index {
+            None => table_at(doc, &path),
+            Some(index) => {
+                let (last, parent) = path.split_last()?;
+                table_at(doc, parent)?
+                    .get(last)?
+                    .as_array_of_tables()?
+                    .get(index)
+            }
+        }
+    }
+
+    fn table_mut<'a>(&self, doc: &'a mut DocumentMut) -> Option<&'a mut Table> {
+        let path: Vec<&str> = self.path.iter().map(String::as_str).collect();
+        match self.index {
+            None => table_at_mut(doc, &path),
+            Some(index) => {
+                let (last, parent) = path.split_last()?;
+                table_at_mut(doc, parent)?
+                    .get_mut(last)?
+                    .as_array_of_tables_mut()?
+                    .get_mut(index)
+            }
+        }
+    }
+}
+
+/// 見出しを書いた表と、ファイルの中の位置。見出しを書かない表（`[colors.tab_bar]` の `colors`
+/// など）は含めず、その中の表を含める。表の配列は、その表を一つずつ含める。
+fn tables(doc: &DocumentMut) -> Vec<(Header, Option<isize>)> {
     let mut found = Vec::new();
     collect_tables(doc.as_table(), &mut Vec::new(), &mut found);
     found
 }
 
-fn collect_tables(
-    table: &Table,
-    path: &mut Vec<String>,
-    found: &mut Vec<(Vec<String>, Option<isize>)>,
-) {
+fn collect_tables(table: &Table, path: &mut Vec<String>, found: &mut Vec<(Header, Option<isize>)>) {
     for (name, item) in table.iter() {
+        if let Some(array) = item.as_array_of_tables() {
+            for (index, inner) in array.iter().enumerate() {
+                let mut path = path.clone();
+                path.push(name.to_owned());
+                found.push((
+                    Header {
+                        path,
+                        index: Some(index),
+                    },
+                    inner.position(),
+                ));
+            }
+            continue;
+        }
         let Some(inner) = item.as_table() else {
             continue;
         };
@@ -539,7 +820,13 @@ fn collect_tables(
         }
         path.push(name.to_owned());
         if !inner.is_implicit() {
-            found.push((path.clone(), inner.position()));
+            found.push((
+                Header {
+                    path: path.clone(),
+                    index: None,
+                },
+                inner.position(),
+            ));
         }
         collect_tables(inner, path, found);
         path.pop();
@@ -549,7 +836,7 @@ fn collect_tables(
 /// 表の値の行のあとに続く場所。次の表の見出しの前か、ファイルの最後。
 #[derive(Debug)]
 enum Following {
-    Table(Vec<String>),
+    Table(Header),
     End,
 }
 
@@ -560,9 +847,18 @@ fn following(doc: &DocumentMut, path: &[&str]) -> Following {
     } else {
         table_at(doc, path).and_then(Table::position)
     };
+    let me = Header {
+        path: path.iter().map(|name| (*name).to_owned()).collect(),
+        index: None,
+    };
+    first_after(doc, &me, after)
+}
+
+/// `me` のほかの、位置が `after` より後ろ（`None` ならどこでも）の、いちばん前の表。
+fn first_after(doc: &DocumentMut, me: &Header, after: Option<isize>) -> Following {
     tables(doc)
         .into_iter()
-        .filter(|(other, position)| *other != path && position.is_some())
+        .filter(|(other, position)| other != me && position.is_some())
         .filter(|(_, position)| after.is_none_or(|after| position.is_some_and(|p| p > after)))
         .min_by_key(|(_, position)| *position)
         .map_or(Following::End, |(other, _)| Following::Table(other))
@@ -570,21 +866,18 @@ fn following(doc: &DocumentMut, path: &[&str]) -> Following {
 
 fn following_prefix(doc: &DocumentMut, following: &Following) -> String {
     match following {
-        Following::Table(path) => {
-            let path: Vec<&str> = path.iter().map(String::as_str).collect();
-            table_at(doc, &path)
-                .map(|table| decor_prefix(table.decor()))
-                .unwrap_or_default()
-        }
+        Following::Table(header) => header
+            .table(doc)
+            .map(|table| decor_prefix(table.decor()))
+            .unwrap_or_default(),
         Following::End => doc.trailing().as_str().unwrap_or_default().to_owned(),
     }
 }
 
 fn set_following_prefix(doc: &mut DocumentMut, following: &Following, prefix: String) {
     match following {
-        Following::Table(path) => {
-            let path: Vec<&str> = path.iter().map(String::as_str).collect();
-            if let Some(table) = table_at_mut(doc, &path) {
+        Following::Table(header) => {
+            if let Some(table) = header.table_mut(doc) {
                 table.decor_mut().set_prefix(prefix);
             }
         }
@@ -992,7 +1285,8 @@ mod tests {
                 size_pt: 10.5,
                 wide_glyph: WideGlyph::Overflow,
             },
-            shell: Some(r"C:\cygwin64\bin\zsh.exe -l".to_owned()),
+            profiles: vec![Profile::from_shell("zsh -l"), Profile::builtin()],
+            default_profile: Some(config::DEFAULT_PROFILE_NAME.to_owned()),
             paste: PasteConfig {
                 confirm: PasteConfirm::Never,
             },
@@ -1032,8 +1326,12 @@ mod tests {
         // 説明の行はそのまま、コメントにした行が値の行になる。足した組み合わせは表の最後。
         let expected = TEMPLATE
             .replace(
-                r"# shell = 'C:\cygwin64\bin\zsh.exe -l'",
-                r"shell = 'C:\cygwin64\bin\zsh.exe -l'",
+                r#"# default_profile = "PowerShell""#,
+                r#"default_profile = "PowerShell""#,
+            )
+            .replace(
+                "\n\n[font]\n",
+                "\n\n[[profiles]]\nname = \"zsh\"\ncommand = \"zsh -l\"\n\n[[profiles]]\nname = \"PowerShell\"\ncommand = \"powershell.exe -NoLogo\"\n\n[font]\n",
             )
             .replace(
                 r#"# family = ["Bizin Gothic", "BIZ UDGothic", "Consolas"]"#,
@@ -1064,7 +1362,8 @@ images = ['C:\walls', 'D:\pics\*.png']",
         let edited = customized();
         let text = update(TEMPLATE, &Config::default(), &edited).unwrap();
         let back = update(&text, &edited, &Config::default()).unwrap();
-        // shell は既定値がないので、それまでの値をコメントにする（ひな形の例と同じ値）。
+        // default_profile は既定値がないので、それまでの値をコメントにする（ひな形の例と同じ値）。
+        // プロファイルは表を消す。
         assert_eq!(back, TEMPLATE);
 
         // 一つずつ戻しても同じ。
@@ -1079,7 +1378,10 @@ images = ['C:\walls', 'D:\pics\*.png']",
                 c.background.images = d.background.images.clone();
                 c.background.fit = d.background.fit;
             },
-            |c, d| c.shell = d.shell.clone(),
+            |c, d| {
+                c.profiles = d.profiles.clone();
+                c.default_profile = d.default_profile.clone();
+            },
             |c, _| c.keys.bind(combo("ctrl+tab"), Some(Action::NextTab)),
             |c, d| c.scroll_bar = d.scroll_bar.clone(),
             |c, d| c.font.families = d.font.families.clone(),
@@ -1121,12 +1423,12 @@ images = ['C:\walls', 'D:\pics\*.png']",
         let mut edited = base.clone();
         edited.font.wide_glyph = WideGlyph::Clip;
         edited.scroll_bar.width = 16;
-        edited.shell = Some("cmd.exe".to_owned());
+        edited.default_profile = Some("PowerShell".to_owned());
         let updated = update(text, &base, &edited).unwrap();
         // 見出しのすぐ上のコメントは、その表のものとして見出しの上に残す。
         assert_eq!(
             updated,
-            "shell = \"cmd.exe\"\n# only a comment\n[font]\nsize = 9\nwide_glyph = \"clip\"\n\n[scroll_bar]\nwidth = 16\n"
+            "default_profile = \"PowerShell\"\n# only a comment\n[font]\nsize = 9\nwide_glyph = \"clip\"\n\n[scroll_bar]\nwidth = 16\n"
         );
         assert_reads_as(&updated, &edited);
 
@@ -1135,7 +1437,7 @@ images = ['C:\walls', 'D:\pics\*.png']",
         let updated = update(text, &base, &edited).unwrap();
         assert_eq!(
             updated,
-            "# head\n\nshell = \"cmd.exe\"\n# about font\n[font]\nsize = 9\nwide_glyph = \"clip\"\n\n[scroll_bar]\nwidth = 16\n"
+            "# head\n\ndefault_profile = \"PowerShell\"\n# about font\n[font]\nsize = 9\nwide_glyph = \"clip\"\n\n[scroll_bar]\nwidth = 16\n"
         );
 
         let updated = update("", &Config::default(), &edited).unwrap();
@@ -1349,6 +1651,84 @@ images = ['C:\walls', 'D:\pics\*.png']",
             update(&text, &edited, &Config::default()).unwrap(),
             TEMPLATE
         );
+    }
+
+    fn profile(name: &str, command: &str) -> Profile {
+        Profile {
+            name: name.to_owned(),
+            command: command.to_owned(),
+            backend: BackendKind::Conpty,
+        }
+    }
+
+    #[test]
+    fn profiles_are_merged_by_name_keeping_the_comments() {
+        let text = "default_profile = 'zsh'\n\n# mine\n[[profiles]]\nname = 'PowerShell'\ncommand = 'powershell.exe -NoLogo' # plain\n\n# cygwin\n[[profiles]]\nname = 'zsh'\ncommand = 'C:\\cygwin64\\bin\\zsh.exe -l'\nbackend = 'conpty'\n\n[[profiles]]\nname = 'old'\ncommand = 'cmd.exe'\n\n[font]\nsize = 9\n";
+        let base = config::parse(text, &Config::default()).config;
+        assert_eq!(base.profiles.len(), 3);
+        let mut edited = base.clone();
+        // 1 番目のコマンドを変え、2 番目の名前を変え（既定も追う）、3 番目を消して 2 つ足す。
+        edited.profiles[0].command = "pwsh.exe".to_owned();
+        edited.profiles[1].name = "Cygwin zsh".to_owned();
+        edited.default_profile = Some("Cygwin zsh".to_owned());
+        edited.profiles.remove(2);
+        edited.profiles.push(profile("WSL", "wsl.exe"));
+        let updated = update(text, &base, &edited).unwrap();
+        assert_eq!(
+            updated,
+            "default_profile = \"Cygwin zsh\"\n\n# mine\n[[profiles]]\nname = 'PowerShell'\ncommand = \"pwsh.exe\" # plain\n\n# cygwin\n[[profiles]]\nname = \"Cygwin zsh\"\ncommand = 'C:\\cygwin64\\bin\\zsh.exe -l'\nbackend = 'conpty'\n\n[[profiles]]\nname = \"WSL\"\ncommand = \"wsl.exe\"\n\n[font]\nsize = 9\n"
+        );
+        assert_reads_as(&updated, &edited);
+    }
+
+    #[test]
+    fn profiles_replace_the_shell_and_go_before_the_first_table() {
+        let text = "# head\nshell = 'zsh -l' # mine\n\n# about font\n[font]\nsize = 9\n";
+        let base = config::parse(text, &Config::default()).config;
+        assert_eq!(base.profiles, [Profile::from_shell("zsh -l")]);
+        let mut edited = base.clone();
+        edited.profiles.push(profile("cmd", "cmd.exe"));
+        let updated = update(text, &base, &edited).unwrap();
+        // shell はコメントにし、表は最初の表の見出しの前に置く。
+        assert_eq!(
+            updated,
+            "# head\n# shell = 'zsh -l' # mine\n\n[[profiles]]\nname = \"zsh\"\ncommand = \"zsh -l\"\n\n[[profiles]]\nname = \"cmd\"\ncommand = \"cmd.exe\"\n\n# about font\n[font]\nsize = 9\n"
+        );
+        assert_reads_as(&updated, &edited);
+
+        // 何もないファイルと、表のないファイル。
+        let updated = update("", &Config::default(), &edited).unwrap();
+        assert_reads_as(&updated, &edited);
+        assert_eq!(
+            updated,
+            "[[profiles]]\nname = \"zsh\"\ncommand = \"zsh -l\"\n\n[[profiles]]\nname = \"cmd\"\ncommand = \"cmd.exe\"\n\n[font]\nsize = 9\n"
+        );
+        let updated = update("# a\n", &Config::default(), &edited).unwrap();
+        assert_reads_as(&updated, &edited);
+    }
+
+    #[test]
+    fn profiles_back_to_the_default_remove_the_tables() {
+        let text = "# head\n\n[[profiles]]\nname = 'a'\ncommand = 'cmd.exe'\n\n[[profiles]]\nname = 'b'\ncommand = 'wsl.exe'\n\n[font]\nsize = 9\n";
+        let base = config::parse(text, &Config::default()).config;
+        let edited = Config {
+            profiles: Config::default().profiles,
+            ..base.clone()
+        };
+        let updated = update(text, &base, &edited).unwrap();
+        assert_eq!(updated, "# head\n\n[font]\nsize = 9\n");
+        assert_reads_as(&updated, &edited);
+        // インラインの配列なら、配列を書き換える。
+        let text = "profiles = [{ name = 'a', command = 'cmd.exe' }]\n";
+        let base = config::parse(text, &Config::default()).config;
+        let mut edited = base.clone();
+        edited.profiles[0].command = "pwsh.exe".to_owned();
+        let updated = update(text, &base, &edited).unwrap();
+        assert_eq!(
+            updated,
+            "profiles = [{ name = \"a\", command = \"pwsh.exe\" }]\n"
+        );
+        assert_reads_as(&updated, &edited);
     }
 
     #[test]
