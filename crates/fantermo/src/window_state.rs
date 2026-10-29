@@ -108,7 +108,9 @@ pub fn save(path: &Path, state: &State) {
     }
 }
 
-fn write_replacing(path: &Path, text: &str) -> io::Result<()> {
+/// `path` に `text` を書く。フォルダが無ければ作る。同じフォルダの一時ファイルに書いてから置き換える
+/// ので、途中で止まっても前のファイルは壊れない。
+pub fn write_replacing(path: &Path, text: &str) -> io::Result<()> {
     if let Some(dir) = path.parent()
         && !dir.as_os_str().is_empty()
     {

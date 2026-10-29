@@ -21,18 +21,21 @@ pub enum MenuCommand {
     SelectAll,
     NewTab,
     CloseTab,
+    /// 設定ダイアログを開く。
+    EditSettings,
     OpenSettings,
     ShowLicenses,
     Exit,
 }
 
 impl MenuCommand {
-    const ALL: [MenuCommand; 8] = [
+    const ALL: [MenuCommand; 9] = [
         MenuCommand::Copy,
         MenuCommand::Paste,
         MenuCommand::SelectAll,
         MenuCommand::NewTab,
         MenuCommand::CloseTab,
+        MenuCommand::EditSettings,
         MenuCommand::OpenSettings,
         MenuCommand::ShowLicenses,
         MenuCommand::Exit,
@@ -49,6 +52,7 @@ impl MenuCommand {
             MenuCommand::OpenSettings => 6,
             MenuCommand::Exit => 7,
             MenuCommand::ShowLicenses => 8,
+            MenuCommand::EditSettings => 9,
         }
     }
 
@@ -64,7 +68,8 @@ impl MenuCommand {
             MenuCommand::SelectAll => "すべて選択(&A)",
             MenuCommand::NewTab => "新しいタブ(&T)\tCtrl+Shift+T",
             MenuCommand::CloseTab => "タブを閉じる(&W)\tCtrl+Shift+W",
-            MenuCommand::OpenSettings => "設定ファイルを開く(&S)",
+            MenuCommand::EditSettings => "設定(&S)…",
+            MenuCommand::OpenSettings => "設定ファイルを開く(&F)",
             MenuCommand::ShowLicenses => "ライセンス(&L)",
             MenuCommand::Exit => "終了(&X)",
         }
@@ -102,6 +107,7 @@ impl Menu {
                 Some(Paste),
                 Some(SelectAll),
                 None,
+                Some(EditSettings),
                 Some(OpenSettings),
                 Some(ShowLicenses),
                 None,
@@ -122,7 +128,8 @@ pub struct MenuRequest {
     pub exclude: Option<RECT>,
     /// 選んでいる範囲がある。なければコピーを押せなくする。
     pub can_copy: bool,
-    /// 設定ファイルの場所が分かっている。分からなければ「設定ファイルを開く」を押せなくする。
+    /// 設定ファイルの場所が分かっている。分からなければ「設定…」と「設定ファイルを開く」を押せなく
+    /// する。
     pub can_open_settings: bool,
 }
 
@@ -166,7 +173,7 @@ pub fn show(owner: HWND, request: &MenuRequest) -> Option<MenuCommand> {
 fn enabled(command: MenuCommand, request: &MenuRequest) -> bool {
     match command {
         MenuCommand::Copy => request.can_copy,
-        MenuCommand::OpenSettings => request.can_open_settings,
+        MenuCommand::EditSettings | MenuCommand::OpenSettings => request.can_open_settings,
         _ => true,
     }
 }
@@ -224,11 +231,9 @@ mod tests {
         }
         // コンテキストメニューには、設定、ライセンス、終了を入れない。
         assert!(!Menu::Context.items().contains(&Some(MenuCommand::Exit)));
-        assert!(
-            !Menu::Context
-                .items()
-                .contains(&Some(MenuCommand::OpenSettings))
-        );
+        for command in [MenuCommand::EditSettings, MenuCommand::OpenSettings] {
+            assert!(!Menu::Context.items().contains(&Some(command)));
+        }
         assert!(
             !Menu::Context
                 .items()

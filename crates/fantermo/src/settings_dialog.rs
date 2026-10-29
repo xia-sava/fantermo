@@ -1,0 +1,1216 @@
+//! 設定ダイアログ。左にページの一覧、右にそのページの項目のコントロールを並べる。
+//!
+//! 項目を変えると、その場で [`Host::preview`] に渡して端末に反映させる（入力欄は打ち終わるまで
+//! [`PREVIEW_DELAY`] だけ待つ）。「OK」は設定ファイルに書いて閉じ、「適用」は書いて開いたまま、
+//! 「キャンセル」（Esc、×）は最後に書いたとき（書いていなければ開いたとき）の設定に戻して閉じる。
+//! 設定ファイルには、最後に書いたとき（または開いたとき）から変えた項目だけを書く。
+//!
+//! 開いている間は呼び出し元の窓を無効にする（`modal`）。端末の出力や描き直しは、ダイアログのループ
+//! から届く。
+
+use std::{
+    cell::{Cell, RefCell},
+    sync::OnceLock,
+    time::Duration,
+};
+
+use fantermo_core::config::{self, Config, PasteConfirm, WideGlyph};
+use windows::{
+    Win32::{
+        Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Graphics::Gdi::{COLOR_BTNFACE, CreateFontIndirectW, DeleteObject, HBRUSH, HFONT, HGDIOBJ},
+        System::LibraryLoader::GetModuleHandleW,
+        UI::{
+            Controls::{
+                BST_CHECKED, CB_SETMINVISIBLE, ICC_UPDOWN_CLASS, INITCOMMONCONTROLSEX,
+                InitCommonControlsEx, NMHDR, NMUPDOWN, UDM_SETBUDDY, UDM_SETPOS32, UDM_SETRANGE32,
+                UDN_DELTAPOS, UDS_ALIGNRIGHT, UDS_ARROWKEYS, UDS_HOTTRACK, UDS_NOTHOUSANDS,
+                UPDOWN_CLASSW, WC_COMBOBOXW, WC_LISTBOXW,
+            },
+            HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow},
+            Input::KeyboardAndMouse::SetFocus,
+            WindowsAndMessaging::{
+                BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTORADIOBUTTON, BS_DEFPUSHBUTTON,
+                BS_PUSHBUTTON, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CBN_SELCHANGE,
+                CBS_DROPDOWNLIST, CW_USEDEFAULT, CreateWindowExW, DC_HASDEFID, DM_GETDEFID,
+                DefWindowProcW, DestroyWindow, EN_CHANGE, ES_AUTOHSCROLL, GWLP_USERDATA,
+                GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, HMENU,
+                IDC_ARROW, IDCANCEL, IDOK, KillTimer, LB_ADDSTRING, LB_GETCURSEL, LB_SETCURSEL,
+                LBN_SELCHANGE, LBS_NOTIFY, LoadCursorW, MB_ICONWARNING, MB_OK, MessageBoxW,
+                MoveWindow, RegisterClassW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
+                SendMessageW, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
+                ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY,
+                WM_DPICHANGED, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETFONT, WM_TIMER, WNDCLASSW,
+                WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME,
+                WS_GROUP, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+            },
+        },
+    },
+    core::{HSTRING, PCWSTR, w},
+};
+
+use crate::{modal, ui_font};
+
+const CLASS: PCWSTR = w!("fantermo-settings-dialog");
+const TITLE: &str = "設定";
+
+/// 入力欄を打ってから、端末に反映するまでの間。この間に打ったものはまとめる。
+const PREVIEW_DELAY: Duration = Duration::from_millis(400);
+/// 入力欄を打ったあと、端末に反映するまでのタイマー。
+const PREVIEW_TIMER_ID: usize = 1;
+
+/// コントロールの ID。ボタンは IDOK と IDCANCEL も使う。
+const ID_PAGES: i32 = 100;
+const ID_APPLY: i32 = 101;
+const ID_ERROR: i32 = 102;
+const ID_FONT: i32 = 200;
+const ID_SIZE: i32 = 201;
+const ID_SIZE_SPIN: i32 = 202;
+/// `font.wide_glyph` のラジオボタン。[`WideGlyph::ALL`] の順に ID が続く。
+const ID_WIDE_GLYPH: i32 = 210;
+const ID_SCROLL_BAR_WIDTH: i32 = 220;
+const ID_SCROLL_BAR_WIDTH_SPIN: i32 = 221;
+/// `paste.confirm` のラジオボタン。[`PasteConfirm::ALL`] の順に ID が続く。
+const ID_PASTE_CONFIRM: i32 = 300;
+const ID_SHELL: i32 = 400;
+/// 見出しや説明の文字。押せないので同じ ID でよい。
+const ID_LABEL: i32 = -1;
+
+/// 96 DPI のときの寸法（ピクセル）。窓の DPI に合わせて拡大する。
+const BASE_DPI: u32 = 96;
+const CLIENT_WIDTH: i32 = 640;
+const CLIENT_HEIGHT: i32 = 300;
+const MARGIN: i32 = 12;
+const PAGES_WIDTH: i32 = 120;
+/// ページの見出しの列の幅。コントロールはその右に置く。
+const LABEL_WIDTH: i32 = 150;
+const ROW_HEIGHT: i32 = 24;
+/// 見出しの文字を、横のコントロールの文字と高さを揃えるための下げ幅。
+const LABEL_OFFSET: i32 = 4;
+const BUTTON_WIDTH: i32 = 88;
+const BUTTON_HEIGHT: i32 = 28;
+const BUTTON_GAP: i32 = 8;
+const NUMBER_WIDTH: i32 = 72;
+/// 上下の矢印のボタンの範囲（下限、上限）。上の矢印で増える向きにするためのもの。
+const SPIN_RANGE: (i32, i32) = (0, 1000);
+/// フォントの一覧を開いたときに見せる行の数。
+const VISIBLE_FONTS: usize = 16;
+
+/// ページ。一覧の順。
+const PAGES: [&str; 3] = ["外観", "動作", "シェル"];
+/// 開いたときに見せるページ。
+const PAGE_APPEARANCE: usize = 0;
+
+/// `font.wide_glyph` の選択肢の表示。[`WideGlyph::ALL`] の順。
+const WIDE_GLYPH_LABELS: [&str; 3] = [
+    "横に縮めてセルに収める",
+    "縮めずに、はみ出しを切る",
+    "縮めずに、右のセルへはみ出す",
+];
+
+/// `paste.confirm` の選択肢の表示。[`PasteConfirm::ALL`] の順。
+const PASTE_CONFIRM_LABELS: [&str; 3] =
+    ["コマンドとして走りうるとき", "改行を含むとき", "確かめない"];
+
+/// ダイアログの外の、端末と設定ファイルを受け持つもの。
+pub trait Host {
+    /// 編集中の設定 `config` を端末に反映する。
+    fn preview(&mut self, config: &Config);
+    /// 設定ファイルに、`base` から `edited` へ変えた項目を書く。書けなければ、利用者に見せる文を返す。
+    fn save(&mut self, base: &Config, edited: &Config) -> Result<(), String>;
+}
+
+/// フォントの一覧の一つ。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FontChoice {
+    /// 見せる名前。選んだら、この名前を設定に書く。
+    pub name: String,
+    /// システムのフォントの中の番号。同じ書体の別の名前を見分けるのに使う。
+    pub index: Option<u32>,
+}
+
+/// ダイアログを開くときに渡すもの。
+pub struct Request {
+    /// いま使っている設定。
+    pub current: Config,
+    /// `current.font.families` のそれぞれの、システムのフォントの中の番号（無ければ `None`）。
+    pub family_indices: Vec<Option<u32>>,
+    /// フォントの一覧（等幅の書体）。
+    pub fonts: Vec<FontChoice>,
+    /// いま使っているフォント。一覧に無ければ、一覧の先頭に足す。
+    pub font_in_use: FontChoice,
+}
+
+/// 設定ダイアログを開き、閉じるまで待つ。
+pub fn run(owner: HWND, request: Request, host: &mut dyn Host) {
+    if let Err(e) = register_class() {
+        tracing::warn!("failed to register the settings dialog: {e}");
+        return;
+    }
+    let Request {
+        current,
+        family_indices,
+        mut fonts,
+        font_in_use,
+    } = request;
+    let selected_font = match fonts.iter().position(|font| {
+        font.index.is_some() && font.index == font_in_use.index || font.name == font_in_use.name
+    }) {
+        Some(index) => index,
+        None => {
+            fonts.insert(0, font_in_use);
+            0
+        }
+    };
+    let (hwnd, controls) = match create(owner) {
+        Ok(created) => created,
+        Err(e) => {
+            tracing::warn!("failed to open the settings dialog: {e}");
+            return;
+        }
+    };
+    let state = State {
+        hwnd,
+        controls,
+        fonts,
+        host: RefCell::new(host),
+        base: RefCell::new(current.clone()),
+        base_indices: RefCell::new(family_indices),
+        base_font: Cell::new(selected_font),
+        previewed: RefCell::new(current.clone()),
+        font: Cell::new(HFONT::default()),
+        dpi: Cell::new(BASE_DPI),
+        closed: Cell::new(false),
+    };
+    state.fill(&current, selected_font);
+    // SAFETY: hwnd は作ったばかりの窓。ポインタは modal::run が戻るまで有効で、WM_DESTROY で外す。
+    unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, std::ptr::from_ref(&state) as isize) };
+    // SAFETY: owner は呼び出し元の有効な窓。
+    let dpi = unsafe { GetDpiForWindow(owner) };
+    state.set_dpi(dpi);
+    if let Err(e) = place(owner, hwnd, dpi) {
+        tracing::warn!("failed to place the settings dialog: {e}");
+    }
+    state.show_page(PAGE_APPEARANCE);
+    // SAFETY: hwnd と一覧は有効な窓。
+    unsafe {
+        _ = ShowWindow(hwnd, SW_SHOW);
+        _ = SetFocus(Some(state.controls.pages));
+    }
+
+    modal::run(owner, hwnd, &state.closed, |_| false);
+
+    let font = state.font.get();
+    if !font.is_invalid() {
+        // SAFETY: フォントはダイアログのために作ったもので、ダイアログはもう閉じている。
+        unsafe { _ = DeleteObject(HGDIOBJ(font.0)) };
+    }
+}
+
+fn register_class() -> windows::core::Result<()> {
+    static REGISTERED: OnceLock<()> = OnceLock::new();
+    if REGISTERED.get().is_some() {
+        return Ok(());
+    }
+    let controls = INITCOMMONCONTROLSEX {
+        dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+        dwICC: ICC_UPDOWN_CLASS,
+    };
+    // SAFETY: controls は大きさを入れて初期化してある。
+    if !unsafe { InitCommonControlsEx(&controls) }.as_bool() {
+        tracing::warn!("failed to register the up-down control");
+    }
+    // SAFETY: 自分のモジュールのハンドルを問い合わせるだけ。
+    let instance = unsafe { GetModuleHandleW(None)? };
+    let class = WNDCLASSW {
+        lpfnWndProc: Some(dialog_proc),
+        hInstance: instance.into(),
+        // SAFETY: システムの矢印カーソルを読むだけ。
+        hCursor: unsafe { LoadCursorW(None, IDC_ARROW)? },
+        // システムの色の番号に 1 を足した値は、その色のブラシとして扱われる。
+        hbrBackground: HBRUSH((COLOR_BTNFACE.0 + 1) as isize as *mut _),
+        lpszClassName: CLASS,
+        ..Default::default()
+    };
+    // SAFETY: class は初期化済みで、名前は静的な文字列。
+    if unsafe { RegisterClassW(&class) } == 0 {
+        return Err(windows::core::Error::from_thread());
+    }
+    _ = REGISTERED.set(());
+    Ok(())
+}
+
+/// 96 DPI のときの矩形（左、上、幅、高さ）。
+type DipRect = [i32; 4];
+
+/// ダイアログのコントロール。
+struct Controls {
+    pages: HWND,
+    /// 各ページに置くコントロール。[`PAGES`] の順。
+    page_controls: [Vec<HWND>; 3],
+    font: HWND,
+    size: HWND,
+    size_spin: HWND,
+    wide_glyph: [HWND; 3],
+    scroll_bar_width: HWND,
+    scroll_bar_width_spin: HWND,
+    paste_confirm: [HWND; 3],
+    shell: HWND,
+    error: HWND,
+    /// すべてのコントロールと、96 DPI のときの矩形。上下の矢印のボタンは入れない（相手の入力欄に
+    /// 付けて置く）。
+    placed: Vec<(HWND, DipRect)>,
+}
+
+/// ダイアログの状態。ウィンドウプロシージャからも触るので、共有の参照だけで読み書きする。
+struct State<'a> {
+    hwnd: HWND,
+    controls: Controls,
+    fonts: Vec<FontChoice>,
+    host: RefCell<&'a mut dyn Host>,
+    /// 最後に設定ファイルに書いたとき（書いていなければ開いたとき）の設定。キャンセルでここへ戻す。
+    base: RefCell<Config>,
+    /// `base.font.families` のそれぞれの、システムのフォントの中の番号。
+    base_indices: RefCell<Vec<Option<u32>>>,
+    /// `base` のときに選んでいたフォントの、一覧の中の位置。
+    base_font: Cell<usize>,
+    /// 最後に端末に反映した設定。
+    previewed: RefCell<Config>,
+    font: Cell<HFONT>,
+    dpi: Cell<u32>,
+    closed: Cell<bool>,
+}
+
+/// ダイアログとコントロールを作る。大きさと位置は後で決める（[`place`]）。
+fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
+    // SAFETY: 自分のモジュールのハンドルを問い合わせるだけ。
+    let instance = unsafe { GetModuleHandleW(None)? };
+    // SAFETY: クラスは登録済みで、文字列はこの呼び出しの間は生きている。
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+            CLASS,
+            &HSTRING::from(TITLE),
+            WS_POPUP | WS_CAPTION | WS_SYSMENU,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            CLIENT_WIDTH,
+            CLIENT_HEIGHT,
+            Some(owner),
+            None,
+            Some(instance.into()),
+            None,
+        )?
+    };
+    let mut placed = Vec::new();
+    let mut child = |class: PCWSTR,
+                     text: &str,
+                     style: WINDOW_STYLE,
+                     ex_style: WINDOW_EX_STYLE,
+                     id: i32,
+                     rect: Option<DipRect>|
+     -> windows::core::Result<HWND> {
+        // SAFETY: hwnd は有効な窓で、文字列はこの呼び出しの間は生きている。
+        let control = unsafe {
+            CreateWindowExW(
+                ex_style,
+                class,
+                &HSTRING::from(text),
+                WS_CHILD | WS_VISIBLE | style,
+                0,
+                0,
+                0,
+                0,
+                Some(hwnd),
+                Some(HMENU(id as isize as *mut _)),
+                Some(instance.into()),
+                None,
+            )?
+        };
+        if let Some(rect) = rect {
+            placed.push((control, rect));
+        }
+        Ok(control)
+    };
+    let none = WINDOW_EX_STYLE(0);
+    let label = |text: &str, rect: DipRect| (w!("STATIC"), text.to_owned(), rect);
+    let radio = |first: bool| {
+        let group = if first {
+            WS_GROUP | WS_TABSTOP
+        } else {
+            WINDOW_STYLE(0)
+        };
+        group | WINDOW_STYLE(BS_AUTORADIOBUTTON as u32)
+    };
+    let edit_style = WS_GROUP | WS_TABSTOP | WINDOW_STYLE(ES_AUTOHSCROLL as u32);
+    let spin_style = WINDOW_STYLE(UDS_ALIGNRIGHT | UDS_ARROWKEYS | UDS_NOTHOUSANDS | UDS_HOTTRACK);
+
+    let page_left = MARGIN + PAGES_WIDTH + MARGIN;
+    let page_width = CLIENT_WIDTH - page_left - MARGIN;
+    let control_left = page_left + LABEL_WIDTH;
+    let control_width = CLIENT_WIDTH - control_left - MARGIN;
+    let button_top = CLIENT_HEIGHT - MARGIN - BUTTON_HEIGHT;
+    let row = |index: i32| MARGIN + index * (ROW_HEIGHT + MARGIN);
+    let label_rect = |top: i32| [page_left, top + LABEL_OFFSET, LABEL_WIDTH, ROW_HEIGHT];
+
+    let pages = child(
+        WC_LISTBOXW,
+        "",
+        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(LBS_NOTIFY as u32),
+        WS_EX_CLIENTEDGE,
+        ID_PAGES,
+        Some([MARGIN, MARGIN, PAGES_WIDTH, button_top - 2 * MARGIN]),
+    )?;
+    for page in PAGES {
+        // SAFETY: pages は有効な一覧で、文字列はこの呼び出しの間は生きている。
+        unsafe {
+            SendMessageW(
+                pages,
+                LB_ADDSTRING,
+                None,
+                Some(LPARAM(HSTRING::from(page).as_ptr() as isize)),
+            )
+        };
+    }
+
+    // 外観
+    let mut appearance = Vec::new();
+    let (class, text, rect) = label("フォント(&F):", label_rect(row(0)));
+    appearance.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let font = child(
+        WC_COMBOBOXW,
+        "",
+        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
+        none,
+        ID_FONT,
+        Some([control_left, row(0), control_width, ROW_HEIGHT]),
+    )?;
+    appearance.push(font);
+    // SAFETY: font は有効なコンボボックス。
+    unsafe { SendMessageW(font, CB_SETMINVISIBLE, Some(WPARAM(VISIBLE_FONTS)), None) };
+    let (class, text, rect) = label("大きさ(&S):", label_rect(row(1)));
+    appearance.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let size = child(
+        w!("EDIT"),
+        "",
+        edit_style,
+        WS_EX_CLIENTEDGE,
+        ID_SIZE,
+        Some([control_left, row(1), NUMBER_WIDTH, ROW_HEIGHT]),
+    )?;
+    appearance.push(size);
+    let size_spin = child(UPDOWN_CLASSW, "", spin_style, none, ID_SIZE_SPIN, None)?;
+    appearance.push(size_spin);
+    let (class, text, rect) = label(
+        "ポイント（1〜128）",
+        [
+            control_left + NUMBER_WIDTH + BUTTON_GAP,
+            row(1) + LABEL_OFFSET,
+            control_width - NUMBER_WIDTH - BUTTON_GAP,
+            ROW_HEIGHT,
+        ],
+    );
+    appearance.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let (class, text, rect) = label("セルより広い文字(&W):", label_rect(row(2)));
+    appearance.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let mut wide_glyph = [HWND::default(); 3];
+    for (index, text) in WIDE_GLYPH_LABELS.iter().enumerate() {
+        let top = row(2) + index as i32 * ROW_HEIGHT;
+        wide_glyph[index] = child(
+            w!("BUTTON"),
+            text,
+            radio(index == 0),
+            none,
+            ID_WIDE_GLYPH + index as i32,
+            Some([control_left, top, control_width, ROW_HEIGHT]),
+        )?;
+        appearance.push(wide_glyph[index]);
+    }
+    let width_row = row(2) + 3 * ROW_HEIGHT + MARGIN;
+    let (class, text, rect) = label("スクロールバーの幅(&B):", label_rect(width_row));
+    appearance.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let scroll_bar_width = child(
+        w!("EDIT"),
+        "",
+        edit_style,
+        WS_EX_CLIENTEDGE,
+        ID_SCROLL_BAR_WIDTH,
+        Some([control_left, width_row, NUMBER_WIDTH, ROW_HEIGHT]),
+    )?;
+    appearance.push(scroll_bar_width);
+    let scroll_bar_width_spin = child(
+        UPDOWN_CLASSW,
+        "",
+        spin_style,
+        none,
+        ID_SCROLL_BAR_WIDTH_SPIN,
+        None,
+    )?;
+    appearance.push(scroll_bar_width_spin);
+    let (class, text, rect) = label(
+        "ピクセル（4〜64。画面の拡大率に合わせて広げる）",
+        [
+            control_left + NUMBER_WIDTH + BUTTON_GAP,
+            width_row + LABEL_OFFSET,
+            control_width - NUMBER_WIDTH - BUTTON_GAP,
+            ROW_HEIGHT,
+        ],
+    );
+    appearance.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+
+    // 動作
+    let mut behavior = Vec::new();
+    let (class, text, rect) = label("貼り付ける前に確かめる(&P):", label_rect(row(0)));
+    behavior.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let mut paste_confirm = [HWND::default(); 3];
+    for (index, text) in PASTE_CONFIRM_LABELS.iter().enumerate() {
+        let top = row(0) + index as i32 * ROW_HEIGHT;
+        paste_confirm[index] = child(
+            w!("BUTTON"),
+            text,
+            radio(index == 0),
+            none,
+            ID_PASTE_CONFIRM + index as i32,
+            Some([control_left, top, control_width, ROW_HEIGHT]),
+        )?;
+        behavior.push(paste_confirm[index]);
+    }
+    let (class, text, rect) = label(
+        "改行を含む文字列を貼り付ける前に、内容を編集できるダイアログで確かめる。「コマンドとして走りうるとき」は、アプリが bracketed paste を有効にしていないときなど。",
+        [
+            page_left,
+            row(0) + 3 * ROW_HEIGHT + MARGIN,
+            page_width,
+            3 * ROW_HEIGHT,
+        ],
+    );
+    behavior.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+
+    // シェル
+    let mut shell_page = Vec::new();
+    let (class, text, rect) = label(
+        "起動するコマンドライン(&C):",
+        [page_left, row(0), page_width, ROW_HEIGHT],
+    );
+    shell_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let shell = child(
+        w!("EDIT"),
+        "",
+        edit_style,
+        WS_EX_CLIENTEDGE,
+        ID_SHELL,
+        Some([page_left, row(0) + ROW_HEIGHT, page_width, ROW_HEIGHT]),
+    )?;
+    shell_page.push(shell);
+    let (class, text, rect) = label(
+        "空にすると PowerShell を起動する。fantermo を引数つきで起動したときは、引数のほうを使う。書き換えたら、次に開くタブから使う。",
+        [
+            page_left,
+            row(0) + 2 * ROW_HEIGHT + MARGIN,
+            page_width,
+            3 * ROW_HEIGHT,
+        ],
+    );
+    shell_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+
+    // 下のボタンと、入力の誤り
+    let error = child(
+        w!("STATIC"),
+        "",
+        WINDOW_STYLE(0),
+        none,
+        ID_ERROR,
+        Some([
+            MARGIN,
+            button_top + LABEL_OFFSET,
+            CLIENT_WIDTH - 2 * MARGIN - 3 * (BUTTON_WIDTH + BUTTON_GAP),
+            ROW_HEIGHT,
+        ]),
+    )?;
+    let buttons = [
+        (IDOK.0, "OK", true),
+        (IDCANCEL.0, "キャンセル", false),
+        (ID_APPLY, "適用(&A)", false),
+    ];
+    let mut button_left = CLIENT_WIDTH
+        - MARGIN
+        - buttons.len() as i32 * BUTTON_WIDTH
+        - (buttons.len() as i32 - 1) * BUTTON_GAP;
+    for (id, text, default) in buttons {
+        let style = if default {
+            BS_DEFPUSHBUTTON
+        } else {
+            BS_PUSHBUTTON
+        };
+        child(
+            w!("BUTTON"),
+            text,
+            WS_GROUP | WS_TABSTOP | WINDOW_STYLE(style as u32),
+            none,
+            id,
+            Some([button_left, button_top, BUTTON_WIDTH, BUTTON_HEIGHT]),
+        )?;
+        button_left += BUTTON_WIDTH + BUTTON_GAP;
+    }
+
+    Ok((
+        hwnd,
+        Controls {
+            pages,
+            page_controls: [appearance, behavior, shell_page],
+            font,
+            size,
+            size_spin,
+            wide_glyph,
+            scroll_bar_width,
+            scroll_bar_width_spin,
+            paste_confirm,
+            shell,
+            error,
+            placed,
+        },
+    ))
+}
+
+/// ダイアログを、DPI が `dpi` のときの大きさにして、呼び出し元の窓の真ん中に置く。
+fn place(owner: HWND, dialog: HWND, dpi: u32) -> windows::core::Result<()> {
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: scale(CLIENT_WIDTH, dpi),
+        bottom: scale(CLIENT_HEIGHT, dpi),
+    };
+    // SAFETY: rect は書き込める。
+    unsafe {
+        AdjustWindowRectExForDpi(
+            &mut rect,
+            WS_POPUP | WS_CAPTION | WS_SYSMENU,
+            false,
+            WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+            dpi,
+        )?
+    };
+    let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
+    let mut owner_rect = RECT::default();
+    // SAFETY: owner は有効な窓で、owner_rect は書き込める。
+    unsafe { GetWindowRect(owner, &mut owner_rect)? };
+    let left = owner_rect.left + (owner_rect.right - owner_rect.left - width) / 2;
+    let top = owner_rect.top + (owner_rect.bottom - owner_rect.top - height) / 2;
+    // SAFETY: dialog は有効な窓。
+    unsafe { SetWindowPos(dialog, None, left, top, width, height, SWP_NOZORDER) }
+}
+
+/// 96 DPI のときの `value` ピクセルを、DPI が `dpi` のときのピクセルにする。
+fn scale(value: i32, dpi: u32) -> i32 {
+    (value as f32 * dpi as f32 / BASE_DPI as f32).round() as i32
+}
+
+impl State<'_> {
+    /// コントロールに、設定 `config` と、一覧の `selected_font` 番目のフォントを入れる。
+    fn fill(&self, config: &Config, selected_font: usize) {
+        let c = &self.controls;
+        for font in &self.fonts {
+            // SAFETY: コンボボックスは有効な窓で、文字列はこの呼び出しの間は生きている。
+            unsafe {
+                SendMessageW(
+                    c.font,
+                    CB_ADDSTRING,
+                    None,
+                    Some(LPARAM(HSTRING::from(font.name.as_str()).as_ptr() as isize)),
+                )
+            };
+        }
+        // SAFETY: コンボボックスは有効な窓。
+        unsafe { SendMessageW(c.font, CB_SETCURSEL, Some(WPARAM(selected_font)), None) };
+        set_text(c.size, &format_size(config.font.size_pt));
+        let wide_glyph = WideGlyph::ALL
+            .iter()
+            .position(|&value| value == config.font.wide_glyph);
+        check_one(&c.wide_glyph, wide_glyph);
+        set_text(c.scroll_bar_width, &config.scroll_bar.width.to_string());
+        let paste_confirm = PasteConfirm::ALL
+            .iter()
+            .position(|&value| value == config.paste.confirm);
+        check_one(&c.paste_confirm, paste_confirm);
+        set_text(c.shell, config.shell.as_deref().unwrap_or_default());
+    }
+
+    /// DPI を `dpi` にし、フォントを作り直してコントロールを並べ直す。
+    fn set_dpi(&self, dpi: u32) {
+        self.dpi.set(dpi);
+        let font = match ui_font::message_logfont(dpi) {
+            // SAFETY: logfont は初期化済み。作ったフォントはダイアログが閉じた後に消す。
+            Ok(logfont) => unsafe { CreateFontIndirectW(&logfont) },
+            Err(e) => {
+                tracing::warn!("failed to read the message font: {e}");
+                HFONT::default()
+            }
+        };
+        let previous = self.font.replace(font);
+        self.layout();
+        if !previous.is_invalid() {
+            // SAFETY: 前のフォントは、どのコントロールももう使っていない。
+            unsafe { _ = DeleteObject(HGDIOBJ(previous.0)) };
+        }
+    }
+
+    /// コントロールを、いまの DPI の大きさで並べ、フォントを付ける。
+    fn layout(&self) {
+        let dpi = self.dpi.get();
+        let c = &self.controls;
+        let font = self.font.get();
+        let all = c
+            .placed
+            .iter()
+            .map(|(control, _)| *control)
+            .chain([c.size_spin, c.scroll_bar_width_spin]);
+        for control in all {
+            // SAFETY: control はダイアログの子で、フォントはダイアログが閉じるまで消さない。
+            unsafe {
+                SendMessageW(
+                    control,
+                    WM_SETFONT,
+                    Some(WPARAM(font.0 as usize)),
+                    Some(LPARAM(0)),
+                )
+            };
+        }
+        for &(control, [left, top, width, height]) in &c.placed {
+            // SAFETY: control はダイアログの子の有効な窓。
+            unsafe {
+                _ = MoveWindow(
+                    control,
+                    scale(left, dpi),
+                    scale(top, dpi),
+                    scale(width, dpi),
+                    scale(height, dpi),
+                    true,
+                );
+            }
+        }
+        // 上下の矢印のボタンは、相手の入力欄の右端に付け直す（付けるときに入力欄の幅を詰める）。
+        for (spin, buddy) in [
+            (c.size_spin, c.size),
+            (c.scroll_bar_width_spin, c.scroll_bar_width),
+        ] {
+            // 範囲は、上の矢印で数が増える向き（既定は逆）にするためだけに決める。数は step で決める。
+            // SAFETY: spin と buddy はダイアログの子の有効な窓。
+            unsafe {
+                SendMessageW(spin, UDM_SETBUDDY, Some(WPARAM(buddy.0 as usize)), None);
+                SendMessageW(
+                    spin,
+                    UDM_SETRANGE32,
+                    Some(WPARAM(SPIN_RANGE.0 as usize)),
+                    Some(LPARAM(SPIN_RANGE.1 as isize)),
+                );
+                // 端にいると矢印を押しても知らせないので、真ん中に置く（step で動かさない）。
+                SendMessageW(
+                    spin,
+                    UDM_SETPOS32,
+                    None,
+                    Some(LPARAM(((SPIN_RANGE.0 + SPIN_RANGE.1) / 2) as isize)),
+                );
+            }
+        }
+    }
+
+    /// `page` 番目のページのコントロールだけを見せる。
+    fn show_page(&self, page: usize) {
+        let c = &self.controls;
+        // SAFETY: 一覧は有効な窓。
+        unsafe { SendMessageW(c.pages, LB_SETCURSEL, Some(WPARAM(page)), None) };
+        for (index, controls) in c.page_controls.iter().enumerate() {
+            let show = if index == page { SW_SHOW } else { SW_HIDE };
+            for &control in controls {
+                // SAFETY: control はダイアログの子の有効な窓。
+                unsafe { _ = ShowWindow(control, show) };
+            }
+        }
+    }
+
+    /// コントロールから編集中の設定を組み立てる。読めない入力があれば、その文と入力欄を返す。
+    fn read(&self) -> Result<Config, (&'static str, HWND)> {
+        let c = &self.controls;
+        let mut config = self.base.borrow().clone();
+        // SAFETY: コンボボックスは有効な窓。
+        let selected = unsafe { SendMessageW(c.font, CB_GETCURSEL, None, None) }.0;
+        if let Ok(selected) = usize::try_from(selected)
+            && selected != self.base_font.get()
+            && let Some(choice) = self.fonts.get(selected)
+        {
+            config.font.families =
+                families_choosing(&config.font.families, &self.base_indices.borrow(), choice)
+                    .into_iter()
+                    .map(|(name, _)| name)
+                    .collect();
+        }
+        config.font.size_pt = config::parse_font_size(&get_text(c.size)).ok_or((
+            "フォントの大きさは、1 から 128 までの数で書いてください。",
+            c.size,
+        ))?;
+        if let Some(index) = checked(&c.wide_glyph) {
+            config.font.wide_glyph = WideGlyph::ALL[index];
+        }
+        config.scroll_bar.width = config::parse_scroll_bar_width(&get_text(c.scroll_bar_width))
+            .ok_or((
+                "スクロールバーの幅は、4 から 64 までの整数で書いてください。",
+                c.scroll_bar_width,
+            ))?;
+        if let Some(index) = checked(&c.paste_confirm) {
+            config.paste.confirm = PasteConfirm::ALL[index];
+        }
+        config.shell = config::shell_from_input(&get_text(c.shell));
+        Ok(config)
+    }
+
+    /// 編集中の設定を読み、読めれば端末に反映する（前に反映したものと同じなら何もしない）。読めた
+    /// 設定を返す。読めなければ誤りを見せる。
+    fn preview(&self) -> Option<Config> {
+        // SAFETY: hwnd は有効な窓。掛けていないタイマーを止めても害はない。
+        unsafe { _ = KillTimer(Some(self.hwnd), PREVIEW_TIMER_ID) };
+        let config = match self.read() {
+            Ok(config) => config,
+            Err((message, _)) => {
+                set_text(self.controls.error, message);
+                return None;
+            }
+        };
+        set_text(self.controls.error, "");
+        self.preview_config(&config);
+        Some(config)
+    }
+
+    fn preview_config(&self, config: &Config) {
+        if *self.previewed.borrow() == *config {
+            return;
+        }
+        let Ok(mut host) = self.host.try_borrow_mut() else {
+            tracing::debug!("skipped a nested settings preview");
+            return;
+        };
+        host.preview(config);
+        *self.previewed.borrow_mut() = config.clone();
+    }
+
+    /// 編集中の設定を反映して設定ファイルに書く。書けたら `true`。
+    fn apply(&self) -> bool {
+        let Some(edited) = self.preview() else {
+            // 読めない入力欄へ移る。誤りの文は preview が見せている。
+            if let Err((_, control)) = self.read() {
+                // SAFETY: control はダイアログの子の有効な窓。
+                unsafe { _ = SetFocus(Some(control)) };
+            }
+            return false;
+        };
+        let base = self.base.borrow().clone();
+        let saved = match self.host.try_borrow_mut() {
+            Ok(mut host) => host.save(&base, &edited),
+            Err(_) => return false,
+        };
+        if let Err(text) = saved {
+            // SAFETY: hwnd は有効な窓で、文字列はこの呼び出しの間は生きている。借用は持っていない。
+            unsafe {
+                MessageBoxW(
+                    Some(self.hwnd),
+                    &HSTRING::from(text),
+                    &HSTRING::from("fantermo"),
+                    MB_OK | MB_ICONWARNING,
+                )
+            };
+            return false;
+        }
+        // SAFETY: コンボボックスは有効な窓。
+        let selected = unsafe { SendMessageW(self.controls.font, CB_GETCURSEL, None, None) }.0;
+        if let Ok(selected) = usize::try_from(selected)
+            && selected != self.base_font.get()
+            && let Some(choice) = self.fonts.get(selected)
+        {
+            let indices =
+                families_choosing(&base.font.families, &self.base_indices.borrow(), choice)
+                    .into_iter()
+                    .map(|(_, index)| index)
+                    .collect();
+            *self.base_indices.borrow_mut() = indices;
+            self.base_font.set(selected);
+        }
+        *self.base.borrow_mut() = edited;
+        true
+    }
+
+    /// 最後に書いたときの設定に戻して閉じる。
+    fn cancel(&self) {
+        // SAFETY: hwnd は有効な窓。掛けていないタイマーを止めても害はない。
+        unsafe { _ = KillTimer(Some(self.hwnd), PREVIEW_TIMER_ID) };
+        let base = self.base.borrow().clone();
+        self.preview_config(&base);
+        self.close();
+    }
+
+    fn close(&self) {
+        // SAFETY: hwnd はこのダイアログ。
+        unsafe { _ = DestroyWindow(self.hwnd) };
+    }
+
+    /// 入力欄を打ったので、少し待ってから反映する。
+    fn schedule_preview(&self) {
+        // SAFETY: hwnd は有効な窓。同じ番号のタイマーは掛け直しになる。
+        if unsafe {
+            SetTimer(
+                Some(self.hwnd),
+                PREVIEW_TIMER_ID,
+                PREVIEW_DELAY.as_millis() as u32,
+                None,
+            )
+        } == 0
+        {
+            tracing::warn!(
+                "failed to schedule the settings preview: {}",
+                windows::core::Error::from_thread()
+            );
+            self.preview();
+        }
+    }
+
+    /// 上下の矢印のボタン `spin` が押された。相手の入力欄の数を `delta` の向きに一つ動かす。
+    fn step(&self, spin: HWND, delta: i32) {
+        let c = &self.controls;
+        if spin == c.size_spin {
+            let text = get_text(c.size);
+            let current = config::parse_font_size(&text).unwrap_or(self.base.borrow().font.size_pt);
+            set_text(c.size, &format_size(step_size(current, delta)));
+        } else if spin == c.scroll_bar_width_spin {
+            let text = get_text(c.scroll_bar_width);
+            let current = config::parse_scroll_bar_width(&text)
+                .unwrap_or(self.base.borrow().scroll_bar.width);
+            set_text(c.scroll_bar_width, &step_width(current, delta).to_string());
+        }
+        // 矢印は打ち間違えないので、待たずに反映する。
+        self.preview();
+    }
+}
+
+/// フォントの名前の並び `families`（それぞれの番号は `indices`）で、`chosen` を先頭にした並び。同じ
+/// 書体（名前か番号が同じもの）は後ろから除く。名前と番号の組で返す。
+fn families_choosing(
+    families: &[String],
+    indices: &[Option<u32>],
+    chosen: &FontChoice,
+) -> Vec<(String, Option<u32>)> {
+    let same = |name: &str, index: Option<u32>| {
+        name.eq_ignore_ascii_case(&chosen.name) || (index.is_some() && index == chosen.index)
+    };
+    std::iter::once((chosen.name.clone(), chosen.index))
+        .chain(
+            families
+                .iter()
+                .enumerate()
+                .map(|(i, name)| (name.clone(), indices.get(i).copied().flatten()))
+                .filter(|(name, index)| !same(name, *index)),
+        )
+        .collect()
+}
+
+/// フォントの大きさを、矢印で一つ動かした値。整数の大きさへ動かし、範囲の端で止める。
+fn step_size(current: f32, delta: i32) -> f32 {
+    let next = if delta > 0 {
+        current.floor() + 1.0
+    } else {
+        current.ceil() - 1.0
+    };
+    next.clamp(
+        *config::FONT_SIZE_RANGE_PT.start(),
+        *config::FONT_SIZE_RANGE_PT.end(),
+    )
+}
+
+/// スクロールバーの幅を、矢印で一つ動かした値。範囲の端で止める。
+fn step_width(current: u32, delta: i32) -> u32 {
+    let next = if delta > 0 {
+        current.saturating_add(1)
+    } else {
+        current.saturating_sub(1)
+    };
+    next.clamp(
+        *config::SCROLL_BAR_WIDTH_RANGE.start(),
+        *config::SCROLL_BAR_WIDTH_RANGE.end(),
+    )
+}
+
+/// 入力欄に見せる、フォントの大きさ。整数なら小数点を付けない。
+fn format_size(size_pt: f32) -> String {
+    size_pt.to_string()
+}
+
+fn set_text(control: HWND, text: &str) {
+    // SAFETY: control は有効な窓で、文字列はこの呼び出しの間は生きている。
+    unsafe { _ = SetWindowTextW(control, &HSTRING::from(text)) };
+}
+
+fn get_text(control: HWND) -> String {
+    // SAFETY: control は有効な窓。
+    let length = unsafe { GetWindowTextLengthW(control) }.max(0) as usize;
+    let mut buffer = vec![0u16; length + 1];
+    // SAFETY: buffer は length + 1 個の u16 を書き込める。
+    let copied = unsafe { GetWindowTextW(control, &mut buffer) }.max(0) as usize;
+    String::from_utf16_lossy(&buffer[..copied])
+}
+
+/// ラジオボタンの並び `buttons` のうち、`index` 番目だけを選ぶ。
+fn check_one(buttons: &[HWND], index: Option<usize>) {
+    for (i, &button) in buttons.iter().enumerate() {
+        let state = if Some(i) == index { BST_CHECKED.0 } else { 0 };
+        // SAFETY: button は有効なボタン。
+        unsafe { SendMessageW(button, BM_SETCHECK, Some(WPARAM(state as usize)), None) };
+    }
+}
+
+/// ラジオボタンの並び `buttons` のうち、選んでいるものの位置。
+fn checked(buttons: &[HWND]) -> Option<usize> {
+    buttons.iter().position(|&button| {
+        // SAFETY: button は有効なボタン。
+        unsafe { SendMessageW(button, BM_GETCHECK, None, None) }.0 == BST_CHECKED.0 as isize
+    })
+}
+
+/// ダイアログに結び付けた状態。WM_DESTROY で外すまで有効。
+fn state_of<'a>(dialog: HWND) -> Option<&'a State<'a>> {
+    // SAFETY: GWLP_USERDATA には run が入れた State のポインタか 0 が入っている。
+    let pointer = unsafe { GetWindowLongPtrW(dialog, GWLP_USERDATA) } as *const State;
+    // SAFETY: 0 でなければ、run の中の State を指し、ダイアログが閉じるまで有効。
+    unsafe { pointer.as_ref() }
+}
+
+extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let Some(state) = state_of(hwnd) else {
+        // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
+        return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+    };
+    match msg {
+        WM_COMMAND => {
+            let id = (wparam.0 & 0xffff) as i32;
+            let code = ((wparam.0 >> 16) & 0xffff) as u32;
+            match (id, code) {
+                (id, _) if id == IDOK.0 => {
+                    if state.apply() {
+                        state.close();
+                    }
+                }
+                (id, _) if id == IDCANCEL.0 => state.cancel(),
+                (ID_APPLY, BN_CLICKED) => {
+                    state.apply();
+                }
+                (ID_PAGES, LBN_SELCHANGE) => {
+                    // SAFETY: 一覧は有効な窓。
+                    let page =
+                        unsafe { SendMessageW(state.controls.pages, LB_GETCURSEL, None, None) }.0;
+                    if let Ok(page) = usize::try_from(page)
+                        && page < PAGES.len()
+                    {
+                        state.show_page(page);
+                    }
+                }
+                (ID_FONT, CBN_SELCHANGE) => {
+                    state.preview();
+                }
+                (ID_SIZE | ID_SCROLL_BAR_WIDTH | ID_SHELL, EN_CHANGE) => state.schedule_preview(),
+                (id, BN_CLICKED)
+                    if (ID_WIDE_GLYPH..ID_WIDE_GLYPH + 3).contains(&id)
+                        || (ID_PASTE_CONFIRM..ID_PASTE_CONFIRM + 3).contains(&id) =>
+                {
+                    state.preview();
+                }
+                _ => {}
+            }
+            LRESULT(0)
+        }
+        WM_NOTIFY => {
+            // SAFETY: WM_NOTIFY の lparam は NMHDR で始まる構造体を指す。
+            let header = unsafe { &*(lparam.0 as *const NMHDR) };
+            if header.code == UDN_DELTAPOS {
+                // SAFETY: UDN_DELTAPOS の lparam は NMUPDOWN を指す。
+                let updown = unsafe { &*(lparam.0 as *const NMUPDOWN) };
+                state.step(header.hwndFrom, updown.iDelta);
+                // 矢印のボタン自身の位置は動かさない（入力欄の数はこちらで決める）。
+                return LRESULT(1);
+            }
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == PREVIEW_TIMER_ID => {
+            state.preview();
+            LRESULT(0)
+        }
+        WM_DPICHANGED => {
+            let dpi = (wparam.0 & 0xffff) as u32;
+            // SAFETY: WM_DPICHANGED の lparam は推奨された矩形を指す。
+            let suggested = unsafe { &*(lparam.0 as *const RECT) };
+            // SAFETY: hwnd はこのダイアログ。
+            if let Err(e) = unsafe {
+                SetWindowPos(
+                    hwnd,
+                    None,
+                    suggested.left,
+                    suggested.top,
+                    suggested.right - suggested.left,
+                    suggested.bottom - suggested.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            } {
+                tracing::warn!("failed to move the settings dialog for {dpi} DPI: {e}");
+            }
+            state.set_dpi(dpi);
+            LRESULT(0)
+        }
+        // Enter を自分で使わないコントロールは、既定のボタンをこの二つで問い合わせて押させる。
+        DM_GETDEFID => LRESULT(((DC_HASDEFID as isize) << 16) | IDOK.0 as isize),
+        WM_NEXTDLGCTL => {
+            // lparam が 0 でなければ、wparam は移す先の子の窓。順に移すほうは使われないので扱わない。
+            if lparam.0 & 0xffff != 0 {
+                // SAFETY: wparam はこのダイアログの子の窓のハンドルとして渡される。
+                unsafe { _ = SetFocus(Some(HWND(wparam.0 as *mut _))) };
+            }
+            LRESULT(0)
+        }
+        WM_CLOSE => {
+            state.cancel();
+            LRESULT(0)
+        }
+        WM_DESTROY => {
+            state.closed.set(true);
+            // SAFETY: hwnd はこのダイアログ。以後、状態のポインタは使わせない。
+            unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
+            LRESULT(0)
+        }
+        _ => {
+            // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn choice(name: &str, index: Option<u32>) -> FontChoice {
+        FontChoice {
+            name: name.to_owned(),
+            index,
+        }
+    }
+
+    #[test]
+    fn chosen_family_goes_first_without_duplicates() {
+        let families = ["Bizin Gothic", "BIZ UDGothic", "Consolas"].map(str::to_owned);
+        let indices = [Some(96), Some(77), Some(5)];
+        assert_eq!(
+            families_choosing(&families, &indices, &choice("BIZ UDゴシック", Some(77))),
+            [
+                ("BIZ UDゴシック".to_owned(), Some(77)),
+                ("Bizin Gothic".to_owned(), Some(96)),
+                ("Consolas".to_owned(), Some(5)),
+            ]
+        );
+        assert_eq!(
+            families_choosing(&families, &indices, &choice("consolas", None)),
+            [
+                ("consolas".to_owned(), None),
+                ("Bizin Gothic".to_owned(), Some(96)),
+                ("BIZ UDGothic".to_owned(), Some(77)),
+            ]
+        );
+        // 番号の分からない名前は、名前だけで比べる。
+        assert_eq!(
+            families_choosing(&families, &[], &choice("Cascadia Mono", Some(3))).len(),
+            4
+        );
+    }
+
+    #[test]
+    fn arrows_step_to_whole_sizes_within_the_range() {
+        assert_eq!(step_size(12.0, 1), 13.0);
+        assert_eq!(step_size(12.0, -1), 11.0);
+        assert_eq!(step_size(10.5, 1), 11.0);
+        assert_eq!(step_size(10.5, -1), 10.0);
+        assert_eq!(step_size(1.0, -1), 1.0);
+        assert_eq!(step_size(128.0, 1), 128.0);
+        assert_eq!(step_width(12, 1), 13);
+        assert_eq!(step_width(4, -1), 4);
+        assert_eq!(step_width(64, 1), 64);
+    }
+
+    #[test]
+    fn sizes_are_shown_as_written() {
+        assert_eq!(format_size(12.0), "12");
+        assert_eq!(format_size(10.5), "10.5");
+    }
+}

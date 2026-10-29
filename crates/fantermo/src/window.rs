@@ -84,6 +84,7 @@ use crate::{
     renderer::Renderer,
     scroll_bar,
     session::{Session, SessionId},
+    settings_dialog::{self, FontChoice},
     tab_bar::{self, Hit, TabView},
     text_dialog,
     ui_font::UiFont,
@@ -484,6 +485,8 @@ enum Deferred {
     EditPaste { text: String, font: Font },
     /// ライセンスのダイアログを開く。`font` は端末のフォント。
     ShowLicenses { font: Font },
+    /// 設定ダイアログを開く。
+    EditSettings,
     /// コンテキストメニューか、タブバーのメニューのボタンのメニューを出す。
     Menu(MenuRequest),
     /// 窓を閉じる。最後の端末を閉じたときと、メニューで終了を選んだときに使う。
@@ -588,6 +591,14 @@ struct App {
     scroll_bar_hover: bool,
     /// 表示している端末の、最後に描いたときの表示している範囲の位置。変わったら描き直す。
     scroll_position: Option<ScrollPosition>,
+    /// 設定ダイアログを開いている。開いている間は設定ファイルを読み直さない（ダイアログで編集中の
+    /// 設定を、書く前の中身で上書きしないため）。
+    settings_dialog_open: bool,
+    /// 設定ダイアログを開いている間に、設定ファイルが書き換えられた。閉じたら読み直す。
+    reload_pending: bool,
+    /// 設定ダイアログが最後に設定ファイルに書いた中身。読み直すときに中身がこれと同じなら、使っている
+    /// 設定と同じなので読まない。
+    settings_written: Option<String>,
 }
 
 impl App {
@@ -678,6 +689,9 @@ impl App {
             scroll_bar_press: None,
             scroll_bar_hover: false,
             scroll_position: None,
+            settings_dialog_open: false,
+            reload_pending: false,
+            settings_written: None,
         })
     }
 
@@ -1775,7 +1789,20 @@ impl App {
     /// 貼り付けの設定はすぐに入れ替える。`shell` は次に開く端末から使う。
     /// 誤りがあれば、それを見せることを返す（借用を手放してから [`run_deferred`] で見せる）。誤りが
     /// なければ、設定の警告を取り下げる（開いているメッセージボックスも閉じさせる）。
+    ///
+    /// 設定ダイアログを開いている間は読まず、閉じてから読む。設定ダイアログが書いた中身のままなら読まない。
     fn reload_config(&mut self) -> (Option<u32>, Option<Deferred>) {
+        if self.settings_dialog_open {
+            self.reload_pending = true;
+            return (None, None);
+        }
+        if let Some(written) = self.settings_written.take()
+            && let Some(path) = &self.config_path
+            && std::fs::read_to_string(path).is_ok_and(|text| text == written)
+        {
+            tracing::debug!("the settings file is as the settings dialog wrote it");
+            return (None, None);
+        }
         let Loaded { config, notice } =
             config_file::reload(self.config_path.as_deref(), &self.config_in_use());
         let warn = match notice {
@@ -1791,7 +1818,8 @@ impl App {
         (self.apply_config(config), warn)
     }
 
-    /// 読み直した設定を入れ替える。作り直しが要れば、その DPI を返す（[`App::reload_config`]）。
+    /// 読み直した設定、または設定ダイアログで編集中の設定を入れ替える。作り直しが要れば、その DPI を
+    /// 返す（[`App::reload_config`]）。
     fn apply_config(&mut self, config: Config) -> Option<u32> {
         self.paste_confirm = config.paste.confirm;
         self.shell = config.shell;
@@ -1831,6 +1859,40 @@ impl App {
             scroll_bar: ScrollBarConfig {
                 width: self.scroll_bar_width,
             },
+        }
+    }
+
+    /// 設定ダイアログに渡すもの。いま使っている設定と、フォントの一覧。
+    fn settings_request(&self) -> settings_dialog::Request {
+        let current = self.config_in_use();
+        let fonts = match font::monospaced_families(&self.dwrite) {
+            Ok(families) => families
+                .into_iter()
+                .map(|family| FontChoice {
+                    name: family.name,
+                    index: Some(family.index),
+                })
+                .collect(),
+            Err(e) => {
+                tracing::warn!("failed to list the fonts: {e}");
+                Vec::new()
+            }
+        };
+        let family_indices = current
+            .font
+            .families
+            .iter()
+            .map(|family| font::family_index(&self.dwrite, family))
+            .collect();
+        let font_in_use = FontChoice {
+            name: self.font.family.clone(),
+            index: font::family_index(&self.dwrite, &self.font.family),
+        };
+        settings_dialog::Request {
+            current,
+            family_indices,
+            fonts,
+            font_in_use,
         }
     }
 
@@ -2100,6 +2162,7 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
                 }
             }
             Deferred::ShowLicenses { font } => license::show(hwnd, &font),
+            Deferred::EditSettings => edit_settings(hwnd, with_app),
             Deferred::Menu(request) => match context_menu::show(hwnd, &request) {
                 Some(MenuCommand::Copy) => with_app(&mut |app| {
                     app.copy_selection();
@@ -2112,6 +2175,7 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
                 Some(MenuCommand::CloseTab) => {
                     with_app(&mut |app| next = app.run_tab_command(TabCommand::Close))
                 }
+                Some(MenuCommand::EditSettings) => next = Some(Deferred::EditSettings),
                 Some(MenuCommand::OpenSettings) => with_app(&mut |app| app.open_settings()),
                 Some(MenuCommand::ShowLicenses) => with_app(&mut |app| {
                     next = Some(Deferred::ShowLicenses {
@@ -2125,6 +2189,77 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
             Deferred::CloseWindow => destroy_window(hwnd),
             Deferred::Warn { topic, text } => notice::warn(hwnd, topic, text),
         }
+    }
+}
+
+/// 設定ファイルを読み直し、フォントやスクロールバーの幅が変わっていれば作り直す。誤りがあれば見せる。
+fn reload_settings(hwnd: HWND, with_app: &WithApp) {
+    let mut reloaded = (None, None);
+    with_app(&mut |app| reloaded = app.reload_config());
+    let (rebuild_dpi, deferred) = reloaded;
+    // WM_DPICHANGED をこの場で送るので、借用を手放してから呼ぶ。
+    if let Some(dpi) = rebuild_dpi {
+        change_dpi_in_place(hwnd, dpi);
+    }
+    run_deferred(hwnd, deferred, with_app);
+}
+
+/// 設定ダイアログの編集を端末と設定ファイルにつなぐもの。
+struct SettingsHost<'a, 'b> {
+    hwnd: HWND,
+    with_app: &'a WithApp<'b>,
+    config_path: PathBuf,
+}
+
+impl settings_dialog::Host for SettingsHost<'_, '_> {
+    fn preview(&mut self, config: &Config) {
+        let mut rebuild_dpi = None;
+        (self.with_app)(&mut |app| rebuild_dpi = app.apply_config(config.clone()));
+        // WM_DPICHANGED をこの場で送るので、借用を手放してから呼ぶ。
+        if let Some(dpi) = rebuild_dpi {
+            change_dpi_in_place(self.hwnd, dpi);
+        }
+    }
+
+    fn save(&mut self, base: &Config, edited: &Config) -> Result<(), String> {
+        let written = config_file::save(&self.config_path, base, edited)?;
+        (self.with_app)(&mut |app| app.settings_written = Some(written.clone()));
+        Ok(())
+    }
+}
+
+/// 設定ダイアログを開き、閉じるまで待つ。開いている間に設定ファイルが書き換えられていたら、閉じて
+/// から読み直す。
+fn edit_settings(hwnd: HWND, with_app: &WithApp) {
+    let mut opened = None;
+    with_app(&mut |app| {
+        let Some(path) = app.config_path.clone() else {
+            tracing::warn!("the settings file location is unknown");
+            return;
+        };
+        app.settings_dialog_open = true;
+        opened = Some((path, app.settings_request()));
+    });
+    let Some((config_path, request)) = opened else {
+        return;
+    };
+    let mut host = SettingsHost {
+        hwnd,
+        with_app,
+        config_path,
+    };
+    settings_dialog::run(hwnd, request, &mut host);
+    // 開いている間に最後の端末が終わって窓が閉じたら、App はもう無い。
+    if app_of(hwnd).is_none() {
+        return;
+    }
+    let mut pending = false;
+    with_app(&mut |app| {
+        app.settings_dialog_open = false;
+        pending = std::mem::take(&mut app.reload_pending);
+    });
+    if pending {
+        reload_settings(hwnd, with_app);
     }
 }
 
@@ -2403,14 +2538,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             if let Err(e) = unsafe { KillTimer(Some(hwnd), CONFIG_TIMER_ID) } {
                 tracing::warn!("failed to stop the settings timer: {e}");
             }
-            let mut reloaded = (None, None);
-            with_app(&mut |app| reloaded = app.reload_config());
-            let (rebuild_dpi, deferred) = reloaded;
-            // WM_DPICHANGED をこの場で送るので、借用を手放してから呼ぶ。
-            if let Some(dpi) = rebuild_dpi {
-                change_dpi_in_place(hwnd, dpi);
-            }
-            run_deferred(hwnd, deferred, &with_app);
+            reload_settings(hwnd, &with_app);
             LRESULT(0)
         }
         WM_KEYDOWN | WM_SYSKEYDOWN => {

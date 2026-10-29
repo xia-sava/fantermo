@@ -33,6 +33,7 @@ mod pipeline;
 mod renderer;
 mod scroll_bar;
 mod session;
+mod settings_dialog;
 mod shader;
 mod tab_bar;
 mod text_dialog;

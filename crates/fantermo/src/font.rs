@@ -5,11 +5,12 @@ use windows::{
         DirectWrite::{
             DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_METRICS, DWRITE_FONT_STRETCH_NORMAL,
             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_GLYPH_METRICS,
-            DWriteCreateFactory, IDWriteFactory, IDWriteFontFace,
+            DWriteCreateFactory, IDWriteFactory, IDWriteFont1, IDWriteFontCollection,
+            IDWriteFontFace, IDWriteFontFamily,
         },
         Gdi::{DEFAULT_CHARSET, LOGFONTW},
     },
-    core::{BOOL, HSTRING},
+    core::{BOOL, HSTRING, Interface},
 };
 
 /// 1 インチあたりのポイント数。
@@ -89,12 +90,100 @@ pub fn create_factory() -> windows::core::Result<IDWriteFactory> {
     unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }
 }
 
-fn font_face(factory: &IDWriteFactory, family: &str) -> windows::core::Result<IDWriteFontFace> {
+/// システムのフォントの書体の一つ。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Family {
+    /// システムのフォントの中の番号。
+    pub index: u32,
+    /// 見せる名前。日本語の名前があればそれ、なければ英語の名前。
+    pub name: String,
+}
+
+/// 見せる名前を選ぶときに探すロケールの順。
+const NAME_LOCALES: [&str; 2] = ["ja-jp", "en-us"];
+
+/// システムのフォントのうち、等幅の書体（標準の太さ・字形のフォントが等幅のもの）。見せる名前の順。
+pub fn monospaced_families(factory: &IDWriteFactory) -> windows::core::Result<Vec<Family>> {
+    let collection = system_collection(factory)?;
+    // SAFETY: collection は有効なフォントの集まり。
+    let count = unsafe { collection.GetFontFamilyCount() };
+    let mut families = Vec::new();
+    for index in 0..count {
+        // SAFETY: index は書体の数より小さい。
+        let family = match unsafe { collection.GetFontFamily(index) } {
+            Ok(family) => family,
+            Err(e) => {
+                tracing::warn!("failed to read the font family {index}: {e}");
+                continue;
+            }
+        };
+        match is_monospaced(&family) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => {
+                tracing::debug!("cannot tell whether the font family {index} is monospaced: {e}");
+                continue;
+            }
+        }
+        match display_name(&family) {
+            Ok(name) => families.push(Family { index, name }),
+            Err(e) => tracing::warn!("failed to read the name of the font family {index}: {e}"),
+        }
+    }
+    families.sort_by_key(|family| family.name.to_lowercase());
+    Ok(families)
+}
+
+/// 名前 `name`（どの言語の名前でもよい）の書体の、システムのフォントの中の番号。
+pub fn family_index(factory: &IDWriteFactory, name: &str) -> Option<u32> {
+    let collection = system_collection(factory).ok()?;
+    find_family(&collection, name).ok()
+}
+
+fn is_monospaced(family: &IDWriteFontFamily) -> windows::core::Result<bool> {
+    // SAFETY: family は有効な書体。
+    let font = unsafe {
+        family.GetFirstMatchingFont(
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+        )?
+    };
+    let font: IDWriteFont1 = font.cast()?;
+    // SAFETY: font は有効なフォント。
+    Ok(unsafe { font.IsMonospacedFont() }.as_bool())
+}
+
+/// 書体の見せる名前。[`NAME_LOCALES`] の順に探し、どれもなければ最初の名前。
+fn display_name(family: &IDWriteFontFamily) -> windows::core::Result<String> {
+    // SAFETY: family は有効な書体。
+    let names = unsafe { family.GetFamilyNames()? };
+    let mut index = 0u32;
+    for locale in NAME_LOCALES {
+        let mut exists = BOOL::default();
+        // SAFETY: index と exists は書き込める。
+        unsafe { names.FindLocaleName(&HSTRING::from(locale), &mut index, &mut exists)? };
+        if exists.as_bool() {
+            break;
+        }
+        index = 0;
+    }
+    // SAFETY: index は名前の数より小さい（見つからなければ 0。書体は少なくとも一つの名前を持つ）。
+    let length = unsafe { names.GetStringLength(index)? } as usize;
+    let mut buffer = vec![0u16; length + 1];
+    // SAFETY: buffer は終端を含めて length + 1 個の u16 を書き込める。
+    unsafe { names.GetString(index, &mut buffer)? };
+    Ok(String::from_utf16_lossy(&buffer[..length]))
+}
+
+fn system_collection(factory: &IDWriteFactory) -> windows::core::Result<IDWriteFontCollection> {
     let mut collection = None;
     // SAFETY: collection は書き込める Option を指す。
     unsafe { factory.GetSystemFontCollection(&mut collection, false)? };
-    let collection = collection.ok_or_else(windows::core::Error::empty)?;
+    collection.ok_or_else(windows::core::Error::empty)
+}
 
+fn find_family(collection: &IDWriteFontCollection, family: &str) -> windows::core::Result<u32> {
     let mut index = 0u32;
     let mut exists = BOOL::default();
     // SAFETY: index と exists は書き込める。
@@ -105,6 +194,12 @@ fn font_face(factory: &IDWriteFactory, family: &str) -> windows::core::Result<ID
             format!("font family {family:?} not found"),
         ));
     }
+    Ok(index)
+}
+
+fn font_face(factory: &IDWriteFactory, family: &str) -> windows::core::Result<IDWriteFontFace> {
+    let collection = system_collection(factory)?;
+    let index = find_family(&collection, family)?;
     // SAFETY: index は FindFamilyName が見つけた有効な番号。
     let font = unsafe {
         collection.GetFontFamily(index)?.GetFirstMatchingFont(
@@ -212,6 +307,32 @@ mod tests {
         let lines = doubled.lines;
         assert!((lines.underline_offset - base.lines.underline_offset * 2.0).abs() < 1e-3);
         assert!((lines.underline_thickness - base.lines.underline_thickness * 2.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn monospaced_families_include_consolas() {
+        let factory = create_factory().unwrap();
+        let families = monospaced_families(&factory).unwrap();
+        let consolas = family_index(&factory, "Consolas").unwrap();
+        assert!(
+            families
+                .iter()
+                .any(|family| family.index == consolas && family.name == "Consolas"),
+            "{families:?}"
+        );
+        assert!(
+            !families
+                .iter()
+                .any(|family| Some(family.index) == family_index(&factory, "Segoe UI")),
+        );
+        // 日本語の名前を持つ書体は、日本語の名前で見せる。
+        let ms_gothic = family_index(&factory, "MS Gothic").unwrap();
+        assert!(
+            families
+                .iter()
+                .any(|family| family.index == ms_gothic && family.name == "ＭＳ ゴシック"),
+            "{families:?}"
+        );
     }
 
     #[test]

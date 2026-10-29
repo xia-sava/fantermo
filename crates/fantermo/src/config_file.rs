@@ -14,7 +14,10 @@ use std::{
     thread,
 };
 
-use fantermo_core::config::{self, Config, Parsed, Warning};
+use fantermo_core::{
+    config::{self, Config, Parsed, Warning},
+    config_edit,
+};
 use windows::{
     Win32::{
         Foundation::HANDLE,
@@ -29,7 +32,7 @@ use windows::{
     core::HSTRING,
 };
 
-use crate::known_folder;
+use crate::{known_folder, window_state};
 
 /// フォルダの変化を受け取るバッファの大きさ（4 バイト単位）。
 const NOTIFY_BUFFER_WORDS: usize = 4096;
@@ -186,6 +189,37 @@ fn read(path: Option<&Path>, previous: &Config, occasion: Occasion) -> Loaded {
         notice: notice_text(path, &parsed, occasion),
         config: parsed.config,
     }
+}
+
+/// 設定ファイルの、`base` から `edited` へ変えた項目だけを書き換える（`fantermo_core::config_edit`）。
+/// ファイルが無ければ [`config::TEMPLATE`] を書き換えて作る。書いた中身を返す。読めない・TOML として
+/// 読めない・書けないときは、利用者に見せる文を返し、ファイルは変えない。
+pub fn save(path: &Path, base: &Config, edited: &Config) -> Result<String, String> {
+    let failed = |reason: &str, e: &dyn std::fmt::Display| {
+        tracing::warn!("cannot save the settings to {}: {e}", path.display());
+        format!("{reason}\n\n{}\n{e}", path.display())
+    };
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => config::TEMPLATE.to_owned(),
+        Err(e) => {
+            return Err(failed(
+                "設定ファイルを読めなかったので、書き換えませんでした。",
+                &e,
+            ));
+        }
+    };
+    let updated = config_edit::update(&text, base, edited).map_err(|e| {
+        failed(
+            "設定ファイルを TOML として読めなかったので、書き換えませんでした。",
+            &e,
+        )
+    })?;
+    if let Err(e) = window_state::write_replacing(path, &updated) {
+        return Err(failed("設定ファイルに書けませんでした。", &e));
+    }
+    tracing::info!("saved the settings to {}", path.display());
+    Ok(updated)
 }
 
 /// 解釈した結果の警告を、利用者に見せる文にする。警告がなければ `None`。
@@ -383,6 +417,37 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "[font]\nsize = 9\n"
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn saving_writes_only_the_changes() {
+        let dir = scratch_dir("save");
+        let path = dir.join("fantermo").join("config.toml");
+        let mut edited = Config::default();
+        edited.font.size_pt = 14.0;
+        let written = save(&path, &Config::default(), &edited).unwrap();
+        assert_eq!(
+            written,
+            config::TEMPLATE.replace("# size = 12", "size = 14")
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
+
+        std::fs::write(&path, "# mine\n[font]\nsize = 9\n").unwrap();
+        let base = config::parse("[font]\nsize = 9\n", &Config::default()).config;
+        save(&path, &base, &edited).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# mine\n[font]\nsize = 14\n"
+        );
+
+        std::fs::write(&path, "[font\n").unwrap();
+        let error = save(&path, &base, &Config::default()).unwrap_err();
+        assert!(
+            error.starts_with("設定ファイルを TOML として読めなかった"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[font\n");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
