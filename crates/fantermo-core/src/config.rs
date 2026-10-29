@@ -1,8 +1,8 @@
 //! 設定ファイル（TOML）の型、既定値、解釈。
 //!
-//! 項目ごとに読む。書いていない項目は既定値にする。型の誤りや範囲外の値はその項目だけを前の値の
-//! まま（起動したときは既定値）にし、知らないキーは無視する。どちらも、誤りのある行を添えた警告として
-//! 返す。TOML として読めないときは、すべてを前の値のままにする。
+//! 項目ごとに読む。書いていない項目は既定値にする。型の合わない値や範囲外の値はその項目だけを前の
+//! 値のまま（起動したときは既定値）にし、知らないキーは無視する。どちらも、エラーのある行を添えた
+//! 警告として返す。TOML として読めないときは、すべてを前の値のままにする。
 //!
 //! 書ける項目と既定値は [`TEMPLATE`] にある。
 
@@ -457,7 +457,7 @@ impl ColorTable {
 pub const TERMINAL_COLOR_KEYS: [&str; 2] = ["background", "foreground"];
 
 /// 端末の配色（`colors.scheme`）。背景色・文字の色・16 色をまとめて決める。カーソルは文字の色で
-/// 描き、選んだ範囲は文字の色と背景色を入れ替えて描くので、どちらも配色に従う。
+/// 描き、選択範囲は文字の色と背景色を入れ替えて描くので、どちらも配色に従う。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ColorScheme {
@@ -674,7 +674,7 @@ pub struct PasteConfig {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PasteConfirm {
-    /// コマンドとして走りうるとき。改行を含む文字列でアプリが bracketed paste を有効にしていない
+    /// コマンドとして実行されうるとき。改行を含む文字列でアプリが bracketed paste を有効にしていない
     /// ときと、bracketed paste の終わりの印を含むとき。
     #[default]
     Unsafe,
@@ -792,14 +792,14 @@ pub fn parse_image_opacity(text: &str) -> Option<f32> {
 pub struct Parsed {
     pub config: Config,
     pub warnings: Vec<Warning>,
-    /// TOML として読めなかった。`config` は前の設定のままで、`warnings` はその誤りの一つだけ。
+    /// TOML として読めなかった。`config` は前の設定のままで、`warnings` はそのエラーの一つだけ。
     pub syntax_error: bool,
 }
 
-/// 設定ファイルの誤りについての警告。
+/// 設定ファイルのエラーについての警告。
 #[derive(Clone, Debug, PartialEq)]
 pub struct Warning {
-    /// 誤りのある行（1 から数える）。分からなければ `None`。
+    /// エラーのある行（1 から数える）。分からなければ `None`。
     pub line: Option<usize>,
     /// 何がおかしいか。
     pub message: String,
@@ -1381,7 +1381,7 @@ fn read_keys(reader: &mut Reader, keys: Table, previous: &Keymap) -> Keymap {
     keymap
 }
 
-/// 項目を読みながら、警告を誤りのある行と一緒に溜める。
+/// 項目を読みながら、警告をエラーのある行と一緒に溜める。
 struct Reader {
     /// キーの道筋（`font.size` など）から、そのキーを書いた行へ。
     lines: HashMap<String, usize>,
@@ -1972,7 +1972,7 @@ mod tests {
                 "ignoring colors.background = \"white\": expected \"#rrggbb\""
             )
         );
-        // 誤りの色と配色は前の値のまま、書いた色は読み、書いていない色は既定に戻る。
+        // 誤った値の色と配色は前の値のまま、書いた色は読み、書いていない色は既定に戻る。
         let colors = &parsed.config.colors;
         assert_eq!(colors.scheme, previous.colors.scheme);
         assert_eq!(colors.terminal, [previous.colors.terminal[0], None]);

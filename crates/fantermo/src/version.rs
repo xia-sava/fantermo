@@ -1,9 +1,9 @@
-//! fantermo の版と、ビルドしたコミット。
+//! fantermo のバージョンと、ビルドしたコミット。
 //!
-//! 版は Cargo の版（workspace の `version`）。コミットとリリースのビルドかは `build.rs` が埋め込む。
+//! バージョンは Cargo のバージョン（workspace の `version`）。コミットとリリースのビルドかは `build.rs` が埋め込む。
 //! 配布物を作るワークフローは `FANTERMO_RELEASE=1` を付けてビルドする。
 
-/// Cargo の版（`MAJOR.MINOR.PATCH`）。
+/// Cargo のバージョン（`MAJOR.MINOR.PATCH`）。
 pub const PACKAGE: &str = env!("CARGO_PKG_VERSION");
 
 /// ビルドしたコミットの短い SHA。git から取れなければ `unknown`。
@@ -12,7 +12,7 @@ pub const COMMIT: &str = env!("FANTERMO_COMMIT");
 /// リリースのビルドか。
 pub const RELEASE: bool = matches!(env!("FANTERMO_RELEASE_BUILD").as_bytes(), b"1");
 
-/// 見せる版。リリースのビルドなら `0.0.1`、ほかは `0.0.1 (dev-<短い SHA>)`。
+/// 見せるバージョン。リリースのビルドなら `0.0.1`、ほかは `0.0.1 (dev-<短い SHA>)`。
 pub fn display() -> String {
     display_of(PACKAGE, COMMIT, RELEASE)
 }

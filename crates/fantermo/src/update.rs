@@ -1,15 +1,15 @@
 //! アプリの中からの更新。
 //!
 //! 更新できるのは、インストーラ（MSI）で `%LOCALAPPDATA%\Programs\fantermo` に入れたリリースのビルド
-//! だけ。zip の版と開発中のビルドでは「fantermo について」の「更新を確認」を押せない。
+//! だけ。zip のものと開発中のビルドでは「fantermo について」の「更新を確認」を押せない。
 //!
 //! 「更新を確認」を押すと、GitHub の `latest` のリリースから更新の情報 `latest.json` と署名
-//! `latest.json.sig` を取得し、埋め込んだ公開鍵で署名を確かめてから読み、版を比べる。新しい版を
-//! 入れるときは、MSI を一時フォルダにダウンロードして SHA-256 を照合し、fantermo の外で走るスクリプト
-//! （`apply`）に引き渡してから fantermo を閉じる。取得とダウンロードは窓を止めないよう別のスレッドで
-//! 行い、終わったら窓にメッセージで知らせる。
+//! `latest.json.sig` を取得し、埋め込んだ公開鍵で署名を確かめてから読み、バージョンを比べる。新しい
+//! バージョンを入れるときは、MSI を一時フォルダにダウンロードして SHA-256 を照合し、fantermo の外で動く
+//! スクリプト（`apply`）に引き渡してから fantermo を閉じる。取得とダウンロードは窓を止めないよう別の
+//! スレッドで行い、終わったら窓にメッセージで知らせる。
 //!
-//! 取得先はアプリが組み立てる。`latest.json` から使うのは版と MSI の SHA-256 だけ。
+//! 取得先はアプリが組み立てる。`latest.json` から使うのはバージョンと MSI の SHA-256 だけ。
 
 mod apply;
 mod http;
@@ -35,7 +35,7 @@ use crate::{known_folder, logging, version};
 /// インストーラが fantermo を入れる、`%LOCALAPPDATA%\Programs` の下のフォルダ。
 const INSTALL_DIR_NAME: &str = "fantermo";
 
-/// 配布物を置くところ。`latest` のタグのリリースは、版を出すたびに中身を置き換える。
+/// 配布物を置くところ。`latest` のタグのリリースは、バージョンを出すたびに中身を置き換える。
 const RELEASE_HOST: &str = "github.com";
 const RELEASE_PATH: &str = "/xia-sava/fantermo/releases/download/latest/";
 /// 更新の情報、その署名、MSI のファイルの名前。
@@ -51,7 +51,7 @@ const MSI_MAX_BYTES: usize = 200 * 1024 * 1024;
 /// 署名を確かめる公開鍵（X.509 の SubjectPublicKeyInfo の DER）。署名する秘密鍵と対になる。
 const PUBLIC_KEY: &[u8] = include_bytes!("../../../assets/manifest-public-key.der");
 
-/// ダウンロードした MSI を置く一時フォルダの名前の前半。後ろにプロセスの番号と時刻を付ける。
+/// ダウンロードした MSI を置く一時フォルダの名前の前半。後ろにプロセスの ID と時刻を付ける。
 const DOWNLOAD_DIR_PREFIX: &str = "fantermo-update";
 
 /// この fantermo を更新できるか。インストーラで入れたリリースのビルドなら真。
@@ -92,14 +92,14 @@ fn same_path(a: &Path, b: &Path) -> bool {
     normalize(a) == normalize(b)
 }
 
-/// いまの版。
+/// いまのバージョン。
 pub fn current_version() -> Option<Version> {
     Version::parse(version::PACKAGE)
 }
 
 /// 別のスレッドでする仕事。
 pub enum Work {
-    /// 更新の情報を取得し、いまの版と比べる。
+    /// 更新の情報を取得し、いまのバージョンと比べる。
     Check,
     /// `Release` の MSI をダウンロードする。
     Download(Release),
@@ -143,7 +143,7 @@ pub enum CheckError {
     Signature(String),
     /// 更新の情報を読めなかった。
     Manifest(ManifestError),
-    /// いまの版が `MAJOR.MINOR.PATCH` でない。
+    /// いまのバージョンが `MAJOR.MINOR.PATCH` でない。
     CurrentVersion,
 }
 
@@ -180,8 +180,8 @@ impl fmt::Display for CheckError {
     }
 }
 
-/// 更新の情報と署名を取得し、署名を確かめてから、いまの版と比べる。時間がかかるので、窓のスレッド
-/// からは呼ばない。
+/// 更新の情報と署名を取得し、署名を確かめてから、いまのバージョンと比べる。時間がかかるので、窓の
+/// スレッドからは呼ばない。
 fn check() -> Result<Comparison, CheckError> {
     let current = current_version().ok_or(CheckError::CurrentVersion)?;
     let manifest = http::get(
@@ -201,8 +201,8 @@ fn check() -> Result<Comparison, CheckError> {
     Ok(comparison)
 }
 
-/// 署名 `signature` を公開鍵 `public_key` で確かめてから、更新の情報 `manifest` を読み、いまの版
-/// `current` と比べる。署名を確かめられなければ、更新の情報は読まない。
+/// 署名 `signature` を公開鍵 `public_key` で確かめてから、更新の情報 `manifest` を読み、いまの
+/// バージョン `current` と比べる。署名を確かめられなければ、更新の情報は読まない。
 fn compare_signed(
     manifest: &[u8],
     signature: &[u8],
@@ -261,7 +261,7 @@ impl fmt::Display for DownloadError {
     }
 }
 
-/// 一時フォルダにダウンロードし、SHA-256 を照合した MSI。引き渡さずに落とすと、フォルダごと消す。
+/// 一時フォルダにダウンロードし、SHA-256 を照合した MSI。引き渡さずに破棄すると、フォルダごと消す。
 pub struct Downloaded {
     pub version: Version,
     sha256: [u8; SHA256_LEN],
@@ -345,7 +345,7 @@ impl fmt::Display for ApplyError {
 }
 
 impl Downloaded {
-    /// ほかに同じ実行ファイルで動いている fantermo のプロセスの番号。
+    /// ほかに同じ実行ファイルで動いている fantermo のプロセスの ID。
     pub fn other_instances(&self) -> Vec<u32> {
         match std::env::current_exe() {
             Ok(exe) => apply::other_instances(&exe, std::process::id()),
@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn manifest_is_not_read_unless_the_signature_verifies() {
         let current = Version::parse("0.0.1").unwrap();
-        // 署名が合わなければ、中身が読めない更新の情報でも署名の誤りになる。
+        // 署名が合わなければ、中身が読めない更新の情報でも署名のエラーになる。
         assert!(matches!(
             compare_signed(b"{", SIGNATURE, TEST_PUBLIC_KEY, current),
             Err(CheckError::Signature(_))

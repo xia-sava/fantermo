@@ -61,11 +61,11 @@ pub enum PasteOutcome {
     Pasted,
     /// 貼り付けるものがなかった。
     Empty,
-    /// コマンドとして走りうるので送らなかった。
+    /// コマンドとして実行されうるので送らなかった。
     Unsafe,
 }
 
-/// `text` が、端末のモードに関わらずコマンドとして走りえない。改行（LF、CR）と bracketed paste の
+/// `text` が、端末のモードに関わらずコマンドとして実行されえない。改行（LF、CR）と bracketed paste の
 /// 終わりの印（`ESC [ 201 ~`）を含めば `false`。
 pub fn is_safe_to_paste(text: &str) -> bool {
     libghostty_vt::paste::is_safe(text)
@@ -450,7 +450,7 @@ impl Vt {
             .apply(&mut self.selection_gesture, &self.terminal, grid_ref)
     }
 
-    /// 選んでいる範囲の文字列。折り返した行はつなげ、行末の空白は除く。選んでいなければ `None`。
+    /// 選択範囲の文字列。折り返した行はつなげ、行末の空白は除く。選んでいなければ `None`。
     pub fn selected_text(&self) -> Result<Option<String>, VtError> {
         let options = SelectionFormatOptions::new()
             .with_emit_format(Format::Plain)
@@ -464,8 +464,8 @@ impl Vt {
 
     /// `text` を貼り付ける。シェルへ送るバイト列は `take_replies` で取り出す。
     ///
-    /// 改行を含む文字列は、アプリが bracketed paste に対応していなければコマンドとして走りうるので、
-    /// `allow_unsafe` でなければ送らずに [`PasteOutcome::Unsafe`] を返す。
+    /// 改行を含む文字列は、アプリが bracketed paste に対応していなければコマンドとして実行されうる
+    /// ので、`allow_unsafe` でなければ送らずに [`PasteOutcome::Unsafe`] を返す。
     pub fn paste(&mut self, text: &str, allow_unsafe: bool) -> Result<PasteOutcome, VtError> {
         let mimes = [ClipboardMime::new(PLAIN_TEXT_MIME)];
         let options = PasteOptions::new().with_allow_unsafe(allow_unsafe);
@@ -626,7 +626,7 @@ impl Vt {
                     fg = bg.unwrap_or(colors.background);
                     bg = Some(swapped_bg);
                 }
-                // 選んでいる範囲は、前景色と背景色を入れ替えて描く。
+                // 選択範囲は、前景色と背景色を入れ替えて描く。
                 if cell.is_selected()? {
                     let swapped_bg = fg;
                     fg = bg.unwrap_or(colors.background);
@@ -888,7 +888,7 @@ mod tests {
         assert_eq!(fg(4), rgb(standard.0[196]));
         assert_eq!(fg(5), rgb(standard.0[255]));
         assert_eq!(bg(6), Some(LIGHT_COLORS.ansi[4]));
-        // 反転（と選んだ範囲）は、配色の文字の色と背景色を入れ替える。
+        // 反転（と選択範囲）は、配色の文字の色と背景色を入れ替える。
         assert_eq!(fg(7), LIGHT_COLORS.ansi[4]);
         let cursor = frame.cursor.unwrap();
         // カーソルは文字の色。

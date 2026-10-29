@@ -16,7 +16,7 @@ use crate::version;
 
 /// HTTPS のポート。
 const HTTPS_PORT: u16 = 443;
-/// 成功の応答の状態の番号。リダイレクトは WinHTTP が追う。
+/// 成功の応答のステータスコード。リダイレクトは WinHTTP が追う。
 const HTTP_OK: u32 = 200;
 /// 名前の解決・接続・送信・受信のそれぞれを待つ上限（ミリ秒）。受信は 1 回の読み出しごと。
 const RESOLVE_TIMEOUT_MS: i32 = 10_000;
@@ -31,7 +31,7 @@ const READ_CHUNK: usize = 64 * 1024;
 pub enum HttpError {
     /// WinHTTP の呼び出しが失敗した（名前の解決・接続・TLS・時間切れなど）。
     Request(windows::core::Error),
-    /// 成功でない応答。状態の番号を添える。
+    /// 成功でない応答。ステータスコードを添える。
     Status(u32),
     /// 応答の本体が上限より大きい。
     TooLarge,
@@ -87,7 +87,7 @@ pub fn get(host: &str, path: &str, max_bytes: usize) -> Result<Vec<u8>, HttpErro
             WINHTTP_FLAG_SECURE,
         )
     })?;
-    // SAFETY: request は開いたハンドル。足す見出しも本体もない。
+    // SAFETY: request は開いたハンドル。足すヘッダーも本体もない。
     unsafe {
         WinHttpSendRequest(request.0, None, None, 0, 0, 0).map_err(HttpError::Request)?;
         WinHttpReceiveResponse(request.0, std::ptr::null_mut()).map_err(HttpError::Request)?;
@@ -142,11 +142,11 @@ fn read_body(request: &Handle, max_bytes: usize) -> Result<Vec<u8>, HttpError> {
     }
 }
 
-/// WinHTTP のハンドル。落とすと閉じる。
+/// WinHTTP のハンドル。破棄すると閉じる。
 struct Handle(*mut c_void);
 
 impl Handle {
-    /// 開いた結果のハンドル。null なら失敗として、スレッドの最後の誤りを返す。
+    /// 開いた結果のハンドル。null なら失敗として、スレッドの最後のエラーを返す。
     fn new(handle: *mut c_void) -> Result<Self, HttpError> {
         if handle.is_null() {
             return Err(HttpError::Request(windows::core::Error::from_thread()));
@@ -157,7 +157,7 @@ impl Handle {
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        // SAFETY: 開いたハンドルで、ほかでは閉じない。開いた順の逆に落ちる。
+        // SAFETY: 開いたハンドルで、ほかでは閉じない。開いた順の逆に破棄される。
         if let Err(e) = unsafe { WinHttpCloseHandle(self.0) } {
             tracing::warn!("failed to close a WinHTTP handle: {e}");
         }

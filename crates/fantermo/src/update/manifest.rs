@@ -1,4 +1,4 @@
-//! 更新の情報（`latest.json`）と版。
+//! 更新の情報（`latest.json`）とバージョン。
 //!
 //! `latest.json` は `tools/manifest.sh` が書く:
 //! `{ "versionName": "0.0.2", "zip": { "url": "...", "sha256": "..." }, "msi": { "url": "...", "sha256": "..." } }`。
@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use super::signature::SHA256_LEN;
 
-/// 版（`MAJOR.MINOR.PATCH`）。数として比べる。
+/// バージョン（`MAJOR.MINOR.PATCH`）。数として比べる。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Version {
     major: u32,
@@ -41,7 +41,7 @@ impl fmt::Display for Version {
     }
 }
 
-/// 配布している版の、MSI。
+/// 配布しているバージョンの、MSI。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Release {
     pub version: Version,
@@ -49,12 +49,12 @@ pub struct Release {
     pub msi_sha256: [u8; SHA256_LEN],
 }
 
-/// いまの版と比べた結果。
+/// いまのバージョンと比べた結果。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Comparison {
-    /// 配布している版がいまの版より新しくない。
+    /// 配布しているバージョンがいまのバージョンより新しくない。
     UpToDate { latest: Version },
-    /// 新しい版がある。
+    /// 新しいバージョンがある。
     Newer(Release),
 }
 
@@ -94,9 +94,9 @@ struct Asset {
     sha256: String,
 }
 
-/// 署名を確かめた更新の情報 `bytes` を読み、いまの版 `current` と比べる。
+/// 署名を確かめた更新の情報 `bytes` を読み、いまのバージョン `current` と比べる。
 ///
-/// 新しくないときは `msi` の項目がなくてもよい（MSI を配る前の版の情報でも、最新かは分かる）。
+/// 新しくないときは `msi` の項目がなくてもよい（MSI を配る前のバージョンの情報でも、最新かは分かる）。
 pub fn compare(bytes: &[u8], current: Version) -> Result<Comparison, ManifestError> {
     let manifest: Manifest = serde_json::from_slice(bytes).map_err(ManifestError::Json)?;
     let latest = Version::parse(&manifest.version_name)

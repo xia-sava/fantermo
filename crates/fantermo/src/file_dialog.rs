@@ -71,7 +71,7 @@ pub fn open_folder(owner: HWND, title: &str) -> windows::core::Result<Option<Pat
     file_system_path(&item).map(Some)
 }
 
-/// 題が `title` で、ファイルシステムのものだけを選べるダイアログを作り、`options` を足す。
+/// タイトルが `title` で、ファイルシステムのものだけを選べるダイアログを作り、`options` を足す。
 fn create(title: &str, options: FILEOPENDIALOGOPTIONS) -> windows::core::Result<IFileOpenDialog> {
     // SAFETY: このスレッドは COM を初期化している。
     let dialog: IFileOpenDialog =

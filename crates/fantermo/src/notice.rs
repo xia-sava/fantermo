@@ -25,7 +25,7 @@ use windows::{
 /// 警告の話題。同じ話題の警告は、新しいものが古いものに代わる。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Topic {
-    /// 設定ファイルの誤り。
+    /// 設定ファイルのエラー。
     Settings,
     /// 話題が二つ以上あるときの決まりを確かめるための話題。
     #[cfg(test)]
@@ -67,7 +67,7 @@ pub fn warn(owner: HWND, topic: Topic, text: String) {
     }
 }
 
-/// `topic` の警告を取り下げる。誤りが直ったときに使う。待っているものは捨て、`owner` の窓に開いている
+/// `topic` の警告を取り下げる。エラーが直ったときに使う。待っているものは捨て、`owner` の窓に開いている
 /// メッセージボックスで見せていれば閉じさせる（ほかの話題の警告も見せていれば、閉じたあとに見せ直す）。
 /// メッセージボックスを開いて閉じるのを待つことはしないので、借用を持ったまま呼んでよい。
 pub fn withdraw(owner: HWND, topic: Topic) {
@@ -92,7 +92,7 @@ fn message_box(owner: Option<HWND>, text: &str, icon: MESSAGEBOX_STYLE) {
     }
 }
 
-/// このスレッドで `owner` の窓を持ち主として開いているメッセージボックスに、閉じる求めを積む。閉じると
+/// このスレッドで `owner` の窓を持ち主として開いているメッセージボックスに、WM_CLOSE を積む。閉じると
 /// [`warn`] の中の `MessageBoxW` が戻り、待っている警告があれば続けて見せる。
 fn close_message_box(owner: HWND) {
     let mut search = BoxSearch { owner, closed: 0 };
@@ -112,7 +112,7 @@ fn close_message_box(owner: HWND) {
 /// [`close_message_box`] がコールバックに渡すもの。
 struct BoxSearch {
     owner: HWND,
-    /// 閉じる求めを積んだメッセージボックスの数。
+    /// WM_CLOSE を積んだメッセージボックスの数。
     closed: usize,
 }
 

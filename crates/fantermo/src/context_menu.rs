@@ -192,7 +192,7 @@ pub struct MenuRequest {
     pub y: i32,
     /// 隠さない画面の矩形（メニューを出したボタン）。メニューはこの下に出し、下に入らなければ上に出す。
     pub exclude: Option<RECT>,
-    /// 選んでいる範囲がある。なければコピーを押せなくする。
+    /// 選択範囲がある。なければコピーを押せなくする。
     pub can_copy: bool,
     /// 設定ファイルの場所が分かっている。分からなければ「設定…」と「設定ファイルを開く」を押せなく
     /// する。
@@ -232,7 +232,7 @@ pub fn show(owner: HWND, request: &MenuRequest) -> Option<Chosen> {
             params.as_ref().map(|params| params as *const TPMPARAMS),
         )
     };
-    // SAFETY: menu はここで一度だけ壊す。
+    // SAFETY: menu はここで一度だけ破棄する。
     if let Err(e) = unsafe { DestroyMenu(menu) } {
         tracing::warn!("failed to destroy the menu: {e}");
     }

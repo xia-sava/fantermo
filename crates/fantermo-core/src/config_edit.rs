@@ -356,7 +356,7 @@ enum Reset {
 }
 
 /// 設定ファイルの中身 `text` を、`base` から `edited` へ変えた項目だけ書き換えて返す。`base` は
-/// 編集を始めたときの設定。TOML として読めなければ、その誤りの文を返す。
+/// 編集を始めたときの設定。TOML として読めなければ、そのエラーメッセージを返す。
 ///
 /// 先頭の BOM と、改行が CRLF かどうかは `text` に合わせる。
 pub fn update(text: &str, base: &Config, edited: &Config) -> Result<String, String> {
@@ -726,7 +726,7 @@ fn table_at_mut<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> Option<&'a mut T
 }
 
 /// 道筋 `path` の表。無ければ、`create` なら最後に作る（途中の表は見出しを書かない表にする）。表で
-/// ないものが書いてあれば誤り。
+/// ないものが書いてあればエラー。
 fn section_mut<'a>(
     doc: &'a mut DocumentMut,
     path: &[&str],

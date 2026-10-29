@@ -10,9 +10,9 @@ use windows::{
     core::GUID,
 };
 
-/// 今の利用者の、`id` が指す既知のフォルダ。求められなければ `None`。
+/// いまの利用者の、`id` が指す既知のフォルダ。求められなければ `None`。
 pub fn path(id: &GUID) -> Option<PathBuf> {
-    // SAFETY: 既知のフォルダの GUID を指すポインタを渡す問い合わせ。トークンを渡さないので今の利用者のもの。
+    // SAFETY: 既知のフォルダの GUID を指すポインタを渡す問い合わせ。トークンを渡さないのでいまの利用者のもの。
     let path = match unsafe { SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None) } {
         Ok(path) => path,
         Err(e) => {

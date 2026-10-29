@@ -708,7 +708,7 @@ struct App {
     settings_written: Option<String>,
     /// 更新の確認かダウンロードを別のスレッドでしているか、その結果を見せている。その間は新しく始めない。
     update_busy: bool,
-    /// 更新のスレッドが結果を送る口と、窓が受け取る口。送ったら `WM_APP_UPDATE` で知らせる。
+    /// 更新のスレッドが結果を送るチャネルの送信側と、窓が受け取る受信側。送ったら `WM_APP_UPDATE` で知らせる。
     update_sender: mpsc::Sender<update::Event>,
     update_events: mpsc::Receiver<update::Event>,
 }
@@ -1020,7 +1020,7 @@ impl App {
         self.activate(self.sessions.len() - 1);
     }
 
-    /// `sessions` の `index` の端末を閉じる（子プロセスはバックエンドを落として終わらせる）。最後の
+    /// `sessions` の `index` の端末を閉じる（子プロセスはバックエンドを破棄して終わらせる）。最後の
     /// 端末なら閉じずに `true` を返す（窓を閉じると一緒に閉じる）。
     fn close_session(&mut self, index: usize) -> bool {
         if self.sessions.len() == 1 {
@@ -1056,7 +1056,7 @@ impl App {
     fn leave_active(&mut self) {
         if self.session().selecting || self.scroll_bar_press.is_some() {
             self.end_scroll_bar_press();
-            // SAFETY: このスレッドが捕まえたマウスを放す。捕まえていなければ何もしない。
+            // SAFETY: このスレッドがキャプチャしたマウスを放す。キャプチャしていなければ何もしない。
             if let Err(e) = unsafe { ReleaseCapture() } {
                 tracing::warn!("failed to release the mouse capture: {e}");
             }
@@ -1103,7 +1103,7 @@ impl App {
         })
     }
 
-    /// `text` を貼り付ける。`allow_unsafe` でなければ、コマンドとして走りうる文字列は送らない。
+    /// `text` を貼り付ける。`allow_unsafe` でなければ、コマンドとして実行されうる文字列は送らない。
     fn paste(&mut self, text: &str, allow_unsafe: bool) -> Option<PasteOutcome> {
         let outcome = match self.session_mut().vt.paste(text, allow_unsafe) {
             Ok(outcome) => outcome,
@@ -1117,7 +1117,7 @@ impl App {
         Some(outcome)
     }
 
-    /// 選んでいる範囲をクリップボードにコピーし、選択を外す。選んでいなければ何もせず `false`。
+    /// 選択範囲をクリップボードにコピーし、選択を外す。選んでいなければ何もせず `false`。
     fn copy_selection(&mut self) -> bool {
         let text = match self.session().vt.selected_text() {
             Ok(Some(text)) => text,
@@ -1421,7 +1421,7 @@ impl App {
     /// （アプリへも送らず、選択も始めない）。そうでなければ、アプリがマウスを求めていればアプリへ送り、
     /// 求めていなければ左ボタンで選択を始める。Shift を押していれば、アプリが求めていても選択にする。
     fn on_button_down(&mut self, button: MouseButton, lparam: LPARAM, wparam: WPARAM) {
-        // 窓の外までドラッグしても離したことが届くように、マウスを捕まえる。
+        // 窓の外までドラッグしても離したことが届くように、マウスをキャプチャする。
         // SAFETY: self.hwnd はこのスレッドの有効な窓。
         unsafe { SetCapture(self.hwnd) };
         let (x, y) = client_position(lparam);
@@ -1544,7 +1544,7 @@ impl App {
             deferred = Some(self.context_menu(x, y));
         }
         if held_button(wparam).is_none() {
-            // SAFETY: このスレッドが捕まえたマウスを放す。
+            // SAFETY: このスレッドがキャプチャしたマウスを放す。
             if let Err(e) = unsafe { ReleaseCapture() } {
                 tracing::warn!("failed to release the mouse capture: {e}");
             }
@@ -2069,7 +2069,7 @@ impl App {
     /// 返す。
     /// グリフの描き方だけが変わったときは、セルの寸法は変わらないので、この場でアトラスだけを作り直す。
     /// 貼り付けの設定はすぐに入れ替える。プロファイルは次に開く端末から使う。
-    /// 誤りがあれば、それを見せることを返す（借用を手放してから [`run_deferred`] で見せる）。誤りが
+    /// エラーがあれば、それを見せることを返す（借用を手放してから [`run_deferred`] で見せる）。エラーが
     /// なければ、設定の警告を取り下げる（開いているメッセージボックスも閉じさせる）。
     ///
     /// 設定ダイアログを開いている間は読まず、閉じてから読む。設定ダイアログが書いた中身のままなら読まない。
@@ -2558,7 +2558,7 @@ fn run_menu_command(command: MenuCommand, with_app: &WithApp) -> Option<Deferred
     next
 }
 
-/// 設定ファイルを読み直し、フォントやスクロールバーの幅が変わっていれば作り直す。誤りがあれば見せる。
+/// 設定ファイルを読み直し、フォントやスクロールバーの幅が変わっていれば作り直す。エラーがあれば見せる。
 fn reload_settings(hwnd: HWND, with_app: &WithApp) {
     let mut reloaded = (None, None);
     with_app(&mut |app| reloaded = app.reload_config());
@@ -2710,7 +2710,7 @@ fn message_button(msg: u32) -> MouseButton {
 enum PasteAction {
     /// 送らずに、編集のダイアログで確かめる。
     Confirm,
-    /// 端末に渡す。`allow_unsafe` でなければ、コマンドとして走りうる文字列は端末が送らずに返す。
+    /// 端末に渡す。`allow_unsafe` でなければ、コマンドとして実行されうる文字列は端末が送らずに返す。
     Paste { allow_unsafe: bool },
 }
 
@@ -2791,7 +2791,7 @@ fn wheel_lines_per_notch() -> u32 {
 }
 
 /// WM_KEYDOWN の処理中に、そのキーから TranslateMessage が積んだ文字のメッセージを取り出す。
-/// 死にキーだったときは `None`。
+/// デッドキーだったときは `None`。
 fn take_translated_chars(hwnd: HWND) -> Option<Vec<char>> {
     const CHAR_MESSAGES: [u32; 4] = [WM_CHAR, WM_SYSCHAR, WM_DEADCHAR, WM_SYSDEADCHAR];
     let mut assembler = Utf16Assembler::default();
@@ -2895,8 +2895,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             with_app(&mut |app| app.on_scroll_bar_timer());
             LRESULT(0)
         }
-        // ほかの窓にマウスを取られたら（Alt+Tab など）、離したことが届かないので、スクロールバーの操作を
-        // 終える。lparam はマウスを捕まえる窓。
+        // ほかの窓にマウスのキャプチャが移ったら（Alt+Tab など）、離したことが届かないので、スクロール
+        // バーの操作を終える。lparam はマウスをキャプチャする窓。
         WM_CAPTURECHANGED if lparam.0 != hwnd.0 as isize => {
             with_app(&mut |app| app.end_scroll_bar_press());
             LRESULT(0)
@@ -2927,7 +2927,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
             let position = KeyPosition::from_lparam(lparam.0);
             let Some(chars) = take_translated_chars(hwnd) else {
-                // 死にキー。次のキーと合わせた文字が WM_CHAR で届く。
+                // デッドキー。次のキーと合わせた文字が WM_CHAR で届く。
                 return LRESULT(0);
             };
             let action = if position.repeated {

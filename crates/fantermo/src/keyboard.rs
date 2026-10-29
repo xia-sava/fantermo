@@ -6,7 +6,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_MENU, VK_NUMLOCK, VK_RWIN, VK_SHIFT,
 };
 
-/// `MapVirtualKeyW(MAPVK_VK_TO_CHAR)` が死にキーに立てる最上位のビット。
+/// `MapVirtualKeyW(MAPVK_VK_TO_CHAR)` がデッドキーに立てる最上位のビット。
 const DEAD_KEY_FLAG: u32 = 0x8000_0000;
 
 /// WM_KEYDOWN などの `lparam` から読み取ったキーの位置。
@@ -194,7 +194,7 @@ pub fn consumed_mods(mods: Mods, has_text: bool) -> Mods {
 
 /// 修飾キーなしで、このキーがいまのキーボード配列で出す文字。なければ `'\0'`。
 pub fn unshifted_codepoint(virtual_key: u16) -> char {
-    // SAFETY: 引数は値だけで、キーボード配列を引くだけ。
+    // SAFETY: 引数は値だけで、キーボード配列を調べるだけ。
     let mapped = unsafe { MapVirtualKeyW(u32::from(virtual_key), MAPVK_VK_TO_CHAR) };
     let code = mapped & !DEAD_KEY_FLAG;
     if code == 0 {
@@ -245,7 +245,7 @@ fn is_toggled(key: VIRTUAL_KEY) -> bool {
 
 /// 最上位のビットが押されているか、最下位のビットがロックの状態。
 fn key_state(key: VIRTUAL_KEY) -> i16 {
-    // SAFETY: 値を渡して、このスレッドのキーボードの状態を引くだけ。
+    // SAFETY: 値を渡して、このスレッドのキーボードの状態を読むだけ。
     unsafe { GetKeyState(i32::from(key.0)) }
 }
 

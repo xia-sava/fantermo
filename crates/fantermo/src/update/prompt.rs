@@ -14,14 +14,14 @@ use windows::{
 use super::{Comparison, Downloaded, Event, Release, current_version, wait_minutes};
 use crate::logging;
 
-/// メッセージボックスの題。
+/// メッセージボックスのタイトル。
 const TITLE: &str = "fantermo の更新";
 
 /// 結果を見せたあとにすること。
 pub enum Next {
     /// 何もしない。更新の仕事は終わった。
     Nothing,
-    /// 新しい版をダウンロードする。
+    /// 新しいバージョンをダウンロードする。
     Download(Release),
     /// 更新を当てるスクリプトに引き渡したので、fantermo を閉じる。
     Quit,

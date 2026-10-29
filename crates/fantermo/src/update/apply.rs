@@ -1,4 +1,4 @@
-//! 更新を当てる、fantermo の外で走るスクリプト。
+//! 更新を当てる、fantermo の外で動くスクリプト。
 //!
 //! fantermo が動いている間は実行ファイルを置き換えられないので、スクリプトに引き渡してから fantermo を
 //! 閉じる。スクリプトは fantermo の終了を待ち、msiexec で MSI を無人で入れ、入れ終えたら fantermo を
@@ -60,7 +60,7 @@ pub struct Plan<'a> {
     pub msiexec_log: &'a Path,
     /// 入れ終えたら消すフォルダ（MSI とスクリプトを置いた一時フォルダ）。
     pub work_dir: &'a Path,
-    /// 終わるのを待つプロセスの番号。
+    /// 終わるのを待つプロセスの ID。
     pub wait_pids: &'a [u32],
     /// 待つ上限（秒）。
     pub wait_seconds: u32,
@@ -174,7 +174,7 @@ fn system_root() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "SystemRoot is not set"))
 }
 
-/// 実行ファイルが `exe` と同じ、ほかのプロセスの番号。自分（`own`）は除く。
+/// 実行ファイルが `exe` と同じ、ほかのプロセスの ID。自分（`own`）は除く。
 pub fn other_instances(exe: &Path, own: u32) -> Vec<u32> {
     let pids = match process_ids() {
         Ok(pids) => pids,
@@ -190,16 +190,16 @@ pub fn other_instances(exe: &Path, own: u32) -> Vec<u32> {
         .collect()
 }
 
-/// 動いているプロセスの番号。
+/// 動いているプロセスの ID。
 fn process_ids() -> windows::core::Result<Vec<u32>> {
-    // SAFETY: プロセスの一覧の写しを取るだけ。ハンドルは読み終えたら閉じる。
+    // SAFETY: プロセスの一覧のスナップショットを取るだけ。ハンドルは読み終えたら閉じる。
     let snapshot = Owned(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)? });
     let mut entry = PROCESSENTRY32W {
         dwSize: size_of::<PROCESSENTRY32W>() as u32,
         ..Default::default()
     };
     let mut pids = Vec::new();
-    // SAFETY: snapshot は開いた写しで、entry は大きさを入れて初期化してある。
+    // SAFETY: snapshot は開いたスナップショットで、entry は大きさを入れて初期化してある。
     let mut next = unsafe { Process32FirstW(snapshot.0, &mut entry) };
     while next.is_ok() {
         pids.push(entry.th32ProcessID);
@@ -211,7 +211,7 @@ fn process_ids() -> windows::core::Result<Vec<u32>> {
 
 /// プロセス `pid` の実行ファイルのパス。問い合わせられなければ `None`。
 fn image_of(pid: u32) -> Option<String> {
-    // SAFETY: 問い合わせだけの権利で開く。ハンドルは読み終えたら閉じる。
+    // SAFETY: 問い合わせだけの権限で開く。ハンドルは読み終えたら閉じる。
     let process =
         Owned(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?);
     let mut buffer = vec![0u16; IMAGE_NAME_CAPACITY];

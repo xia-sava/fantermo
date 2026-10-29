@@ -1,5 +1,6 @@
-//! 「fantermo について」のダイアログ。名前、版、コミット、著作権、GitHub のリンクを並べ、その下の
-//! 読み取り専用の入力欄に、fantermo 自身と実行ファイルに含まれる第三者のソフトウェアのライセンスを見せる。
+//! 「fantermo について」のダイアログ。名前、バージョン、コミット、著作権、GitHub のリンクを並べ、
+//! その下の読み取り専用の入力欄に、fantermo 自身と実行ファイルに含まれる第三者のソフトウェアの
+//! ライセンスを見せる。
 //!
 //! ライセンスの文はリポジトリ直下の `LICENSE` と `THIRD-PARTY-NOTICES.txt`（`tools/licenses.sh` が作る）を
 //! 実行ファイルに埋め込んだもの。
@@ -17,7 +18,7 @@ const TITLE: &str = "fantermo について";
 const NAME: &str = "fantermo";
 /// GitHub のリポジトリ。
 const REPOSITORY_URL: &str = "https://github.com/xia-sava/fantermo";
-/// 「更新を確認」のボタンの制御 ID。
+/// 「更新を確認」のボタンのコントロール ID。
 const CHECK_UPDATE_ID: i32 = 101;
 /// 「更新を確認」を押せないときに添える行。
 const UPDATE_UNAVAILABLE: &str = "自動更新はインストーラで入れたバージョンでのみ可能です";
@@ -40,7 +41,7 @@ const TEXT: &str = concat!(
 
 /// 「fantermo について」のダイアログを開き、閉じるまで待つ。「更新を確認」を押して閉じたら真を返す。
 ///
-/// 「更新を確認」は、インストーラで入れた版（[`update::can_update`]）でだけ押せる。
+/// 「更新を確認」は、インストーラで入れたバージョン（[`update::can_update`]）でだけ押せる。
 pub fn show(owner: HWND, font: &Font) -> bool {
     let can_update = update::can_update();
     let version = format!("バージョン: {}", version::display());

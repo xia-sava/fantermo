@@ -47,9 +47,9 @@ use crate::{font::Font, link_opener, modal, ui_font};
 
 const CLASS: PCWSTR = w!("fantermo-text-dialog");
 
-/// 入力欄の制御 ID。閉じるボタンは IDOK と IDCANCEL を使う。
+/// 入力欄のコントロール ID。閉じるボタンは IDOK と IDCANCEL を使う。
 const EDIT_ID: i32 = 100;
-/// 入力欄の上の行の制御 ID の始まり。上から順に 1 ずつ増やす。
+/// 入力欄の上の行のコントロール ID の始まり。上から順に 1 ずつ増やす。
 const HEADER_ID: i32 = 200;
 
 /// `EM_SETLIMITTEXT` と、その上限を外す値。
@@ -76,7 +76,7 @@ const FONT_RATIO: f32 = 0.75;
 
 /// ダイアログの下に右から並べるボタン。
 pub struct Button {
-    /// 押したときの制御 ID。どのボタンを押してもダイアログを閉じる。
+    /// 押したときのコントロール ID。どのボタンを押してもダイアログを閉じる。
     pub id: i32,
     pub label: &'static str,
     /// Enter で押されるボタンとして描く。
@@ -113,7 +113,7 @@ pub struct Dialog<'a> {
 pub enum Closed {
     /// IDOK のボタンを押した。入力欄の文字列を添える。改行は `\n`。
     Ok(String),
-    /// IDOK と IDCANCEL のほかのボタンを押した。その制御 ID を添える。
+    /// IDOK と IDCANCEL のほかのボタンを押した。そのコントロール ID を添える。
     Button(i32),
     /// IDCANCEL のボタン、Esc、窓の × で閉じた。開けなかったときも。
     Cancel,
@@ -147,7 +147,7 @@ pub fn run(owner: HWND, dialog: &Dialog, font: &Font) -> Closed {
     state.result.take().unwrap_or(Closed::Cancel)
 }
 
-/// ダイアログの状態。ウィンドウプロシージャからも触るので、共有の参照だけで読み書きする。
+/// ダイアログの状態。ウィンドウプロシージャからも使うので、共有の参照だけで読み書きする。
 #[derive(Default)]
 struct DialogState {
     edit: Cell<HWND>,
@@ -166,10 +166,10 @@ struct DialogState {
     scale: Cell<f32>,
     /// 閉じたわけ。ボタンで閉じるまでは `None`。
     result: RefCell<Option<Closed>>,
-    /// ボタンの制御 ID。入力欄などのほかの子からの WM_COMMAND と見分ける。
+    /// ボタンのコントロール ID。入力欄などのほかの子からの WM_COMMAND と見分ける。
     button_ids: RefCell<Vec<i32>>,
     closed: Cell<bool>,
-    /// Enter で押されるボタンの制御 ID。
+    /// Enter で押されるボタンのコントロール ID。
     default_id: Cell<Option<i32>>,
 }
 

@@ -8,7 +8,7 @@ use windows::{
     core::PCSTR,
 };
 
-/// セルを描くシェーダの源。
+/// セルを描くシェーダのソース。
 pub const CELLS_SOURCE: &str = include_str!("cells.hlsl");
 pub const CELLS_VERTEX_ENTRY: &str = "vs_main\0";
 pub const CELLS_PIXEL_ENTRY: &str = "ps_main\0";

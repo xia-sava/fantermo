@@ -175,7 +175,7 @@ enum ProfileField {
 }
 
 /// 編集中のプロファイル `profiles` を設定ファイルと同じ決まりで確かめる。名前とコマンドラインが空で
-/// なく、名前がどれも違えば `Ok`。そうでなければ、最初の誤りの位置と入力欄と文。
+/// なく、名前がどれも違えば `Ok`。そうでなければ、最初のエラーの位置と入力欄とエラーメッセージ。
 fn check_profiles(profiles: &[Profile]) -> Result<(), (usize, ProfileField, &'static str)> {
     for (index, profile) in profiles.iter().enumerate() {
         if profile.name.trim().is_empty() {
@@ -1520,7 +1520,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         }
     }
 
-    // 下のボタンと、入力の誤り
+    // 下のボタンと、入力のエラー
     let error = child(
         w!("STATIC"),
         "",
@@ -2065,7 +2065,7 @@ impl State<'_> {
     }
 
     /// 一覧で選んでいる項目の濃さの入力欄が変わった。読めれば項目に入れる。端末への反映は少し待つ
-    /// （読めなければ、反映するときに誤りを見せる）。
+    /// （読めなければ、反映するときにエラーを見せる）。
     fn on_background_item_opacity(&self) {
         if let Some(index) = self.selected_background_image()
             && let Some(opacity) =
@@ -2426,7 +2426,7 @@ impl State<'_> {
         }
         let profiles = self.profiles.borrow().clone();
         if let Err((index, field, message)) = check_profiles(&profiles) {
-            // 誤りのあるプロファイルを選び、その入力欄へ移れるようにする。
+            // エラーのあるプロファイルを選び、その入力欄へ移れるようにする。
             if self.selected_profile() != Some(index) {
                 // SAFETY: 一覧は有効な窓。
                 unsafe { SendMessageW(c.profiles_list, LB_SETCURSEL, Some(WPARAM(index)), None) };
@@ -2472,7 +2472,7 @@ impl State<'_> {
     }
 
     /// 編集中の設定を読み、読めれば端末に反映する（前に反映したものと同じなら何もしない）。読めた
-    /// 設定を返す。読めなければ誤りを見せる。
+    /// 設定を返す。読めなければエラーを見せる。
     fn preview(&self) -> Option<Config> {
         // SAFETY: hwnd は有効な窓。掛けていないタイマーを止めても害はない。
         unsafe { _ = KillTimer(Some(self.hwnd), PREVIEW_TIMER_ID) };
@@ -2503,7 +2503,7 @@ impl State<'_> {
     /// 編集中の設定を反映して設定ファイルに書く。書けたら `true`。
     fn apply(&self) -> bool {
         let Some(edited) = self.preview() else {
-            // 読めない入力欄へ移る。誤りの文は preview が見せている。
+            // 読めない入力欄へ移る。エラーメッセージは preview が見せている。
             if let Err((_, control)) = self.read() {
                 // SAFETY: control はダイアログの子の有効な窓。
                 unsafe { _ = SetFocus(Some(control)) };

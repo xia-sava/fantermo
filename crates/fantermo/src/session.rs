@@ -123,7 +123,7 @@ impl Session {
     }
 
     /// マウスの操作の途中の状態（選択のドラッグ、リンクの下線、押したリンク）を終える。表示から
-    /// 外すときに使う。選んだ範囲は残す。
+    /// 外すときに使う。選択範囲は残す。
     pub fn release_pointer(&mut self) {
         self.selecting = false;
         self.pressed_link = None;

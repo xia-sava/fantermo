@@ -47,7 +47,7 @@ pub struct Instance {
     pub rect: [f32; 4],
     /// アトラスの中の左上の x, y と幅, 高さ（ピクセル）。
     pub uv: [f32; 4],
-    /// 直線の RGBA（0〜1）。
+    /// アルファを乗算していない RGBA（0〜1）。
     pub color: [f32; 4],
     pub kind: InstanceKind,
     pub _padding: [u32; 3],

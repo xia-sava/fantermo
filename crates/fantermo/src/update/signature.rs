@@ -67,7 +67,7 @@ pub fn verify(message: &[u8], signature: &str, public_key: &[u8]) -> Result<(), 
     let key = algorithm
         .import_public_key(&public_key_blob(point))
         .map_err(VerifyError::Cng)?;
-    // SAFETY: key は開いた鍵で、hash と raw はこの呼び出しの間は生きている。ECDSA は詰め物を使わない。
+    // SAFETY: key は開いた鍵で、hash と raw はこの呼び出しの間は生きている。ECDSA はパディングを使わない。
     unsafe { BCryptVerifySignature(key.0, None, &hash, &raw, BCRYPT_FLAGS(0)) }
         .ok()
         .map_err(VerifyError::Cng)
@@ -173,7 +173,7 @@ fn decode_base64(text: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// 開いた CNG のアルゴリズム。落とすと閉じる。
+/// 開いた CNG のアルゴリズム。破棄すると閉じる。
 struct Algorithm(BCRYPT_ALG_HANDLE);
 
 impl Algorithm {
@@ -211,7 +211,7 @@ impl Drop for Algorithm {
     }
 }
 
-/// 読み込んだ CNG の鍵。落とすと消す。
+/// 読み込んだ CNG の鍵。破棄すると消す。
 struct Key(BCRYPT_KEY_HANDLE);
 
 impl Drop for Key {

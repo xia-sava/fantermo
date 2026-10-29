@@ -15,7 +15,7 @@ const RESOURCE_SCRIPT: &str = "fantermo.rc";
 /// リソースの定義が読むアイコン。
 const ICON: &str = "../../assets/icon/fantermo.ico";
 
-/// 1 ならリリースのビルドとして版を見せる環境変数。配布物を作るワークフローが付ける。
+/// 1 ならリリースのビルドとしてバージョンを見せる環境変数。配布物を作るワークフローが付ける。
 const RELEASE_ENV: &str = "FANTERMO_RELEASE";
 
 /// コミットが分からないときの印。
@@ -59,7 +59,7 @@ fn embed_build_info() {
         if release { "1" } else { "0" }
     );
 
-    // コミットが変わったら作り直す。HEAD が枝を指していれば、その枝の参照も見る。
+    // コミットが変わったら作り直す。HEAD がブランチを指していれば、そのブランチの参照も見る。
     for path in git_paths() {
         println!("cargo:rerun-if-changed={path}");
     }
@@ -79,7 +79,7 @@ fn git_paths() -> Vec<String> {
         .collect()
 }
 
-/// git を走らせて、成功すれば標準出力の 1 行目を返す。git が無い・リポジトリの外なら `None`。
+/// git を実行して、成功すれば標準出力の 1 行目を返す。git が無い・リポジトリの外なら `None`。
 fn git(args: &[&str]) -> Option<String> {
     let output = std::process::Command::new("git").args(args).output().ok()?;
     if !output.status.success() {

@@ -185,7 +185,7 @@ mod tests {
 
     use super::*;
 
-    /// 試しごとに別の、空のフォルダ（一時フォルダの下）。
+    /// テストごとに別の、空のフォルダ（一時フォルダの下）。
     fn scratch_dir(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("fantermo-state-test-{}-{name}", std::process::id()));

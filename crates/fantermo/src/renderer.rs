@@ -167,7 +167,7 @@ impl Renderer {
         let desc = D3D11_TEXTURE2D_DESC {
             Width: decoded.width,
             Height: decoded.height,
-            // 0 はすべての段のミップマップ。縮めて描くときに粗くならないように持つ。
+            // 0 はすべてのレベルのミップマップ。縮めて描くときに粗くならないように持つ。
             MipLevels: 0,
             ArraySize: 1,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -188,7 +188,7 @@ impl Renderer {
                 .CreateTexture2D(&desc, None, Some(&mut texture))?
         };
         let texture: ID3D11Texture2D = texture.ok_or_else(windows::core::Error::empty)?;
-        // SAFETY: pixels は stride × 高さのバイトを持ち、texture の段 0 と同じ大きさと形式。
+        // SAFETY: pixels は stride × 高さのバイトを持ち、texture のレベル 0 と同じ大きさと形式。
         unsafe {
             self.context.UpdateSubresource(
                 &texture,
@@ -206,7 +206,7 @@ impl Renderer {
                 .CreateShaderResourceView(&texture, None, Some(&mut view))?
         };
         let view = view.ok_or_else(windows::core::Error::empty)?;
-        // SAFETY: view は GENERATE_MIPS を付けて作ったテクスチャのすべての段のビュー。
+        // SAFETY: view は GENERATE_MIPS を付けて作ったテクスチャのすべてのレベルのビュー。
         unsafe { self.context.GenerateMips(&view) };
         Ok(ImageTexture {
             view,

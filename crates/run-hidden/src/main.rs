@@ -7,7 +7,7 @@
 //!
 //! プログラムは `CreateProcessW` のコマンドラインとして渡すので、パスは Windows 形式（`\` 区切り）で書く。
 //!
-//! 起動したプロセスは Job に入れるので、この道具がどう終わっても道連れに終わる。
+//! 起動したプロセスは Job に入れるので、この道具がどう終わっても一緒に終わる。
 //! プログラムが先に終われば、その終了コードを返す。時間切れなら終わらせて 0 を返す。
 
 use std::{
@@ -127,7 +127,7 @@ fn run(args: &Args) -> windows::core::Result<u32> {
     };
     let mut command_line = to_wide_nul(&command_line(&args.command));
     let mut process_info = PROCESS_INFORMATION::default();
-    // SAFETY: どのポインタもこの呼び出しの間は生きている。Job に入れる前に走り出さないよう、止めた状態で作る。
+    // SAFETY: どのポインタもこの呼び出しの間は生きている。Job に入れる前に動き出さないよう、止めた状態で作る。
     unsafe {
         CreateProcessW(
             PCWSTR::null(),
@@ -152,7 +152,7 @@ fn run(args: &Args) -> windows::core::Result<u32> {
     let process_handle = HANDLE(process.as_raw_handle());
     // SAFETY: job と process は有効なハンドル。
     unsafe { AssignProcessToJobObject(HANDLE(job.as_raw_handle()), process_handle)? };
-    // SAFETY: thread は止めた状態で作った主スレッド。
+    // SAFETY: thread は止めた状態で作ったメインスレッド。
     unsafe { ResumeThread(HANDLE(thread.as_raw_handle())) };
 
     let timeout = Duration::from_secs(args.seconds);

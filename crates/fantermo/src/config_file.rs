@@ -69,16 +69,16 @@ pub fn app_data_file(override_env: &str, file_name: &str) -> Option<PathBuf> {
 #[derive(Debug, Default)]
 pub struct Loaded {
     pub config: Config,
-    /// 作れなかった・読めなかった・誤りがあったときに、利用者に見せる文。何もなければ `None`。
+    /// 作れなかった・読めなかった・エラーがあったときに、利用者に見せる文。何もなければ `None`。
     pub notice: Option<String>,
 }
 
-/// いつ読んだか。誤りがあったときに、どの設定で動いているかの言い方を決める。
+/// いつ読んだか。エラーがあったときに、どの設定で動いているかの言い方を決める。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Occasion {
-    /// 起動したとき。誤りのある箇所は既定値になる。
+    /// 起動したとき。エラーのある箇所は既定値になる。
     Startup,
-    /// 書き換えられて読み直したとき。誤りのある箇所は前の値のまま。
+    /// 書き換えられて読み直したとき。エラーのある箇所は前の値のまま。
     Reload,
 }
 
@@ -91,7 +91,7 @@ impl Occasion {
         }
     }
 
-    /// 誤りのある項目を、どの値にしたか。
+    /// エラーのある項目を、どの値にしたか。
     fn item(self) -> &'static str {
         match self {
             Occasion::Startup => "既定値",
@@ -390,7 +390,7 @@ mod tests {
         bytes
     }
 
-    /// 試しごとに別の、空のフォルダ（一時フォルダの下）。
+    /// テストごとに別の、空のフォルダ（一時フォルダの下）。
     fn scratch_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "fantermo-config-test-{}-{name}",
