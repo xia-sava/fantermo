@@ -1,4 +1,4 @@
-//! セルを四角形のインスタンスとして描く Direct3D 11 のパイプライン（`cells.hlsl`）。
+//! 背景画像とセルを四角形のインスタンスとして描く Direct3D 11 のパイプライン（`cells.hlsl`）。
 
 use windows::{
     Win32::Graphics::{
@@ -7,9 +7,10 @@ use windows::{
             D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_VERTEX_BUFFER, D3D11_BLEND_DESC,
             D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_ONE, D3D11_BLEND_OP_ADD, D3D11_BUFFER_DESC,
             D3D11_COLOR_WRITE_ENABLE_ALL, D3D11_COMPARISON_NEVER, D3D11_CPU_ACCESS_WRITE,
-            D3D11_FILTER_MIN_MAG_MIP_POINT, D3D11_INPUT_ELEMENT_DESC,
-            D3D11_INPUT_PER_INSTANCE_DATA, D3D11_MAP_WRITE_DISCARD, D3D11_MAPPED_SUBRESOURCE,
-            D3D11_RENDER_TARGET_BLEND_DESC, D3D11_SAMPLER_DESC, D3D11_TEXTURE_ADDRESS_CLAMP,
+            D3D11_FILTER_MIN_MAG_MIP_LINEAR, D3D11_FILTER_MIN_MAG_MIP_POINT,
+            D3D11_INPUT_ELEMENT_DESC, D3D11_INPUT_PER_INSTANCE_DATA, D3D11_MAP_WRITE_DISCARD,
+            D3D11_MAPPED_SUBRESOURCE, D3D11_RENDER_TARGET_BLEND_DESC, D3D11_SAMPLER_DESC,
+            D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_TEXTURE_ADDRESS_MODE, D3D11_TEXTURE_ADDRESS_WRAP,
             D3D11_USAGE_DYNAMIC, D3D11_VIEWPORT, ID3D11BlendState, ID3D11Buffer, ID3D11Device,
             ID3D11DeviceContext, ID3D11InputLayout, ID3D11PixelShader, ID3D11RenderTargetView,
             ID3D11SamplerState, ID3D11ShaderResourceView, ID3D11VertexShader,
@@ -28,10 +29,14 @@ const QUAD_VERTICES: u32 = 4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum InstanceKind {
-    /// 塗りつぶし（背景、カーソル）。
+    /// 塗りつぶし（背景、背景画像の上に重ねる背景色、カーソル）。
     Solid = 0,
     /// アトラスのグリフ。
     Glyph = 1,
+    /// 背景画像。`uv` は画像の幅と高さを 1 とし、範囲の外は端の色。
+    Image = 2,
+    /// 背景画像を繰り返す。`uv` は画像の幅と高さを 1 とする。
+    ImageRepeat = 3,
 }
 
 /// シェーダに渡す四角形一つ。`cells.hlsl` の Instance と並びを揃える。
@@ -62,6 +67,8 @@ pub struct CellPipeline {
     input_layout: ID3D11InputLayout,
     constants: ID3D11Buffer,
     sampler: ID3D11SamplerState,
+    /// 背景画像のサンプラ。範囲の外を端の色にするものと、繰り返すもの。
+    image_samplers: [ID3D11SamplerState; 2],
     blend: ID3D11BlendState,
     instances: Option<ID3D11Buffer>,
     /// `instances` に入るインスタンスの数。
@@ -151,6 +158,23 @@ impl CellPipeline {
         let mut sampler = None;
         // SAFETY: sampler_desc は初期化済みで、sampler は書き込める。
         unsafe { device.CreateSamplerState(&sampler_desc, Some(&mut sampler))? };
+        let image_sampler = |address: D3D11_TEXTURE_ADDRESS_MODE| {
+            let desc = D3D11_SAMPLER_DESC {
+                Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+                AddressU: address,
+                AddressV: address,
+                AddressW: address,
+                ..sampler_desc
+            };
+            let mut sampler = None;
+            // SAFETY: desc は初期化済みで、sampler は書き込める。
+            unsafe { device.CreateSamplerState(&desc, Some(&mut sampler))? };
+            sampler.ok_or_else(windows::core::Error::empty)
+        };
+        let image_samplers = [
+            image_sampler(D3D11_TEXTURE_ADDRESS_CLAMP)?,
+            image_sampler(D3D11_TEXTURE_ADDRESS_WRAP)?,
+        ];
 
         // ピクセルシェーダは乗算済みのアルファを出す。
         let mut blend_desc = D3D11_BLEND_DESC::default();
@@ -175,13 +199,14 @@ impl CellPipeline {
             input_layout: input_layout.ok_or_else(missing)?,
             constants,
             sampler: sampler.ok_or_else(missing)?,
+            image_samplers,
             blend: blend.ok_or_else(missing)?,
             instances: None,
             capacity: 0,
         })
     }
 
-    /// `instances` を `target` に並べた順に描く。
+    /// `instances` を `target` に並べた順に描く。背景画像のインスタンスは `image` を描く。
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -191,6 +216,7 @@ impl CellPipeline {
         viewport_size: (u32, u32),
         atlas: &ID3D11ShaderResourceView,
         atlas_size: (u32, u32),
+        image: Option<&ID3D11ShaderResourceView>,
         instances: &[Instance],
     ) -> windows::core::Result<()> {
         if instances.is_empty() {
@@ -237,8 +263,16 @@ impl CellPipeline {
             context.VSSetShader(&self.vertex_shader, None);
             context.VSSetConstantBuffers(0, Some(&[Some(self.constants.clone())]));
             context.PSSetShader(&self.pixel_shader, None);
-            context.PSSetShaderResources(0, Some(&[Some(atlas.clone())]));
-            context.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
+            context.PSSetShaderResources(0, Some(&[Some(atlas.clone()), image.cloned()]));
+            let [image_clamp, image_wrap] = &self.image_samplers;
+            context.PSSetSamplers(
+                0,
+                Some(&[
+                    Some(self.sampler.clone()),
+                    Some(image_clamp.clone()),
+                    Some(image_wrap.clone()),
+                ]),
+            );
             context.DrawInstanced(QUAD_VERTICES, instances.len() as u32, 0, 0);
         }
         Ok(())

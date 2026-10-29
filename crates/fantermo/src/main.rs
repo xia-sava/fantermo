@@ -11,6 +11,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod atlas;
+mod background;
 mod boxdraw;
 mod clipboard;
 mod config_file;
@@ -45,7 +46,10 @@ mod window_state;
 use std::path::Path;
 
 use windows::Win32::{
-    System::Environment::GetCommandLineW,
+    System::{
+        Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx},
+        Environment::GetCommandLineW,
+    },
     UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
 };
 
@@ -57,6 +61,13 @@ fn main() {
         unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
     if let Err(e) = dpi_awareness {
         tracing::warn!("failed to enable per-monitor DPI awareness: {e}");
+    }
+    // 背景画像を読む WIC と、ファイルを選ぶダイアログを、窓のスレッドで使う。プロセスが終わるまで
+    // 解放しない。
+    // SAFETY: 窓のスレッド（このスレッド）で、窓を作る前に一度だけ初期化する。
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+    if let Err(e) = com.ok() {
+        tracing::warn!("failed to initialize COM: {e}");
     }
 
     let config_path = config_file::path();

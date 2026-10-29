@@ -1,9 +1,14 @@
 //! Direct3D 11 で窓に描く。
 
-use std::{path::Path, rc::Rc};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use fantermo_core::{
-    config::WideGlyph,
+    background::{self, Placement},
+    config::{BackgroundFit, WideGlyph},
     frame::{Frame, Rgb, Underline},
 };
 use windows::Win32::{
@@ -11,10 +16,11 @@ use windows::Win32::{
     Graphics::{
         Direct3D::{D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP},
         Direct3D11::{
-            D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ,
-            D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
-            D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView,
-            ID3D11Texture2D,
+            D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+            D3D11_RESOURCE_MISC_GENERATE_MIPS, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
+            D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device,
+            ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D,
         },
         DirectWrite::IDWriteFactory,
         Dxgi::{
@@ -28,6 +34,7 @@ use windows::Win32::{
 
 use crate::{
     atlas::{AtlasFull, GlyphAtlas, Slot},
+    background::{Decoded, Decoder},
     decoration::Decoration,
     font::Font,
     paint::{Area, Paint},
@@ -55,6 +62,28 @@ pub struct Renderer {
     pipeline: CellPipeline,
     cell_width: u32,
     cell_height: u32,
+    /// 背景画像を読むもの。初めて読むときに作る。
+    decoder: Option<Decoder>,
+    /// 読んだ背景画像。ファイルの場所ごと。
+    images: HashMap<PathBuf, ImageTexture>,
+}
+
+/// 背景画像のテクスチャ（ミップマップつき）。
+struct ImageTexture {
+    view: ID3D11ShaderResourceView,
+    width: u32,
+    height: u32,
+}
+
+/// 端末の背景に敷く画像の描き方。
+pub struct Backdrop<'a> {
+    /// 画像のファイル。[`Renderer::load_image`] で読んであること（なければ画像を描かない）。
+    pub image: &'a Path,
+    /// 画像を敷く範囲（端末の画面と余白）。
+    pub region: Area,
+    pub fit: BackgroundFit,
+    /// 画像の上に重ねる端末の背景色の濃さ（0〜1）。
+    pub opacity: f32,
 }
 
 impl Renderer {
@@ -101,9 +130,89 @@ impl Renderer {
             pipeline,
             cell_width: font.cell_width_px,
             cell_height: font.cell_height_px,
+            decoder: None,
+            images: HashMap::new(),
         };
         renderer.create_target()?;
         Ok(renderer)
+    }
+
+    /// 背景画像 `path` を読んでテクスチャにする。読んであれば何もしない。
+    pub fn load_image(&mut self, path: &Path) -> windows::core::Result<()> {
+        if self.images.contains_key(path) {
+            return Ok(());
+        }
+        let decoder = match &self.decoder {
+            Some(decoder) => decoder,
+            None => self.decoder.insert(Decoder::new()?),
+        };
+        let decoded = decoder.decode(path)?;
+        let texture = self.create_image(&decoded)?;
+        tracing::info!(
+            "loaded the background image {} ({}x{})",
+            path.display(),
+            texture.width,
+            texture.height
+        );
+        self.images.insert(path.to_owned(), texture);
+        Ok(())
+    }
+
+    /// 読んだ背景画像のうち、`keep` が偽のものを捨てる。
+    pub fn retain_images(&mut self, keep: impl Fn(&Path) -> bool) {
+        self.images.retain(|path, _| keep(path));
+    }
+
+    fn create_image(&self, decoded: &Decoded) -> windows::core::Result<ImageTexture> {
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: decoded.width,
+            Height: decoded.height,
+            // 0 はすべての段のミップマップ。縮めて描くときに粗くならないように持つ。
+            MipLevels: 0,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            // ミップマップを作らせるには描画先にもできること。
+            BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+            MiscFlags: D3D11_RESOURCE_MISC_GENERATE_MIPS.0 as u32,
+            ..Default::default()
+        };
+        let mut texture = None;
+        // SAFETY: desc は初期化済みで、texture は書き込める。
+        unsafe {
+            self.device
+                .CreateTexture2D(&desc, None, Some(&mut texture))?
+        };
+        let texture: ID3D11Texture2D = texture.ok_or_else(windows::core::Error::empty)?;
+        // SAFETY: pixels は stride × 高さのバイトを持ち、texture の段 0 と同じ大きさと形式。
+        unsafe {
+            self.context.UpdateSubresource(
+                &texture,
+                0,
+                None,
+                decoded.pixels.as_ptr().cast(),
+                decoded.stride(),
+                0,
+            )
+        };
+        let mut view = None;
+        // SAFETY: texture はシェーダから読めるテクスチャで、view は書き込める。
+        unsafe {
+            self.device
+                .CreateShaderResourceView(&texture, None, Some(&mut view))?
+        };
+        let view = view.ok_or_else(windows::core::Error::empty)?;
+        // SAFETY: view は GENERATE_MIPS を付けて作ったテクスチャのすべての段のビュー。
+        unsafe { self.context.GenerateMips(&view) };
+        Ok(ImageTexture {
+            view,
+            width: decoded.width,
+            height: decoded.height,
+        })
     }
 
     /// 端末を `font` で、タブバーのタイトルを `ui_font` で描き、セルより広いグリフは `wide_glyph` の
@@ -146,28 +255,60 @@ impl Renderer {
 
     /// 画面 `layers` を順に、それぞれ左上のセルが領域の左上に来るように描き、その上に `paints` を
     /// 順に描いて表示する。それぞれの領域はその画面の背景色で塗ってから描き、どの領域にも入らない
-    /// ところは最初の画面の背景色で塗る。`capture` を渡すと、表示する前のバックバッファを PNG で
-    /// 書き出す。
+    /// ところは最初の画面の背景色で塗る。
+    ///
+    /// `backdrop` があれば、最初に画像を描き、その範囲に最初の画面の背景色を `opacity` の濃さで重ねる。
+    /// 画面の領域は塗らず、背景色を持つセルだけを塗る。
+    ///
+    /// `capture` を渡すと、表示する前のバックバッファを PNG で書き出す。
     pub fn render(
         &mut self,
         layers: &[(&Frame, Area)],
+        backdrop: Option<&Backdrop>,
         paints: &[Paint],
         capture: Option<&Path>,
     ) -> windows::core::Result<()> {
         let Some((first, _)) = layers.first() else {
             return Ok(());
         };
-        let instances = match self.instances(layers, paints) {
+        let placed = backdrop.and_then(|backdrop| {
+            let texture = self.images.get(backdrop.image)?;
+            let placement = background::place(
+                backdrop.fit,
+                background::Rect {
+                    x: backdrop.region.x as f32,
+                    y: backdrop.region.y as f32,
+                    width: backdrop.region.width as f32,
+                    height: backdrop.region.height as f32,
+                },
+                (texture.width, texture.height),
+            )?;
+            Some((texture.view.clone(), placement, backdrop))
+        });
+        let mut instances = Vec::new();
+        if let Some((_, placement, backdrop)) = &placed {
+            instances.push(image_instance(placement));
+            instances.push(translucent(
+                area_rect(backdrop.region),
+                first.background,
+                backdrop.opacity,
+            ));
+        }
+        let fill_areas = placed.is_none();
+        let layer_instances = match self.instances(layers, paints, fill_areas) {
             Ok(instances) => instances,
             Err(AtlasFull) => {
                 // 描きかけのフレームの場所は捨てたアトラスを指すので、空にしてから組み直す。
                 self.atlas.clear()?;
-                self.instances(layers, paints).unwrap_or_else(|AtlasFull| {
-                    tracing::warn!("the glyph atlas cannot hold one frame");
-                    Vec::new()
-                })
+                self.instances(layers, paints, fill_areas)
+                    .unwrap_or_else(|AtlasFull| {
+                        tracing::warn!("the glyph atlas cannot hold one frame");
+                        Vec::new()
+                    })
             }
         };
+        instances.extend(layer_instances);
+        let image = placed.as_ref().map(|(view, _, _)| view);
         if let Some(target) = &self.target {
             // SAFETY: target は現在のバックバッファのビュー。
             unsafe {
@@ -181,6 +322,7 @@ impl Renderer {
                 (self.width, self.height),
                 self.atlas.view(),
                 self.atlas.size(),
+                image,
                 &instances,
             )?;
         }
@@ -197,16 +339,19 @@ impl Renderer {
         }
     }
 
-    /// 画面ごとに、領域の背景、セルの背景、カーソル、グリフ、装飾の順に四角形を並べ、続けて
-    /// `paints` を並べる。
+    /// 画面ごとに、領域の背景（`fill_areas` のときだけ）、セルの背景、カーソル、グリフ、装飾の順に
+    /// 四角形を並べ、続けて `paints` を並べる。
     fn instances(
         &mut self,
         layers: &[(&Frame, Area)],
         paints: &[Paint],
+        fill_areas: bool,
     ) -> Result<Vec<Instance>, AtlasFull> {
         let mut instances = Vec::new();
         for &(frame, area) in layers {
-            instances.push(solid(area_rect(area), frame.background));
+            if fill_areas {
+                instances.push(solid(area_rect(area), frame.background));
+            }
             instances.append(&mut self.frame_instances(frame, area)?);
         }
         for paint in paints {
@@ -417,11 +562,33 @@ fn glyph(rect: [f32; 4], slot: Slot, color: Rgb) -> Instance {
 }
 
 fn solid(rect: [f32; 4], color: Rgb) -> Instance {
+    translucent(rect, color, 1.0)
+}
+
+/// `rect` を `color` で、濃さ `alpha`（0〜1）で塗る。
+fn translucent(rect: [f32; 4], color: Rgb, alpha: f32) -> Instance {
+    let [r, g, b, _] = rgba(color);
     Instance {
         rect,
         uv: [0.0; 4],
-        color: rgba(color),
+        color: [r, g, b, alpha.clamp(0.0, 1.0)],
         kind: InstanceKind::Solid,
+        _padding: [0; 3],
+    }
+}
+
+/// 背景画像を `placement` のとおりに描く。
+fn image_instance(placement: &Placement) -> Instance {
+    let Placement { rect, uv, repeat } = *placement;
+    Instance {
+        rect: [rect.x, rect.y, rect.width, rect.height],
+        uv: [uv.x, uv.y, uv.width, uv.height],
+        color: [1.0; 4],
+        kind: if repeat {
+            InstanceKind::ImageRepeat
+        } else {
+            InstanceKind::Image
+        },
         _padding: [0; 3],
     }
 }

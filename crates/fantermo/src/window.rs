@@ -2,14 +2,16 @@
 
 use std::{
     cell::RefCell,
-    path::PathBuf,
+    hash::{BuildHasher, Hasher, RandomState},
+    path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use fantermo_core::{
     backend::{ExitCode, GridSize},
+    background::Random,
     config::{
         BackgroundConfig, ColorsConfig, Config, DEFAULT_FONT_FAMILIES, FontConfig, PasteConfig,
         PasteConfirm, ScrollBarConfig, WideGlyph,
@@ -70,6 +72,7 @@ use windows::{
 };
 
 use crate::{
+    background::DiskFiles,
     clipboard,
     config_file::{self, Loaded},
     context_menu::{self, Menu, MenuCommand, MenuRequest},
@@ -81,7 +84,7 @@ use crate::{
     notice::{self, Topic},
     paint::{Area, Paint, scale},
     paste_editor,
-    renderer::Renderer,
+    renderer::{Backdrop, Renderer},
     scroll_bar,
     session::{Session, SessionId},
     settings_dialog::{self, FontChoice},
@@ -154,6 +157,15 @@ fn command_line_for(arguments: Option<&str>, shell: Option<&str>) -> String {
         .or(shell)
         .unwrap_or(DEFAULT_COMMAND_LINE)
         .to_owned()
+}
+
+/// 背景画像を選ぶ乱数の種。起動するたびに変わる。
+fn random_seed() -> u64 {
+    let mut hasher = RandomState::new().build_hasher();
+    if let Ok(elapsed) = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+        hasher.write_u128(elapsed.as_nanos());
+    }
+    hasher.finish()
 }
 
 /// 窓を開き、子プロセスを起動して、窓が閉じるまでメッセージを処理する。最後の端末の子プロセスが終わって
@@ -392,6 +404,18 @@ fn scroll_bar_area_in_client(width: u32, terminal: Area, insets: Insets) -> Area
     }
 }
 
+/// 大きさが `width` × `height` のクライアント領域のうち、背景画像を敷く領域。上端のタブバーと右端の
+/// スクロールバーを除いた残りの全体（端末を描く領域と、その周りの余白）。
+fn backdrop_area_in_client(width: u32, height: u32, insets: Insets) -> Area {
+    let top = insets.tab_bar_height.min(height);
+    Area {
+        x: 0,
+        y: top,
+        width: width.saturating_sub(insets.scroll_bar_width),
+        height: height - top,
+    }
+}
+
 /// 端末を描く領域の大きさが `terminal` になるクライアント領域の大きさ。[`terminal_area_in_client`] と
 /// 対になる。
 fn client_size_for_terminal(terminal: SIZE, insets: Insets) -> SIZE {
@@ -592,6 +616,12 @@ struct App {
     colors: ColorsConfig,
     /// 背景画像の設定。
     background: BackgroundConfig,
+    /// 背景画像に選んだファイル。
+    background_image: Option<PathBuf>,
+    /// 背景画像を選ぶ乱数。
+    random: Random,
+    /// 窓のクライアント領域のうち、背景画像を敷く領域。
+    backdrop_area: Area,
     /// 割り当ての動作に使ったので、離したときにも端末へ送らないキー。タブを切り替えたあとに
     /// 離したことが届くので、端末ごとではなく窓に持つ。
     suppressed_release: Option<Key>,
@@ -643,6 +673,7 @@ impl App {
         let insets = Insets::new(dpi, scroll_bar_width);
         let terminal_area = terminal_area_in_client(width, height, insets);
         let scroll_bar_area = scroll_bar_area_in_client(width, terminal_area, insets);
+        let backdrop_area = backdrop_area_in_client(width, height, insets);
         let size = grid_size(&font, terminal_area);
         let ui_font = Rc::new(UiFont::for_dpi(&dwrite, dpi)?);
         log_ui_font(&ui_font, dpi);
@@ -680,7 +711,7 @@ impl App {
             };
         }
 
-        Ok(Self {
+        let mut app = Self {
             hwnd,
             dwrite,
             font,
@@ -707,6 +738,9 @@ impl App {
             keymap: config.keys,
             colors: config.colors,
             background: config.background,
+            background_image: None,
+            random: Random::new(random_seed()),
+            backdrop_area,
             suppressed_release: None,
             tab_bar_press: None,
             tab_bar_hover: None,
@@ -721,7 +755,49 @@ impl App {
             settings_dialog_open: false,
             reload_pending: false,
             settings_written: None,
-        })
+        };
+        app.background_image = app.choose_background_image();
+        Ok(app)
+    }
+
+    /// 設定の背景画像の一覧から、ランダムに一枚選んで読む。読めない画像は警告を残して飛ばす。一覧が
+    /// 空か、どれも読めなければ `None`。
+    fn choose_background_image(&mut self) -> Option<PathBuf> {
+        if self.background.images.is_empty() {
+            return None;
+        }
+        let base = self.config_path.as_deref().and_then(Path::parent);
+        let expanded = fantermo_core::background::expand(&self.background.images, base, &DiskFiles);
+        for warning in &expanded.warnings {
+            tracing::warn!("{warning}");
+        }
+        let mut candidates = expanded.candidates;
+        let renderer = &mut self.renderer;
+        let random = &mut self.random;
+        let picked = fantermo_core::background::pick(
+            &mut candidates,
+            &mut |count| random.below(count),
+            |path| match renderer.load_image(path) {
+                Ok(()) => Some(()),
+                Err(e) => {
+                    tracing::warn!("cannot read the background image {}: {e}", path.display());
+                    None
+                }
+            },
+        );
+        if picked.is_none() {
+            tracing::warn!("none of the background images can be read");
+        }
+        picked.map(|(path, ())| path)
+    }
+
+    /// 背景画像を選び直し、使わなくなった画像を捨てる。
+    fn rechoose_background_image(&mut self) {
+        self.background_image = self.choose_background_image();
+        let chosen = self.background_image.clone();
+        self.renderer
+            .retain_images(|path| chosen.as_deref() == Some(path));
+        self.invalidate();
     }
 
     /// 表示している端末。
@@ -1777,6 +1853,7 @@ impl App {
         let insets = self.insets(self.dpi);
         self.terminal_area = terminal_area_in_client(width, height, insets);
         self.scroll_bar_area = scroll_bar_area_in_client(width, self.terminal_area, insets);
+        self.backdrop_area = backdrop_area_in_client(width, height, insets);
         self.resize_sessions();
         self.update_tab_bar_hover();
         self.update_scroll_bar_hover();
@@ -1875,7 +1952,14 @@ impl App {
         self.paste_confirm = config.paste.confirm;
         self.shell = config.shell;
         self.keymap = config.keys;
-        self.background = config.background;
+        if config.background != self.background {
+            let images_changed = config.background.images != self.background.images;
+            self.background = config.background;
+            if images_changed {
+                self.rechoose_background_image();
+            }
+            self.invalidate();
+        }
         if config.colors != self.colors {
             let terminal_colors = config.colors.terminal_colors();
             if terminal_colors != self.colors.terminal_colors() {
@@ -2033,10 +2117,18 @@ impl App {
             scroll_bar::Palette::from_terminal(frame.background, frame.foreground)
                 .with_colors(&self.colors.scroll_bar);
         paints.extend(self.scroll_bar_paints(&scroll_bar_colors));
-        if let Err(e) = self
-            .renderer
-            .render(&[(&frame, self.terminal_area)], &paints, capture)
-        {
+        let backdrop = self.background_image.as_deref().map(|image| Backdrop {
+            image,
+            region: self.backdrop_area,
+            fit: self.background.fit,
+            opacity: self.background.opacity,
+        });
+        if let Err(e) = self.renderer.render(
+            &[(&frame, self.terminal_area)],
+            backdrop.as_ref(),
+            &paints,
+            capture,
+        ) {
             tracing::warn!("failed to render: {e}");
         }
     }

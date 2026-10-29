@@ -208,6 +208,27 @@ impl Random {
     }
 }
 
+/// 大きさ `image` の画像を持っておく大きさ。`cover`（画面の大きさ）を縦横比を保って覆える大きさより
+/// 大きければ、覆える大きさまで縮める。さらに、どちらの辺も `max_side` を超えないように縮める。広げは
+/// しない。`cover` のどちらかが 0 なら、覆える大きさでは縮めない。
+pub fn stored_size(image: (u32, u32), cover: (u32, u32), max_side: u32) -> (u32, u32) {
+    let (width, height) = (image.0 as f64, image.1 as f64);
+    if width <= 0.0 || height <= 0.0 {
+        return image;
+    }
+    let mut scale: f64 = 1.0;
+    if cover.0 > 0 && cover.1 > 0 {
+        scale = scale.min((f64::from(cover.0) / width).max(f64::from(cover.1) / height));
+    }
+    let max_side = f64::from(max_side.max(1));
+    scale = scale.min(max_side / width).min(max_side / height);
+    if scale >= 1.0 {
+        return image;
+    }
+    let shrink = |length: f64| ((length * scale).round() as u32).clamp(1, max_side as u32);
+    (shrink(width), shrink(height))
+}
+
 /// ピクセルの矩形（左上の x, y と幅, 高さ）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
@@ -564,6 +585,20 @@ mod tests {
             assert_eq!(place(fit, REGION, (0, 10)), None);
             assert_eq!(place(fit, rect(0.0, 0.0, 0.0, 10.0), (10, 10)), None);
         }
+    }
+
+    #[test]
+    fn large_images_are_kept_just_large_enough_to_cover_the_screen() {
+        // 画面より小さければそのまま。
+        assert_eq!(stored_size((800, 600), (1920, 1080), 16384), (800, 600));
+        // 横に長い画像は、高さを画面に合わせる（fill で覆える大きさ）。
+        assert_eq!(stored_size((8000, 2000), (1920, 1080), 16384), (4320, 1080));
+        assert_eq!(stored_size((4000, 4000), (1920, 1080), 16384), (1920, 1920));
+        // 片方だけ画面より大きい画像は縮めない。
+        assert_eq!(stored_size((3000, 500), (1920, 1080), 16384), (3000, 500));
+        // 辺の上限。
+        assert_eq!(stored_size((40000, 100), (0, 0), 16384), (16384, 41));
+        assert_eq!(stored_size((0, 10), (1920, 1080), 16384), (0, 10));
     }
 
     #[test]

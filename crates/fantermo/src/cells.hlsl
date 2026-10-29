@@ -1,4 +1,4 @@
-// セルの背景・カーソル・グリフを、インスタンスごとの四角形として描く。
+// 背景画像・セルの背景・カーソル・グリフを、インスタンスごとの四角形として描く。
 // 頂点バッファは使わず、SV_VertexID（0〜3 の三角形ストリップ）から四角形の角を作る。
 
 cbuffer Viewport : register(b0)
@@ -10,14 +10,21 @@ cbuffer Viewport : register(b0)
 Texture2D atlas : register(t0);
 SamplerState atlas_sampler : register(s0);
 
+// 背景画像（乗算済みアルファの BGRA）と、範囲の外を端の色にするものと繰り返すもののサンプラ。
+Texture2D image : register(t1);
+SamplerState image_clamp : register(s1);
+SamplerState image_wrap : register(s2);
+
 // kind の値。Rust 側の InstanceKind と揃える。
 static const uint KIND_SOLID = 0;
 static const uint KIND_GLYPH = 1;
+static const uint KIND_IMAGE = 2;
+static const uint KIND_IMAGE_REPEAT = 3;
 
 struct Instance
 {
     float4 rect : RECT;   // 左上の x, y と幅, 高さ（ピクセル）
-    float4 uv : UV;       // アトラスの中の左上の x, y と幅, 高さ（ピクセル）
+    float4 uv : UV;       // アトラスの中の左上の x, y と幅, 高さ（ピクセル）。背景画像は画像の幅と高さを 1 とする
     float4 color : COLOR; // 直線の RGBA（0〜1）
     uint kind : KIND;
 };
@@ -34,10 +41,11 @@ Fragment vs_main(uint vertex : SV_VertexID, Instance instance)
 {
     float2 corner = float2(vertex & 1, vertex >> 1);
     float2 pixel = instance.rect.xy + corner * instance.rect.zw;
+    float2 uv = instance.uv.xy + corner * instance.uv.zw;
 
     Fragment fragment;
     fragment.position = float4(pixel / viewport_size * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
-    fragment.uv = (instance.uv.xy + corner * instance.uv.zw) / atlas_size;
+    fragment.uv = instance.kind >= KIND_IMAGE ? uv : uv / atlas_size;
     fragment.color = instance.color;
     fragment.kind = instance.kind;
     return fragment;
@@ -46,6 +54,17 @@ Fragment vs_main(uint vertex : SV_VertexID, Instance instance)
 // 出力は乗算済みのアルファ。
 float4 ps_main(Fragment fragment) : SV_Target
 {
+    // 背景画像の縮小の度合い（ミップマップの段）は uv の変化から決める。分岐の中では求められないので先に求める。
+    float2 uv_dx = ddx(fragment.uv);
+    float2 uv_dy = ddy(fragment.uv);
+    if (fragment.kind == KIND_IMAGE)
+    {
+        return image.SampleGrad(image_clamp, fragment.uv, uv_dx, uv_dy) * fragment.color.a;
+    }
+    if (fragment.kind == KIND_IMAGE_REPEAT)
+    {
+        return image.SampleGrad(image_wrap, fragment.uv, uv_dx, uv_dy) * fragment.color.a;
+    }
     float alpha = fragment.color.a;
     if (fragment.kind == KIND_GLYPH)
     {
