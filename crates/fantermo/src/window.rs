@@ -11,7 +11,7 @@ use std::{
 
 use fantermo_core::{
     backend::{ExitCode, GridSize},
-    background::Random,
+    background::{Candidate, Random},
     config::{
         BackgroundConfig, ColorsConfig, Config, DEFAULT_FONT_FAMILIES, FontConfig, PasteConfig,
         PasteConfirm, ScrollBarConfig, WideGlyph,
@@ -765,7 +765,7 @@ impl App {
 
     /// 設定の背景画像の一覧から、ランダムに一枚選んで読む。読めない画像は警告を残して飛ばす。一覧が
     /// 空か、どれも読めなければ `None`。
-    fn choose_background_image(&mut self) -> Option<PathBuf> {
+    fn choose_background_image(&mut self) -> Option<Candidate> {
         if self.background.images.is_empty() {
             return None;
         }
@@ -780,10 +780,13 @@ impl App {
         let picked = fantermo_core::background::pick(
             &mut candidates,
             &mut |count| random.below(count),
-            |path| match renderer.load_image(path) {
+            |candidate| match renderer.load_image(&candidate.path) {
                 Ok(()) => Some(()),
                 Err(e) => {
-                    tracing::warn!("cannot read the background image {}: {e}", path.display());
+                    tracing::warn!(
+                        "cannot read the background image {}: {e}",
+                        candidate.path.display()
+                    );
                     None
                 }
             },
@@ -791,7 +794,7 @@ impl App {
         if picked.is_none() {
             tracing::warn!("none of the background images can be read");
         }
-        picked.map(|(path, ())| path)
+        picked.map(|(candidate, ())| candidate)
     }
 
     /// すべての端末の背景画像を選び直す。
@@ -807,9 +810,12 @@ impl App {
     fn drop_unused_background_images(&mut self) {
         let sessions = &self.sessions;
         self.renderer.retain_images(|path| {
-            sessions
-                .iter()
-                .any(|session| session.background_image.as_deref() == Some(path))
+            sessions.iter().any(|session| {
+                session
+                    .background_image
+                    .as_ref()
+                    .is_some_and(|image| image.path == path)
+            })
         });
     }
 
@@ -1968,9 +1974,11 @@ impl App {
         self.shell = config.shell;
         self.keymap = config.keys;
         if config.background != self.background {
-            let images_changed = config.background.images != self.background.images;
+            // 項目ごとの収め方と濃さだけが変わったなら、選んだ画像のまま描き直す（描くときに項目から
+            // 決める）。
+            let paths_changed = !config.background.same_paths(&self.background);
             self.background = config.background;
-            if images_changed {
+            if paths_changed {
                 self.rechoose_background_images();
             }
             self.invalidate();
@@ -2106,7 +2114,10 @@ impl App {
             &self.font,
             self.sessions.len(),
             self.active,
-            self.session().background_image.as_deref(),
+            self.session()
+                .background_image
+                .as_ref()
+                .map(|image| image.path.as_path()),
         );
         let frame_path = dump.frame_path();
         self.render_to(Some(&frame_path));
@@ -2135,12 +2146,15 @@ impl App {
         paints.extend(self.scroll_bar_paints(&scroll_bar_colors));
         let backdrop = self.sessions[self.active]
             .background_image
-            .as_deref()
-            .map(|image| Backdrop {
-                image,
-                region: self.backdrop_area,
-                fit: self.background.fit,
-                image_opacity: self.background.image_opacity,
+            .as_ref()
+            .map(|image| {
+                let (fit, image_opacity) = self.background.settings_for(image.entry);
+                Backdrop {
+                    image: &image.path,
+                    region: self.backdrop_area,
+                    fit,
+                    image_opacity,
+                }
             });
         if let Err(e) = self.renderer.render(
             &[(&frame, self.terminal_area)],

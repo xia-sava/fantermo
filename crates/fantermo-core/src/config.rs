@@ -111,7 +111,9 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # 「*」「?」を使ったワイルドカードを並べる。新しいタブを開くたびに、この中からランダムに一枚選ぶ。フォルダと
 # ワイルドカードから選ぶのは png、jpg、jpeg、bmp、gif（最初のコマ）、webp（Windows で読めるとき）。読めない
 # 画像は飛ばして別の画像を選ぶ。相対パスはこのファイルのフォルダから。空なら画像を敷かない。
-# 例: images = ['C:\画像\壁紙', 'C:\画像\*.jpg']
+# 項目は文字列のほか、{ path = '…', fit = "tile", image_opacity = 0.3 } の形の表でも書ける。表に書いた収め方と
+# 濃さは、その項目（フォルダやワイルドカードなら、そこから選んだ画像）にだけ効く。書かなかったものは下の値に従う。
+# 例: images = ['C:\画像\壁紙', 'C:\画像\*.jpg', { path = 'C:\画像\模様.png', fit = "tile" }]
 # images = []
 
 # 画像の濃さ。0 から 1 まで。1 は画像をそのまま見せ、0 は画像を消して端末の背景色だけにする。間の値は、
@@ -164,11 +166,60 @@ pub struct Config {
 /// `[background]` の設定。
 #[derive(Clone, Debug, PartialEq)]
 pub struct BackgroundConfig {
-    /// 画像のファイル・フォルダ・ワイルドカードの一覧（書いたまま）。空なら画像を敷かない。
-    pub images: Vec<String>,
+    /// 画像のファイル・フォルダ・ワイルドカードの一覧（書いた順）。空なら画像を敷かない。
+    pub images: Vec<BackgroundImage>,
     /// 画像の濃さ（1 で画像をそのまま見せ、0 で消す）。
     pub image_opacity: f32,
     pub fit: BackgroundFit,
+}
+
+impl BackgroundConfig {
+    /// `images` の `entry` 番目の項目から選んだ画像の収め方と濃さ。項目に書いていなければ（項目が
+    /// なければ）、全体の値。
+    pub fn settings_for(&self, entry: usize) -> (BackgroundFit, f32) {
+        let image = self.images.get(entry);
+        (
+            image.and_then(|image| image.fit).unwrap_or(self.fit),
+            image
+                .and_then(|image| image.image_opacity)
+                .unwrap_or(self.image_opacity),
+        )
+    }
+
+    /// `other` と、一覧の項目のパスが同じ順に並んでいる（項目ごとの収め方と濃さは比べない）。
+    pub fn same_paths(&self, other: &BackgroundConfig) -> bool {
+        self.images
+            .iter()
+            .map(|image| &image.path)
+            .eq(other.images.iter().map(|image| &image.path))
+    }
+}
+
+/// `background.images` の一つの項目。
+#[derive(Clone, Debug, PartialEq)]
+pub struct BackgroundImage {
+    /// 画像のファイル・フォルダ・ワイルドカード（書いたまま）。
+    pub path: String,
+    /// この項目から選んだ画像の収め方。`None` なら `[background]` の `fit`。
+    pub fit: Option<BackgroundFit>,
+    /// この項目から選んだ画像の濃さ。`None` なら `[background]` の `image_opacity`。
+    pub image_opacity: Option<f32>,
+}
+
+impl BackgroundImage {
+    /// 収め方と濃さを全体の値に任せる項目。
+    pub fn new(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            fit: None,
+            image_opacity: None,
+        }
+    }
+
+    /// 収め方も濃さも全体の値に任せる（設定ファイルには文字列で書く）。
+    pub fn follows_background(&self) -> bool {
+        self.fit.is_none() && self.image_opacity.is_none()
+    }
 }
 
 impl Default for BackgroundConfig {
@@ -207,6 +258,11 @@ impl BackgroundFit {
         BackgroundFit::Tile,
         BackgroundFit::Center,
     ];
+
+    /// 設定ファイルに書く名前 `name` の値。
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|fit| fit.name() == name)
+    }
 
     /// 設定ファイルに書く名前。
     pub fn name(self) -> &'static str {
@@ -654,7 +710,7 @@ impl<T> Item<T> {
     }
 }
 
-/// `font.family` と `background.images` に書ける形。
+/// `font.family` に書ける形。
 #[derive(Deserialize)]
 #[serde(untagged, expecting = "a string or an array of strings")]
 enum Strings {
@@ -805,30 +861,113 @@ fn read_font(reader: &mut Reader, table: &mut Table, font: &mut FontConfig) {
 fn read_background(reader: &mut Reader, table: &mut Table, background: &mut BackgroundConfig) {
     const SECTION: Option<&str> = Some("background");
     let defaults = BackgroundConfig::default();
+    let images = match reader.take::<Value>(table, SECTION, "images") {
+        Item::Valid(value) => read_background_images(reader, value),
+        Item::Absent => Item::Absent,
+        Item::Invalid => Item::Invalid,
+    };
+    images.apply(&mut background.images, defaults.images);
+    read_image_opacity(reader, table, SECTION)
+        .apply(&mut background.image_opacity, defaults.image_opacity);
     reader
-        .take::<Strings>(table, SECTION, "images")
-        .map(Strings::into_vec)
-        .check(reader, "background.images", |images| {
-            images.iter().any(|image| image.trim().is_empty()).then(|| {
-                format!("ignoring background.images = {images:?}: names must not be empty")
-            })
-        })
-        .apply(&mut background.images, defaults.images);
+        .take::<BackgroundFit>(table, SECTION, "fit")
+        .apply(&mut background.fit, defaults.fit);
+}
+
+/// 表 `table`（道筋は `section`）の `image_opacity` を読む。範囲の外は警告して読めなかったことにする。
+fn read_image_opacity(reader: &mut Reader, table: &mut Table, section: Option<&str>) -> Item<f32> {
+    let path = key_path(section, "image_opacity");
     reader
-        .take::<f32>(table, SECTION, "image_opacity")
-        .check(reader, "background.image_opacity", |opacity| {
+        .take::<f32>(table, section, "image_opacity")
+        .check(reader, &path, |opacity| {
             (!IMAGE_OPACITY_RANGE.contains(opacity)).then(|| {
                 format!(
-                    "ignoring background.image_opacity = {opacity}: must be between {} and {}",
+                    "ignoring {path} = {opacity}: must be between {} and {}",
                     IMAGE_OPACITY_RANGE.start(),
                     IMAGE_OPACITY_RANGE.end()
                 )
             })
         })
-        .apply(&mut background.image_opacity, defaults.image_opacity);
-    reader
-        .take::<BackgroundFit>(table, SECTION, "fit")
-        .apply(&mut background.fit, defaults.fit);
+}
+
+/// `background.images` の値を読む。文字列か表なら項目一つ、配列なら項目の並び。配列の中の読めない
+/// 項目は、警告してその項目だけを飛ばす。項目一つが読めなければ、全体を読めなかったことにする。
+fn read_background_images(reader: &mut Reader, value: Value) -> Item<Vec<BackgroundImage>> {
+    const PATH: &str = "background.images";
+    match value {
+        Value::Array(items) => Item::Valid(
+            items
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, item)| {
+                    read_background_image(reader, &format!("{PATH}[{index}]"), item)
+                })
+                .collect(),
+        ),
+        Value::String(_) | Value::Table(_) => match read_background_image(reader, PATH, value) {
+            Some(image) => Item::Valid(vec![image]),
+            None => Item::Invalid,
+        },
+        _ => {
+            reader.warn(
+                PATH,
+                format!("ignoring {PATH}: expected a string, a table, or an array of them"),
+            );
+            Item::Invalid
+        }
+    }
+}
+
+/// `background.images` の項目一つ（道筋は `path`）を読む。文字列ならそのパス、表なら `path` と、
+/// 書いてあれば `fit` と `image_opacity`。読めなければ警告して `None`。表の中の読めない `fit` と
+/// `image_opacity` は、警告してその値だけを全体の値に任せる。
+fn read_background_image(reader: &mut Reader, path: &str, value: Value) -> Option<BackgroundImage> {
+    let empty = || format!("ignoring {path}: names must not be empty");
+    match value {
+        Value::String(name) => {
+            if name.trim().is_empty() {
+                reader.warn(path, empty());
+                return None;
+            }
+            Some(BackgroundImage::new(name))
+        }
+        Value::Table(mut table) => {
+            let section = Some(path);
+            let name = match reader.take::<String>(&mut table, section, "path") {
+                Item::Valid(name) if !name.trim().is_empty() => name,
+                Item::Valid(_) => {
+                    reader.warn(&key_path(section, "path"), empty());
+                    return None;
+                }
+                Item::Absent => {
+                    reader.warn(path, format!("ignoring {path}: expected a path"));
+                    return None;
+                }
+                Item::Invalid => return None,
+            };
+            let fit = match reader.take::<BackgroundFit>(&mut table, section, "fit") {
+                Item::Valid(fit) => Some(fit),
+                Item::Absent | Item::Invalid => None,
+            };
+            let image_opacity = match read_image_opacity(reader, &mut table, section) {
+                Item::Valid(opacity) => Some(opacity),
+                Item::Absent | Item::Invalid => None,
+            };
+            reader.warn_unknown(&table, section);
+            Some(BackgroundImage {
+                path: name,
+                fit,
+                image_opacity,
+            })
+        }
+        _ => {
+            reader.warn(
+                path,
+                format!("ignoring {path}: expected a string or a table"),
+            );
+            None
+        }
+    }
 }
 
 /// `[colors]` の配色と、その中の色の表を読む。
@@ -1003,8 +1142,19 @@ fn collect_key_lines(
 ) {
     for (key, value) in table {
         let path = key_path(section, key.get_ref());
-        if let DeValue::Table(inner) = value.get_ref() {
-            collect_key_lines(text, inner, Some(&path), lines);
+        match value.get_ref() {
+            DeValue::Table(inner) => collect_key_lines(text, inner, Some(&path), lines),
+            DeValue::Array(items) => {
+                // 配列の要素は `background.images[2]`、その中の表のキーは `background.images[2].fit`。
+                for (index, item) in items.iter().enumerate() {
+                    let item_path = format!("{path}[{index}]");
+                    if let DeValue::Table(inner) = item.get_ref() {
+                        collect_key_lines(text, inner, Some(&item_path), lines);
+                    }
+                    lines.insert(item_path, line_of(text, item.span().start));
+                }
+            }
+            _ => {}
         }
         lines.insert(path, line_of(text, key.span().start));
     }
@@ -1075,7 +1225,7 @@ mod tests {
                 ..ColorsConfig::default()
             },
             background: BackgroundConfig {
-                images: vec![r"C:\walls".to_owned()],
+                images: vec![BackgroundImage::new(r"C:\walls")],
                 image_opacity: 0.5,
                 fit: BackgroundFit::Tile,
             },
@@ -1101,7 +1251,10 @@ mod tests {
         assert_eq!(
             parsed.config.background,
             BackgroundConfig {
-                images: vec![r"C:\walls".to_owned(), r"D:\a\*.png".to_owned()],
+                images: vec![
+                    BackgroundImage::new(r"C:\walls"),
+                    BackgroundImage::new(r"D:\a\*.png")
+                ],
                 image_opacity: 0.65,
                 fit: BackgroundFit::Center,
             }
@@ -1109,7 +1262,10 @@ mod tests {
         // 一つなら文字列でもよく、濃さは整数でもよい。
         let parsed = parse("[background]\nimages = 'C:\\one.png'\nimage_opacity = 1\n");
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
-        assert_eq!(parsed.config.background.images, [r"C:\one.png"]);
+        assert_eq!(
+            parsed.config.background.images,
+            [BackgroundImage::new(r"C:\one.png")]
+        );
         assert_eq!(parsed.config.background.image_opacity, 1.0);
         // `opacity` は知らないキー。
         let parsed = parse("[background]\nopacity = 0.8\n");
@@ -1125,13 +1281,132 @@ mod tests {
     }
 
     #[test]
+    fn background_images_may_be_tables_with_their_own_fit_and_opacity() {
+        let parsed = parse(
+            "[background]\nfit = 'fit'\nimage_opacity = 0.4\nimages = [\n  'C:\\walls',\n  { path = 'C:\\tiles\\*.png', fit = 'tile' },\n  { path = 'C:\\a.png', image_opacity = 0.3 },\n  { path = 'C:\\b.png', fit = 'center', image_opacity = 1 },\n]\n",
+        );
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        let background = &parsed.config.background;
+        assert_eq!(
+            background.images,
+            [
+                BackgroundImage::new(r"C:\walls"),
+                BackgroundImage {
+                    path: r"C:\tiles\*.png".to_owned(),
+                    fit: Some(BackgroundFit::Tile),
+                    image_opacity: None,
+                },
+                BackgroundImage {
+                    path: r"C:\a.png".to_owned(),
+                    fit: None,
+                    image_opacity: Some(0.3),
+                },
+                BackgroundImage {
+                    path: r"C:\b.png".to_owned(),
+                    fit: Some(BackgroundFit::Center),
+                    image_opacity: Some(1.0),
+                },
+            ]
+        );
+        // 書かなかった値は全体の値に従う。項目がなければ全体の値。
+        assert_eq!(background.settings_for(0), (BackgroundFit::Fit, 0.4));
+        assert_eq!(background.settings_for(1), (BackgroundFit::Tile, 0.4));
+        assert_eq!(background.settings_for(2), (BackgroundFit::Fit, 0.3));
+        assert_eq!(background.settings_for(3), (BackgroundFit::Center, 1.0));
+        assert_eq!(background.settings_for(9), (BackgroundFit::Fit, 0.4));
+        // 表一つでもよい。
+        let parsed = parse("[background]\nimages = { path = 'C:\\x.png', fit = 'stretch' }\n");
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        assert_eq!(
+            parsed.config.background.images[0].fit,
+            Some(BackgroundFit::Stretch)
+        );
+    }
+
+    #[test]
+    fn invalid_background_items_are_reported_with_their_lines() {
+        let previous = customized();
+        let parsed = super::parse(
+            "[background]\nimages = [\n  'C:\\ok',\n  { path = 'C:\\a.png', fit = 'cover', image_opacity = 2 },\n  { fit = 'tile' },\n  { path = ' ' },\n  3,\n  { path = 'C:\\b.png', blur = 1 },\n]\n",
+            &previous,
+        );
+        // 読めない値は全体の値に任せ、パスのない項目と表でも文字列でもない項目は飛ばす。
+        assert_eq!(
+            parsed.config.background.images,
+            [
+                BackgroundImage::new(r"C:\ok"),
+                BackgroundImage::new(r"C:\a.png"),
+                BackgroundImage::new(r"C:\b.png"),
+            ]
+        );
+        let lines: Vec<Option<usize>> = parsed.warnings.iter().map(|w| w.line).collect();
+        assert_eq!(
+            lines,
+            [Some(4), Some(4), Some(5), Some(6), Some(7), Some(8)],
+            "{:?}",
+            parsed.warnings
+        );
+        let messages: Vec<&str> = parsed.warnings.iter().map(|w| w.message.as_str()).collect();
+        assert!(messages[0].starts_with("ignoring background.images[1].fit"));
+        assert_eq!(
+            messages[1],
+            "ignoring background.images[1].image_opacity = 2: must be between 0 and 1"
+        );
+        assert_eq!(
+            messages[2],
+            "ignoring background.images[2]: expected a path"
+        );
+        assert_eq!(
+            messages[3],
+            "ignoring background.images[3]: names must not be empty"
+        );
+        assert_eq!(
+            messages[4],
+            "ignoring background.images[4]: expected a string or a table"
+        );
+        assert_eq!(
+            messages[5],
+            "ignoring unknown setting background.images[5].blur"
+        );
+        // 一つだけ書いた項目が読めなければ、一覧は前のまま。
+        let parsed = super::parse("[background]\nimages = { fit = 'tile' }\n", &previous);
+        assert_eq!(parsed.config.background.images, previous.background.images);
+        assert_eq!(parsed.warnings.len(), 1);
+    }
+
+    #[test]
+    fn background_paths_are_compared_without_the_item_settings() {
+        let mut a = BackgroundConfig {
+            images: vec![BackgroundImage::new("x"), BackgroundImage::new("y")],
+            ..BackgroundConfig::default()
+        };
+        let mut b = a.clone();
+        b.images[1].fit = Some(BackgroundFit::Tile);
+        b.image_opacity = 1.0;
+        assert!(a.same_paths(&b));
+        b.images.pop();
+        assert!(!a.same_paths(&b));
+        a.images.reverse();
+        b = a.clone();
+        b.images.reverse();
+        assert!(!a.same_paths(&b));
+    }
+
+    #[test]
     fn invalid_background_values_keep_the_previous_values_with_their_lines() {
         let previous = customized();
         let parsed = super::parse(
             "[background]\nimages = ['C:\\ok', ' ']\nimage_opacity = 1.5\nfit = 'cover'\nblur = 3\n",
             &previous,
         );
-        assert_eq!(parsed.config.background, previous.background);
+        // 一覧の空の名前は、その項目だけを飛ばす。
+        assert_eq!(
+            parsed.config.background,
+            BackgroundConfig {
+                images: vec![BackgroundImage::new(r"C:\ok")],
+                ..previous.background.clone()
+            }
+        );
         let lines: Vec<Option<usize>> = parsed.warnings.iter().map(|w| w.line).collect();
         assert_eq!(
             lines,

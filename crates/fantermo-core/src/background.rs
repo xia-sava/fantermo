@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::config::BackgroundFit;
+use crate::config::{BackgroundFit, BackgroundImage};
 
 /// ディレクトリとワイルドカードから選ぶ画像の拡張子（大文字小文字は区別しない）。一覧に名前で書いた
 /// ファイルは、拡張子によらず候補にする。
@@ -30,11 +30,21 @@ pub trait Files {
     fn files_in(&self, dir: &Path) -> Result<Vec<PathBuf>, String>;
 }
 
+/// 候補のファイル一つ。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Candidate {
+    pub path: PathBuf,
+    /// このファイルを出した、一覧の項目の位置。収め方と濃さはその項目から決める
+    /// （[`BackgroundConfig::settings_for`](crate::config::BackgroundConfig::settings_for)）。
+    pub entry: usize,
+}
+
 /// 一覧を展開した結果。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Expanded {
-    /// 候補のファイル。一覧の順で、ディレクトリとワイルドカードの中は名前の順。同じファイルは一度だけ。
-    pub candidates: Vec<PathBuf>,
+    /// 候補のファイル。一覧の順で、ディレクトリとワイルドカードの中は名前の順。同じファイルは一度だけで、
+    /// 最初に出した項目のものとする。
+    pub candidates: Vec<Candidate>,
     /// 候補を出さなかった項目についての警告。
     pub warnings: Vec<String>,
 }
@@ -46,10 +56,10 @@ pub struct Expanded {
 /// - 最後の部分に `*`（0 文字以上）か `?`（1 文字）を含むものは、そのディレクトリの中で名前が合う画像の
 ///   ファイル。名前は大文字小文字を区別しない。途中の部分のワイルドカードは扱わない。
 /// - ほかはファイルとして、そのまま候補にする（在るかどうかは読むときに分かる）。
-pub fn expand(entries: &[String], base: Option<&Path>, files: &impl Files) -> Expanded {
+pub fn expand(entries: &[BackgroundImage], base: Option<&Path>, files: &impl Files) -> Expanded {
     let mut expanded = Expanded::default();
-    for entry in entries {
-        let entry = entry.trim();
+    for (index, entry) in entries.iter().enumerate() {
+        let entry = entry.path.trim();
         if entry.is_empty() {
             continue;
         }
@@ -118,9 +128,12 @@ pub fn expand(entries: &[String], base: Option<&Path>, files: &impl Files) -> Ex
             if !expanded
                 .candidates
                 .iter()
-                .any(|seen| seen.to_string_lossy().to_lowercase() == key)
+                .any(|seen| seen.path.to_string_lossy().to_lowercase() == key)
             {
-                expanded.candidates.push(file);
+                expanded.candidates.push(Candidate {
+                    path: file,
+                    entry: index,
+                });
             }
         }
     }
@@ -162,12 +175,12 @@ pub fn wildcard_matches(pattern: &str, name: &str) -> bool {
 }
 
 /// 候補 `candidates` からランダムに（`random(n)` が 0〜n-1 を返す）一つ選び、`load` で読む。読めなければ
-/// その候補を外して選び直す。読めたものの場所と中身を返し、どれも読めなければ `None`。
-pub fn pick<T>(
-    candidates: &mut Vec<PathBuf>,
+/// その候補を外して選び直す。読めた候補と中身を返し、どれも読めなければ `None`。
+pub fn pick<C: Clone, T>(
+    candidates: &mut Vec<C>,
     random: &mut impl FnMut(usize) -> usize,
-    mut load: impl FnMut(&Path) -> Option<T>,
-) -> Option<(PathBuf, T)> {
+    mut load: impl FnMut(&C) -> Option<T>,
+) -> Option<(C, T)> {
     while !candidates.is_empty() {
         let index = random(candidates.len()).min(candidates.len() - 1);
         if let Some(loaded) = load(&candidates[index]) {
@@ -396,19 +409,51 @@ mod tests {
         ]))
     }
 
-    fn entries(items: &[&str]) -> Vec<String> {
-        items.iter().map(|&item| item.to_owned()).collect()
+    fn entries(items: &[&str]) -> Vec<BackgroundImage> {
+        items
+            .iter()
+            .map(|&item| BackgroundImage::new(item))
+            .collect()
     }
 
     fn paths(items: &[&str]) -> Vec<PathBuf> {
         items.iter().map(PathBuf::from).collect()
     }
 
+    fn candidate_paths(expanded: &Expanded) -> Vec<PathBuf> {
+        expanded
+            .candidates
+            .iter()
+            .map(|candidate| candidate.path.clone())
+            .collect()
+    }
+
+    #[test]
+    fn candidates_remember_the_entry_they_came_from() {
+        let mut items = entries(&[r"C:\pics\*.png", r"C:\conf\walls", r"C:\PICS\B.png"]);
+        items[1].fit = Some(BackgroundFit::Tile);
+        let expanded = expand(&items, None, &files());
+        // 同じファイルは最初に出した項目のもの。
+        assert_eq!(
+            expanded.candidates,
+            [
+                Candidate {
+                    path: PathBuf::from(r"C:\pics\b.PNG"),
+                    entry: 0,
+                },
+                Candidate {
+                    path: PathBuf::from(r"C:\conf\walls\x.png"),
+                    entry: 1,
+                },
+            ]
+        );
+    }
+
     #[test]
     fn directories_give_their_images_in_name_order() {
         let expanded = expand(&entries(&[r"C:\pics"]), None, &files());
         assert_eq!(
-            expanded.candidates,
+            candidate_paths(&expanded),
             paths(&[
                 r"C:\pics\a.jpg",
                 r"C:\pics\b.PNG",
@@ -429,7 +474,7 @@ mod tests {
             &files(),
         );
         assert_eq!(
-            expanded.candidates,
+            candidate_paths(&expanded),
             paths(&[
                 r"C:\pics\b.PNG",
                 r"C:\pics\a.jpg",
@@ -451,7 +496,7 @@ mod tests {
         );
         // 名前で書いたファイルは拡張子によらず候補にする。同じファイルは一度だけ。
         assert_eq!(
-            expanded.candidates,
+            candidate_paths(&expanded),
             paths(&[r"C:\conf\walls\x.png", r"C:\conf\one.tif", r"C:\pics\a.jpg"])
         );
     }
@@ -503,7 +548,10 @@ mod tests {
         let mut candidates = paths(&["bad1", "bad2"]);
         assert_eq!(pick(&mut candidates, &mut |n| n - 1, |_| None::<()>), None);
         assert!(candidates.is_empty());
-        assert_eq!(pick(&mut Vec::new(), &mut |_| 0, |_| Some(())), None);
+        assert_eq!(
+            pick(&mut Vec::<PathBuf>::new(), &mut |_| 0, |_| Some(())),
+            None
+        );
     }
 
     #[test]

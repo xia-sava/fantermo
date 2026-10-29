@@ -15,10 +15,10 @@
 //!   既定の割り当てに戻した組み合わせは、既定の割り当ての `# "…" = "…"` のコメントの行にし、既定で
 //!   割り当てていない組み合わせは行を消す。
 
-use toml_edit::{Array, Decor, DocumentMut, Item, Key, Table, Value};
+use toml_edit::{Array, Decor, DocumentMut, InlineTable, Item, Key, Table, Value};
 
 use crate::{
-    config::{ColorTable, Config, format_color},
+    config::{self, BackgroundFit, BackgroundImage, ColorTable, Config, format_color},
     keymap::{self, Action, KeyCombo},
 };
 
@@ -95,7 +95,7 @@ impl Setting {
                     .background
                     .images
                     .iter()
-                    .map(String::as_str)
+                    .map(image_value)
                     .collect::<Array>(),
             )),
             Setting::BackgroundImageOpacity => Some(number_value(config.background.image_opacity)),
@@ -113,6 +113,168 @@ fn families_value(families: &[String]) -> Value {
         [family] => Value::from(family.as_str()),
         _ => Value::Array(families.iter().map(String::as_str).collect::<Array>()),
     }
+}
+
+/// `background.images` の項目一つ。収め方も濃さも全体の値に任せるなら文字列、そうでなければ
+/// `{ path = …, fit = …, image_opacity = … }` の表（書かない値は入れない）。
+fn image_value(image: &BackgroundImage) -> Value {
+    image_item(Value::from(image.path.as_str()), image, Vec::new())
+}
+
+/// パスを `path` と書いた、`image` の項目一つ。表にするときは、`others`（知らないキー）を後ろに続ける。
+fn image_item(mut path: Value, image: &BackgroundImage, others: Vec<(String, Value)>) -> Value {
+    path.decor_mut().clear();
+    if image.follows_background() && others.is_empty() {
+        return path;
+    }
+    let mut table = InlineTable::new();
+    table.insert(IMAGE_PATH, path);
+    if let Some(fit) = image.fit {
+        table.insert(IMAGE_FIT, Value::from(fit.name()));
+    }
+    if let Some(opacity) = image.image_opacity {
+        table.insert(IMAGE_OPACITY, number_value(opacity));
+    }
+    for (key, mut value) in others {
+        value.decor_mut().clear();
+        table.insert(&key, value);
+    }
+    table.fmt();
+    Value::InlineTable(table)
+}
+
+/// `background.images` の表の項目のキー。
+const IMAGE_PATH: &str = "path";
+const IMAGE_FIT: &str = "fit";
+const IMAGE_OPACITY: &str = "image_opacity";
+
+/// ファイルに書いてある `background.images` の項目一つ `item` のパス。読めない項目（パスのない表や、
+/// 文字列でも表でもないもの）なら `None`。
+fn written_image_path(item: &Value) -> Option<&str> {
+    let path = match item {
+        Value::String(path) => path.value(),
+        Value::InlineTable(table) => table.get(IMAGE_PATH)?.as_str()?,
+        _ => return None,
+    };
+    (!path.trim().is_empty()).then_some(path)
+}
+
+/// ファイルに書いてある `background.images` の項目一つ `item` の、収め方と濃さ。読めない値は書いて
+/// いないものとする（設定を読むときと同じ）。
+fn written_image_settings(item: &Value) -> (Option<BackgroundFit>, Option<f32>) {
+    let Value::InlineTable(table) = item else {
+        return (None, None);
+    };
+    let fit = table
+        .get(IMAGE_FIT)
+        .and_then(Value::as_str)
+        .and_then(BackgroundFit::from_name);
+    let opacity = table
+        .get(IMAGE_OPACITY)
+        .and_then(|value| {
+            value
+                .as_float()
+                .or_else(|| value.as_integer().map(|integer| integer as f64))
+        })
+        .map(|opacity| opacity as f32)
+        .filter(|opacity| config::IMAGE_OPACITY_RANGE.contains(opacity));
+    (fit, opacity)
+}
+
+/// ファイルに書いてある `background.images` の配列 `written` を、一覧 `images` に合わせて書き換えた
+/// 配列。項目はパスで突き合わせ（同じパスが二つあれば前から順に）、一覧にない項目は消し、一覧にしか
+/// ない項目は最後に足す。読めない項目、項目の前のコメント、並びは残す。収め方と濃さを変えた項目だけを
+/// 書き換え、全体の値に任せるようにした表は（ほかのキーがなければ）文字列に戻す。
+fn merged_images(written: &Array, images: &[BackgroundImage]) -> Array {
+    let mut array = written.clone();
+    let mut used = vec![false; images.len()];
+    let mut index = 0;
+    while index < array.len() {
+        let Some(path) = array.get(index).and_then(written_image_path) else {
+            index += 1;
+            continue;
+        };
+        let found = images
+            .iter()
+            .enumerate()
+            .position(|(i, image)| !used[i] && image.path == path);
+        match found {
+            Some(found) => {
+                used[found] = true;
+                if let Some(item) = array.get_mut(index) {
+                    update_image_item(item, &images[found]);
+                }
+                index += 1;
+            }
+            None => remove_array_item(&mut array, index),
+        }
+    }
+    for (image, _) in images.iter().zip(&used).filter(|(_, used)| !**used) {
+        let prefix = appended_item_prefix(&array);
+        let mut value = image_value(image);
+        value.decor_mut().set_prefix(prefix);
+        value.decor_mut().set_suffix("");
+        array.push_formatted(value);
+    }
+    array
+}
+
+/// 配列 `array` の `index` 番目の項目を消す。先頭を消したら、次の項目の前の空白（コメントでなければ）を
+/// 消した項目の前のものにする（`['a', 'b']` から `'a'` を消して `[ 'b']` にしないため）。
+fn remove_array_item(array: &mut Array, index: usize) {
+    let removed_prefix = array
+        .get(index)
+        .map(|item| decor_prefix(item.decor()))
+        .unwrap_or_default();
+    array.remove(index);
+    if index != 0 {
+        return;
+    }
+    if let Some(next) = array.get_mut(0)
+        && decor_prefix(next.decor()).trim().is_empty()
+    {
+        next.decor_mut().set_prefix(removed_prefix);
+    }
+}
+
+/// 配列 `array` の最後に足す項目の前に置く空白。二つ目からの項目と同じにする（項目を行ごとに書いて
+/// いればその改行と字下げ、一行に並べていれば空白一つ）。
+fn appended_item_prefix(array: &Array) -> String {
+    let last = array.iter().last().map(|item| decor_prefix(item.decor()));
+    match (array.len(), last) {
+        (0, _) | (_, None) => String::new(),
+        (1, Some(prefix)) if !prefix.contains('\n') => " ".to_owned(),
+        (_, Some(prefix)) => {
+            // コメントを写さないように、最後の行（改行のあとの字下げ）だけを使う。
+            match prefix.rfind('\n') {
+                Some(newline) => format!("\n{}", &prefix[newline + 1..]),
+                None => prefix,
+            }
+        }
+    }
+}
+
+/// ファイルに書いてある項目一つ `item` の収め方と濃さを、`image` に合わせる。同じなら変えない。パスは
+/// 書いてあった形（引用符の種類など）のまま、知らないキーも残す。項目の前後の空白とコメントは残す。
+fn update_image_item(item: &mut Value, image: &BackgroundImage) {
+    if written_image_settings(item) == (image.fit, image.image_opacity) {
+        return;
+    }
+    let (path, others) = match &*item {
+        Value::InlineTable(table) => (
+            table.get(IMAGE_PATH).cloned(),
+            table
+                .iter()
+                .filter(|(key, _)| ![IMAGE_PATH, IMAGE_FIT, IMAGE_OPACITY].contains(key))
+                .map(|(key, value)| (key.to_owned(), value.clone()))
+                .collect(),
+        ),
+        other => (Some(other.clone()), Vec::new()),
+    };
+    let path = path.unwrap_or_else(|| Value::from(image.path.as_str()));
+    let mut value = image_item(path, image, others);
+    *value.decor_mut() = item.decor().clone();
+    *item = value;
 }
 
 /// フォントの大きさや画像の濃さの数。整数なら整数で、そうでなければ小数で書く（`f32` を `f64` に
@@ -199,6 +361,12 @@ pub fn update(text: &str, base: &Config, edited: &Config) -> Result<String, Stri
         let default = setting.value(&defaults);
         match new {
             Some(value) if !same(&Some(value.clone()), &default) => {
+                let value = match (setting, written_value(&doc, setting)) {
+                    (Setting::BackgroundImages, Some(Value::Array(written))) => {
+                        Value::Array(merged_images(written, &edited.background.images))
+                    }
+                    _ => value,
+                };
                 set(&mut doc, setting.path(), &target, value)?;
             }
             _ => {
@@ -217,6 +385,13 @@ pub fn update(text: &str, base: &Config, edited: &Config) -> Result<String, Stri
         out = out.replace("\r\n", "\n").replace('\n', "\r\n");
     }
     Ok(format!("{bom}{out}"))
+}
+
+/// ファイルに書いてある、`setting` の最初の値。
+fn written_value(doc: &DocumentMut, setting: Setting) -> Option<&Value> {
+    table_at(doc, setting.path())?
+        .get(setting.key())?
+        .as_value()
 }
 
 /// `[colors]` と `[colors.…]` の表で、`base` と `edited` で違う色を書き換える。既定の色に戻した色は、
@@ -804,7 +979,10 @@ mod tests {
             // 色は既定に戻すとひな形と違う行になるので、色の書き戻しは別に確かめる。
             colors: ColorsConfig::default(),
             background: BackgroundConfig {
-                images: vec![r"C:\walls".to_owned(), r"D:\pics\*.png".to_owned()],
+                images: vec![
+                    BackgroundImage::new(r"C:\walls"),
+                    BackgroundImage::new(r"D:\pics\*.png"),
+                ],
                 image_opacity: 0.65,
                 fit: BackgroundFit::Center,
             },
@@ -1036,7 +1214,7 @@ images = ['C:\walls', 'D:\pics\*.png']",
         let text = "[font]\nsize = 9\n";
         let base = config::parse(text, &Config::default()).config;
         let mut edited = base.clone();
-        edited.background.images = vec![r"C:\walls".to_owned()];
+        edited.background.images = vec![BackgroundImage::new(r"C:\walls")];
         edited.background.image_opacity = 1.0;
         let updated = update(text, &base, &edited).unwrap();
         assert_eq!(
@@ -1049,6 +1227,103 @@ images = ['C:\walls', 'D:\pics\*.png']",
         assert_eq!(
             back,
             "[font]\nsize = 9\n\n[background]\n# images = []\n# image_opacity = 0.2\n"
+        );
+    }
+
+    fn image(
+        path: &str,
+        fit: Option<BackgroundFit>,
+        image_opacity: Option<f32>,
+    ) -> BackgroundImage {
+        BackgroundImage {
+            path: path.to_owned(),
+            fit,
+            image_opacity,
+        }
+    }
+
+    #[test]
+    fn image_items_become_tables_and_strings_again_in_place() {
+        let text = "[background]\n# mine\nimages = [\n  # walls\n  'C:\\walls',\n  'C:\\a.png', # the cat\n  { path = 'C:\\b.png', fit = 'tile' },\n]\n";
+        let base = config::parse(text, &Config::default()).config;
+        let mut edited = base.clone();
+        edited.background.images[0].image_opacity = Some(0.3);
+        edited.background.images[1].fit = Some(BackgroundFit::Center);
+        edited.background.images[2].fit = None;
+        let updated = update(text, &base, &edited).unwrap();
+        // コメントと並びは残し、変えた項目だけを書き換える。パスの引用符は書いたまま。
+        assert_eq!(
+            updated,
+            "[background]\n# mine\nimages = [\n  # walls\n  { path = 'C:\\walls', image_opacity = 0.3 },\n  { path = 'C:\\a.png', fit = \"center\" }, # the cat\n  'C:\\b.png',\n]\n"
+        );
+        assert_reads_as(&updated, &edited);
+        // 全体の設定に従うように戻すと、文字列に戻る。
+        let back = update(&updated, &edited, &base).unwrap();
+        assert_eq!(
+            back,
+            "[background]\n# mine\nimages = [\n  # walls\n  'C:\\walls',\n  'C:\\a.png', # the cat\n  { path = 'C:\\b.png', fit = \"tile\" },\n]\n"
+        );
+        assert_reads_as(&back, &base);
+    }
+
+    #[test]
+    fn image_items_are_removed_and_added_keeping_the_others() {
+        let text = "[background]\nimages = ['C:\\a.png', { path = 'C:\\b.png', fit = 'tile', note = 'x' }, 3, 'C:\\c.png']\n";
+        let parsed = config::parse(text, &Config::default());
+        let base = parsed.config;
+        let mut edited = base.clone();
+        // 先頭を外し、知らないキーのある表を全体の設定に従わせ、二つ足す。
+        edited.background.images.remove(0);
+        edited.background.images[0].fit = None;
+        edited
+            .background
+            .images
+            .push(image(r"D:\d.png", Some(BackgroundFit::Fit), None));
+        edited.background.images.push(BackgroundImage::new(r"D:\e"));
+        let updated = update(text, &base, &edited).unwrap();
+        // 読めない項目（3）はそのまま。知らないキーのある表は表のまま。
+        assert_eq!(
+            updated,
+            "[background]\nimages = [{ path = 'C:\\b.png', note = 'x' }, 3, 'C:\\c.png', { path = 'D:\\d.png', fit = \"fit\" }, 'D:\\e']\n"
+        );
+        let reread = config::parse(&updated, &Config::default());
+        assert_eq!(reread.config.background, edited.background);
+
+        // 行ごとに書いた配列には、同じ字下げで足す。
+        let text = "[background]\nimages = [\n    # first\n    'C:\\a.png',\n]\n";
+        let base = config::parse(text, &Config::default()).config;
+        let mut edited = base.clone();
+        edited
+            .background
+            .images
+            .push(image(r"C:\b.png", None, Some(0.5)));
+        let updated = update(text, &base, &edited).unwrap();
+        assert_eq!(
+            updated,
+            "[background]\nimages = [\n    # first\n    'C:\\a.png',\n    { path = 'C:\\b.png', image_opacity = 0.5 },\n]\n"
+        );
+        assert_reads_as(&updated, &edited);
+    }
+
+    #[test]
+    fn image_tables_are_written_into_the_template() {
+        let mut edited = Config::default();
+        edited.background.images = vec![
+            BackgroundImage::new(r"C:\walls"),
+            image(r"C:\tiles", Some(BackgroundFit::Tile), Some(0.25)),
+        ];
+        let text = update(TEMPLATE, &Config::default(), &edited).unwrap();
+        assert_reads_as(&text, &edited);
+        assert_eq!(
+            text,
+            TEMPLATE.replace(
+                "\n# images = []",
+                "\nimages = ['C:\\walls', { path = 'C:\\tiles', fit = \"tile\", image_opacity = 0.25 }]"
+            )
+        );
+        assert_eq!(
+            update(&text, &edited, &Config::default()).unwrap(),
+            TEMPLATE
         );
     }
 

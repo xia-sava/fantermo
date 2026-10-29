@@ -2,10 +2,9 @@
 //! リンクの下線・タイトル・背景画像に選んだファイルなど、端末ごとに持つ状態を添える。窓・描画・設定は
 //! 持たない（背景画像のテクスチャは描画が持つ）。
 
-use std::path::PathBuf;
-
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize},
+    background::Candidate,
     config::TerminalColors,
     link::Link,
     vt::Vt,
@@ -38,8 +37,8 @@ pub struct Session {
     pub pressed_link: Option<String>,
     /// 表示していない間にベルが鳴った。タブに印を付け、表示したら消す。
     pub bell_marked: bool,
-    /// 背景画像に選んだファイル。敷かないなら `None`。
-    pub background_image: Option<PathBuf>,
+    /// 背景画像に選んだファイルと、それを出した一覧の項目。敷かないなら `None`。
+    pub background_image: Option<Candidate>,
 }
 
 /// 子プロセスの出力を流し込んだ結果。

@@ -18,8 +18,8 @@ use std::{
 use fantermo_core::{
     background::IMAGE_EXTENSIONS,
     config::{
-        self, BackgroundFit, ColorScheme, ColorTable, ColorsConfig, Config, PasteConfirm,
-        WideGlyph, format_color,
+        self, BackgroundFit, BackgroundImage, ColorScheme, ColorTable, ColorsConfig, Config,
+        PasteConfirm, WideGlyph, format_color,
     },
     frame::Rgb,
     keymap::{Action, KeyCombo, Keymap},
@@ -505,7 +505,7 @@ struct State<'a> {
     /// 最後に端末に反映した設定。
     previewed: RefCell<Config>,
     /// 編集中の背景画像の一覧。
-    background_images: RefCell<Vec<String>>,
+    background_images: RefCell<Vec<BackgroundImage>>,
     /// 編集中のキーの割り当て。
     keys: RefCell<Keymap>,
     /// キーの割り当ての一覧の行。一覧の順。
@@ -1449,7 +1449,7 @@ impl State<'_> {
                     list,
                     LB_ADDSTRING,
                     None,
-                    Some(LPARAM(HSTRING::from(image.as_str()).as_ptr() as isize)),
+                    Some(LPARAM(HSTRING::from(image.path.as_str()).as_ptr() as isize)),
                 )
             };
         }
@@ -1532,10 +1532,13 @@ impl State<'_> {
         let mut added = None;
         for path in paths {
             let text = path.to_string_lossy().into_owned();
-            if images.iter().any(|image| image.eq_ignore_ascii_case(&text)) {
+            if images
+                .iter()
+                .any(|image| image.path.eq_ignore_ascii_case(&text))
+            {
                 continue;
             }
-            images.push(text);
+            images.push(BackgroundImage::new(text));
             added = Some(images.len() - 1);
         }
         added
