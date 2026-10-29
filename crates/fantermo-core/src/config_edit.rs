@@ -530,8 +530,8 @@ fn profile_inline_table(profile: &Profile) -> Value {
 }
 
 /// `[[profiles]]` の表を、`wanted` に合わせて `wanted` の順に並べ直す。書いてある表とは名前で突き合わせ、
-/// 突き合わなかったものはコマンドラインが同じ表と組にする（名前だけを変えたとき）。組になった表は、変えた
-/// 値だけを書き換えてコメントと知らないキーを残す。組にならなかった表は消し、新しいプロファイルは表を
+/// 突き合わなかったものはコマンドラインで突き合わせる（名前だけを変えたとき）。突き合った表は、変えた
+/// 値だけを書き換えてコメントと知らないキーを残す。突き合わなかった表は消し、新しいプロファイルは表を
 /// 作る。名前のない表（読めない表）は最後にそのまま残す。
 fn merge_profile_tables(doc: &mut DocumentMut, wanted: &[Profile]) {
     let text_of =
@@ -1700,7 +1700,7 @@ images = ['C:\walls', 'D:\pics\*.png']",
         edited.profiles.push(profile("d", "wsl.exe"));
         edited.default_profile = Some("c2".to_owned());
         let updated = update(text, &base, &edited).unwrap();
-        // 名前もコマンドラインも違う c の表は、組にせず作り直す。先頭のコメントは最初の表の前に残す。
+        // 名前もコマンドラインも違う c の表は、突き合わせずに作り直す。先頭のコメントは最初の表の前に残す。
         assert_eq!(
             updated,
             "default_profile = \"c2\"\n\n# head\n[[profiles]]\nname = 'b'\ncommand = 'pwsh.exe' # mine\n\n[[profiles]]\nname = \"c2\"\ncommand = \"zsh.exe -l\"\n\n[[profiles]]\nname = \"d\"\ncommand = \"wsl.exe\"\n\n[font]\nsize = 9\n"
