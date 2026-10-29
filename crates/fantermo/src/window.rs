@@ -52,13 +52,14 @@ use windows::{
                 SWP_NOACTIVATE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW,
                 SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
                 SystemParametersInfoW, TranslateMessage, WA_INACTIVE, WHEEL_DELTA, WINDOW_EX_STYLE,
-                WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU, WM_DEADCHAR,
-                WM_DESTROY, WM_DPICHANGED, WM_ENDSESSION, WM_GETDPISCALEDSIZE, WM_IME_COMPOSITION,
-                WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN,
-                WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-                WM_NCDESTROY, WM_PAINT, WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP,
-                WM_SETCURSOR, WM_SIZE, WM_SYSCHAR, WM_SYSCOLORCHANGE, WM_SYSDEADCHAR,
-                WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+                WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE,
+                WM_CONTEXTMENU, WM_DEADCHAR, WM_DESTROY, WM_DPICHANGED, WM_ENDSESSION,
+                WM_GETDPISCALEDSIZE, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
+                WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+                WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_QUERYENDSESSION,
+                WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_SYSCHAR, WM_SYSCOLORCHANGE,
+                WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW,
+                WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -113,6 +114,15 @@ const BLINK_TIMER_ID: usize = 3;
 
 /// 点滅の文字を見せる間と隠す間の、それぞれの長さ。
 const BLINK_INTERVAL: Duration = Duration::from_millis(500);
+
+/// スクロールバーのつまみの外を押し続けたときに、ページを送り続けるタイマー。
+const SCROLL_BAR_TIMER_ID: usize = 4;
+
+/// スクロールバーのつまみの外を押してから、押し続けたとしてページを送り始めるまで。
+const SCROLL_BAR_REPEAT_DELAY: Duration = Duration::from_millis(250);
+
+/// スクロールバーのつまみの外を押し続けている間に、ページを送る間隔。
+const SCROLL_BAR_REPEAT_INTERVAL: Duration = Duration::from_millis(50);
 
 /// キーボードから開いた WM_CONTEXTMENU が `lparam` に入れてくる位置。
 const KEYBOARD_CONTEXT_MENU_POSITION: (i32, i32) = (-1, -1);
@@ -473,6 +483,19 @@ enum Deferred {
     Warn { topic: Topic, text: String },
 }
 
+/// スクロールバーの上で左ボタンを押してから離すまでの操作。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScrollBarDrag {
+    /// つまみをドラッグしている。`grab` は、押した位置のつまみの上端からの高さ。動かしても、つまみの
+    /// 中の押した位置をマウスの下に保つ。
+    Thumb { grab: i32 },
+    /// つまみの外を押し続けている。つまみがマウスの位置 `y` に来るまで、`direction` へページを送る。
+    Page {
+        direction: scroll_bar::Direction,
+        y: i32,
+    },
+}
+
 /// タブの操作。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TabCommand {
@@ -547,6 +570,11 @@ struct App {
     blink_timer_running: bool,
     /// 窓のクライアント領域のうち、スクロールバーを描く領域。
     scroll_bar_area: Area,
+    /// スクロールバーの上で押したマウスのボタンと、左ボタンならその操作。離すまで、マウスの操作を
+    /// 端末へ送らない。
+    scroll_bar_press: Option<(MouseButton, Option<ScrollBarDrag>)>,
+    /// マウスがスクロールバーの上にある。変わったときだけ描き直す。
+    scroll_bar_hover: bool,
     /// 表示している端末の、最後に描いたときの表示している範囲の位置。変わったら描き直す。
     scroll_position: Option<ScrollPosition>,
 }
@@ -633,6 +661,8 @@ impl App {
             blink_visible: true,
             blink_timer_running: false,
             scroll_bar_area,
+            scroll_bar_press: None,
+            scroll_bar_hover: false,
             scroll_position: None,
         })
     }
@@ -795,7 +825,8 @@ impl App {
 
     /// 表示している端末を表示から外す前に、マウスの操作の途中の状態を終える。
     fn leave_active(&mut self) {
-        if self.session().selecting {
+        if self.session().selecting || self.scroll_bar_press.is_some() {
+            self.end_scroll_bar_press();
             // SAFETY: このスレッドが捕まえたマウスを放す。捕まえていなければ何もしない。
             if let Err(e) = unsafe { ReleaseCapture() } {
                 tracing::warn!("failed to release the mouse capture: {e}");
@@ -911,7 +942,8 @@ impl App {
     /// 窓のクライアント領域の中の位置にあるリンク。
     fn link_at(&self, x: i32, y: i32) -> Option<Link> {
         let (x, y) = self.client_to_terminal(x, y);
-        if x < 0 || y < 0 {
+        // 端末の右のスクロールバーの上にはリンクはない。
+        if x < 0 || y < 0 || x as u32 >= self.terminal_area.width {
             return None;
         }
         let size = self.session().vt.size();
@@ -997,6 +1029,132 @@ impl App {
         self.pointer_in_window = None;
         self.refresh_hovered_link(false);
         self.update_tab_bar_hover();
+        self.update_scroll_bar_hover();
+    }
+
+    /// マウスがスクロールバーの上にあるかを決め直す。変わったら描き直す。
+    fn update_scroll_bar_hover(&mut self) {
+        let hover = self
+            .pointer_in_window
+            .is_some_and(|(x, y)| self.scroll_bar_area.contains(x, y));
+        if hover == self.scroll_bar_hover {
+            return;
+        }
+        tracing::debug!("pointer on the scroll bar: {hover}");
+        self.scroll_bar_hover = hover;
+        self.invalidate();
+    }
+
+    /// 表示している範囲を示す、いまのつまみ。スクロールバックがなければ `None`。
+    fn scroll_bar_thumb(&mut self) -> Option<scroll_bar::Thumb> {
+        self.update_scroll_position();
+        scroll_bar::thumb_in(
+            self.scroll_bar_area,
+            self.scroll_bar_metrics(),
+            self.scroll_position?,
+        )
+    }
+
+    /// スクロールバーの上で左ボタンを押した。つまみの上ならドラッグを始め、つまみの外なら、その向きへ
+    /// 表示している行数だけ動かして、押し続けたら送り続けるタイマーを掛ける。アプリがマウスを
+    /// 求めていても、表示する範囲を動かす。
+    fn press_scroll_bar(&mut self, y: i32) -> Option<ScrollBarDrag> {
+        let thumb = self.scroll_bar_thumb()?;
+        match scroll_bar::part_at(thumb, y) {
+            scroll_bar::Part::Thumb => Some(ScrollBarDrag::Thumb {
+                grab: y - thumb.top as i32,
+            }),
+            scroll_bar::Part::Page(direction) => {
+                self.scroll_page(direction);
+                self.set_scroll_bar_timer(SCROLL_BAR_REPEAT_DELAY);
+                Some(ScrollBarDrag::Page { direction, y })
+            }
+        }
+    }
+
+    /// 表示している行数だけ `direction` へ動かす。
+    fn scroll_page(&mut self, direction: scroll_bar::Direction) {
+        let page = self.session().vt.size().rows as isize;
+        self.session_mut().vt.scroll(direction.sign() * page);
+        self.on_viewport_moved();
+    }
+
+    /// スクロールバーの上で押したまま、マウスが高さ `y` へ動いた。つまみをドラッグしていれば、押した
+    /// 位置がマウスの下に来るようにつまみを動かし、その位置の行を表示する。
+    fn drag_scroll_bar(&mut self, y: i32) {
+        let Some((button, Some(drag))) = self.scroll_bar_press else {
+            return;
+        };
+        match drag {
+            ScrollBarDrag::Thumb { grab } => {
+                let Some(thumb) = self.scroll_bar_thumb() else {
+                    return;
+                };
+                let Some(position) = self.scroll_position else {
+                    return;
+                };
+                let track = scroll_bar::track(self.scroll_bar_area, self.scroll_bar_metrics());
+                let row = scroll_bar::row_at(track, thumb.length, position, y - grab);
+                if row == position.offset {
+                    return;
+                }
+                self.session_mut().vt.scroll_to_row(row);
+                self.on_viewport_moved();
+            }
+            ScrollBarDrag::Page { direction, .. } => {
+                self.scroll_bar_press = Some((button, Some(ScrollBarDrag::Page { direction, y })));
+            }
+        }
+    }
+
+    /// つまみの外を押し続けている間のタイマーが来た。つまみがまだマウスの位置に来ていなければ、もう
+    /// 1 ページ動かす。
+    fn on_scroll_bar_timer(&mut self) {
+        let Some((_, Some(ScrollBarDrag::Page { direction, y }))) = self.scroll_bar_press else {
+            self.kill_scroll_bar_timer();
+            return;
+        };
+        self.set_scroll_bar_timer(SCROLL_BAR_REPEAT_INTERVAL);
+        let Some(thumb) = self.scroll_bar_thumb() else {
+            return;
+        };
+        if scroll_bar::part_at(thumb, y) == scroll_bar::Part::Page(direction) {
+            self.scroll_page(direction);
+        }
+    }
+
+    /// スクロールバーの上で押した操作を終える。
+    fn end_scroll_bar_press(&mut self) {
+        if self.scroll_bar_press.take().is_none() {
+            return;
+        }
+        self.kill_scroll_bar_timer();
+        self.invalidate();
+    }
+
+    fn set_scroll_bar_timer(&self, delay: Duration) {
+        // SAFETY: self.hwnd は有効な窓。同じ番号のタイマーは掛け直しになる。
+        if unsafe {
+            SetTimer(
+                Some(self.hwnd),
+                SCROLL_BAR_TIMER_ID,
+                delay.as_millis() as u32,
+                None,
+            )
+        } == 0
+        {
+            tracing::warn!(
+                "failed to start the scroll bar timer: {}",
+                windows::core::Error::from_thread()
+            );
+        }
+    }
+
+    fn kill_scroll_bar_timer(&self) {
+        // SAFETY: self.hwnd は有効な窓。掛けていなければ失敗するだけ。
+        if unsafe { KillTimer(Some(self.hwnd), SCROLL_BAR_TIMER_ID) }.is_err() {
+            tracing::debug!("the scroll bar timer was not running");
+        }
     }
 
     /// タブバーの上の、マウスの下にあるものを決め直す。変わったら描き直す。マウスの位置やタブの並びが
@@ -1034,6 +1192,17 @@ impl App {
             }
             return;
         }
+        // スクロールバーの上は、アプリへ送らず、選択も始めない。
+        if self.scroll_bar_area.contains(x, y) {
+            let drag = if button == MouseButton::Left {
+                self.press_scroll_bar(y)
+            } else {
+                None
+            };
+            self.scroll_bar_press = Some((button, drag));
+            self.invalidate();
+            return;
+        }
         if button == MouseButton::Left
             && is_link_modifier(mouse_mods(wparam))
             && let Some(link) = self.link_at(x, y)
@@ -1063,13 +1232,19 @@ impl App {
         let (x, y) = client_position(lparam);
         self.track_pointer(x, y);
         self.update_tab_bar_hover();
+        self.update_scroll_bar_hover();
         self.refresh_hovered_link(is_link_modifier(mouse_mods(wparam)));
-        // リンクやタブバーを押している間の動きと、タブバーの上の動きは、アプリへ送らない。
+        if self.scroll_bar_press.is_some() {
+            self.drag_scroll_bar(y);
+            return;
+        }
+        // リンクやタブバーを押している間の動きと、タブバーとスクロールバーの上の動きは、アプリへ
+        // 送らない。
         if self.session().pressed_link.is_some() || self.tab_bar_press.is_some() {
             return;
         }
         if !self.session().selecting {
-            if self.tab_bar_hit(x, y).is_some() {
+            if self.tab_bar_hit(x, y).is_some() || self.scroll_bar_area.contains(x, y) {
                 return;
             }
             self.report_mouse(MouseAction::Motion, held_button(wparam), x, y, wparam);
@@ -1094,7 +1269,12 @@ impl App {
     ) -> Option<Deferred> {
         let (x, y) = client_position(lparam);
         let mut deferred = None;
-        if let Some((pressed, hit)) = self.tab_bar_press
+        if let Some((pressed, _)) = self.scroll_bar_press {
+            // スクロールバーの上で押したボタンを離すまでは、ほかのボタンも端末へ送らない。
+            if pressed == button {
+                self.end_scroll_bar_press();
+            }
+        } else if let Some((pressed, hit)) = self.tab_bar_press
             && pressed == button
         {
             self.tab_bar_press = None;
@@ -1522,6 +1702,7 @@ impl App {
         self.scroll_bar_area = scroll_bar_area_in_client(width, self.terminal_area);
         self.resize_sessions();
         self.update_tab_bar_hover();
+        self.update_scroll_bar_hover();
     }
 
     /// すべての端末の大きさを、端末を描く領域に合わせる。表示していない端末も同じ大きさにする。
@@ -1734,11 +1915,18 @@ impl App {
         let Some(position) = self.scroll_position else {
             return Vec::new();
         };
+        let drag = self.scroll_bar_press.and_then(|(_, drag)| drag);
+        let dragging = matches!(drag, Some(ScrollBarDrag::Thumb { .. }));
+        // つまみの外を押し続けている間は、マウスがスクロールバーの外へ出ても、載せているときの形にする。
+        let paging = matches!(drag, Some(ScrollBarDrag::Page { .. }));
         scroll_bar::paints(
             self.scroll_bar_area,
             self.scroll_bar_metrics(),
             position,
-            scroll_bar::Highlight::default(),
+            scroll_bar::Highlight {
+                hovered: self.scroll_bar_hover || paging,
+                dragging,
+            },
             colors,
         )
     }
@@ -2159,6 +2347,16 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             with_app(&mut |app| app.on_blink_timer());
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == SCROLL_BAR_TIMER_ID => {
+            with_app(&mut |app| app.on_scroll_bar_timer());
+            LRESULT(0)
+        }
+        // ほかの窓にマウスを取られたら（Alt+Tab など）、離したことが届かないので、スクロールバーの操作を
+        // 終える。lparam はマウスを捕まえる窓。
+        WM_CAPTURECHANGED if lparam.0 != hwnd.0 as isize => {
+            with_app(&mut |app| app.end_scroll_bar_press());
+            LRESULT(0)
+        }
         // 下位の語が WA_INACTIVE なら、アクティブでなくなった。
         WM_ACTIVATE => {
             let active = (wparam.0 & 0xffff) as u32 != WA_INACTIVE;
@@ -2358,6 +2556,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 _ = KillTimer(Some(hwnd), DUMP_TIMER_ID);
                 _ = KillTimer(Some(hwnd), CONFIG_TIMER_ID);
                 _ = KillTimer(Some(hwnd), BLINK_TIMER_ID);
+                _ = KillTimer(Some(hwnd), SCROLL_BAR_TIMER_ID);
             };
             let mut code = 0;
             with_app(&mut |app| code = app.exit.map_or(0, |code| code.0));

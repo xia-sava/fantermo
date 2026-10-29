@@ -127,6 +127,60 @@ pub fn thumb(track: Track, position: ScrollPosition, min_length: u32) -> Option<
     })
 }
 
+/// つまみの上端を `top`（窓のクライアント領域の中の y。溝からはみ出してもよい）に動かしたときに、表示
+/// する範囲の先頭の行。[`thumb`] と対になる。長さ `length` のつまみが溝の上端で 0、下端でいちばん新しい
+/// 行（`total - len`）。
+pub fn row_at(track: Track, length: u32, position: ScrollPosition, top: i32) -> usize {
+    let scrollable = position.total.saturating_sub(position.len) as u64;
+    let travel = i64::from(track.length.saturating_sub(length));
+    if travel == 0 {
+        return 0;
+    }
+    let moved = (i64::from(top) - i64::from(track.top)).clamp(0, travel) as u64;
+    let travel = travel as u64;
+    ((moved * scrollable + travel / 2) / travel) as usize
+}
+
+/// 表示している行数ずつ動かす向き。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    /// 過去（上）へ。
+    Up,
+    /// 新しい行（下）へ。
+    Down,
+}
+
+impl Direction {
+    /// 表示する範囲を動かす行数の符号。
+    pub fn sign(self) -> isize {
+        match self {
+            Direction::Up => -1,
+            Direction::Down => 1,
+        }
+    }
+}
+
+/// スクロールバーの中で、つまみに対してどこにあるか。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    /// つまみの上。ドラッグで動かす。
+    Thumb,
+    /// つまみの上か下の溝。押すと、その向きへ表示している行数ずつ動かす。
+    Page(Direction),
+}
+
+/// スクロールバーの中の高さ `y`（窓のクライアント領域の中）が、つまみ `thumb` に対してどこにあるか。
+/// 押し続けてページを送るときは、つまみが `y` まで来たら（`Page` の向きが変わったら）止める。
+pub fn part_at(thumb: Thumb, y: i32) -> Part {
+    if y < thumb.top as i32 {
+        Part::Page(Direction::Up)
+    } else if y >= thumb.bottom() as i32 {
+        Part::Page(Direction::Down)
+    } else {
+        Part::Thumb
+    }
+}
+
 /// スクロールバーの色。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Palette {
@@ -317,6 +371,66 @@ mod tests {
         assert_eq!(thumb(TRACK, position(0, 0, 0), 24), None);
         let empty = Track { top: 0, length: 0 };
         assert_eq!(thumb(empty, position(100, 0, 30), 24), None);
+    }
+
+    #[test]
+    fn dragging_the_thumb_to_either_end_reaches_the_end() {
+        let at = position(100, 40, 30);
+        let length = thumb(TRACK, at, 24).unwrap().length;
+        let travel = (TRACK.length - length) as i32;
+        let top = TRACK.top as i32;
+        assert_eq!(row_at(TRACK, length, at, top), 0);
+        assert_eq!(row_at(TRACK, length, at, top + travel), 70);
+        // 溝の外へ出しても端で止まる。
+        assert_eq!(row_at(TRACK, length, at, top - 50), 0);
+        assert_eq!(row_at(TRACK, length, at, top + travel + 50), 70);
+    }
+
+    #[test]
+    fn dragging_the_thumb_returns_to_its_row() {
+        // つまみの位置から行に戻すと、元の行になる。
+        for offset in 0..=70 {
+            let at = position(100, offset, 30);
+            let shown = thumb(TRACK, at, 24).unwrap();
+            assert_eq!(
+                row_at(TRACK, shown.length, at, shown.top as i32),
+                offset,
+                "{offset}"
+            );
+        }
+        // つまみが溝いっぱいなら動かせない。
+        let at = position(100, 0, 30);
+        assert_eq!(row_at(Track { top: 0, length: 10 }, 10, at, 5), 0);
+    }
+
+    #[test]
+    fn clicks_above_and_below_the_thumb_page() {
+        let thumb = Thumb {
+            top: 100,
+            length: 50,
+        };
+        assert_eq!(part_at(thumb, 99), Part::Page(Direction::Up));
+        assert_eq!(part_at(thumb, -5), Part::Page(Direction::Up));
+        assert_eq!(part_at(thumb, 100), Part::Thumb);
+        assert_eq!(part_at(thumb, 149), Part::Thumb);
+        assert_eq!(part_at(thumb, 150), Part::Page(Direction::Down));
+        assert_eq!(Direction::Up.sign(), -1);
+        assert_eq!(Direction::Down.sign(), 1);
+    }
+
+    #[test]
+    fn paging_stops_when_the_thumb_reaches_the_pointer() {
+        // 下を押し続けると、つまみが押した位置に来たところで向きが変わって止まる。
+        let at = |offset| position(100, offset, 30);
+        let pointer = 400;
+        let mut offset = 0;
+        while let Part::Page(Direction::Down) =
+            part_at(thumb(TRACK, at(offset), 24).unwrap(), pointer)
+        {
+            offset = (offset + 30).min(70);
+        }
+        let stopped = thumb(TRACK, at(offset), 24).unwrap();
+        assert!(stopped.top <= pointer as u32 && pointer as u32 <= stopped.bottom());
     }
 
     const COLORS: Palette = Palette {
