@@ -11,6 +11,7 @@ use fantermo_core::{
     backend::{ExitCode, GridSize},
     config::{Config, DEFAULT_FONT_FAMILIES, FontConfig, PasteConfig, PasteConfirm, WideGlyph},
     frame::{Frame, Rgb},
+    keymap::{self, Keymap},
     link::Link,
     vt::{
         self, Key, KeyAction, KeyInput, Mods, MouseAction, MouseButton, MouseInput, PasteOutcome,
@@ -418,7 +419,9 @@ struct App {
     clock: Instant,
     /// マウスの、窓のクライアント領域の中の位置。窓の外へ出たら `None`。
     pointer_in_window: Option<(i32, i32)>,
-    /// コピーやタブの操作に使ったので、離したときにも端末へ送らないキー。タブを切り替えたあとに
+    /// fantermo が受け持つキーの割り当て。
+    keymap: Keymap,
+    /// 割り当ての動作に使ったので、離したときにも端末へ送らないキー。タブを切り替えたあとに
     /// 離したことが届くので、端末ごとではなく窓に持つ。
     suppressed_release: Option<Key>,
     /// タブバーの上で押したマウスのボタンと、そのときマウスの下にあったタブの番号。離すまで、マウスの
@@ -494,6 +497,7 @@ impl App {
             wheel_lines_per_notch: wheel_lines_per_notch(),
             clock: Instant::now(),
             pointer_in_window: None,
+            keymap: Keymap::default(),
             suppressed_release: None,
             tab_bar_press: None,
             window_active: false,
@@ -530,33 +534,17 @@ impl App {
         if action == KeyAction::Press && self.suppressed_release == Some(key) {
             self.suppressed_release = None;
         }
-        // コピーや貼り付けに使ったキーは、離したときもシェルに送らない。
+        // 割り当ての動作に使ったキーは、離したときもシェルに送らない。
         if action == KeyAction::Release && self.suppressed_release == Some(key) {
             self.suppressed_release = None;
             return None;
         }
         if action != KeyAction::Release
-            && let Some(command) = tab_shortcut(key, mods)
+            && let Some(bound) = self.keymap.lookup(key, mods)
+            && let Some(deferred) = self.run_bound_action(bound, action)
         {
-            // 開く・閉じるは、押し続けたときの繰り返しでは繰り返さない。シェルにも送らない。
             self.suppressed_release = Some(key);
-            let repeats = matches!(command, TabCommand::Next | TabCommand::Previous);
-            return (action == KeyAction::Press || repeats)
-                .then(|| self.run_tab_command(command))
-                .flatten();
-        }
-        if action != KeyAction::Release && is_copy_shortcut(key, mods) && self.copy_selection() {
-            self.suppressed_release = Some(key);
-            return None;
-        }
-        if action == KeyAction::Press && is_paste_shortcut(key, mods) {
-            self.suppressed_release = Some(key);
-            return self.paste_clipboard();
-        }
-        if action != KeyAction::Release && is_context_menu_shortcut(key, mods) {
-            // 押し続けたときの繰り返しはメニューを出し直さず、シェルにも送らない。
-            self.suppressed_release = Some(key);
-            return (action == KeyAction::Press).then(|| self.context_menu_at_cursor());
+            return deferred;
         }
 
         let text = keyboard::printable_text(chars);
@@ -573,6 +561,37 @@ impl App {
             Err(e) => tracing::warn!("failed to encode {:?}: {e}", input.key),
         }
         None
+    }
+
+    /// キーに割り当てた動作 `bound` を、押した・押し続けた（`action`）ときに行う。動作が成り立たず、
+    /// キーをシェルへ送るときは `None`。
+    fn run_bound_action(
+        &mut self,
+        bound: keymap::Action,
+        action: KeyAction,
+    ) -> Option<Option<Deferred>> {
+        let repeated = action == KeyAction::Repeat;
+        match bound {
+            // 選んでいなければシェルへ送る。押し続けたときも同じ。
+            keymap::Action::Copy => self.copy_selection().then_some(None),
+            // 押し続けたときの繰り返しはシェルへ送る。
+            keymap::Action::Paste => (!repeated).then(|| self.paste_clipboard()),
+            // ここから下は、押し続けたときの繰り返しもシェルへ送らない。メニュー・開く・閉じるは
+            // 繰り返さず、次・前は繰り返す。
+            keymap::Action::ContextMenu => Some((!repeated).then(|| self.context_menu_at_cursor())),
+            keymap::Action::NewTab => Some(
+                (!repeated)
+                    .then(|| self.run_tab_command(TabCommand::New))
+                    .flatten(),
+            ),
+            keymap::Action::CloseTab => Some(
+                (!repeated)
+                    .then(|| self.run_tab_command(TabCommand::Close))
+                    .flatten(),
+            ),
+            keymap::Action::NextTab => Some(self.run_tab_command(TabCommand::Next)),
+            keymap::Action::PrevTab => Some(self.run_tab_command(TabCommand::Previous)),
+        }
     }
 
     /// タブの操作をする。最後の端末を閉じたときは、窓を閉じるよう返す。
@@ -1639,19 +1658,6 @@ fn destroy_window(hwnd: HWND) {
     }
 }
 
-/// タブを操作するキー。Ctrl+Shift+T で開く、Ctrl+Shift+W で閉じる、Ctrl+Tab と Ctrl+Shift+Tab で
-/// 次・前へ（ほかの修飾キーなし）。
-fn tab_shortcut(key: Key, mods: Mods) -> Option<TabCommand> {
-    const CTRL_SHIFT: Mods = Mods::CTRL.union(Mods::SHIFT);
-    match (held_mods(mods), key) {
-        (CTRL_SHIFT, Key::T) => Some(TabCommand::New),
-        (CTRL_SHIFT, Key::W) => Some(TabCommand::Close),
-        (Mods::CTRL, Key::Tab) => Some(TabCommand::Next),
-        (CTRL_SHIFT, Key::Tab) => Some(TabCommand::Previous),
-        _ => None,
-    }
-}
-
 /// `closed` の位置の端末を閉じて `remaining` 個になったあとの、表示する端末の位置。表示していた
 /// `active` を閉じたら、右隣（右端なら新しい右端）を表示する。
 fn active_after_close(active: usize, closed: usize, remaining: usize) -> usize {
@@ -1693,16 +1699,6 @@ fn message_button(msg: u32) -> MouseButton {
     }
 }
 
-/// 選んでいればコピーにするキー。Ctrl+C と Ctrl+Insert（ほかの修飾キーなし）。
-fn is_copy_shortcut(key: Key, mods: Mods) -> bool {
-    held_mods(mods) == Mods::CTRL && matches!(key, Key::C | Key::Insert)
-}
-
-/// 貼り付けにするキー。Shift+Insert（ほかの修飾キーなし）。
-fn is_paste_shortcut(key: Key, mods: Mods) -> bool {
-    held_mods(mods) == Mods::SHIFT && key == Key::Insert
-}
-
 /// 貼り付けるときにすること。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PasteAction {
@@ -1726,15 +1722,9 @@ fn paste_action(confirm: PasteConfirm, text: &str) -> PasteAction {
     }
 }
 
-/// コンテキストメニューを出すキー。メニューキー（修飾キーなし）と Shift+F10（ほかの修飾キーなし）。
-fn is_context_menu_shortcut(key: Key, mods: Mods) -> bool {
-    let held = held_mods(mods);
-    (key == Key::ContextMenu && held.is_empty()) || (key == Key::F10 && held == Mods::SHIFT)
-}
-
 /// リンクを開く修飾キー。Ctrl（ほかの修飾キーなし）。Ctrl+Alt は配列によって AltGr になるので含めない。
 fn is_link_modifier(mods: Mods) -> bool {
-    held_mods(mods) == Mods::CTRL
+    keymap::held_mods(mods) == Mods::CTRL
 }
 
 /// マウスのメッセージのときに押されている修飾キー。Ctrl と Shift は `wparam` から、そのほかは
@@ -1764,11 +1754,6 @@ fn is_modifier_key(key: Key) -> bool {
             | Key::MetaLeft
             | Key::MetaRight
     )
-}
-
-/// 押されている修飾キーだけ。ロックの状態は除く。
-fn held_mods(mods: Mods) -> Mods {
-    mods & (Mods::CTRL | Mods::SHIFT | Mods::ALT | Mods::SUPER)
 }
 
 /// 前回の端数 `remainder` に回転量 `delta` を足し、動かす行数と新しい端数を返す。
@@ -2091,17 +2076,6 @@ mod tests {
     const NOTCH: i32 = WHEEL_DELTA as i32;
 
     #[test]
-    fn copy_shortcuts_need_ctrl_alone() {
-        assert!(is_copy_shortcut(Key::C, Mods::CTRL));
-        assert!(is_copy_shortcut(Key::Insert, Mods::CTRL));
-        // ロックの状態は関係しない。
-        assert!(is_copy_shortcut(Key::C, Mods::CTRL | Mods::CAPS_LOCK));
-        assert!(!is_copy_shortcut(Key::C, Mods::CTRL | Mods::SHIFT));
-        assert!(!is_copy_shortcut(Key::C, Mods::empty()));
-        assert!(!is_copy_shortcut(Key::V, Mods::CTRL));
-    }
-
-    #[test]
     fn mouse_positions_keep_their_sign() {
         // 窓の外（左上）へドラッグすると、負の位置で届く。
         let lparam = LPARAM((((-5i16 as u16) as isize) << 16) | ((-3i16 as u16) as isize));
@@ -2120,15 +2094,6 @@ mod tests {
             Some(MouseButton::Left)
         );
         assert_eq!(message_button(WM_MBUTTONUP), MouseButton::Middle);
-    }
-
-    #[test]
-    fn paste_shortcut_is_shift_insert_alone() {
-        assert!(is_paste_shortcut(Key::Insert, Mods::SHIFT));
-        assert!(is_paste_shortcut(Key::Insert, Mods::SHIFT | Mods::NUM_LOCK));
-        assert!(!is_paste_shortcut(Key::Insert, Mods::CTRL));
-        assert!(!is_paste_shortcut(Key::Insert, Mods::SHIFT | Mods::CTRL));
-        assert!(!is_paste_shortcut(Key::V, Mods::CTRL));
     }
 
     #[test]
@@ -2153,19 +2118,6 @@ mod tests {
     }
 
     #[test]
-    fn context_menu_shortcuts_are_menu_key_and_shift_f10() {
-        assert!(is_context_menu_shortcut(Key::ContextMenu, Mods::empty()));
-        assert!(is_context_menu_shortcut(Key::ContextMenu, Mods::NUM_LOCK));
-        assert!(is_context_menu_shortcut(Key::F10, Mods::SHIFT));
-        assert!(!is_context_menu_shortcut(Key::F10, Mods::empty()));
-        assert!(!is_context_menu_shortcut(
-            Key::F10,
-            Mods::SHIFT | Mods::CTRL
-        ));
-        assert!(!is_context_menu_shortcut(Key::ContextMenu, Mods::CTRL));
-    }
-
-    #[test]
     fn keyboard_context_menu_position_is_read_from_lparam() {
         // MAKELPARAM(-1, -1) は 64 ビットでは 0xffffffff（正の値）で届く。
         assert_eq!(
@@ -2173,28 +2125,6 @@ mod tests {
             KEYBOARD_CONTEXT_MENU_POSITION
         );
         assert_eq!(client_position(LPARAM(-1)), KEYBOARD_CONTEXT_MENU_POSITION);
-    }
-
-    #[test]
-    fn tab_shortcuts_need_ctrl_and_shift_as_listed() {
-        let ctrl_shift = Mods::CTRL | Mods::SHIFT;
-        assert_eq!(tab_shortcut(Key::T, ctrl_shift), Some(TabCommand::New));
-        assert_eq!(
-            tab_shortcut(Key::T, ctrl_shift | Mods::CAPS_LOCK),
-            Some(TabCommand::New)
-        );
-        assert_eq!(tab_shortcut(Key::W, ctrl_shift), Some(TabCommand::Close));
-        assert_eq!(tab_shortcut(Key::Tab, Mods::CTRL), Some(TabCommand::Next));
-        assert_eq!(
-            tab_shortcut(Key::Tab, ctrl_shift),
-            Some(TabCommand::Previous)
-        );
-        // Ctrl+T・Ctrl+W はシェルのキー（readline の入れ替え・単語の削除）として送る。
-        assert_eq!(tab_shortcut(Key::T, Mods::CTRL), None);
-        assert_eq!(tab_shortcut(Key::W, Mods::CTRL), None);
-        assert_eq!(tab_shortcut(Key::Tab, Mods::empty()), None);
-        assert_eq!(tab_shortcut(Key::Tab, Mods::CTRL | Mods::ALT), None);
-        assert_eq!(tab_shortcut(Key::T, ctrl_shift | Mods::ALT), None);
     }
 
     #[test]

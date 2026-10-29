@@ -5,5 +5,6 @@
 pub mod backend;
 pub mod config;
 pub mod frame;
+pub mod keymap;
 pub mod link;
 pub mod vt;
