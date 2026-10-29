@@ -1,4 +1,4 @@
-//! タブバー。端末が二つ以上あるとき、窓の上端に端末と同じ書体の 1 行で、端末ごとのタブを並べる。
+//! タブバー。窓の上端に端末と同じ書体の 1 行で、端末ごとのタブを並べる。端末が一つのときも出す。
 //!
 //! タブの並べ方（どの桁がどのタブか、幅、タイトルの省略）と、描くための画面（[`Frame`]）の組み立ては、
 //! 窓や描画に依存しない関数にしてある。
@@ -7,9 +7,6 @@ use fantermo_core::{
     frame::{CellView, Frame, Rgb, Underline},
     vt,
 };
-
-/// タブバーを出す、端末の数の下限。端末が一つならタブバーを出さない。
-const MIN_TABS_TO_SHOW: usize = 2;
 
 /// タブの幅の上限（セル）。
 const MAX_TAB_COLS: u16 = 24;
@@ -49,13 +46,9 @@ const INACTIVE_TAB_TINT: f32 = 0.22;
 /// 表示していないタブのタイトルの色を、端末の文字の色から背景色へ寄せる割合。
 const INACTIVE_TITLE_FADE: f32 = 0.35;
 
-/// タブバーの高さ（ピクセル）。端末が `tabs` 個のとき、二つ以上なら 1 セル分、一つなら 0。
-pub fn height(cell_height_px: u32, tabs: usize) -> u32 {
-    if tabs >= MIN_TABS_TO_SHOW {
-        cell_height_px
-    } else {
-        0
-    }
+/// タブバーの高さ（ピクセル）。1 セル分。
+pub fn height(cell_height_px: u32) -> u32 {
+    cell_height_px
 }
 
 /// タブバーの中のタブ一つの位置。単位はセル。
@@ -309,13 +302,6 @@ mod tests {
 
     fn text(graphemes: &[vt::Grapheme]) -> String {
         graphemes.iter().map(|g| g.text.as_str()).collect()
-    }
-
-    #[test]
-    fn the_bar_appears_with_two_tabs() {
-        assert_eq!(height(32, 1), 0);
-        assert_eq!(height(32, 2), 32);
-        assert_eq!(height(32, 5), 32);
     }
 
     #[test]

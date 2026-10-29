@@ -317,9 +317,11 @@ fn create_window(font: &Font, dpi: u32) -> windows::core::Result<HWND> {
         return Err(windows::core::Error::from_thread());
     }
 
-    // 起動したときの端末は一つなので、タブバーは出さない。
     let size = window_size(
-        client_size_for_terminal(grid_pixels(font, INITIAL_COLS, INITIAL_ROWS), 0),
+        client_size_for_terminal(
+            grid_pixels(font, INITIAL_COLS, INITIAL_ROWS),
+            tab_bar::height(font.cell_height_px),
+        ),
         dpi,
     )?;
 
@@ -448,7 +450,7 @@ impl App {
         let font_config = config.font;
         let (width, height) = client_size(hwnd);
         let terminal_area =
-            terminal_area_in_client(width, height, tab_bar::height(font.cell_height_px, 1));
+            terminal_area_in_client(width, height, tab_bar::height(font.cell_height_px));
         let size = grid_size(&font, terminal_area);
         let renderer = Renderer::new(hwnd, width, height, &dwrite, &font, font_config.wide_glyph)?;
         let first_id = SessionId(0);
@@ -613,14 +615,7 @@ impl App {
     fn open_session(&mut self) {
         let id = SessionId(self.next_session_id);
         let command_line = command_line_for(self.arguments.as_deref(), self.shell.as_deref());
-        // タブバーが出ると端末を描く領域が狭まるので、足したあとの領域の大きさで起動する。
-        let (width, height) = client_size(self.hwnd);
-        let area = terminal_area_in_client(
-            width,
-            height,
-            tab_bar::height(self.font.cell_height_px, self.sessions.len() + 1),
-        );
-        let size = grid_size(&self.font, area);
+        let size = grid_size(&self.font, self.terminal_area);
         let session = match Session::spawn(
             id,
             &command_line,
@@ -635,7 +630,6 @@ impl App {
         };
         self.next_session_id += 1;
         self.sessions.push(session);
-        self.relayout();
         self.activate(self.sessions.len() - 1);
     }
 
@@ -651,7 +645,6 @@ impl App {
         }
         drop(self.sessions.remove(index));
         self.active = active_after_close(self.active, index, self.sessions.len());
-        self.relayout();
         if was_active {
             self.on_activated();
         }
@@ -991,7 +984,7 @@ impl App {
     /// 窓のクライアント領域の中の (`x`, `y`) がタブバーの上なら、そこにあるタブの番号（タブの間のすき間や
     /// 右の空きなら `None`）を `Some` で返す。タブバーの外なら `None`。
     fn tab_bar_hit(&self, x: i32, y: i32) -> Option<Option<usize>> {
-        let area = self.tab_bar_area()?;
+        let area = self.tab_bar_area();
         let inside = (0..area.width as i32).contains(&x) && (0..area.height as i32).contains(&y);
         if !inside {
             return None;
@@ -1295,23 +1288,11 @@ impl App {
         self.layout(width, height);
     }
 
-    /// 端末の数が変わった。タブバーを出し入れし、端末を描く領域と端末の大きさを合わせる。窓の大きさは
-    /// 変えない（タブバーの分だけ端末の行数が変わる）。
-    fn relayout(&mut self) {
-        let (width, height) = client_size(self.hwnd);
-        self.layout(width, height);
-    }
-
     /// クライアント領域の大きさが `width` × `height` のときの、端末を描く領域に合わせる。
     fn layout(&mut self, width: u32, height: u32) {
         self.terminal_area =
-            terminal_area_in_client(width, height, self.tab_bar_height(&self.font));
+            terminal_area_in_client(width, height, tab_bar::height(self.font.cell_height_px));
         self.resize_sessions();
-    }
-
-    /// `font` で描くときのタブバーの高さ。
-    fn tab_bar_height(&self, font: &Font) -> u32 {
-        tab_bar::height(font.cell_height_px, self.sessions.len())
     }
 
     /// すべての端末の大きさを、端末を描く領域に合わせる。表示していない端末も同じ大きさにする。
@@ -1421,7 +1402,7 @@ impl App {
         let size = self.session().vt.size();
         Ok(client_size_for_terminal(
             grid_pixels(&font, size.cols, size.rows),
-            self.tab_bar_height(&font),
+            tab_bar::height(font.cell_height_px),
         ))
     }
 
@@ -1448,7 +1429,7 @@ impl App {
         self.render_to(Some(&frame_path));
     }
 
-    /// 表示している端末を端末を描く領域に、端末が二つ以上ならタブバーをその上に描いて表示する。
+    /// 表示している端末を端末を描く領域に、タブバーをその上に描いて表示する。
     /// `capture` を渡すと、表示する前の画面を PNG で書き出す。
     fn render_to(&mut self, capture: Option<&std::path::Path>) {
         let mut frame = match self.session_mut().vt.frame() {
@@ -1463,19 +1444,17 @@ impl App {
             frame.hide_blinking_text();
         }
         let tab_bar = self.tab_bar_frame(frame.background, frame.foreground);
-        let mut layers = vec![(&frame, self.terminal_area)];
-        if let Some((tab_bar, area)) = &tab_bar {
-            layers.push((tab_bar, *area));
-        }
+        let layers = [
+            (&frame, self.terminal_area),
+            (&tab_bar, self.tab_bar_area()),
+        ];
         if let Err(e) = self.renderer.render(&layers, capture) {
             tracing::warn!("failed to render: {e}");
         }
     }
 
-    /// タブバーの画面と、それを描く領域。タブバーを出さないときは `None`。色は端末の背景色
-    /// `background` と文字の色 `foreground` から決める。
-    fn tab_bar_frame(&self, background: Rgb, foreground: Rgb) -> Option<(Frame, Area)> {
-        let area = self.tab_bar_area()?;
+    /// タブバーの画面。色は端末の背景色 `background` と文字の色 `foreground` から決める。
+    fn tab_bar_frame(&self, background: Rgb, foreground: Rgb) -> Frame {
         let tabs: Vec<TabView> = self
             .sessions
             .iter()
@@ -1484,24 +1463,23 @@ impl App {
                 bell: session.bell_marked,
             })
             .collect();
-        let frame = tab_bar::frame(
+        tab_bar::frame(
             &tabs,
             self.active,
             self.tab_bar_cols(),
             background,
             foreground,
-        );
-        Some((frame, area))
+        )
     }
 
-    /// タブバーを描く領域。端末を描く領域の上の、窓の幅いっぱい。タブバーを出さないときは `None`。
-    fn tab_bar_area(&self) -> Option<Area> {
-        (self.terminal_area.y > 0).then_some(Area {
+    /// タブバーを描く領域。端末を描く領域の上の、窓の幅いっぱい。
+    fn tab_bar_area(&self) -> Area {
+        Area {
             x: 0,
             y: 0,
             width: self.terminal_area.width,
             height: self.terminal_area.y,
-        })
+        }
     }
 
     /// タブバーの幅（セル）。
