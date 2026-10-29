@@ -508,6 +508,12 @@ impl Palette {
         self
     }
 
+    /// 色の並び。[`TAB_BAR_COLOR_KEYS`] の順。
+    pub fn colors(&self) -> [Rgb; TAB_BAR_COLOR_KEYS.len()] {
+        let mut copy = *self;
+        copy.fields_mut().map(|field| *field)
+    }
+
     /// 色の欄。[`TAB_BAR_COLOR_KEYS`] の順。
     fn fields_mut(&mut self) -> [&mut Rgb; TAB_BAR_COLOR_KEYS.len()] {
         [

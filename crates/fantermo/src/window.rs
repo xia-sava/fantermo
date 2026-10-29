@@ -1916,8 +1916,26 @@ impl App {
     }
 
     /// 設定ダイアログに渡すもの。いま使っている設定と、フォントの一覧。
-    fn settings_request(&self) -> settings_dialog::Request {
+    fn settings_request(&mut self) -> settings_dialog::Request {
         let current = self.config_in_use();
+        let scroll_bar_defaults = match self.session_mut().vt.frame() {
+            Ok(frame) => scroll_bar::Palette::from_terminal(frame.background, frame.foreground),
+            Err(e) => {
+                tracing::warn!("failed to read the terminal colors: {e}");
+                scroll_bar::Palette::from_terminal(
+                    Rgb { r: 0, g: 0, b: 0 },
+                    Rgb {
+                        r: 0xff,
+                        g: 0xff,
+                        b: 0xff,
+                    },
+                )
+            }
+        };
+        let default_colors = settings_dialog::DefaultColors {
+            tab_bar: tab_bar::Palette::from_system(system_colors()).colors(),
+            scroll_bar: scroll_bar_defaults.colors(),
+        };
         let fonts = match font::monospaced_families(&self.dwrite) {
             Ok(families) => families
                 .into_iter()
@@ -1946,6 +1964,7 @@ impl App {
             family_indices,
             fonts,
             font_in_use,
+            default_colors,
         }
     }
 

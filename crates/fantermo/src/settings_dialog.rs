@@ -15,20 +15,26 @@ use std::{
 };
 
 use fantermo_core::{
-    config::{self, Config, PasteConfirm, WideGlyph},
+    config::{self, ColorTable, ColorsConfig, Config, PasteConfirm, WideGlyph, format_color},
+    frame::Rgb,
     keymap::{Action, KeyCombo, Keymap},
 };
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
-        Graphics::Gdi::{COLOR_BTNFACE, CreateFontIndirectW, DeleteObject, HBRUSH, HFONT, HGDIOBJ},
+        Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Graphics::Gdi::{
+            COLOR_BTNFACE, CreateFontIndirectW, CreateSolidBrush, DeleteObject, HBRUSH, HFONT,
+            HGDIOBJ, InvalidateRect,
+        },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Controls::{
-                BST_CHECKED, CB_SETMINVISIBLE, ICC_UPDOWN_CLASS, INITCOMMONCONTROLSEX,
-                InitCommonControlsEx, NMHDR, NMUPDOWN, UDM_SETBUDDY, UDM_SETPOS32, UDM_SETRANGE32,
-                UDN_DELTAPOS, UDS_ALIGNRIGHT, UDS_ARROWKEYS, UDS_HOTTRACK, UDS_NOTHOUSANDS,
-                UPDOWN_CLASSW, WC_COMBOBOXW, WC_LISTBOXW,
+                BST_CHECKED, CB_SETMINVISIBLE,
+                Dialogs::{CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW, ChooseColorW},
+                ICC_UPDOWN_CLASS, INITCOMMONCONTROLSEX, InitCommonControlsEx, NMHDR, NMUPDOWN,
+                UDM_SETBUDDY, UDM_SETPOS32, UDM_SETRANGE32, UDN_DELTAPOS, UDS_ALIGNRIGHT,
+                UDS_ARROWKEYS, UDS_HOTTRACK, UDS_NOTHOUSANDS, UPDOWN_CLASSW, WC_COMBOBOXW,
+                WC_LISTBOXW,
             },
             HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow},
             Input::KeyboardAndMouse::{EnableWindow, SetFocus},
@@ -44,10 +50,10 @@ use windows::{
                 MB_YESNO, MessageBoxW, MoveWindow, RegisterClassW, SW_HIDE, SW_SHOW,
                 SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetTimer, SetWindowLongPtrW,
                 SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE,
-                WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETFONT,
-                WM_TIMER, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT,
-                WS_EX_DLGMODALFRAME, WS_GROUP, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
-                WS_VSCROLL,
+                WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_NEXTDLGCTL, WM_NOTIFY,
+                WM_SETFONT, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE,
+                WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_GROUP, WS_POPUP, WS_SYSMENU,
+                WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
             },
         },
     },
@@ -89,7 +95,7 @@ const ID_LABEL: i32 = -1;
 /// 96 DPI のときの寸法（ピクセル）。窓の DPI に合わせて拡大する。
 const BASE_DPI: u32 = 96;
 const CLIENT_WIDTH: i32 = 640;
-const CLIENT_HEIGHT: i32 = 300;
+const CLIENT_HEIGHT: i32 = 400;
 const MARGIN: i32 = 12;
 const PAGES_WIDTH: i32 = 120;
 /// ページの見出しの列の幅。コントロールはその右に置く。
@@ -107,7 +113,89 @@ const SPIN_RANGE: (i32, i32) = (0, 1000);
 const VISIBLE_FONTS: usize = 16;
 
 /// ページ。一覧の順。
-const PAGES: [&str; 4] = ["外観", "動作", "シェル", "キー"];
+const PAGES: [&str; 5] = ["外観", "動作", "シェル", "キー", "色"];
+
+/// 色のページのコントロールの ID の始まり。色ごとに [`COLOR_ID_STRIDE`] ずつ、見本・値・選ぶ・既定に
+/// 戻すの順に続く。
+const ID_COLORS: i32 = 600;
+const COLOR_ID_STRIDE: i32 = 4;
+const COLOR_SWATCH: i32 = 0;
+const COLOR_CHOOSE: i32 = 2;
+const COLOR_RESET: i32 = 3;
+/// 色のページの一行の高さ。
+const COLOR_ROW_HEIGHT: i32 = 22;
+/// 色の名前を、表の見出しより右へ寄せる幅。
+const COLOR_LABEL_INDENT: i32 = 4;
+/// 色の見本の幅と、値の文字の幅。
+const SWATCH_WIDTH: i32 = 32;
+const COLOR_TEXT_WIDTH: i32 = 110;
+const CHOOSE_WIDTH: i32 = 72;
+const COLOR_RESET_WIDTH: i32 = 88;
+
+/// 色の表の見出し。[`ColorTable::ALL`] の順。
+const COLOR_TABLE_LABELS: [&str; 2] = ["タブバー", "スクロールバー"];
+
+/// タブバーの色の表示。[`config::TAB_BAR_COLOR_KEYS`] の順。
+const TAB_BAR_COLOR_LABELS: [&str; 9] = [
+    "地",
+    "表示しているタブ",
+    "表示しているタブの縁",
+    "表示しているタブの文字",
+    "表示していないタブの文字",
+    "タブの区切りの線",
+    "マウスの下のタブ",
+    "「+」と「≡」",
+    "ベルの印",
+];
+
+/// スクロールバーの色の表示。[`config::SCROLL_BAR_COLOR_KEYS`] の順。
+const SCROLL_BAR_COLOR_LABELS: [&str; 4] = [
+    "トラック",
+    "つまみ",
+    "マウスの下のつまみ",
+    "ドラッグしているつまみ",
+];
+
+fn color_labels(table: ColorTable) -> &'static [&'static str] {
+    match table {
+        ColorTable::TabBar => &TAB_BAR_COLOR_LABELS,
+        ColorTable::ScrollBar => &SCROLL_BAR_COLOR_LABELS,
+    }
+}
+
+/// 色のページの色の並び。表と、表の中の位置。
+fn color_items() -> Vec<(ColorTable, usize)> {
+    ColorTable::ALL
+        .iter()
+        .flat_map(|&table| (0..table.keys().len()).map(move |index| (table, index)))
+        .collect()
+}
+
+/// 色を Win32 の `COLORREF`（`0x00BBGGRR`）にする。
+fn colorref(color: Rgb) -> COLORREF {
+    COLORREF(u32::from(color.r) | (u32::from(color.g) << 8) | (u32::from(color.b) << 16))
+}
+
+/// Win32 の `COLORREF` を色にする。
+fn rgb_of(colorref: COLORREF) -> Rgb {
+    let [r, g, b, _] = colorref.0.to_le_bytes();
+    Rgb { r, g, b }
+}
+
+/// 既定の色（設定に書いていない色に使う色）。それぞれのキーの並びの順。
+pub struct DefaultColors {
+    pub tab_bar: [Rgb; config::TAB_BAR_COLOR_KEYS.len()],
+    pub scroll_bar: [Rgb; config::SCROLL_BAR_COLOR_KEYS.len()],
+}
+
+impl DefaultColors {
+    fn get(&self, table: ColorTable, index: usize) -> Rgb {
+        match table {
+            ColorTable::TabBar => self.tab_bar[index],
+            ColorTable::ScrollBar => self.scroll_bar[index],
+        }
+    }
+}
 /// 開いたときに見せるページ。
 const PAGE_APPEARANCE: usize = 0;
 
@@ -202,6 +290,8 @@ pub struct Request {
     pub fonts: Vec<FontChoice>,
     /// いま使っているフォント。一覧に無ければ、一覧の先頭に足す。
     pub font_in_use: FontChoice,
+    /// 色のページで、書いていない色として見せる色。
+    pub default_colors: DefaultColors,
 }
 
 /// 設定ダイアログを開き、閉じるまで待つ。
@@ -215,6 +305,7 @@ pub fn run(owner: HWND, request: Request, host: &mut dyn Host) {
         family_indices,
         mut fonts,
         font_in_use,
+        default_colors,
     } = request;
     let selected_font = match fonts.iter().position(|font| {
         font.index.is_some() && font.index == font_in_use.index || font.name == font_in_use.name
@@ -243,6 +334,10 @@ pub fn run(owner: HWND, request: Request, host: &mut dyn Host) {
         previewed: RefCell::new(current.clone()),
         keys: RefCell::new(current.keys.clone()),
         key_rows: RefCell::new(Vec::new()),
+        colors: RefCell::new(current.colors.clone()),
+        default_colors,
+        swatch_brushes: RefCell::new(vec![HBRUSH::default(); color_items().len()]),
+        custom_colors: Cell::new([COLORREF(0); CUSTOM_COLORS]),
         font: Cell::new(HFONT::default()),
         dpi: Cell::new(BASE_DPI),
         closed: Cell::new(false),
@@ -269,6 +364,12 @@ pub fn run(owner: HWND, request: Request, host: &mut dyn Host) {
     if !font.is_invalid() {
         // SAFETY: フォントはダイアログのために作ったもので、ダイアログはもう閉じている。
         unsafe { _ = DeleteObject(HGDIOBJ(font.0)) };
+    }
+    for brush in state.swatch_brushes.take() {
+        if !brush.is_invalid() {
+            // SAFETY: ブラシは色の見本のために作ったもので、ダイアログはもう閉じている。
+            unsafe { _ = DeleteObject(HGDIOBJ(brush.0)) };
+        }
     }
 }
 
@@ -325,6 +426,8 @@ struct Controls {
     keys_list: HWND,
     /// 追加・変更・外す・既定に戻すのボタン。
     key_buttons: [HWND; 4],
+    /// 色のページの行。[`color_items`] の順。
+    color_rows: Vec<ColorRow>,
     error: HWND,
     /// すべてのコントロールと、96 DPI のときの矩形。上下の矢印のボタンは入れない（相手の入力欄に
     /// 付けて置く）。
@@ -351,7 +454,24 @@ struct State<'a> {
     key_rows: RefCell<Vec<KeyRow>>,
     font: Cell<HFONT>,
     dpi: Cell<u32>,
+    /// 編集中の色。
+    colors: RefCell<ColorsConfig>,
+    default_colors: DefaultColors,
+    /// 色の見本を塗るブラシ。[`color_items`] の順。
+    swatch_brushes: RefCell<Vec<HBRUSH>>,
+    /// 色を選ぶダイアログの「作成した色」。ダイアログを開いている間は覚えておく。
+    custom_colors: Cell<[COLORREF; CUSTOM_COLORS]>,
     closed: Cell<bool>,
+}
+
+/// 色を選ぶダイアログの「作成した色」の数。
+const CUSTOM_COLORS: usize = 16;
+
+/// 色のページの一行のコントロール。
+struct ColorRow {
+    swatch: HWND,
+    text: HWND,
+    reset: HWND,
 }
 
 /// ダイアログとコントロールを作る。大きさと位置は後で決める（[`place`]）。
@@ -722,6 +842,88 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         keys_page.push(key_buttons[index]);
     }
 
+    // 色
+    let mut colors_page = Vec::new();
+    let mut color_rows = Vec::new();
+    let mut top = MARGIN;
+    for (table_index, table) in ColorTable::ALL.into_iter().enumerate() {
+        let (class, text, rect) = label(
+            COLOR_TABLE_LABELS[table_index],
+            [page_left, top + LABEL_OFFSET, page_width, COLOR_ROW_HEIGHT],
+        );
+        colors_page.push(child(
+            class,
+            &text,
+            WINDOW_STYLE(0),
+            none,
+            ID_LABEL,
+            Some(rect),
+        )?);
+        top += COLOR_ROW_HEIGHT;
+        for label_text in color_labels(table) {
+            let id = ID_COLORS + color_rows.len() as i32 * COLOR_ID_STRIDE;
+            let (class, text, rect) = label(
+                label_text,
+                [
+                    page_left + COLOR_LABEL_INDENT,
+                    top + LABEL_OFFSET,
+                    LABEL_WIDTH - COLOR_LABEL_INDENT,
+                    COLOR_ROW_HEIGHT,
+                ],
+            );
+            colors_page.push(child(
+                class,
+                &text,
+                WINDOW_STYLE(0),
+                none,
+                ID_LABEL,
+                Some(rect),
+            )?);
+            let swatch = child(
+                w!("STATIC"),
+                "",
+                WINDOW_STYLE(0),
+                WS_EX_CLIENTEDGE,
+                id + COLOR_SWATCH,
+                Some([control_left, top + 2, SWATCH_WIDTH, COLOR_ROW_HEIGHT - 4]),
+            )?;
+            let mut left = control_left + SWATCH_WIDTH + BUTTON_GAP;
+            let text = child(
+                w!("STATIC"),
+                "",
+                WINDOW_STYLE(0),
+                none,
+                id + 1,
+                Some([left, top + LABEL_OFFSET, COLOR_TEXT_WIDTH, COLOR_ROW_HEIGHT]),
+            )?;
+            left += COLOR_TEXT_WIDTH + BUTTON_GAP;
+            let choose = child(
+                w!("BUTTON"),
+                "選ぶ…",
+                WS_GROUP | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+                none,
+                id + COLOR_CHOOSE,
+                Some([left, top, CHOOSE_WIDTH, COLOR_ROW_HEIGHT - 2]),
+            )?;
+            left += CHOOSE_WIDTH + BUTTON_GAP;
+            let reset = child(
+                w!("BUTTON"),
+                "既定に戻す",
+                WS_GROUP | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+                none,
+                id + COLOR_RESET,
+                Some([left, top, COLOR_RESET_WIDTH, COLOR_ROW_HEIGHT - 2]),
+            )?;
+            colors_page.extend([swatch, text, choose, reset]);
+            color_rows.push(ColorRow {
+                swatch,
+                text,
+                reset,
+            });
+            top += COLOR_ROW_HEIGHT;
+        }
+    }
+
     // 下のボタンと、入力の誤り
     let error = child(
         w!("STATIC"),
@@ -766,7 +968,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         hwnd,
         Controls {
             pages,
-            page_controls: vec![appearance, behavior, shell_page, keys_page],
+            page_controls: vec![appearance, behavior, shell_page, keys_page, colors_page],
             font,
             size,
             size_spin,
@@ -777,6 +979,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             shell,
             keys_list,
             key_buttons,
+            color_rows,
             error,
             placed,
         },
@@ -846,6 +1049,88 @@ impl State<'_> {
         set_text(c.shell, config.shell.as_deref().unwrap_or_default());
         *self.keys.borrow_mut() = config.keys.clone();
         self.refresh_keys(None);
+        *self.colors.borrow_mut() = config.colors.clone();
+        for item in 0..self.controls.color_rows.len() {
+            self.refresh_color(item);
+        }
+    }
+
+    /// 色のページの `item` 番目の色の、見本・値・既定に戻すボタンを、編集中の色に合わせる。
+    fn refresh_color(&self, item: usize) {
+        let (table, index) = color_items()[item];
+        let written = self.colors.borrow().table(table)[index];
+        let color = written.unwrap_or(self.default_colors.get(table, index));
+        let row = &self.controls.color_rows[item];
+        let text = match written {
+            Some(_) => format_color(color),
+            None => format!("{}（既定）", format_color(color)),
+        };
+        set_text(row.text, &text);
+        // SAFETY: 色を渡してブラシを作るだけ。
+        let brush = unsafe { CreateSolidBrush(colorref(color)) };
+        let previous = std::mem::replace(&mut self.swatch_brushes.borrow_mut()[item], brush);
+        // SAFETY: row のコントロールはダイアログの子の有効な窓。
+        unsafe {
+            _ = EnableWindow(row.reset, written.is_some());
+            _ = InvalidateRect(Some(row.swatch), None, true);
+        }
+        if !previous.is_invalid() {
+            // SAFETY: 前のブラシは、描き直しを頼んだ見本がもう使わない（WM_CTLCOLORSTATIC で渡すのは
+            // いまのブラシ）。
+            unsafe { _ = DeleteObject(HGDIOBJ(previous.0)) };
+        }
+    }
+
+    /// 色のページのボタン `id` が押された。
+    fn on_color_button(&self, id: i32) {
+        let offset = id - ID_COLORS;
+        let item = (offset / COLOR_ID_STRIDE) as usize;
+        let Some(&(table, index)) = color_items().get(item) else {
+            return;
+        };
+        let new = match offset % COLOR_ID_STRIDE {
+            COLOR_CHOOSE => {
+                let current = self.colors.borrow().table(table)[index]
+                    .unwrap_or(self.default_colors.get(table, index));
+                let Some(chosen) = self.choose_color(current) else {
+                    return;
+                };
+                Some(chosen)
+            }
+            COLOR_RESET => None,
+            _ => return,
+        };
+        self.colors.borrow_mut().table_mut(table)[index] = new;
+        self.refresh_color(item);
+        self.preview();
+    }
+
+    /// 色を選ぶダイアログを、`current` を選んだ状態で開く。やめたら `None`。
+    fn choose_color(&self, current: Rgb) -> Option<Rgb> {
+        let mut custom = self.custom_colors.get();
+        let mut choose = CHOOSECOLORW {
+            lStructSize: size_of::<CHOOSECOLORW>() as u32,
+            hwndOwner: self.hwnd,
+            rgbResult: colorref(current),
+            lpCustColors: custom.as_mut_ptr(),
+            Flags: CC_RGBINIT | CC_FULLOPEN,
+            ..Default::default()
+        };
+        // SAFETY: choose は初期化済みで、custom はこの呼び出しの間は生きている 16 個の COLORREF。
+        // 借用は持っていない。
+        let chosen = unsafe { ChooseColorW(&mut choose) }.as_bool();
+        self.custom_colors.set(custom);
+        chosen.then(|| rgb_of(choose.rgbResult))
+    }
+
+    /// 色の見本 `control` を塗るブラシ。色の見本でなければ `None`。
+    fn swatch_brush(&self, control: HWND) -> Option<HBRUSH> {
+        let item = self
+            .controls
+            .color_rows
+            .iter()
+            .position(|row| row.swatch == control)?;
+        self.swatch_brushes.borrow().get(item).copied()
     }
 
     /// キーの割り当ての一覧を作り直し、`selected` の行（なければ同じ動作の行、それもなければ先頭）を
@@ -1120,6 +1405,7 @@ impl State<'_> {
         }
         config.shell = config::shell_from_input(&get_text(c.shell));
         config.keys = self.keys.borrow().clone();
+        config.colors = self.colors.borrow().clone();
         Ok(config)
     }
 
@@ -1377,6 +1663,7 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 (ID_KEY_ADD | ID_KEY_CHANGE | ID_KEY_REMOVE | ID_KEY_RESET, BN_CLICKED) => {
                     state.on_key_button(id);
                 }
+                (id, BN_CLICKED) if id >= ID_COLORS => state.on_color_button(id),
                 (ID_SIZE | ID_SCROLL_BAR_WIDTH | ID_SHELL, EN_CHANGE) => state.schedule_preview(),
                 (id, BN_CLICKED)
                     if (ID_WIDE_GLYPH..ID_WIDE_GLYPH + 3).contains(&id)
@@ -1388,6 +1675,11 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
             LRESULT(0)
         }
+        WM_CTLCOLORSTATIC => match state.swatch_brush(HWND(lparam.0 as *mut _)) {
+            Some(brush) => LRESULT(brush.0 as isize),
+            // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
+            None => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        },
         WM_NOTIFY => {
             // SAFETY: WM_NOTIFY の lparam は NMHDR で始まる構造体を指す。
             let header = unsafe { &*(lparam.0 as *const NMHDR) };
@@ -1533,6 +1825,37 @@ mod tests {
         keys.bind(combo("ctrl+c"), None);
         keys.bind(combo("ctrl+c"), Some(Action::Copy));
         assert!(is_default_binding(&keys, Action::Copy));
+    }
+
+    #[test]
+    fn colorrefs_put_red_in_the_low_byte() {
+        let color = Rgb {
+            r: 0x12,
+            g: 0x34,
+            b: 0x56,
+        };
+        assert_eq!(colorref(color), COLORREF(0x0056_3412));
+        assert_eq!(rgb_of(COLORREF(0x0056_3412)), color);
+    }
+
+    #[test]
+    fn every_color_has_a_label_and_fits_above_the_buttons() {
+        for table in ColorTable::ALL {
+            assert_eq!(color_labels(table).len(), table.keys().len());
+        }
+        let items = color_items();
+        assert_eq!(items.len(), 13);
+        assert_eq!(items[9], (ColorTable::ScrollBar, 0));
+        let rows = (ColorTable::ALL.len() + items.len()) as i32;
+        let button_top = CLIENT_HEIGHT - MARGIN - BUTTON_HEIGHT;
+        assert!(MARGIN + rows * COLOR_ROW_HEIGHT <= button_top - MARGIN);
+        let row_width = LABEL_WIDTH
+            + SWATCH_WIDTH
+            + COLOR_TEXT_WIDTH
+            + CHOOSE_WIDTH
+            + COLOR_RESET_WIDTH
+            + 3 * BUTTON_GAP;
+        assert!(row_width <= CLIENT_WIDTH - (MARGIN + PAGES_WIDTH + MARGIN) - MARGIN);
     }
 
     #[test]

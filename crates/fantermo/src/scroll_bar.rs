@@ -212,6 +212,12 @@ impl Palette {
         self
     }
 
+    /// 色の並び。[`SCROLL_BAR_COLOR_KEYS`] の順。
+    pub fn colors(&self) -> [Rgb; SCROLL_BAR_COLOR_KEYS.len()] {
+        let mut copy = *self;
+        copy.fields_mut().map(|field| *field)
+    }
+
     /// 色の欄。[`SCROLL_BAR_COLOR_KEYS`] の順。
     fn fields_mut(&mut self) -> [&mut Rgb; SCROLL_BAR_COLOR_KEYS.len()] {
         [
