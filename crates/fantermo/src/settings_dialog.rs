@@ -383,8 +383,11 @@ const WIDE_GLYPH_LABELS: [&str; WideGlyph::ALL.len()] = [
 ];
 
 /// `paste.confirm` の選択肢の表示。[`PasteConfirm::ALL`] の順。
-const PASTE_CONFIRM_LABELS: [&str; 3] =
-    ["コマンドとして走りうるとき", "改行を含むとき", "確かめない"];
+const PASTE_CONFIRM_LABELS: [&str; 3] = [
+    "コマンドとして実行されうるとき",
+    "改行を含むとき",
+    "確かめない",
+];
 
 /// キーの割り当ての一覧の、組み合わせの列の位置（ダイアログの単位）。
 const KEY_COLUMN_TAB_STOP: i32 = 110;
@@ -1157,7 +1160,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         };
     }
     let (class, text, rect) = label(
-        "画像は端末の画面と余白に敷き、その上に端末の背景色を重ねて濃さのとおりに薄める。アプリが背景色を付けた文字、反転した文字、選んだ範囲は、その色で塗りつぶす。",
+        "画像は端末の画面と余白に敷き、その上に端末の背景色を重ねて濃さのとおりに薄める。アプリが背景色を付けた文字、反転した文字、選択範囲は、その色で塗りつぶす。",
         [
             page_left,
             fit_row + ROW_HEIGHT + MARGIN,
@@ -1199,7 +1202,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         behavior.push(paste_confirm[index]);
     }
     let (class, text, rect) = label(
-        "改行を含む文字列を貼り付ける前に、内容を編集できるダイアログで確かめる。「コマンドとして走りうるとき」は、アプリが bracketed paste を有効にしていないときなど。",
+        "改行を含む文字列を貼り付ける前に、内容を編集できるダイアログで確かめる。「コマンドとして実行されうるとき」は、アプリが bracketed paste を有効にしていないときなど。",
         [
             page_left,
             row(0) + 3 * ROW_HEIGHT + MARGIN,

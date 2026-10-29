@@ -239,7 +239,7 @@ fn notice_text(path: &Path, parsed: &Parsed, occasion: Occasion) -> Option<Strin
         )
     } else {
         format!(
-            "設定ファイルの次の箇所を無視しました。誤りのある項目は{}のままです。",
+            "設定ファイルの次の箇所を無視しました。エラーのある項目は{}のままです。",
             occasion.item()
         )
     };
@@ -474,7 +474,7 @@ mod tests {
         assert_eq!(
             notice_text(path, &parsed, Occasion::Reload).as_deref(),
             Some(
-                "設定ファイルの次の箇所を無視しました。誤りのある項目は前の値のままです。\n\n\
+                "設定ファイルの次の箇所を無視しました。エラーのある項目は前の値のままです。\n\n\
                  C:\\settings\\config.toml\n\
                  1 行目: ignoring shell: invalid type: integer `1`, expected a string\n\
                  3 行目: ignoring font.size = 0: must be between 1 and 128"

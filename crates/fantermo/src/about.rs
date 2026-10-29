@@ -20,7 +20,7 @@ const REPOSITORY_URL: &str = "https://github.com/xia-sava/fantermo";
 /// 「更新を確認」のボタンの制御 ID。
 const CHECK_UPDATE_ID: i32 = 101;
 /// 「更新を確認」を押せないときに添える行。
-const UPDATE_UNAVAILABLE: &str = "インストーラで入れた版でのみ更新できます";
+const UPDATE_UNAVAILABLE: &str = "自動更新はインストーラで入れたバージョンでのみ可能です";
 /// `THIRD-PARTY-NOTICES.txt` の区切りの線の幅。これが折り返さずに収まる幅で開く。
 const TEXT_COLUMNS: u32 = 80;
 
@@ -43,7 +43,7 @@ const TEXT: &str = concat!(
 /// 「更新を確認」は、インストーラで入れた版（[`update::can_update`]）でだけ押せる。
 pub fn show(owner: HWND, font: &Font) -> bool {
     let can_update = update::can_update();
-    let version = format!("版: {}", version::display());
+    let version = format!("バージョン: {}", version::display());
     let commit = format!("コミット: {}", version::COMMIT);
     let mut header = vec![
         HeaderLine::Text(NAME),

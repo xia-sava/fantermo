@@ -160,7 +160,7 @@ impl CheckError {
             }
             Self::Signature(_) => "配布物の署名を確認できませんでした。".to_owned(),
             Self::Manifest(_) => "更新の情報を読めませんでした。".to_owned(),
-            Self::CurrentVersion => "いまの版を読めませんでした。".to_owned(),
+            Self::CurrentVersion => "いまのバージョンを読めませんでした。".to_owned(),
         }
     }
 }
@@ -236,10 +236,10 @@ impl DownloadError {
     pub fn message(&self) -> String {
         match self {
             Self::Fetch(HttpError::Status(status)) => {
-                format!("新しい版をダウンロードできませんでした（HTTP {status}）。")
+                format!("新しいバージョンをダウンロードできませんでした（HTTP {status}）。")
             }
             Self::Fetch(_) => {
-                "新しい版をダウンロードできませんでした。ネットワークにつながっているか確かめてください。"
+                "新しいバージョンをダウンロードできませんでした。ネットワークにつながっているか確かめてください。"
                     .to_owned()
             }
             Self::Digest => "ダウンロードした配布物が、更新の情報と合いませんでした。".to_owned(),

@@ -60,7 +60,7 @@ fn on_checked(owner: HWND, comparison: Comparison) -> Next {
             show(
                 owner,
                 &format!(
-                    "fantermo は最新の版です。\n\nいまの版: {current}\n配布している版: {latest}"
+                    "fantermo は最新バージョンです。\n\nいまのバージョン: {current}\n配布しているバージョン: {latest}"
                 ),
                 MB_OK | MB_ICONINFORMATION,
             );
@@ -68,7 +68,7 @@ fn on_checked(owner: HWND, comparison: Comparison) -> Next {
         }
         Comparison::Newer(release) => {
             let text = format!(
-                "新しい版 {} があります（いまの版は {current}）。\n\nダウンロードして更新しますか？",
+                "新しいバージョン {} があります（いまのバージョンは {current}）。\n\nダウンロードして更新しますか？",
                 release.version
             );
             if show(owner, &text, MB_YESNO | MB_ICONQUESTION) == IDYES {
@@ -96,7 +96,7 @@ fn on_downloaded(owner: HWND, downloaded: Downloaded) -> Next {
         }
     }
     let text = format!(
-        "全部のタブを閉じて、版 {} に更新します。\n\n更新を入れ終えたら、fantermo を起動し直します。",
+        "全部のタブを閉じて、バージョン {} に更新します。\n\n更新を入れ終えたら、fantermo を起動し直します。",
         downloaded.version
     );
     if show(owner, &text, MB_OKCANCEL | MB_ICONINFORMATION) != IDOK {
