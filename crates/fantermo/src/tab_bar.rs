@@ -1,20 +1,32 @@
 //! タブバー。窓の上端に、端末ごとのタブを並べる。端末が一つのときも出す。
 //!
-//! 寸法は端末のフォントによらず DPI から決め、セルの格子によらずピクセルの位置で並べる。地は Windows の
-//! コントロールの色で塗り、表示しているタブは端末と同じ色で上の角を丸め、下の辺を端末へつなげて描く。並べ方（どこがどのタブか、タイトルの
-//! 省略、ベルの印の位置）と、描くもの（[`Paint`]）の組み立ては、窓や描画に依存しない関数にしてある。
+//! 寸法は端末のフォントによらず DPI から決め、セルの格子によらずピクセルの位置で並べる。色は
+//! [`Palette`] にまとめ、既定では地と表示していないタブを Windows のコントロールの色、表示している
+//! タブを窓の地の色（白）で上の角を丸めて描く。タブバーと端末の画面の間には少し空きを置く。並べ方
+//! （どこがどのタブか、タイトルの省略、ベルの印の位置）と、描くもの（[`Paint`]）の組み立ては、窓や
+//! 描画に依存しない関数にしてある。
 
 use fantermo_core::{frame::Rgb, vt};
 
-use crate::paint::{Area, Corner, Icon, Paint, Side};
+use crate::paint::{Area, Corner, Icon, Paint};
 
 /// 寸法の定数を決めた DPI。定数はこの DPI でのピクセルで、窓の DPI に比例させて使う。
 const BASE_DPI: u32 = 96;
 
-/// タブバーの高さ。
+/// タブバーの高さ。端末の画面との間の空き（[`TERMINAL_GAP`]）は含まない。
 const BAR_HEIGHT: u32 = 32;
 
-/// タブの上の空き。表示しているタブの角の半径と、ボタンとタブの間のすき間にも使う。
+/// タブバーの下の辺と端末の画面の間の空き。何も描かず、描画が端末の背景色で塗るところに任せる
+/// （`Renderer::render` はどの領域にも入らないところを端末の背景色で塗る）。
+const TERMINAL_GAP: u32 = 4;
+
+/// タブバーの上の辺（窓のタイトルバーの下）からタブの上の辺までの空き。
+const TOP_MARGIN: u32 = 2;
+
+/// 表示しているタブとマウスの下のタブの、上の角の半径。
+const CORNER_RADIUS: u32 = 6;
+
+/// 窓の左端とメニューのボタンの間、ボタンとタブの間のすき間。
 const MARGIN: u32 = 6;
 
 /// タブの中の左右の余白。タブの並びの右の余白にも使う。
@@ -53,15 +65,15 @@ const MIN_TAB_WIDTH: u32 = 72;
 /// 収まらないタイトルの末尾に付ける印。
 const ELLIPSIS: &str = "…";
 
-/// 表示していない間にベルが鳴ったタブの、タイトルの前の印（円）の色。
+/// 表示していない間にベルが鳴ったタブの、タイトルの前の印（円）の既定の色。
 const BELL_COLOR: Rgb = Rgb {
     r: 0xf0,
     g: 0xb0,
     b: 0x30,
 };
 
-/// マウスの下の、表示していないタブの色を、コントロールの地の色から明るい縁の色へ寄せる割合。
-const HOVERED_TAB_LIGHTEN: f32 = 0.6;
+/// マウスの下の、表示していないタブの色を、コントロールの地の色から文字の色へ寄せる割合。
+const HOVERED_TAB_TINT: f32 = 0.08;
 
 /// マウスの下のボタン（×、+、≡）の丸い地の色を、ボタンの下の色から文字の色へ寄せる割合。
 const HOVERED_BUTTON_TINT: f32 = 0.15;
@@ -74,9 +86,10 @@ fn scale(px: u32, dpi: u32) -> u32 {
     ((px * dpi + BASE_DPI / 2) / BASE_DPI).max(1)
 }
 
-/// DPI が `dpi` の窓での、タブバーの高さ（ピクセル）。
+/// DPI が `dpi` の窓での、タブバーの高さに端末の画面との間の空きを足したもの（ピクセル）。端末の
+/// 画面はここから下に描く。
 pub fn height(dpi: u32) -> u32 {
-    scale(BAR_HEIGHT, dpi)
+    scale(BAR_HEIGHT, dpi) + scale(TERMINAL_GAP, dpi)
 }
 
 /// タブバーの寸法を決めるもの。寸法は窓の DPI に比例させる。
@@ -98,11 +111,22 @@ impl Metrics {
         scale(px, self.dpi)
     }
 
+    /// タブバーの高さ。端末の画面との間の空きは含まない。
     fn bar_height(self) -> u32 {
-        height(self.dpi)
+        self.scale(BAR_HEIGHT)
     }
 
-    /// タブの上の空き。表示しているタブの角の半径にも使う。
+    /// タブバーの上の辺からタブの上の辺までの空き。
+    fn top_margin(self) -> u32 {
+        self.scale(TOP_MARGIN)
+    }
+
+    /// 表示しているタブとマウスの下のタブの、上の角の半径。
+    fn corner_radius(self) -> u32 {
+        self.scale(CORNER_RADIUS)
+    }
+
+    /// 窓の左端とメニューのボタンの間、ボタンとタブの間のすき間。
     fn margin(self) -> u32 {
         self.scale(MARGIN)
     }
@@ -158,7 +182,7 @@ impl Metrics {
 pub struct TabSlot {
     /// 端末の並びの中の位置。
     pub index: usize,
-    /// タブを描く矩形。上の余白の下から、タブバーの下の辺まで。
+    /// タブを描く矩形。上の空きの下から、タブバーの下の辺まで。
     pub area: Area,
     /// タブを閉じるボタン。タブの右端に置く。
     pub close: Area,
@@ -205,7 +229,7 @@ impl Hit {
 /// 新しいタブのボタンを置く。タブは同じ幅で、上限は [`MAX_TAB_WIDTH`]。多ければ [`MIN_TAB_WIDTH`]
 /// まで縮め、それでも入りきらなければ、表示しているタブ `active` を含む続きのタブだけを並べる。
 pub fn layout(metrics: Metrics, width: u32, tabs: usize, active: usize) -> Layout {
-    let top = metrics.margin();
+    let top = metrics.top_margin();
     let tab_height = metrics.bar_height() - top;
     // ボタンは、タブの高さの真ん中に置く。
     let button_size = metrics.button();
@@ -215,9 +239,10 @@ pub fn layout(metrics: Metrics, width: u32, tabs: usize, active: usize) -> Layou
         width: button_size,
         height: button_size,
     };
-    // ボタンの左右とタブとの間には、上の余白と同じすき間を空ける。
-    let menu = button_at(top);
-    let start = menu.right() + top;
+    // 窓の左端とメニューのボタンの間、ボタンとタブの間には同じすき間を空ける。
+    let gap = metrics.margin();
+    let menu = button_at(gap);
+    let start = menu.right() + gap;
     let mut layout = Layout {
         metrics,
         width,
@@ -229,7 +254,7 @@ pub fn layout(metrics: Metrics, width: u32, tabs: usize, active: usize) -> Layou
         return layout;
     }
     // 新しいタブのボタンと、タブとの間のすき間の分を右に残す。
-    let end = width.saturating_sub(metrics.padding() + top + button_size);
+    let end = width.saturating_sub(metrics.padding() + gap + button_size);
     let room = end.saturating_sub(start);
     let (min_width, max_width) = metrics.tab_width_range();
     let fitting = usize::try_from(room / min_width)
@@ -270,7 +295,7 @@ pub fn layout(metrics: Metrics, width: u32, tabs: usize, active: usize) -> Layou
         })
         .collect();
     if let Some(last) = layout.tabs.last() {
-        layout.new_tab = button_at(last.area.right() + top);
+        layout.new_tab = button_at(last.area.right() + gap);
     }
     layout
 }
@@ -415,54 +440,57 @@ pub struct TabView<'a> {
     pub bell: bool,
 }
 
-/// Windows のコントロールの色（`GetSysColor`）。タブバーの地と、表示していないタブ・ボタンに使う。
+/// Windows のシステムの色（`GetSysColor`）。タブバーの既定の色（[`Palette::from_system`]）を決める。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SystemColors {
-    /// 地（`COLOR_BTNFACE`）。
+    /// コントロールの地（`COLOR_BTNFACE`）。
     pub face: Rgb,
-    /// 文字（`COLOR_BTNTEXT`）。
+    /// コントロールの文字（`COLOR_BTNTEXT`）。
     pub text: Rgb,
     /// 薄い文字（`COLOR_GRAYTEXT`）。
     pub gray_text: Rgb,
-    /// 明るい縁（`COLOR_BTNHIGHLIGHT`）。
-    pub highlight: Rgb,
-    /// 暗い縁（`COLOR_BTNSHADOW`）。
+    /// コントロールの暗い縁（`COLOR_BTNSHADOW`）。
     pub shadow: Rgb,
+    /// 窓の地（`COLOR_WINDOW`）。
+    pub window: Rgb,
+    /// 窓の文字（`COLOR_WINDOWTEXT`）。
+    pub window_text: Rgb,
 }
 
-/// タブバーの色を決めるもの。Windows のコントロールの色と、端末の既定の背景色・文字の色。
+/// タブバーの色。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Palette {
-    pub system: SystemColors,
-    pub background: Rgb,
-    pub foreground: Rgb,
+    /// タブバーの地。表示していないタブも、マウスの下になければこの色のまま。
+    pub bar: Rgb,
+    /// 表示しているタブ。
+    pub active_tab: Rgb,
+    /// 表示しているタブのタイトルと閉じるボタンの「×」。
+    pub active_title: Rgb,
+    /// 表示していないタブのタイトルと閉じるボタンの「×」、マウスの下の「+」と「≡」。
+    pub inactive_title: Rgb,
+    /// 表示していないタブの間の区切りの線。
+    pub separator: Rgb,
+    /// マウスの下の、表示していないタブ。
+    pub hovered_tab: Rgb,
+    /// マウスの下にない、新しいタブのボタンの「+」とメニューのボタンの「≡」。
+    pub idle_mark: Rgb,
+    /// 表示していない間にベルが鳴ったタブの印。
+    pub bell: Rgb,
 }
 
-/// タブバーの色。地と表示していないタブはコントロールの色、表示しているタブは端末の色。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Colors {
-    bar: Rgb,
-    active_tab: Rgb,
-    active_title: Rgb,
-    inactive_title: Rgb,
-    separator: Rgb,
-    hovered_tab: Rgb,
-    /// マウスの下にない、新しいタブのボタンとメニューのボタンの印。
-    idle_mark: Rgb,
-}
-
-impl Colors {
-    fn new(palette: Palette) -> Self {
-        let system = palette.system;
+impl Palette {
+    /// Windows のシステムの色から決める既定の色。地と表示していないタブはコントロールの色、表示して
+    /// いるタブは窓の地と文字の色。
+    pub fn from_system(system: SystemColors) -> Self {
         Self {
             bar: system.face,
-            // 表示しているタブは端末と同じ色にして、端末とつながって見えるようにする。
-            active_tab: palette.background,
-            active_title: palette.foreground,
+            active_tab: system.window,
+            active_title: system.window_text,
             inactive_title: system.text,
             separator: system.shadow,
-            hovered_tab: mix(system.face, system.highlight, HOVERED_TAB_LIGHTEN),
+            hovered_tab: mix(system.face, system.text, HOVERED_TAB_TINT),
             idle_mark: system.gray_text,
+            bell: BELL_COLOR,
         }
     }
 
@@ -511,19 +539,18 @@ fn mix(from: Rgb, to: Rgb, ratio: f32) -> Rgb {
 }
 
 /// `layout` のとおりに並べたタブバーに描くもの。`tabs` は端末の並びの順のタブ、`active` は表示して
-/// いるタブの位置、`highlight` はマウスの下にあるものと押しているもの。色は `palette` から決め、
-/// タイトルの幅は `measure` で測る。表示しているタブのタイトルは太字にする。閉じるボタンは、表示して
-/// いるタブとマウスの下のタブにだけ出す。
+/// いるタブの位置、`highlight` はマウスの下にあるものと押しているもの。色は `colors`、タイトルの幅は
+/// `measure` で測る。表示しているタブのタイトルは太字にする。閉じるボタンは、表示しているタブと
+/// マウスの下のタブにだけ出す。描くのはタブバーの高さまでで、端末の画面との間の空きには描かない。
 pub fn paints(
     layout: &Layout,
     tabs: &[TabView],
     active: usize,
     highlight: Highlight,
-    palette: Palette,
+    colors: &Palette,
     measure: &impl Measure,
 ) -> Vec<Paint> {
     let metrics = layout.metrics;
-    let colors = Colors::new(palette);
     let hovered = highlight.hovered_tab();
     let raised = |index: usize| index == active || Some(index) == hovered;
     let mut paints = vec![Paint::Fill {
@@ -557,10 +584,10 @@ pub fn paints(
         .iter()
         .find(|tab| Some(tab.index) == hovered && tab.index != active)
     {
-        push_raised_tab(&mut paints, layout, tab.area, colors.hovered_tab, false);
+        push_raised_tab(&mut paints, metrics, tab.area, colors.hovered_tab);
     }
     if let Some(tab) = layout.tabs.iter().find(|tab| tab.index == active) {
-        push_raised_tab(&mut paints, layout, tab.area, colors.active_tab, true);
+        push_raised_tab(&mut paints, metrics, tab.area, colors.active_tab);
     }
     for slot in &layout.tabs {
         let Some(tab) = tabs.get(slot.index) else {
@@ -579,7 +606,7 @@ pub fn paints(
             paints.push(Paint::Icon {
                 icon: Icon::Dot,
                 area: mark,
-                color: BELL_COLOR,
+                color: colors.bell,
             });
         }
         let title = fit_title(tab.title, content.title_width, is_active, measure);
@@ -595,7 +622,7 @@ pub fn paints(
         if raised(slot.index) {
             push_button(
                 &mut paints,
-                &colors,
+                colors,
                 Button {
                     area: slot.close,
                     mark: (Icon::Close, metrics.close_mark(), title_color),
@@ -617,7 +644,7 @@ pub fn paints(
         };
         push_button(
             &mut paints,
-            &colors,
+            colors,
             Button {
                 area,
                 mark: (icon, metrics.plus_mark(), mark_color),
@@ -644,7 +671,7 @@ struct Button {
     ink: Rgb,
 }
 
-fn push_button(paints: &mut Vec<Paint>, colors: &Colors, button: Button) {
+fn push_button(paints: &mut Vec<Paint>, colors: &Palette, button: Button) {
     let Button {
         area,
         mark: (icon, mark_size, mark_color),
@@ -672,9 +699,9 @@ fn push_button(paints: &mut Vec<Paint>, colors: &Colors, button: Button) {
     });
 }
 
-/// 矩形 `area` に、上の角を丸めたタブを `color` で描く。`flared` なら、下の辺の左右を外へ反らせる。
-fn push_raised_tab(paints: &mut Vec<Paint>, layout: &Layout, area: Area, color: Rgb, flared: bool) {
-    let radius = layout.metrics.margin();
+/// 矩形 `area` に、上の角を丸めたタブを `color` で描く。下の辺はまっすぐ。
+fn push_raised_tab(paints: &mut Vec<Paint>, metrics: Metrics, area: Area, color: Rgb) {
+    let radius = metrics.corner_radius();
     if area.width < radius * 2 || area.height < radius {
         paints.push(Paint::Fill { area, color });
         return;
@@ -712,36 +739,11 @@ fn push_raised_tab(paints: &mut Vec<Paint>, layout: &Layout, area: Area, color: 
         area: square(area.right() - radius, area.y),
         color,
     });
-    if !flared {
-        return;
-    }
-    let flare_y = area.bottom() - radius;
-    if area.x >= radius {
-        paints.push(Paint::Icon {
-            icon: Icon::Flare(Side::Left),
-            area: square(area.x - radius, flare_y),
-            color,
-        });
-    }
-    if area.right() + radius <= layout.width {
-        paints.push(Paint::Icon {
-            icon: Icon::Flare(Side::Right),
-            area: square(area.right(), flare_y),
-            color,
-        });
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
-    const WHITE: Rgb = Rgb {
-        r: 200,
-        g: 200,
-        b: 200,
-    };
 
     const fn gray(level: u8) -> Rgb {
         Rgb {
@@ -751,22 +753,28 @@ mod tests {
         }
     }
 
-    /// Windows 11 の既定に近いコントロールの色と、黒地に白の端末。コントロールの文字の色は、端末の
-    /// 背景色と見分けられるよう黒にしない。
-    const PALETTE: Palette = Palette {
-        system: SystemColors {
-            face: gray(0xf0),
-            text: gray(0x20),
-            gray_text: gray(0x6d),
-            highlight: gray(0xff),
-            shadow: gray(0xa0),
-        },
-        background: BLACK,
-        foreground: WHITE,
+    /// Windows 11 の既定に近いシステムの色。色で描くものを見分けられるよう、どれも違う色にする。
+    const SYSTEM: SystemColors = SystemColors {
+        face: gray(0xf0),
+        text: gray(0x20),
+        gray_text: gray(0x6d),
+        shadow: gray(0xa0),
+        window: gray(0xfe),
+        window_text: gray(0x10),
     };
 
-    /// 192 DPI の寸法。タブバーの高さ 64、上の空き 12、余白 20、ボタン 44、閉じるボタン 36、
-    /// ベルの印 16、すき間 12、タブの幅 144〜480。
+    /// 表示しているタブの色。
+    const WINDOW: Rgb = SYSTEM.window;
+
+    /// 表示しているタブのタイトルの色。
+    const WINDOW_TEXT: Rgb = SYSTEM.window_text;
+
+    fn palette() -> Palette {
+        Palette::from_system(SYSTEM)
+    }
+
+    /// 192 DPI の寸法。タブバーの高さ 64（端末との空き 8 は別）、上の空き 4、角の半径 12、すき間 12、
+    /// 余白 20、ボタン 44、閉じるボタン 36、ベルの印 16、印のすき間 12、タブの幅 144〜480。
     const METRICS: Metrics = Metrics { dpi: 192 };
 
     /// セルの幅が 16 ピクセルの 100 桁の窓のタブバーの幅。
@@ -809,13 +817,16 @@ mod tests {
 
     #[test]
     fn the_bar_height_follows_the_dpi() {
-        assert_eq!(height(96), 32);
-        assert_eq!(height(144), 48);
-        assert_eq!(height(192), 64);
-        assert_eq!(height(120), 40);
-        assert_eq!(height(1), 1);
+        // タブバーの高さ 32 と、端末の画面との空き 4。
+        assert_eq!(height(96), 36);
+        assert_eq!(height(144), 54);
+        assert_eq!(height(192), 72);
+        assert_eq!(height(120), 45);
+        assert_eq!(height(1), 2);
+        assert_eq!(METRICS.bar_height(), 64);
         let base = Metrics { dpi: 96 };
         assert_eq!((base.button(), METRICS.button()), (22, 44));
+        assert_eq!((base.top_margin(), METRICS.top_margin()), (2, 4));
     }
 
     fn square(x: u32, y: u32, size: u32) -> Area {
@@ -830,17 +841,17 @@ mod tests {
     #[test]
     fn a_single_tab_is_laid_out() {
         let layout = layout(METRICS, WIDTH, 1, 0);
-        // メニューのボタンは、左端に上の空きと同じすき間を空けて、タブの高さの真ん中に置く。
-        assert_eq!(layout.menu(), square(12, 16, 44));
+        // メニューのボタンは、左端からすき間を空けて、タブの高さの真ん中に置く。
+        assert_eq!(layout.menu(), square(12, 12, 44));
         // タブは、メニューのボタンの右に同じすき間を空けて置く。
         assert_eq!(xs(&layout), vec![(0, 68, 480)]);
         let tab = layout.tabs()[0];
         // 上の空きの下から、タブバーの下の辺まで。
-        assert_eq!((tab.area.y, tab.area.bottom()), (12, 64));
+        assert_eq!((tab.area.y, tab.area.bottom()), (4, 64));
         // 閉じるボタンは右の余白の半分を残してタブの右端に、高さの真ん中に置く。
-        assert_eq!(tab.close, square(502, 20, 36));
+        assert_eq!(tab.close, square(502, 16, 36));
         // 新しいタブのボタンは、タブの右に同じすき間を空けて置く。
-        assert_eq!(layout.new_tab, square(560, 16, 44));
+        assert_eq!(layout.new_tab, square(560, 12, 44));
     }
 
     #[test]
@@ -882,7 +893,7 @@ mod tests {
     fn a_narrow_bar_still_shows_one_tab() {
         let layout = layout(METRICS, 224, 3, 2);
         assert_eq!(xs(&layout), vec![(2, 68, 80)]);
-        assert_eq!(layout.tabs()[0].close, square(102, 20, 36));
+        assert_eq!(layout.tabs()[0].close, square(102, 16, 36));
         // 閉じるボタンはタブからはみ出さない。
         let narrower = super::layout(METRICS, 174, 3, 2);
         assert_eq!(xs(&narrower), vec![(2, 68, 30)]);
@@ -890,7 +901,7 @@ mod tests {
             narrower.tabs()[0].close,
             Area {
                 x: 68,
-                y: 20,
+                y: 16,
                 width: 30,
                 height: 36
             }
@@ -907,9 +918,10 @@ mod tests {
         assert_eq!(layout.hit(547, 0), Some(Hit::Tab(0)));
         assert_eq!(layout.hit(548, 63), Some(Hit::Tab(1)));
         // 閉じるボタンと、その上下はタブ。
-        assert_eq!(layout.hit(502, 20), Some(Hit::Close(0)));
-        assert_eq!(layout.hit(537, 55), Some(Hit::Close(0)));
-        assert_eq!(layout.hit(520, 19), Some(Hit::Tab(0)));
+        assert_eq!(layout.hit(502, 16), Some(Hit::Close(0)));
+        assert_eq!(layout.hit(537, 51), Some(Hit::Close(0)));
+        assert_eq!(layout.hit(520, 15), Some(Hit::Tab(0)));
+        assert_eq!(layout.hit(520, 52), Some(Hit::Tab(0)));
         assert_eq!(layout.hit(1000, 40), Some(Hit::Close(1)));
         // 新しいタブのボタンは、上から下まで。
         assert_eq!(layout.hit(1040, 0), Some(Hit::NewTab));
@@ -917,11 +929,12 @@ mod tests {
         // メニューのボタンは、窓の左端から、上から下まで。
         assert_eq!(layout.hit(0, 0), Some(Hit::Menu));
         assert_eq!(layout.hit(55, 63), Some(Hit::Menu));
-        // メニューのボタンとタブの間、タブとボタンの間、右の空き、タブバーの下。
+        // メニューのボタンとタブの間、タブとボタンの間、右の空き、端末の画面との間の空き。
         assert_eq!(layout.hit(60, 30), None);
         assert_eq!(layout.hit(1030, 30), None);
         assert_eq!(layout.hit(1084, 30), None);
         assert_eq!(layout.hit(548, 64), None);
+        assert_eq!(layout.hit(0, 71), None);
         assert_eq!(Hit::Close(1).tab(), Some(1));
         assert_eq!(Hit::NewTab.tab(), None);
         assert_eq!(Hit::Menu.tab(), None);
@@ -969,11 +982,11 @@ mod tests {
             index: 0,
             area: Area {
                 x,
-                y: 12,
+                y: 4,
                 width,
-                height: 52,
+                height: 60,
             },
-            close: square(close_x, 20, 36),
+            close: square(close_x, 16, 36),
         }
     }
 
@@ -984,15 +997,15 @@ mod tests {
         // タイトルは閉じるボタンの左まで。
         assert_eq!((plain.title_x, plain.title_width), (40, 414));
         // タイトルはタブの高さの真ん中に置く。
-        assert_eq!(plain.text_y, 22);
-        assert_eq!(tab_content(METRICS, &tab(20, 480), false, 20).text_y, 28);
+        assert_eq!(plain.text_y, 18);
+        assert_eq!(tab_content(METRICS, &tab(20, 480), false, 20).text_y, 24);
         let marked = tab_content(METRICS, &tab(20, 480), true, 32);
         // 直径 16 の円を左の余白の次に置き、すき間 12 を空けてタイトル。
         assert_eq!(
             marked.mark,
             Some(Area {
                 x: 40,
-                y: 30,
+                y: 26,
                 width: 16,
                 height: 16
             })
@@ -1076,7 +1089,7 @@ mod tests {
             &tabs,
             2,
             Highlight::default(),
-            PALETTE,
+            &palette(),
             &FixedWidth,
         );
         assert_eq!(dots(&paints).len(), 1);
@@ -1110,7 +1123,7 @@ mod tests {
             &tabs,
             3,
             Highlight::default(),
-            PALETTE,
+            &palette(),
             &FixedWidth,
         );
         // 描く 10 個のうち、偶数番の 5 個に印。
@@ -1121,7 +1134,23 @@ mod tests {
     }
 
     #[test]
-    fn the_active_tab_rises_in_the_terminal_colour() {
+    fn default_colours_come_from_the_system() {
+        let colors = palette();
+        assert_eq!(colors.bar, SYSTEM.face);
+        assert_eq!(
+            (colors.active_tab, colors.active_title),
+            (WINDOW, WINDOW_TEXT)
+        );
+        assert_eq!(colors.inactive_title, SYSTEM.text);
+        assert_eq!(colors.separator, SYSTEM.shadow);
+        assert_eq!(colors.idle_mark, SYSTEM.gray_text);
+        assert_eq!(colors.bell, BELL_COLOR);
+        // マウスの下のタブは、地より文字の色へ少し寄せる。
+        assert!(colors.hovered_tab.r < SYSTEM.face.r && colors.hovered_tab.r > SYSTEM.text.r);
+    }
+
+    #[test]
+    fn the_active_tab_rises_in_the_window_colour() {
         let tabs = [
             TabView {
                 title: "one",
@@ -1133,17 +1162,16 @@ mod tests {
             },
         ];
         let layout = layout(METRICS, WIDTH, 2, 1);
+        let colors = palette();
         let paints = paints(
             &layout,
             &tabs,
             1,
             Highlight::default(),
-            PALETTE,
+            &colors,
             &FixedWidth,
         );
-        let colors = Colors::new(PALETTE);
-        // 地はタブバーの全体で、コントロールの地の色。
-        assert_eq!(colors.bar, PALETTE.system.face);
+        // 地はタブバーの全体で、端末の画面との間の空きは含まない。
         assert_eq!(
             paints[0],
             Paint::Fill {
@@ -1156,37 +1184,63 @@ mod tests {
                 color: colors.bar
             }
         );
-        // 表示しているタブは端末の背景色で、上の角を丸め、下の左右を外へ反らせる。
+        // 表示しているタブは窓の地の色で、上の角を丸める。下の辺はまっすぐで、タブバーの下の辺まで。
         let icons: Vec<(Icon, Area)> = paints
             .iter()
             .filter_map(|paint| match paint {
-                Paint::Icon { icon, area, color } if *color == BLACK => Some((*icon, *area)),
+                Paint::Icon { icon, area, color } if *color == WINDOW => Some((*icon, *area)),
                 _ => None,
             })
             .collect();
         assert_eq!(
             icons,
             vec![
-                (Icon::Corner(Corner::TopLeft), square(548, 12, 12)),
-                (Icon::Corner(Corner::TopRight), square(1016, 12, 12)),
-                (Icon::Flare(Side::Left), square(536, 52, 12)),
-                (Icon::Flare(Side::Right), square(1028, 52, 12)),
+                (Icon::Corner(Corner::TopLeft), square(548, 4, 12)),
+                (Icon::Corner(Corner::TopRight), square(1016, 4, 12)),
             ]
         );
+        let fills: Vec<Area> = paints
+            .iter()
+            .filter_map(|paint| match paint {
+                Paint::Fill { area, color } if *color == WINDOW => Some(*area),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            fills,
+            vec![
+                Area {
+                    x: 560,
+                    y: 4,
+                    width: 456,
+                    height: 12
+                },
+                Area {
+                    x: 548,
+                    y: 16,
+                    width: 480,
+                    height: 48
+                },
+            ]
+        );
+        // どれもタブバーの中に描く。
+        assert!(paints.iter().all(|paint| match paint {
+            Paint::Fill { area, .. } | Paint::Icon { area, .. } => area.bottom() <= 64,
+            Paint::Label { y, .. } => y + FixedWidth.height() <= 64,
+        }));
         // タイトルは一つの文字列として、余白の右、タブの高さの真ん中に置く。表示しているタブの
-        // タイトルは太字で端末の文字の色、ほかはコントロールの文字の色。
-        let text = PALETTE.system.text;
+        // タイトルは太字で窓の文字の色、ほかはコントロールの文字の色。
         assert_eq!(
             titles(&paints),
             vec![
-                (88, 22, "one".to_owned(), false, text),
-                (568, 22, "端末".to_owned(), true, WHITE),
+                (88, 18, "one".to_owned(), false, SYSTEM.text),
+                (568, 18, "端末".to_owned(), true, WINDOW_TEXT),
             ]
         );
         // メニューのボタンの「≡」は、一辺 20 でボタンの真ん中に、薄い文字の色で。
         assert_eq!(
             icons_of(&paints, Icon::Menu),
-            vec![(square(24, 28, 20), PALETTE.system.gray_text)]
+            vec![(square(24, 24, 20), SYSTEM.gray_text)]
         );
     }
 
@@ -1197,9 +1251,9 @@ mod tests {
             bell: false,
         }; 4];
         let layout = layout(METRICS, WIDTH, 4, 1);
-        let colors = Colors::new(PALETTE);
+        let colors = palette();
         let separators = |highlight: Highlight| -> Vec<u32> {
-            paints(&layout, &tabs, 1, highlight, PALETTE, &FixedWidth)
+            paints(&layout, &tabs, 1, highlight, &colors, &FixedWidth)
                 .iter()
                 .filter_map(|paint| match paint {
                     Paint::Fill { area, color } if *color == colors.separator => Some(area.x),
@@ -1238,10 +1292,10 @@ mod tests {
             bell: false,
         }; 3];
         let layout = layout(METRICS, WIDTH, 3, 0);
-        let colors = Colors::new(PALETTE);
+        let colors = palette();
         let close_marks = |highlight: Highlight| -> Vec<u32> {
             icons_of(
-                &paints(&layout, &tabs, 0, highlight, PALETTE, &FixedWidth),
+                &paints(&layout, &tabs, 0, highlight, &colors, &FixedWidth),
                 Icon::Close,
             )
             .iter()
@@ -1259,23 +1313,16 @@ mod tests {
             close_marks(hovered),
             vec![close.x + 10, layout.tabs()[2].close.x + 10]
         );
-        // マウスの下のタブは、上の角を丸めて地より明るい色で描く。下の左右は反らせない。
-        let paints = paints(&layout, &tabs, 0, hovered, PALETTE, &FixedWidth);
+        // マウスの下のタブも、表示しているタブと同じく上の角を丸めて描く。
+        let paints = paints(&layout, &tabs, 0, hovered, &colors, &FixedWidth);
         let corners = icons_of(&paints, Icon::Corner(Corner::TopLeft));
-        assert!(colors.hovered_tab.r > colors.bar.r && colors.hovered_tab.r < 0xff);
         assert_eq!(
             corners,
             vec![
-                (square(layout.tabs()[2].area.x, 12, 12), colors.hovered_tab),
-                (square(68, 12, 12), BLACK),
+                (square(layout.tabs()[2].area.x, 4, 12), colors.hovered_tab),
+                (square(68, 4, 12), WINDOW),
             ]
         );
-        let flares: Vec<(Area, Rgb)> = [Side::Left, Side::Right]
-            .into_iter()
-            .flat_map(|side| icons_of(&paints, Icon::Flare(side)))
-            .collect();
-        assert!(flares.iter().all(|(_, color)| *color == BLACK));
-        assert_eq!(flares.len(), 2);
     }
 
     #[test]
@@ -1285,10 +1332,10 @@ mod tests {
             bell: false,
         }; 2];
         let layout = layout(METRICS, WIDTH, 2, 0);
-        let colors = Colors::new(PALETTE);
+        let colors = palette();
         let backgrounds = |highlight: Highlight| -> Vec<(Area, Rgb)> {
             icons_of(
-                &paints(&layout, &tabs, 0, highlight, PALETTE, &FixedWidth),
+                &paints(&layout, &tabs, 0, highlight, &colors, &FixedWidth),
                 Icon::Dot,
             )
         };
@@ -1298,10 +1345,10 @@ mod tests {
             hovered: Some(Hit::Close(0)),
             pressed: None,
         };
-        // 表示しているタブの上では、端末の背景色を文字の色へ寄せる。
+        // 表示しているタブの上では、窓の地の色を窓の文字の色へ寄せる。
         assert_eq!(
             backgrounds(over_close),
-            vec![(close, colors.button(BLACK, WHITE, false))]
+            vec![(close, colors.button(WINDOW, WINDOW_TEXT, false))]
         );
         // 押したままボタンの上にあれば押している色、外へ出れば地を描かない。
         let pressed = Highlight {
@@ -1310,7 +1357,7 @@ mod tests {
         };
         assert_eq!(
             backgrounds(pressed),
-            vec![(close, colors.button(BLACK, WHITE, true))]
+            vec![(close, colors.button(WINDOW, WINDOW_TEXT, true))]
         );
         let pressed_elsewhere = Highlight {
             hovered: Some(Hit::Tab(0)),
@@ -1323,13 +1370,13 @@ mod tests {
             hovered: Some(Hit::NewTab),
             pressed: None,
         };
-        let text = PALETTE.system.text;
+        let text = SYSTEM.text;
         assert_eq!(
             backgrounds(over_new_tab),
             vec![(layout.new_tab, colors.button(colors.bar, text, false))]
         );
         let plus = icons_of(
-            &paints(&layout, &tabs, 0, over_new_tab, PALETTE, &FixedWidth),
+            &paints(&layout, &tabs, 0, over_new_tab, &colors, &FixedWidth),
             Icon::Plus,
         );
         assert_eq!(
@@ -1340,8 +1387,8 @@ mod tests {
             )]
         );
         assert_ne!(
-            colors.button(BLACK, WHITE, false),
-            colors.button(BLACK, WHITE, true)
+            colors.button(WINDOW, WINDOW_TEXT, false),
+            colors.button(WINDOW, WINDOW_TEXT, true)
         );
     }
 }

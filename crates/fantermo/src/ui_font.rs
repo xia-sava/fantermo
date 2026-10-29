@@ -1,5 +1,6 @@
 //! タブバーのタイトルに使う、Windows の UI のフォント（メッセージボックスなどのメッセージのフォント）。
-//! 端末のフォントとは別に、窓の DPI に合わせた大きさで DirectWrite の書式を作り、文字列の幅を測る。
+//! 端末のフォントとは別に、窓の DPI に合わせ、メッセージのフォントより少し小さくした大きさで
+//! DirectWrite の書式を作り、文字列の幅を測る。
 
 use std::{cell::RefCell, collections::HashMap};
 
@@ -29,6 +30,9 @@ const FALLBACK_FAMILY: &str = "Segoe UI";
 /// メッセージのフォントを問い合わせられなかったときの大きさ（ポイント）。
 const FALLBACK_SIZE_PT: f32 = 9.0;
 
+/// メッセージのフォントの大きさに対する、タブのタイトルの大きさの割合。
+const TITLE_SIZE_RATIO: f32 = 0.85;
+
 /// 1 インチあたりのポイント数。
 const POINTS_PER_INCH: f32 = 72.0;
 
@@ -56,10 +60,10 @@ pub struct UiFont {
 }
 
 impl UiFont {
-    /// DPI が `dpi` の窓のメッセージのフォント。問い合わせられなければ [`FALLBACK_FAMILY`] の
-    /// [`FALLBACK_SIZE_PT`] ポイント。
+    /// DPI が `dpi` の窓のメッセージのフォントの書体を、その [`TITLE_SIZE_RATIO`] 倍の大きさで。
+    /// 問い合わせられなければ [`FALLBACK_FAMILY`] の [`FALLBACK_SIZE_PT`] ポイントの同じ割合。
     pub fn for_dpi(dwrite: &IDWriteFactory, dpi: u32) -> windows::core::Result<Self> {
-        let (family, size_px, weight) = match message_font(dpi) {
+        let (family, message_size_px, weight) = match message_font(dpi) {
             Ok(found) => found,
             Err(e) => {
                 tracing::warn!("failed to get the message font for {dpi} DPI: {e}");
@@ -70,6 +74,7 @@ impl UiFont {
                 )
             }
         };
+        let size_px = message_size_px * TITLE_SIZE_RATIO;
         let bold = DWRITE_FONT_WEIGHT(weight.0.max(DWRITE_FONT_WEIGHT_BOLD.0));
         let formats = [
             text_format(dwrite, &family, size_px, weight)?,

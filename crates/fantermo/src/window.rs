@@ -25,9 +25,9 @@ use windows::{
         Graphics::{
             DirectWrite::IDWriteFactory,
             Gdi::{
-                COLOR_BTNFACE, COLOR_BTNHIGHLIGHT, COLOR_BTNSHADOW, COLOR_BTNTEXT, COLOR_GRAYTEXT,
-                ClientToScreen, GetSysColor, InvalidateRect, SYS_COLOR_INDEX, ScreenToClient,
-                ValidateRect,
+                COLOR_BTNFACE, COLOR_BTNSHADOW, COLOR_BTNTEXT, COLOR_GRAYTEXT, COLOR_WINDOW,
+                COLOR_WINDOWTEXT, ClientToScreen, GetSysColor, InvalidateRect, SYS_COLOR_INDEX,
+                ScreenToClient, ValidateRect,
             },
         },
         System::{
@@ -264,7 +264,7 @@ fn change_dpi_in_place(hwnd: HWND, dpi: u32) {
     };
 }
 
-/// Windows のコントロールの色。描くたびに問い合わせるので、システムの色が変わればそのまま従う。
+/// Windows のシステムの色。描くたびに問い合わせるので、システムの色が変わればそのまま従う。
 fn system_colors() -> tab_bar::SystemColors {
     let color = |index: SYS_COLOR_INDEX| {
         // SAFETY: 決まった番号の色を問い合わせるだけ。
@@ -280,8 +280,9 @@ fn system_colors() -> tab_bar::SystemColors {
         face: color(COLOR_BTNFACE),
         text: color(COLOR_BTNTEXT),
         gray_text: color(COLOR_GRAYTEXT),
-        highlight: color(COLOR_BTNHIGHLIGHT),
         shadow: color(COLOR_BTNSHADOW),
+        window: color(COLOR_WINDOW),
+        window_text: color(COLOR_WINDOWTEXT),
     }
 }
 
@@ -294,7 +295,7 @@ fn grid_pixels(font: &Font, cols: u16, rows: u16) -> SIZE {
 }
 
 /// 大きさが `width` × `height` のクライアント領域のうち、表示している端末を描く領域。上端の高さ
-/// `tab_bar_height` のタブバーを除いた残りの全体に描く。
+/// `tab_bar_height` のタブバー（端末との間の空きを含む。[`tab_bar::height`]）を除いた残りの全体に描く。
 fn terminal_area_in_client(width: u32, height: u32, tab_bar_height: u32) -> Area {
     let tab_bar_height = tab_bar_height.min(height);
     Area {
@@ -312,6 +313,16 @@ fn client_size_for_terminal(terminal: SIZE, tab_bar_height: u32) -> SIZE {
         cx: terminal.cx,
         cy: terminal.cy + tab_bar_height as i32,
     }
+}
+
+/// クライアント領域の中の位置を、`area` の左上からの位置にする。
+fn client_to_area(area: Area, x: i32, y: i32) -> (i32, i32) {
+    (x - area.x as i32, y - area.y as i32)
+}
+
+/// `area` の左上からの位置を、クライアント領域の中の位置にする。[`client_to_area`] と対になる。
+fn area_to_client(area: Area, x: i32, y: i32) -> (i32, i32) {
+    (x + area.x as i32, y + area.y as i32)
 }
 
 /// クライアント領域の大きさが `client` になる、DPI が `dpi` の窓の大きさ（枠を含む）。
@@ -809,18 +820,12 @@ impl App {
 
     /// 窓のクライアント領域の中の位置を、端末を描く領域の左上からの位置にする。
     fn client_to_terminal(&self, x: i32, y: i32) -> (i32, i32) {
-        (
-            x - self.terminal_area.x as i32,
-            y - self.terminal_area.y as i32,
-        )
+        client_to_area(self.terminal_area, x, y)
     }
 
     /// 端末を描く領域の左上からの位置を、窓のクライアント領域の中の位置にする。
     fn terminal_to_client(&self, x: i32, y: i32) -> (i32, i32) {
-        (
-            x + self.terminal_area.x as i32,
-            y + self.terminal_area.y as i32,
-        )
+        area_to_client(self.terminal_area, x, y)
     }
 
     /// 窓のクライアント領域の中の位置を、表示している範囲のセルに直す。端末を描く領域の外は端のセルに
@@ -1591,7 +1596,7 @@ impl App {
         if !self.blink_visible {
             frame.hide_blinking_text();
         }
-        let tab_bar = self.tab_bar_paints(frame.background, frame.foreground);
+        let tab_bar = self.tab_bar_paints();
         if let Err(e) = self
             .renderer
             .render(&[(&frame, self.terminal_area)], &tab_bar, capture)
@@ -1600,9 +1605,8 @@ impl App {
         }
     }
 
-    /// タブバーに描くもの。色は Windows のコントロールの色と、端末の背景色 `background`・文字の色
-    /// `foreground` から決める。
-    fn tab_bar_paints(&self, background: Rgb, foreground: Rgb) -> Vec<Paint> {
+    /// タブバーに描くもの。色は Windows のシステムの色から決める。
+    fn tab_bar_paints(&self) -> Vec<Paint> {
         let tabs: Vec<TabView> = self
             .sessions
             .iter()
@@ -1623,16 +1627,12 @@ impl App {
                 hovered: self.tab_bar_hover,
                 pressed,
             },
-            tab_bar::Palette {
-                system: system_colors(),
-                background,
-                foreground,
-            },
+            &tab_bar::Palette::from_system(system_colors()),
             &*self.ui_font,
         )
     }
 
-    /// タブバーを描く領域。端末を描く領域の上の、窓の幅いっぱい。
+    /// タブバーを描く領域。端末を描く領域の上の、窓の幅いっぱい。端末との間の空きも含む。
     fn tab_bar_area(&self) -> Area {
         Area {
             x: 0,
@@ -2296,6 +2296,32 @@ mod tests {
         assert!(!is_link_modifier(Mods::empty()));
         assert!(!is_link_modifier(Mods::CTRL | Mods::SHIFT));
         assert!(!is_link_modifier(Mods::CTRL | Mods::ALT));
+    }
+
+    #[test]
+    fn the_terminal_starts_below_the_tab_bar_and_its_gap() {
+        // 96 DPI ではタブバーの 32 と空きの 4、192 DPI では 64 と 8 の下から。
+        for (dpi, top) in [(96, 36), (192, 72)] {
+            let terminal = SIZE { cx: 800, cy: 480 };
+            let client = client_size_for_terminal(terminal, tab_bar::height(dpi));
+            assert_eq!((client.cx, client.cy), (800, 480 + top as i32));
+            let area = terminal_area_in_client(800, client.cy as u32, tab_bar::height(dpi));
+            assert_eq!(
+                area,
+                Area {
+                    x: 0,
+                    y: top,
+                    width: 800,
+                    height: 480
+                }
+            );
+            // 端末の左上のセルの左上は、クライアント領域の (0, top)。空きの中は端末より上。
+            assert_eq!(client_to_area(area, 0, top as i32), (0, 0));
+            assert_eq!(client_to_area(area, 5, top as i32 - 1), (5, -1));
+            assert_eq!(area_to_client(area, 16, 32), (16, 32 + top as i32));
+        }
+        // タブバーより低いクライアント領域では、端末を描く領域は空。
+        assert_eq!(terminal_area_in_client(800, 20, 36).height, 0);
     }
 
     #[test]

@@ -61,21 +61,11 @@ pub enum Corner {
     TopRight,
 }
 
-/// 左右。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Side {
-    Left,
-    Right,
-}
-
 /// [`Paint::Icon`] で描く形。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Icon {
     /// 四分円で丸めた角。描く矩形を、その角が丸い矩形の角として塗る。
     Corner(Corner),
-    /// 下の辺へ向かって外へ反る角。描く矩形の下の辺と、左（`Side::Left`）か右の辺の間を、内側へ
-    /// くぼんだ四分円で塗る。表示しているタブの下の左右に置き、タブの下の辺を端末へつなぐ。
-    Flare(Side),
     /// 塗りつぶした円。
     Dot,
     /// タブを閉じるボタンの「×」。
@@ -91,7 +81,6 @@ impl Icon {
     pub fn shapes(self, width: f32, height: f32) -> Vec<Shape> {
         match self {
             Icon::Corner(corner) => vec![corner_shape(corner, width, height)],
-            Icon::Flare(side) => vec![flare_shape(side, width, height)],
             Icon::Close => {
                 let thickness = stroke(width.min(height));
                 // 線の端の角が矩形からはみ出さないよう、太さの半分だけ内へ寄せる。
@@ -184,27 +173,6 @@ fn corner_shape(corner: Corner, width: f32, height: f32) -> Shape {
     Shape::Polygon { points, alpha: 1.0 }
 }
 
-/// 幅 `width`・高さ `height` の矩形の、`side` の辺と下の辺の間をくぼんだ四分円で塗る形。
-fn flare_shape(side: Side, width: f32, height: f32) -> Shape {
-    let radius = width.min(height);
-    let mut points = match side {
-        // 右下を塗る。くぼみの円の中心は左上。
-        Side::Left => {
-            let mut points = vec![(width, 0.0), (width, height), (0.0, height)];
-            points.extend(arc((0.0, 0.0), radius, FRAC_PI_2, 0.0));
-            points
-        }
-        // 左下を塗る。くぼみの円の中心は右上。
-        Side::Right => {
-            let mut points = vec![(0.0, 0.0), (0.0, height), (width, height)];
-            points.extend(arc((width, 0.0), radius, FRAC_PI_2, PI));
-            points
-        }
-    };
-    points.dedup();
-    Shape::Polygon { points, alpha: 1.0 }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,19 +231,6 @@ mod tests {
                 assert!((-1e-3..=6.0 + 1e-3).contains(&y), "{corner:?}");
             }
         }
-    }
-
-    #[test]
-    fn flares_fill_the_bottom_toward_the_tab() {
-        let left = Icon::Flare(Side::Left).shapes(8.0, 8.0);
-        let points = polygon_points(&left[0]);
-        // 右下の角を含み、左上の角は含まない。
-        assert!(points.iter().any(|&p| near(p, (8.0, 8.0))));
-        assert!(!points.iter().any(|&p| near(p, (0.0, 0.0))));
-        let right = Icon::Flare(Side::Right).shapes(8.0, 8.0);
-        let points = polygon_points(&right[0]);
-        assert!(points.iter().any(|&p| near(p, (0.0, 8.0))));
-        assert!(!points.iter().any(|&p| near(p, (8.0, 0.0))));
     }
 
     #[test]
