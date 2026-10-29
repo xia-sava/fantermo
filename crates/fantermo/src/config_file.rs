@@ -40,16 +40,25 @@ const NOTIFY_HEADER_BYTES: usize = 12;
 /// 開発用。設定ファイルの場所を、この環境変数の値に差し替える。
 const CONFIG_PATH_ENV: &str = "FANTERMO_CONFIG";
 
-/// `%APPDATA%` の下の、設定ファイルの場所。
-const CONFIG_PATH_COMPONENTS: [&str; 2] = ["fantermo", "config.toml"];
+/// fantermo のファイルを置く、`%APPDATA%` の下のフォルダ。
+const APP_DATA_FOLDER: &str = "fantermo";
+
+/// 設定ファイルの名前。
+const CONFIG_FILE_NAME: &str = "config.toml";
 
 /// 設定ファイルの場所。[`CONFIG_PATH_ENV`] があればその値、なければ `%APPDATA%\fantermo\config.toml`。
 pub fn path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os(CONFIG_PATH_ENV) {
+    app_data_file(CONFIG_PATH_ENV, CONFIG_FILE_NAME)
+}
+
+/// fantermo が `%APPDATA%\fantermo` に置くファイル `file_name` の場所。環境変数 `override_env` が
+/// あれば、その値に差し替える。
+pub fn app_data_file(override_env: &str, file_name: &str) -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os(override_env) {
         return Some(PathBuf::from(path));
     }
     let mut path = known_folder::path(&FOLDERID_RoamingAppData)?;
-    path.extend(CONFIG_PATH_COMPONENTS);
+    path.extend([APP_DATA_FOLDER, file_name]);
     Some(path)
 }
 

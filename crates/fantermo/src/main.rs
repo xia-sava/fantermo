@@ -3,6 +3,8 @@
 //! 引数があれば、それを子プロセスのコマンドラインにする（例: `fantermo.exe C:\app\cygwin\bin\zsh.exe -l`）。
 //! 引数がなければ設定ファイルの `shell` を、それもなければ PowerShell を起動する。新しいタブも同じ
 //! 決め方で起動する。設定ファイルは `%APPDATA%\fantermo\config.toml`（`config_file`）。
+//! 窓の位置・大きさ・最大化は、閉じるときに同じフォルダの `state.toml` に書き、次に起動したときに戻す
+//! （`window_state`）。
 //!
 //! リリースのビルドはコンソールの窓を持たない GUI のアプリにし、ログはファイルに出す（`logging`）。
 
@@ -34,6 +36,7 @@ mod tab_bar;
 mod text_dialog;
 mod ui_font;
 mod window;
+mod window_state;
 
 use std::path::Path;
 
@@ -54,7 +57,9 @@ fn main() {
 
     let config_path = config_file::path();
     let loaded = config_file::load(config_path.as_deref());
-    match window::run(child_command_line(), config_path, loaded) {
+    let state_path = window_state::path();
+    let state = window_state::load(state_path.as_deref());
+    match window::run(child_command_line(), config_path, loaded, state_path, state) {
         Ok(code) => std::process::exit(code as i32),
         Err(e) => {
             tracing::error!("{e}");

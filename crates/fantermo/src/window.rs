@@ -14,6 +14,7 @@ use fantermo_core::{
     frame::Rgb,
     keymap::{self, Keymap},
     link::Link,
+    state::State,
     vt::{
         self, Key, KeyAction, KeyInput, Mods, MouseAction, MouseButton, MouseInput, PasteOutcome,
         PointerPosition,
@@ -47,11 +48,11 @@ use windows::{
                 FlashWindowEx, GWLP_USERDATA, GetClientRect, GetForegroundWindow, GetMessageW,
                 GetWindowLongPtrW, GetWindowRect, HTCLIENT, IDC_ARROW, IDC_HAND, KillTimer,
                 LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage,
-                RegisterClassW, SPI_GETWHEELSCROLLLINES, SW_SHOWDEFAULT, SWP_NOACTIVATE,
-                SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetCursor,
-                SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+                RegisterClassW, SPI_GETWHEELSCROLLLINES, SW_SHOWDEFAULT, SW_SHOWMAXIMIZED,
+                SWP_NOACTIVATE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW,
+                SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
                 SystemParametersInfoW, TranslateMessage, WA_INACTIVE, WHEEL_DELTA, WINDOW_EX_STYLE,
-                WM_ACTIVATE, WM_APP, WM_CHAR, WM_CONTEXTMENU, WM_DEADCHAR, WM_DESTROY,
+                WM_ACTIVATE, WM_APP, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU, WM_DEADCHAR, WM_DESTROY,
                 WM_DPICHANGED, WM_GETDPISCALEDSIZE, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION,
                 WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
                 WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN,
@@ -80,6 +81,7 @@ use crate::{
     tab_bar::{self, Hit, TabView},
     text_dialog,
     ui_font::UiFont,
+    window_state,
 };
 
 const WINDOW_CLASS: PCWSTR = w!("fantermo");
@@ -110,7 +112,7 @@ const BLINK_INTERVAL: Duration = Duration::from_millis(500);
 /// キーボードから開いた WM_CONTEXTMENU が `lparam` に入れてくる位置。
 const KEYBOARD_CONTEXT_MENU_POSITION: (i32, i32) = (-1, -1);
 
-/// 起動したときの大きさ（セルの数）。
+/// 起動したときの大きさ（セルの数）。窓の状態ファイルに大きさを覚えていないときに使う。
 const INITIAL_COLS: u16 = 100;
 const INITIAL_ROWS: u16 = 30;
 
@@ -133,10 +135,14 @@ fn command_line_for(arguments: Option<&str>, shell: Option<&str>) -> String {
 /// 窓を開き、子プロセスを起動して、窓が閉じるまでメッセージを処理する。最後の端末の子プロセスが終わって
 /// 窓を閉じたときはその終了コードを、利用者が最後の端末を閉じたときは 0 を返す。`arguments` は fantermo の引数（子プロセスのコマンドライン）。`config_path` は
 /// 設定ファイルの場所で、`loaded` はそこから読んだ設定。読んだときの警告は、窓を出してから見せる。
+/// `state_path` は窓の状態ファイルの場所で、`state` はそこから読んだ状態。窓を見せる前に、覚えていた
+/// 位置・大きさに戻し、閉じるときに書く。
 pub fn run(
     arguments: Option<String>,
     config_path: Option<PathBuf>,
     loaded: Loaded,
+    state_path: Option<PathBuf>,
+    state: State,
 ) -> Result<u32, Box<dyn std::error::Error>> {
     let Loaded { config, notice } = loaded;
     let dwrite = font::create_factory()?;
@@ -146,7 +152,12 @@ pub fn run(
     log_font(&font, system_dpi);
 
     let hwnd = create_window(&font, system_dpi)?;
-    let app = App::new(
+    // 端末の桁数と行数を、戻した大きさから決めさせるため、App を作る前に戻す。
+    let restored = state.window;
+    if let Some(window) = &restored {
+        window_state::restore_hidden(hwnd, window);
+    }
+    let mut app = App::new(
         hwnd,
         dwrite,
         font,
@@ -155,6 +166,7 @@ pub fn run(
         config,
         arguments,
     )?;
+    app.state_path = state_path;
     let app = Box::into_raw(Box::new(RefCell::new(app)));
     // SAFETY: hwnd はこのスレッドが作った窓。ポインタは WM_NCDESTROY で取り戻して解放する。
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, app as isize) };
@@ -166,10 +178,20 @@ pub fn run(
     });
     if window_dpi != system_dpi {
         change_dpi_in_place(hwnd, window_dpi);
+        // 作り直しは桁数と行数を保って窓の大きさを変えるので、覚えていた大きさに戻し直す。桁数と
+        // 行数は、届く WM_SIZE で新しいセルの寸法から決め直す。
+        if let Some(window) = &restored {
+            window_state::restore_hidden(hwnd, window);
+        }
     }
 
+    let show = if restored.is_some_and(|window| window.maximized) {
+        SW_SHOWMAXIMIZED
+    } else {
+        SW_SHOWDEFAULT
+    };
     // SAFETY: hwnd は有効な窓。
-    unsafe { _ = ShowWindow(hwnd, SW_SHOWDEFAULT) };
+    unsafe { _ = ShowWindow(hwnd, show) };
     // メッセージループの外なので、App の借用はない。
     if let Some(text) = notice {
         notice::warn(hwnd, Topic::Settings, text);
@@ -444,6 +466,8 @@ struct App {
     dpi: u32,
     /// 設定ファイルの場所。
     config_path: Option<PathBuf>,
+    /// 窓の状態ファイルの場所。窓を閉じるときに書く。`None` なら書かない。
+    state_path: Option<PathBuf>,
     /// `font` を探したときの設定。
     font_config: FontConfig,
     /// 貼り付ける前に、編集のダイアログで確かめるとき。
@@ -548,6 +572,7 @@ impl App {
             ui_font,
             dpi,
             config_path,
+            state_path: None,
             font_config,
             paste_confirm: config.paste.confirm,
             arguments,
@@ -1789,11 +1814,39 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
     }
 }
 
+/// 窓の位置・大きさ・最大化を状態ファイルに書いてから、窓を閉じる。
 fn destroy_window(hwnd: HWND) {
+    save_window_state(hwnd);
     // SAFETY: hwnd は有効な窓。借用は持っていない。
     if let Err(e) = unsafe { DestroyWindow(hwnd) } {
         tracing::warn!("failed to destroy the window: {e}");
     }
+}
+
+/// 窓のいまの位置・大きさ・最大化を状態ファイルに書く。
+fn save_window_state(hwnd: HWND) {
+    let Some(app) = app_of(hwnd) else {
+        return;
+    };
+    let path = match app.try_borrow() {
+        Ok(app) => app.state_path.clone(),
+        Err(e) => {
+            tracing::warn!("not saving the window state: {e}");
+            return;
+        }
+    };
+    let Some(path) = path else {
+        return;
+    };
+    let Some(window) = window_state::current(hwnd) else {
+        return;
+    };
+    window_state::save(
+        &path,
+        &State {
+            window: Some(window),
+        },
+    );
 }
 
 /// `closed` の位置の端末を閉じて `remaining` 個になったあとの、表示する端末の位置。表示していた
@@ -2183,6 +2236,11 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             // クライアント領域の大きさが変わらず WM_SIZE が届かなかったときも、セルの寸法を合わせる。
             let (width, height) = client_size(hwnd);
             with_app(&mut |app| app.on_resize(width, height));
+            LRESULT(0)
+        }
+        // × と Alt+F4。メニューの終了と、最後の端末が終わったときと同じく、状態を書いてから閉じる。
+        WM_CLOSE => {
+            destroy_window(hwnd);
             LRESULT(0)
         }
         WM_DESTROY => {
