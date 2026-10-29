@@ -40,9 +40,17 @@ impl ScreenDump {
     }
 
     /// 表示している端末の画面の文字（スクロールバックを含む全体）を、大きさ・フォント・タブ・表示している
-    /// 範囲の情報を先頭に付けて書き出す。`tabs` は
+    /// 範囲・背景画像の情報を先頭に付けて書き出す。`tabs` は
     /// 窓が持つ端末の数、`active` は表示している端末の位置（0 から）。書き出すタブの番号は 1 から数える。
-    pub fn write_screen(&self, vt: &Vt, font: &Font, tabs: usize, active: usize) {
+    /// `background` はその端末の背景画像のファイルで、名前だけを書く（なければ `-`）。
+    pub fn write_screen(
+        &self,
+        vt: &Vt,
+        font: &Font,
+        tabs: usize,
+        active: usize,
+        background: Option<&Path>,
+    ) {
         let text = match vt.plain_text() {
             Ok(text) => text,
             Err(e) => {
@@ -59,8 +67,12 @@ impl ScreenDump {
                 "?".to_owned()
             }
         };
+        let background = background.and_then(Path::file_name).map_or_else(
+            || "-".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
         let contents = format!(
-            "cols={} rows={} cell={}x{} font={} size={}pt tabs={tabs} active={} scroll={scroll}\n{text}",
+            "cols={} rows={} cell={}x{} font={} size={}pt tabs={tabs} active={} scroll={scroll} background={background}\n{text}",
             size.cols,
             size.rows,
             size.cell_width_px,

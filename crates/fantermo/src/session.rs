@@ -1,5 +1,8 @@
 //! 端末一つ分の状態。端末エミュレーションと子プロセスのバックエンドに、選択・ホイールの余り・
-//! リンクの下線・タイトルなど、端末ごとに持つ状態を添える。窓・描画・設定は持たない。
+//! リンクの下線・タイトル・背景画像に選んだファイルなど、端末ごとに持つ状態を添える。窓・描画・設定は
+//! 持たない（背景画像のテクスチャは描画が持つ）。
+
+use std::path::PathBuf;
 
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize},
@@ -35,6 +38,8 @@ pub struct Session {
     pub pressed_link: Option<String>,
     /// 表示していない間にベルが鳴った。タブに印を付け、表示したら消す。
     pub bell_marked: bool,
+    /// 背景画像に選んだファイル。敷かないなら `None`。
+    pub background_image: Option<PathBuf>,
 }
 
 /// 子プロセスの出力を流し込んだ結果。
@@ -79,6 +84,7 @@ impl Session {
             hovered_link: None,
             pressed_link: None,
             bell_marked: false,
+            background_image: None,
         })
     }
 

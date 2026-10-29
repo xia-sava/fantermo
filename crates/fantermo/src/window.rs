@@ -616,8 +616,6 @@ struct App {
     colors: ColorsConfig,
     /// 背景画像の設定。
     background: BackgroundConfig,
-    /// 背景画像に選んだファイル。
-    background_image: Option<PathBuf>,
     /// 背景画像を選ぶ乱数。
     random: Random,
     /// 窓のクライアント領域のうち、背景画像を敷く領域。
@@ -738,7 +736,6 @@ impl App {
             keymap: config.keys,
             colors: config.colors,
             background: config.background,
-            background_image: None,
             random: Random::new(random_seed()),
             backdrop_area,
             suppressed_release: None,
@@ -756,7 +753,7 @@ impl App {
             reload_pending: false,
             settings_written: None,
         };
-        app.background_image = app.choose_background_image();
+        app.sessions[0].background_image = app.choose_background_image();
         Ok(app)
     }
 
@@ -791,13 +788,23 @@ impl App {
         picked.map(|(path, ())| path)
     }
 
-    /// 背景画像を選び直し、使わなくなった画像を捨てる。
-    fn rechoose_background_image(&mut self) {
-        self.background_image = self.choose_background_image();
-        let chosen = self.background_image.clone();
-        self.renderer
-            .retain_images(|path| chosen.as_deref() == Some(path));
+    /// すべての端末の背景画像を選び直す。
+    fn rechoose_background_images(&mut self) {
+        for index in 0..self.sessions.len() {
+            self.sessions[index].background_image = self.choose_background_image();
+        }
+        self.drop_unused_background_images();
         self.invalidate();
+    }
+
+    /// どの端末も使っていない背景画像を捨てる。
+    fn drop_unused_background_images(&mut self) {
+        let sessions = &self.sessions;
+        self.renderer.retain_images(|path| {
+            sessions
+                .iter()
+                .any(|session| session.background_image.as_deref() == Some(path))
+        });
     }
 
     /// 表示している端末。
@@ -908,7 +915,7 @@ impl App {
         let id = SessionId(self.next_session_id);
         let command_line = command_line_for(self.arguments.as_deref(), self.shell.as_deref());
         let size = grid_size(&self.font, self.terminal_area);
-        let session = match Session::spawn(
+        let mut session = match Session::spawn(
             id,
             &command_line,
             size,
@@ -922,6 +929,7 @@ impl App {
             }
         };
         self.next_session_id += 1;
+        session.background_image = self.choose_background_image();
         self.sessions.push(session);
         self.activate(self.sessions.len() - 1);
     }
@@ -937,6 +945,7 @@ impl App {
             self.leave_active();
         }
         drop(self.sessions.remove(index));
+        self.drop_unused_background_images();
         self.active = active_after_close(self.active, index, self.sessions.len());
         if was_active {
             self.on_activated();
@@ -1956,7 +1965,7 @@ impl App {
             let images_changed = config.background.images != self.background.images;
             self.background = config.background;
             if images_changed {
-                self.rechoose_background_image();
+                self.rechoose_background_images();
             }
             self.invalidate();
         }
@@ -2091,6 +2100,7 @@ impl App {
             &self.font,
             self.sessions.len(),
             self.active,
+            self.session().background_image.as_deref(),
         );
         let frame_path = dump.frame_path();
         self.render_to(Some(&frame_path));
@@ -2117,12 +2127,15 @@ impl App {
             scroll_bar::Palette::from_terminal(frame.background, frame.foreground)
                 .with_colors(&self.colors.scroll_bar);
         paints.extend(self.scroll_bar_paints(&scroll_bar_colors));
-        let backdrop = self.background_image.as_deref().map(|image| Backdrop {
-            image,
-            region: self.backdrop_area,
-            fit: self.background.fit,
-            opacity: self.background.opacity,
-        });
+        let backdrop = self.sessions[self.active]
+            .background_image
+            .as_deref()
+            .map(|image| Backdrop {
+                image,
+                region: self.backdrop_area,
+                fit: self.background.fit,
+                opacity: self.background.opacity,
+            });
         if let Err(e) = self.renderer.render(
             &[(&frame, self.terminal_area)],
             backdrop.as_ref(),
