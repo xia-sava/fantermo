@@ -25,6 +25,10 @@ Windows + Rust（edition 2024）+ MSVC ツールチェインと，Zig が必要�
 
 ビルドの途中で Zig が作る補助の exe はパスが深くなるため，cargo の出力先を深い場所に移すと，Windows のパスの上限（260 文字）を超えてビルドが失敗します．出力先は既定のリポジトリ直下の `target/` のままにしてください．
 
+## アイコン
+
+アイコンの図案は `assets/icon/` の SVG です（`fantermo.svg` が 32 px 以上，`fantermo-small.svg` が 24 px 以下）．図案を変えたら `./tools/icon.sh` で `assets/icon/fantermo.ico` を作り直してください．SVG を描くのに Microsoft Edge を，ICO にまとめるのに Python の Pillow を使います．ICO はビルドのたびには作らず，作り直したものをコミットします．
+
 ## ライセンス
 
 [MIT](LICENSE)
