@@ -53,7 +53,7 @@ use windows::{
                 FlashWindowEx, GWLP_USERDATA, GetClientRect, GetForegroundWindow, GetMessageW,
                 GetWindowLongPtrW, GetWindowRect, HTCLIENT, IDC_ARROW, IDC_HAND, KillTimer,
                 LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage,
-                RegisterClassW, SPI_GETWHEELSCROLLLINES, SW_SHOWDEFAULT, SW_SHOWMAXIMIZED,
+                RegisterClassExW, SPI_GETWHEELSCROLLLINES, SW_SHOWDEFAULT, SW_SHOWMAXIMIZED,
                 SWP_NOACTIVATE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW,
                 SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
                 SystemParametersInfoW, TranslateMessage, WA_INACTIVE, WHEEL_DELTA, WINDOW_EX_STYLE,
@@ -63,7 +63,7 @@ use windows::{
                 WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
                 WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_QUERYENDSESSION,
                 WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_SYSCHAR, WM_SYSCOLORCHANGE,
-                WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW,
+                WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSEXW,
                 WS_OVERLAPPEDWINDOW,
             },
         },
@@ -72,6 +72,7 @@ use windows::{
 };
 
 use crate::{
+    app_icon,
     background::DiskFiles,
     clipboard,
     config_file::{self, Loaded},
@@ -469,17 +470,22 @@ fn window_size(client: SIZE, dpi: u32) -> windows::core::Result<SIZE> {
 fn create_window(font: &Font, dpi: u32, scroll_bar_width: u32) -> windows::core::Result<HWND> {
     // SAFETY: 自分のモジュールのハンドルを問い合わせるだけ。
     let instance = unsafe { GetModuleHandleW(None)? };
-    let class = WNDCLASSW {
+    // クラスのアイコンはプロセスが終わるまで捨てない。DPI が変わったら WM_SETICON で付け直す。
+    let icons = app_icon::load(instance.into(), dpi);
+    let class = WNDCLASSEXW {
+        cbSize: size_of::<WNDCLASSEXW>() as u32,
         style: CS_HREDRAW | CS_VREDRAW,
         lpfnWndProc: Some(window_proc),
         hInstance: instance.into(),
+        hIcon: icons.big.unwrap_or_default(),
         // SAFETY: システムの矢印カーソルを読むだけ。
         hCursor: unsafe { LoadCursorW(None, IDC_ARROW)? },
         lpszClassName: WINDOW_CLASS,
+        hIconSm: icons.small.unwrap_or_default(),
         ..Default::default()
     };
     // SAFETY: class は初期化済みで、名前は静的な文字列。
-    if unsafe { RegisterClassW(&class) } == 0 {
+    if unsafe { RegisterClassExW(&class) } == 0 {
         return Err(windows::core::Error::from_thread());
     }
 
@@ -2847,6 +2853,11 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             // WM_SIZE が届き、新しいセルの寸法で桁数と行数を計算し直す。
             let dpi = (wparam.0 & 0xffff) as u32;
             with_app(&mut |app| app.apply_dpi(dpi));
+            // SAFETY: 自分のモジュールのハンドルを問い合わせるだけ。
+            match unsafe { GetModuleHandleW(None) } {
+                Ok(instance) => app_icon::set(hwnd, instance.into(), dpi),
+                Err(e) => tracing::warn!("failed to get the module handle: {e}"),
+            }
             // SAFETY: WM_DPICHANGED の lparam は推奨された矩形を指す。
             let suggested = unsafe { &*(lparam.0 as *const RECT) };
             // SAFETY: hwnd は有効な窓。WM_SIZE がこの場で届くが、借用は持っていない。

@@ -2,7 +2,7 @@
 
 // fantermo の実行ファイルに埋め込むリソース。マニフェストは build.rs がリンカに渡す。
 
-// アプリのアイコン。番号は src/window.rs の ICON_RESOURCE_ID と揃える。エクスプローラーは番号のいちばん
+// アプリのアイコン。番号は src/app_icon.rs の ICON_RESOURCE_ID と揃える。エクスプローラーは番号のいちばん
 // 小さいアイコンを実行ファイルのアイコンにする。
 #define IDI_FANTERMO 1
 

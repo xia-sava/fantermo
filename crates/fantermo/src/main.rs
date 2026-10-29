@@ -10,6 +10,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod app_icon;
 mod atlas;
 mod background;
 mod boxdraw;
