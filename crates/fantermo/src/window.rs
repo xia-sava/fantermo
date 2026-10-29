@@ -1689,10 +1689,14 @@ impl App {
         if !self.blink_visible {
             frame.hide_blinking_text();
         }
-        let tab_bar = self.tab_bar_paints();
+        let mut paints = self.tab_bar_paints();
+        paints.extend(self.scroll_bar_paints(&scroll_bar::Palette::from_terminal(
+            frame.background,
+            frame.foreground,
+        )));
         if let Err(e) = self
             .renderer
-            .render(&[(&frame, self.terminal_area)], &tab_bar, capture)
+            .render(&[(&frame, self.terminal_area)], &paints, capture)
         {
             tracing::warn!("failed to render: {e}");
         }
@@ -1723,6 +1727,25 @@ impl App {
             &tab_bar::Palette::from_system(system_colors()),
             &*self.ui_font,
         )
+    }
+
+    /// スクロールバーに描くもの。色は `colors`。
+    fn scroll_bar_paints(&self, colors: &scroll_bar::Palette) -> Vec<Paint> {
+        let Some(position) = self.scroll_position else {
+            return Vec::new();
+        };
+        scroll_bar::paints(
+            self.scroll_bar_area,
+            self.scroll_bar_metrics(),
+            position,
+            scroll_bar::Highlight::default(),
+            colors,
+        )
+    }
+
+    /// スクロールバーの寸法。
+    fn scroll_bar_metrics(&self) -> scroll_bar::Metrics {
+        scroll_bar::Metrics { dpi: self.dpi }
     }
 
     /// タブバーを描く領域。端末を描く領域とスクロールバーの上の、窓の幅いっぱい。端末との間の空きも

@@ -9,7 +9,7 @@
 
 use fantermo_core::{frame::Rgb, vt};
 
-use crate::paint::{Area, Corner, Icon, Paint, scale};
+use crate::paint::{Area, Corner, Icon, Paint, mix, scale};
 
 /// タブバーの高さ。端末の画面との間の空き（[`TERMINAL_GAP`]）は含まない。
 const BAR_HEIGHT: u32 = 26;
@@ -533,18 +533,6 @@ impl Highlight {
     /// マウスの下にあるタブの位置。
     fn hovered_tab(&self) -> Option<usize> {
         self.hovered.and_then(Hit::tab)
-    }
-}
-
-/// `from` を `to` へ `ratio`（0.0〜1.0）だけ寄せた色。
-fn mix(from: Rgb, to: Rgb, ratio: f32) -> Rgb {
-    let channel = |a: u8, b: u8| -> u8 {
-        (f32::from(a) + (f32::from(b) - f32::from(a)) * ratio).round() as u8
-    };
-    Rgb {
-        r: channel(from.r, to.r),
-        g: channel(from.g, to.g),
-        b: channel(from.b, to.b),
     }
 }
 
