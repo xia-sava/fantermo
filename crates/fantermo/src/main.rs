@@ -25,6 +25,7 @@ mod known_folder;
 mod license;
 mod link_opener;
 mod logging;
+mod modal;
 mod notice;
 mod paint;
 mod paste_editor;

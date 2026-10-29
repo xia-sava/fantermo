@@ -19,26 +19,25 @@ use windows::{
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             HiDpi::GetDpiForWindow,
-            Input::KeyboardAndMouse::{EnableWindow, GetKeyState, SetFocus, VK_CONTROL, VK_MENU},
+            Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_CONTROL, VK_MENU},
             WindowsAndMessaging::{
                 BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CW_USEDEFAULT, CreateWindowExW, DC_HASDEFID,
-                DM_GETDEFID, DefWindowProcW, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL,
-                ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, ES_WANTRETURN, GWLP_USERDATA,
-                GetClientRect, GetMessageW, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
-                GetWindowTextW, HMENU, IDC_ARROW, IDCANCEL, IDOK, IsDialogMessageW, LoadCursorW,
-                MSG, MoveWindow, PostQuitMessage, RegisterClassW, SW_SHOW, SWP_NOZORDER,
-                SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
-                ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
-                WM_DESTROY, WM_KEYDOWN, WM_NEXTDLGCTL, WM_SETFONT, WM_SIZE, WNDCLASSW, WS_CAPTION,
-                WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_HSCROLL,
-                WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
+                DM_GETDEFID, DefWindowProcW, DestroyWindow, ES_AUTOHSCROLL, ES_AUTOVSCROLL,
+                ES_MULTILINE, ES_READONLY, ES_WANTRETURN, GWLP_USERDATA, GetClientRect,
+                GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, HMENU,
+                IDC_ARROW, IDCANCEL, IDOK, LoadCursorW, MSG, MoveWindow, RegisterClassW, SW_SHOW,
+                SWP_NOZORDER, SendMessageW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
+                ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY,
+                WM_KEYDOWN, WM_NEXTDLGCTL, WM_SETFONT, WM_SIZE, WNDCLASSW, WS_CAPTION, WS_CHILD,
+                WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_HSCROLL, WS_POPUP,
+                WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
             },
         },
     },
     core::{HSTRING, PCWSTR, w},
 };
 
-use crate::font::Font;
+use crate::{font::Font, modal};
 
 const CLASS: PCWSTR = w!("fantermo-text-dialog");
 
@@ -381,51 +380,24 @@ fn fit_horizontally(owner: HWND, left: i32, width: i32) -> (i32, i32) {
     (left, width)
 }
 
-/// 呼び出し元の窓を無効にし、ダイアログが閉じるまでメッセージを回す。
+/// 呼び出し元の窓を無効にし、ダイアログが閉じるまでメッセージを回す。入力欄での Ctrl+A は、すべてを
+/// 選ぶ。
 fn run_modal(owner: HWND, dialog: HWND, state: &DialogState) {
-    // SAFETY: owner は有効な窓。閉じた後に必ず有効に戻す。
-    unsafe { _ = EnableWindow(owner, false) };
-    let mut msg = MSG::default();
-    while !state.closed.get() {
-        // SAFETY: msg は書き込める。
-        let got = unsafe { GetMessageW(&mut msg, None, 0, 0) };
-        if !got.as_bool() {
-            // アプリの終了を受け取ったので、外側のループにも伝えてから抜ける。
-            // SAFETY: 受け取った終了コードを積み直し、まだ開いているダイアログを閉じる。
-            unsafe {
-                PostQuitMessage(msg.wParam.0 as i32);
-                _ = DestroyWindow(dialog);
-            }
-            break;
+    modal::run(owner, dialog, &state.closed, |msg| {
+        if !is_select_all(msg, state.edit.get()) {
+            return false;
         }
-        if is_select_all(&msg, state.edit.get()) {
-            // SAFETY: 入力欄は有効な窓。
-            unsafe {
-                SendMessageW(
-                    state.edit.get(),
-                    EM_SETSEL,
-                    Some(WPARAM(SELECT_FROM_START)),
-                    Some(LPARAM(SELECT_TO_END)),
-                )
-            };
-            continue;
-        }
-        // Tab での移動、Enter で既定のボタン、Esc でキャンセルを、ダイアログの決まりどおりに扱う。
-        // SAFETY: dialog はこのスレッドの窓で、msg は GetMessageW が埋めたもの。
-        if unsafe { IsDialogMessageW(dialog, &msg) }.as_bool() {
-            continue;
-        }
-        // SAFETY: msg は GetMessageW が埋めたもの。
+        // SAFETY: 入力欄は有効な窓。
         unsafe {
-            _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-    // SAFETY: owner は有効な窓。
-    unsafe {
-        _ = EnableWindow(owner, true);
-        _ = SetForegroundWindow(owner);
-    }
+            SendMessageW(
+                state.edit.get(),
+                EM_SETSEL,
+                Some(WPARAM(SELECT_FROM_START)),
+                Some(LPARAM(SELECT_TO_END)),
+            )
+        };
+        true
+    });
 }
 
 /// `msg` が入力欄 `edit` での Ctrl+A（Alt なし）か。複数行の入力欄は Ctrl+A で

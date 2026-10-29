@@ -11,6 +11,7 @@ use windows::{
             DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP,
             IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
         },
+        Graphics::Gdi::LOGFONTW,
         UI::{
             HiDpi::SystemParametersInfoForDpi, WindowsAndMessaging::NONCLIENTMETRICSW,
             WindowsAndMessaging::SPI_GETNONCLIENTMETRICS,
@@ -123,8 +124,8 @@ impl tab_bar::Measure for UiFont {
     }
 }
 
-/// DPI が `dpi` のときのメッセージのフォントの書体、大きさ（ピクセル）、太さ。
-fn message_font(dpi: u32) -> windows::core::Result<(String, f32, DWRITE_FONT_WEIGHT)> {
+/// DPI が `dpi` のときのメッセージのフォント（Windows の設定）。ダイアログのコントロールにも使う。
+pub fn message_logfont(dpi: u32) -> windows::core::Result<LOGFONTW> {
     let mut metrics = NONCLIENTMETRICSW {
         cbSize: size_of::<NONCLIENTMETRICSW>() as u32,
         ..Default::default()
@@ -139,7 +140,12 @@ fn message_font(dpi: u32) -> windows::core::Result<(String, f32, DWRITE_FONT_WEI
             dpi,
         )?
     };
-    let font = metrics.lfMessageFont;
+    Ok(metrics.lfMessageFont)
+}
+
+/// DPI が `dpi` のときのメッセージのフォントの書体、大きさ（ピクセル）、太さ。
+fn message_font(dpi: u32) -> windows::core::Result<(String, f32, DWRITE_FONT_WEIGHT)> {
+    let font = message_logfont(dpi)?;
     let name_len = font
         .lfFaceName
         .iter()
