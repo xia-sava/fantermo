@@ -1,9 +1,9 @@
 //! グリフアトラス。DirectWrite で組んだ文字を Direct2D でテクスチャに描き、その場所を覚えておく。
 //! タブバーの角や印のような形（[`Icon`]）も描く。
 //!
-//! 文字は白で、乗算済みのアルファで描く。色はシェーダで付ける。場所は 1 セルの高さの棚に左から
-//! 詰めていき、いっぱいになったら全部を捨てて描き直す。斜体のようにインクがセルの左右へはみ出す
-//! グリフは、はみ出す分だけ左右に余白を持たせた場所に描く。
+//! 文字は白で、乗算済みのアルファで描く。色はシェーダで付ける。場所は棚に左から詰めていき（棚の
+//! 高さはそこに置いたものの高いほう。文字は 1 セルの高さ）、いっぱいになったら全部を捨てて描き直す。
+//! 斜体のようにインクがセルの左右へはみ出すグリフは、はみ出す分だけ左右に余白を持たせた場所に描く。
 
 use std::collections::HashMap;
 
@@ -84,6 +84,54 @@ pub struct Slot {
 #[derive(Debug)]
 pub struct AtlasFull;
 
+/// 正方形のテクスチャを棚に分けて、場所を左から詰めて取る。棚の高さは、そこに置いたものの高いほう。
+#[derive(Clone, Copy, Debug)]
+struct Shelves {
+    /// テクスチャの一辺。
+    size: u32,
+    next_x: u32,
+    /// いま詰めている棚の上端。
+    next_y: u32,
+    /// いま詰めている棚の高さ。
+    shelf_height: u32,
+}
+
+impl Shelves {
+    fn new(size: u32) -> Self {
+        Self {
+            size,
+            next_x: 0,
+            next_y: 0,
+            shelf_height: 0,
+        }
+    }
+
+    /// 幅 `width`、高さ `height` の場所。いまの棚の右に入らなければ、次の棚の左端に置く。
+    fn allocate(&mut self, width: u32, height: u32) -> Result<Slot, AtlasFull> {
+        if width > self.size || height > self.size {
+            return Err(AtlasFull);
+        }
+        if self.next_x + width > self.size {
+            self.next_x = 0;
+            self.next_y += self.shelf_height;
+            self.shelf_height = 0;
+        }
+        if self.next_y + height > self.size {
+            return Err(AtlasFull);
+        }
+        let slot = Slot {
+            x: self.next_x,
+            y: self.next_y,
+            width,
+            height,
+            left: 0,
+        };
+        self.next_x += width;
+        self.shelf_height = self.shelf_height.max(height);
+        Ok(slot)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct GlyphKey {
     text: String,
@@ -108,8 +156,7 @@ pub struct GlyphAtlas {
     placement: Placement,
     /// セルより広いグリフの描き方。
     wide_glyph: WideGlyph,
-    next_x: u32,
-    next_y: u32,
+    shelves: Shelves,
     slots: HashMap<GlyphKey, Slot>,
     /// 装飾と、それを描いたセルの数ごとの場所。
     decoration_slots: HashMap<(Decoration, u8), Slot>,
@@ -206,8 +253,7 @@ impl GlyphAtlas {
             line_thickness: line_thickness(font.cell_width_px),
             placement,
             wide_glyph,
-            next_x: 0,
-            next_y: 0,
+            shelves: Shelves::new(ATLAS_SIZE),
             slots: HashMap::new(),
             decoration_slots: HashMap::new(),
             icon_slots: HashMap::new(),
@@ -229,8 +275,7 @@ impl GlyphAtlas {
         self.slots.clear();
         self.decoration_slots.clear();
         self.icon_slots.clear();
-        self.next_x = 0;
-        self.next_y = 0;
+        self.shelves = Shelves::new(ATLAS_SIZE);
         // SAFETY: context の描画先はアトラスのテクスチャ。BeginDraw と EndDraw を対にする。
         unsafe {
             self.context.BeginDraw();
@@ -304,17 +349,12 @@ impl GlyphAtlas {
         Ok(slot)
     }
 
-    /// `icon` を幅 `width`・高さ `height` で描いた場所を返す。まだ描いていなければ描く。高さは
-    /// 1 セルまでで、それより高ければ 1 セルの高さに切る。
+    /// `icon` を幅 `width`・高さ `height` で描いた場所を返す。まだ描いていなければ描く。
     pub fn icon_slot(&mut self, icon: Icon, width: u32, height: u32) -> Result<Slot, AtlasFull> {
-        let height = height.min(self.cell_height);
         if let Some(slot) = self.icon_slots.get(&(icon, width, height)) {
             return Ok(*slot);
         }
-        let slot = Slot {
-            height,
-            ..self.allocate(width)?
-        };
+        let slot = self.allocate_area(width, height)?;
         if let Err(e) = self.draw_shapes(&icon.shapes(width as f32, height as f32), slot) {
             tracing::warn!("failed to rasterize {icon:?}: {e}");
         }
@@ -322,23 +362,14 @@ impl GlyphAtlas {
         Ok(slot)
     }
 
+    /// 幅 `width`、高さ 1 セルの場所。
     fn allocate(&mut self, width: u32) -> Result<Slot, AtlasFull> {
-        if self.next_x + width > ATLAS_SIZE {
-            self.next_x = 0;
-            self.next_y += self.cell_height;
-        }
-        if self.next_y + self.cell_height > ATLAS_SIZE {
-            return Err(AtlasFull);
-        }
-        let slot = Slot {
-            x: self.next_x,
-            y: self.next_y,
-            width,
-            height: self.cell_height,
-            left: 0,
-        };
-        self.next_x += width;
-        Ok(slot)
+        self.allocate_area(width, self.cell_height)
+    }
+
+    /// 幅 `width`、高さ `height` の場所。
+    fn allocate_area(&mut self, width: u32, height: u32) -> Result<Slot, AtlasFull> {
+        self.shelves.allocate(width, height)
     }
 
     /// 記号や装飾の形を `slot` に描く。
@@ -859,6 +890,23 @@ mod tests {
             ink_left: 0.0,
             ink_right: advance,
         }
+    }
+
+    #[test]
+    fn shelves_grow_to_their_tallest_slot() {
+        let mut shelves = Shelves::new(100);
+        let at = |slot: Slot| (slot.x, slot.y, slot.width, slot.height);
+        assert_eq!(at(shelves.allocate(40, 10).unwrap()), (0, 0, 40, 10));
+        // セルより高いものも同じ棚に置き、棚はその高さになる。
+        assert_eq!(at(shelves.allocate(40, 30).unwrap()), (40, 0, 40, 30));
+        // 右に入らなければ、いちばん高いものの下に次の棚を始める。
+        assert_eq!(at(shelves.allocate(30, 10).unwrap()), (0, 30, 30, 10));
+        assert_eq!(at(shelves.allocate(70, 20).unwrap()), (30, 30, 70, 20));
+        assert_eq!(at(shelves.allocate(10, 50).unwrap()), (0, 50, 10, 50));
+        // 下に入らない、テクスチャより大きい。
+        assert!(shelves.allocate(100, 1).is_err());
+        assert!(Shelves::new(100).allocate(101, 1).is_err());
+        assert!(Shelves::new(100).allocate(1, 101).is_err());
     }
 
     #[test]

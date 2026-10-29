@@ -321,7 +321,7 @@ fn create_window(font: &Font, dpi: u32) -> windows::core::Result<HWND> {
     let size = window_size(
         client_size_for_terminal(
             grid_pixels(font, INITIAL_COLS, INITIAL_ROWS),
-            tab_bar::height(font.cell_height_px),
+            tab_bar::height(dpi),
         ),
         dpi,
     )?;
@@ -452,8 +452,7 @@ impl App {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let font_config = config.font;
         let (width, height) = client_size(hwnd);
-        let terminal_area =
-            terminal_area_in_client(width, height, tab_bar::height(font.cell_height_px));
+        let terminal_area = terminal_area_in_client(width, height, tab_bar::height(dpi));
         let size = grid_size(&font, terminal_area);
         let renderer = Renderer::new(hwnd, width, height, &dwrite, &font, font_config.wide_glyph)?;
         let first_id = SessionId(0);
@@ -1020,6 +1019,7 @@ impl App {
     fn tab_bar_layout(&self) -> tab_bar::Layout {
         tab_bar::layout(
             tab_bar::Metrics {
+                dpi: self.dpi,
                 cell_width: self.font.cell_width_px,
                 cell_height: self.font.cell_height_px,
             },
@@ -1377,8 +1377,7 @@ impl App {
 
     /// クライアント領域の大きさが `width` × `height` のときの、端末を描く領域に合わせる。
     fn layout(&mut self, width: u32, height: u32) {
-        self.terminal_area =
-            terminal_area_in_client(width, height, tab_bar::height(self.font.cell_height_px));
+        self.terminal_area = terminal_area_in_client(width, height, tab_bar::height(self.dpi));
         self.resize_sessions();
         self.update_tab_bar_hover();
     }
@@ -1490,7 +1489,7 @@ impl App {
         let size = self.session().vt.size();
         Ok(client_size_for_terminal(
             grid_pixels(&font, size.cols, size.rows),
-            tab_bar::height(font.cell_height_px),
+            tab_bar::height(dpi),
         ))
     }
 
