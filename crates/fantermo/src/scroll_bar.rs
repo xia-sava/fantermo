@@ -2,7 +2,7 @@
 //! 場所を常に取っておく（スクロールバックの有無で端末の桁数が変わらないように）。
 //!
 //! つまみの位置と長さで、スクロールバックを含む全体の中の、表示している範囲を示す。つまみは両端の
-//! 丸い細い形で、マウスを載せている間とドラッグしている間は太く描き、溝も薄く塗る。スクロールバックが
+//! 丸い細い形で、マウスを載せている間とドラッグしている間は太く描き、トラックも薄く塗る。スクロールバックが
 //! ない（代替画面も）ときはつまみを描かない。寸法は DPI に比例させ、色は [`Palette`] にまとめる。
 //! つまみの位置と長さの計算と、描くもの（[`Paint`]）の組み立ては、窓や描画に依存しない関数にしてある。
 
@@ -10,7 +10,7 @@ use fantermo_core::{frame::Rgb, vt::ScrollPosition};
 
 use crate::paint::{Area, Icon, Paint, mix, scale};
 
-/// 溝の上下の端とつまみの間の空き（96 DPI でのピクセル）。
+/// トラックの上下の端とつまみの間の空き（96 DPI でのピクセル）。
 const TRACK_MARGIN: u32 = 2;
 
 /// つまみの長さの下限（96 DPI でのピクセル）。スクロールバックが長くても、つまめる長さに保つ。
@@ -34,7 +34,7 @@ const HOVERED_THUMB_TINT: f32 = 0.5;
 /// ドラッグしているつまみの色を、端末の背景色から文字の色へ寄せる割合。
 const DRAGGED_THUMB_TINT: f32 = 0.65;
 
-/// マウスを載せている間に塗る溝の色を、端末の背景色から文字の色へ寄せる割合。
+/// マウスを載せている間に塗るトラックの色を、端末の背景色から文字の色へ寄せる割合。
 const TRACK_TINT: f32 = 0.06;
 
 /// スクロールバーの寸法を決めるもの。寸法は窓の DPI に比例させる。
@@ -73,14 +73,14 @@ impl Metrics {
     }
 }
 
-/// つまみが動く溝。窓のクライアント領域の中の縦の範囲（ピクセル）。
+/// つまみが動くトラック。窓のクライアント領域の中の縦の範囲（ピクセル）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Track {
     pub top: u32,
     pub length: u32,
 }
 
-/// スクロールバーを描く領域 `bar` の中の溝。上下の端から少し空ける。
+/// スクロールバーを描く領域 `bar` の中のトラック。上下の端から少し空ける。
 pub fn track(bar: Area, metrics: Metrics) -> Track {
     let margin = metrics.track_margin().min(bar.height / 2);
     Track {
@@ -102,10 +102,10 @@ impl Thumb {
     }
 }
 
-/// 表示している範囲の位置 `position` を示すつまみ。長さは溝の長さを全体の行数と表示している行数の
-/// 比で分けたもの（`min_length` より短くしない）、位置は、つまみが動ける長さを表示している範囲の
-/// 先頭で分けたところ。いちばん古い行で溝の上端、いちばん新しい行で溝の下端に付く。表示している範囲が
-/// 全体を覆えば（スクロールバックがない、代替画面）`None`。
+/// 表示している範囲の位置 `position` を示すつまみ。長さはトラックの長さを全体の行数と表示している
+/// 行数の比で分けたもの（`min_length` より短くしない）、位置は、つまみが動ける長さを表示している
+/// 範囲の先頭で分けたところ。いちばん古い行でトラックの上端、いちばん新しい行でトラックの下端に
+/// 付く。表示している範囲が全体を覆えば（スクロールバックがない、代替画面）`None`。
 pub fn thumb(track: Track, position: ScrollPosition, min_length: u32) -> Option<Thumb> {
     let scrollable = position.total.checked_sub(position.len)?;
     if scrollable == 0 || track.length == 0 {
@@ -121,9 +121,9 @@ pub fn thumb(track: Track, position: ScrollPosition, min_length: u32) -> Option<
     })
 }
 
-/// つまみの上端を `top`（窓のクライアント領域の中の y。溝からはみ出してもよい）に動かしたときに、表示
-/// する範囲の先頭の行。[`thumb`] と対になる。長さ `length` のつまみが溝の上端で 0、下端でいちばん新しい
-/// 行（`total - len`）。
+/// つまみの上端を `top`（窓のクライアント領域の中の y。トラックからはみ出してもよい）に動かした
+/// ときに、表示する範囲の先頭の行。[`thumb`] と対になる。長さ `length` のつまみがトラックの上端で
+/// 0、下端でいちばん新しい行（`total - len`）。
 pub fn row_at(track: Track, length: u32, position: ScrollPosition, top: i32) -> usize {
     let scrollable = position.total.saturating_sub(position.len) as u64;
     let travel = i64::from(track.length.saturating_sub(length));
@@ -159,7 +159,7 @@ impl Direction {
 pub enum Part {
     /// つまみの上。ドラッグで動かす。
     Thumb,
-    /// つまみの上か下の溝。押すと、その向きへ表示している行数ずつ動かす。
+    /// つまみの上か下のトラック。押すと、その向きへ表示している行数ずつ動かす。
     Page(Direction),
 }
 
@@ -178,7 +178,7 @@ pub fn part_at(thumb: Thumb, y: i32) -> Part {
 /// スクロールバーの色。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Palette {
-    /// マウスを載せている間とドラッグしている間の溝。それ以外は塗らず、端末の背景色のまま。
+    /// マウスを載せている間とドラッグしている間のトラック。それ以外は塗らず、端末の背景色のまま。
     pub track: Rgb,
     /// マウスを載せていないつまみ。
     pub thumb: Rgb,
@@ -189,7 +189,7 @@ pub struct Palette {
 }
 
 impl Palette {
-    /// 端末の背景色 `background` と文字の色 `foreground` から決める既定の色。溝は背景色にわずかに
+    /// 端末の背景色 `background` と文字の色 `foreground` から決める既定の色。トラックは背景色にわずかに
     /// 文字の色を混ぜた色、つまみは背景色と文字の色の間の色で、マウスを載せる・ドラッグするほど文字の
     /// 色に寄せる。
     pub fn from_terminal(background: Rgb, foreground: Rgb) -> Self {
@@ -213,7 +213,7 @@ pub struct Highlight {
 }
 
 impl Highlight {
-    /// つまみを太く描き、溝を塗るか。
+    /// つまみを太く描き、トラックを塗るか。
     fn expanded(self) -> bool {
         self.hovered || self.dragging
     }
@@ -348,14 +348,14 @@ mod tests {
                 length: 480
             }
         );
-        // 空きより低い領域でも、溝の長さは負にならない。
+        // 空きより低い領域でも、トラックの長さは負にならない。
         let low = Area { height: 3, ..bar };
         assert_eq!(track(low, metrics(96)).length, 1);
     }
 
     #[test]
     fn the_thumb_shows_the_rows_in_view() {
-        // 30 行の画面と 70 行のスクロールバック。つまみの長さは溝の 3 割。
+        // 30 行の画面と 70 行のスクロールバック。つまみの長さはトラックの 3 割。
         let oldest = thumb(TRACK, position(100, 0, 30), 24).unwrap();
         assert_eq!(
             oldest,
@@ -364,7 +364,7 @@ mod tests {
                 length: 144
             }
         );
-        // いちばん新しい行では、つまみは溝の下端に付く（割り算の端数でずれない）。
+        // いちばん新しい行では、つまみはトラックの下端に付く（割り算の端数でずれない）。
         let newest = thumb(TRACK, position(100, 70, 30), 24).unwrap();
         assert_eq!(newest.bottom(), TRACK.top + TRACK.length);
         let middle = thumb(TRACK, position(100, 35, 30), 24).unwrap();
@@ -395,7 +395,7 @@ mod tests {
         let top = TRACK.top as i32;
         assert_eq!(row_at(TRACK, length, at, top), 0);
         assert_eq!(row_at(TRACK, length, at, top + travel), 70);
-        // 溝の外へ出しても端で止まる。
+        // トラックの外へ出しても端で止まる。
         assert_eq!(row_at(TRACK, length, at, top - 50), 0);
         assert_eq!(row_at(TRACK, length, at, top + travel + 50), 70);
     }
@@ -412,7 +412,7 @@ mod tests {
                 "{offset}"
             );
         }
-        // つまみが溝いっぱいなら動かせない。
+        // つまみがトラックいっぱいなら動かせない。
         let at = position(100, 0, 30);
         assert_eq!(row_at(Track { top: 0, length: 10 }, 10, at, 5), 0);
     }
@@ -480,7 +480,7 @@ mod tests {
             Highlight::default(),
             &COLORS,
         );
-        // 溝は塗らない。幅 3 のつまみを真ん中に、上下の端に直径 3 の円。
+        // トラックは塗らない。幅 3 のつまみを真ん中に、上下の端に直径 3 の円。
         let thumb = Thumb {
             top: 32 + 480 - 144,
             length: 144,
