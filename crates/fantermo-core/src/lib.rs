@@ -4,6 +4,7 @@
 
 pub mod backend;
 pub mod config;
+pub mod config_edit;
 pub mod frame;
 pub mod keymap;
 pub mod link;

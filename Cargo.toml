@@ -16,6 +16,7 @@ libghostty-vt = { git = "https://github.com/uzaaft/libghostty-rs", rev = "9ede35
 png = "0.18.1"
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "1.1.2"
+toml_edit = "0.25.17"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

@@ -108,6 +108,24 @@ pub enum PasteConfirm {
     Never,
 }
 
+impl PasteConfirm {
+    /// 書ける値のすべて。設定ファイルの説明と同じ順。
+    pub const ALL: [PasteConfirm; 3] = [
+        PasteConfirm::Unsafe,
+        PasteConfirm::Multiline,
+        PasteConfirm::Never,
+    ];
+
+    /// 設定ファイルに書く名前。
+    pub fn name(self) -> &'static str {
+        match self {
+            PasteConfirm::Unsafe => "unsafe",
+            PasteConfirm::Multiline => "multiline",
+            PasteConfirm::Never => "never",
+        }
+    }
+}
+
 /// `[font]` の設定。
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontConfig {
@@ -141,6 +159,40 @@ pub enum WideGlyph {
     Clip,
     /// 縮めずにセルの左に置き、右のセルへはみ出して描く。
     Overflow,
+}
+
+impl WideGlyph {
+    /// 書ける値のすべて。設定ファイルの説明と同じ順。
+    pub const ALL: [WideGlyph; 3] = [WideGlyph::Shrink, WideGlyph::Clip, WideGlyph::Overflow];
+
+    /// 設定ファイルに書く名前。
+    pub fn name(self) -> &'static str {
+        match self {
+            WideGlyph::Shrink => "shrink",
+            WideGlyph::Clip => "clip",
+            WideGlyph::Overflow => "overflow",
+        }
+    }
+}
+
+/// 入力された文字列を、フォントの大きさ（ポイント）として読む。前後の空白は除く。数でないか、
+/// [`FONT_SIZE_RANGE_PT`] の外なら `None`。
+pub fn parse_font_size(text: &str) -> Option<f32> {
+    let size: f32 = text.trim().parse().ok()?;
+    FONT_SIZE_RANGE_PT.contains(&size).then_some(size)
+}
+
+/// 入力された文字列を、スクロールバーの幅として読む。前後の空白は除く。整数でないか、
+/// [`SCROLL_BAR_WIDTH_RANGE`] の外なら `None`。
+pub fn parse_scroll_bar_width(text: &str) -> Option<u32> {
+    let width: u32 = text.trim().parse().ok()?;
+    SCROLL_BAR_WIDTH_RANGE.contains(&width).then_some(width)
+}
+
+/// 入力された文字列を、`shell` の値にする。前後の空白は除き、空なら書かない（既定のシェル）。
+pub fn shell_from_input(text: &str) -> Option<String> {
+    let shell = text.trim();
+    (!shell.is_empty()).then(|| shell.to_owned())
 }
 
 /// 解釈した設定と、読めなかった項目についての警告。
@@ -801,6 +853,36 @@ mod tests {
         assert_eq!(parsed.config, Config::default());
         assert_eq!(parsed.warnings.len(), 1);
         assert!(parsed.warnings[0].starts_with("ignoring font:"));
+    }
+
+    #[test]
+    fn names_are_read_back() {
+        for wide_glyph in WideGlyph::ALL {
+            let parsed = parse(&format!("[font]\nwide_glyph = '{}'\n", wide_glyph.name()));
+            assert_eq!(parsed.config.font.wide_glyph, wide_glyph);
+        }
+        for confirm in PasteConfirm::ALL {
+            let parsed = parse(&format!("[paste]\nconfirm = '{}'\n", confirm.name()));
+            assert_eq!(parsed.config.paste.confirm, confirm);
+        }
+    }
+
+    #[test]
+    fn inputs_are_checked_like_the_file() {
+        assert_eq!(parse_font_size(" 10.5 "), Some(10.5));
+        assert_eq!(parse_font_size("1"), Some(1.0));
+        assert_eq!(parse_font_size("128"), Some(128.0));
+        for text in ["", "0", "0.5", "129", "nan", "inf", "12pt", "-3"] {
+            assert_eq!(parse_font_size(text), None, "{text:?}");
+        }
+        assert_eq!(parse_scroll_bar_width(" 16 "), Some(16));
+        assert_eq!(parse_scroll_bar_width("4"), Some(4));
+        assert_eq!(parse_scroll_bar_width("64"), Some(64));
+        for text in ["", "3", "65", "12.5", "-1", "wide"] {
+            assert_eq!(parse_scroll_bar_width(text), None, "{text:?}");
+        }
+        assert_eq!(shell_from_input("  zsh -l "), Some("zsh -l".to_owned()));
+        assert_eq!(shell_from_input(" \t"), None);
     }
 
     #[test]
