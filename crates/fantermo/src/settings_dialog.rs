@@ -10,6 +10,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    ops::RangeInclusive,
     path::PathBuf,
     sync::OnceLock,
     time::Duration,
@@ -86,6 +87,8 @@ const ID_SIZE_SPIN: i32 = 202;
 const ID_WIDE_GLYPH: i32 = 210;
 const ID_SCROLL_BAR_WIDTH: i32 = 220;
 const ID_SCROLL_BAR_WIDTH_SPIN: i32 = 221;
+const ID_PADDING: i32 = 230;
+const ID_PADDING_SPIN: i32 = 231;
 /// `paste.confirm` のラジオボタン。[`PasteConfirm::ALL`] の順に ID が続く。
 const ID_PASTE_CONFIRM: i32 = 300;
 const ID_SHELL: i32 = 400;
@@ -511,6 +514,8 @@ struct Controls {
     wide_glyph: [HWND; 3],
     scroll_bar_width: HWND,
     scroll_bar_width_spin: HWND,
+    padding: HWND,
+    padding_spin: HWND,
     paste_confirm: [HWND; 3],
     shell: HWND,
     /// 背景画像の一覧。
@@ -787,6 +792,44 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         [
             control_left + NUMBER_WIDTH + BUTTON_GAP,
             width_row + LABEL_OFFSET,
+            control_width - NUMBER_WIDTH - BUTTON_GAP,
+            ROW_HEIGHT,
+        ],
+    );
+    appearance.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let padding_row = width_row + ROW_HEIGHT + MARGIN;
+    let (class, text, rect) = label("余白(&G):", label_rect(padding_row));
+    appearance.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let padding = child(
+        w!("EDIT"),
+        "",
+        edit_style,
+        WS_EX_CLIENTEDGE,
+        ID_PADDING,
+        Some([control_left, padding_row, NUMBER_WIDTH, ROW_HEIGHT]),
+    )?;
+    appearance.push(padding);
+    let padding_spin = child(UPDOWN_CLASSW, "", spin_style, none, ID_PADDING_SPIN, None)?;
+    appearance.push(padding_spin);
+    let (class, text, rect) = label(
+        "ピクセル（0〜64。画面の拡大率に合わせて広げる）",
+        [
+            control_left + NUMBER_WIDTH + BUTTON_GAP,
+            padding_row + LABEL_OFFSET,
             control_width - NUMBER_WIDTH - BUTTON_GAP,
             ROW_HEIGHT,
         ],
@@ -1357,6 +1400,8 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             wide_glyph,
             scroll_bar_width,
             scroll_bar_width_spin,
+            padding,
+            padding_spin,
             paste_confirm,
             shell,
             background_images,
@@ -1433,6 +1478,7 @@ impl State<'_> {
             .position(|&value| value == config.font.wide_glyph);
         check_one(&c.wide_glyph, wide_glyph);
         set_text(c.scroll_bar_width, &config.scroll_bar.width.to_string());
+        set_text(c.padding, &config.window.padding.to_string());
         let paste_confirm = PasteConfirm::ALL
             .iter()
             .position(|&value| value == config.paste.confirm);
@@ -1928,6 +1974,7 @@ impl State<'_> {
         let all = c.placed.iter().map(|(control, _)| *control).chain([
             c.size_spin,
             c.scroll_bar_width_spin,
+            c.padding_spin,
             c.background_opacity_spin,
             c.background_item_opacity_spin,
         ]);
@@ -1959,6 +2006,7 @@ impl State<'_> {
         for (spin, buddy) in [
             (c.size_spin, c.size),
             (c.scroll_bar_width_spin, c.scroll_bar_width),
+            (c.padding_spin, c.padding),
             (c.background_opacity_spin, c.background_opacity),
             (c.background_item_opacity_spin, c.background_item_opacity),
         ] {
@@ -2025,6 +2073,8 @@ impl State<'_> {
                 "スクロールバーの幅は、4 から 64 までの整数で書いてください。",
                 c.scroll_bar_width,
             ))?;
+        config.window.padding = config::parse_padding(&get_text(c.padding))
+            .ok_or(("余白は、0 から 64 までの整数で書いてください。", c.padding))?;
         if let Some(index) = checked(&c.paste_confirm) {
             config.paste.confirm = PasteConfirm::ALL[index];
         }
@@ -2175,7 +2225,17 @@ impl State<'_> {
             let text = get_text(c.scroll_bar_width);
             let current = config::parse_scroll_bar_width(&text)
                 .unwrap_or(self.base.borrow().scroll_bar.width);
-            set_text(c.scroll_bar_width, &step_width(current, delta).to_string());
+            set_text(
+                c.scroll_bar_width,
+                &step_pixels(current, delta, &config::SCROLL_BAR_WIDTH_RANGE).to_string(),
+            );
+        } else if spin == c.padding_spin {
+            let current = config::parse_padding(&get_text(c.padding))
+                .unwrap_or(self.base.borrow().window.padding);
+            set_text(
+                c.padding,
+                &step_pixels(current, delta, &config::PADDING_RANGE).to_string(),
+            );
         } else if spin == c.background_opacity_spin {
             let text = get_text(c.background_opacity);
             let current = config::parse_image_opacity(&text)
@@ -2234,17 +2294,14 @@ fn step_size(current: f32, delta: i32) -> f32 {
     )
 }
 
-/// スクロールバーの幅を、矢印で一つ動かした値。範囲の端で止める。
-fn step_width(current: u32, delta: i32) -> u32 {
+/// スクロールバーの幅や余白のピクセルを、矢印で一つ動かした値。範囲 `range` の端で止める。
+fn step_pixels(current: u32, delta: i32, range: &RangeInclusive<u32>) -> u32 {
     let next = if delta > 0 {
         current.saturating_add(1)
     } else {
         current.saturating_sub(1)
     };
-    next.clamp(
-        *config::SCROLL_BAR_WIDTH_RANGE.start(),
-        *config::SCROLL_BAR_WIDTH_RANGE.end(),
-    )
+    next.clamp(*range.start(), *range.end())
 }
 
 /// 入力欄に見せる、フォントの大きさ。整数なら小数点を付けない。
@@ -2387,9 +2444,10 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 {
                     state.on_color_scheme();
                 }
-                (ID_SIZE | ID_SCROLL_BAR_WIDTH | ID_SHELL | ID_BACKGROUND_OPACITY, EN_CHANGE) => {
-                    state.schedule_preview()
-                }
+                (
+                    ID_SIZE | ID_SCROLL_BAR_WIDTH | ID_PADDING | ID_SHELL | ID_BACKGROUND_OPACITY,
+                    EN_CHANGE,
+                ) => state.schedule_preview(),
                 (id, BN_CLICKED)
                     if (ID_WIDE_GLYPH..ID_WIDE_GLYPH + 3).contains(&id)
                         || (ID_PASTE_CONFIRM..ID_PASTE_CONFIRM + 3).contains(&id) =>
@@ -2515,9 +2573,14 @@ mod tests {
         assert_eq!(step_size(10.5, -1), 10.0);
         assert_eq!(step_size(1.0, -1), 1.0);
         assert_eq!(step_size(128.0, 1), 128.0);
-        assert_eq!(step_width(12, 1), 13);
-        assert_eq!(step_width(4, -1), 4);
-        assert_eq!(step_width(64, 1), 64);
+        let width = config::SCROLL_BAR_WIDTH_RANGE;
+        assert_eq!(step_pixels(12, 1, &width), 13);
+        assert_eq!(step_pixels(4, -1, &width), 4);
+        assert_eq!(step_pixels(64, 1, &width), 64);
+        let padding = config::PADDING_RANGE;
+        assert_eq!(step_pixels(4, -1, &padding), 3);
+        assert_eq!(step_pixels(0, -1, &padding), 0);
+        assert_eq!(step_pixels(64, 1, &padding), 64);
     }
 
     #[test]

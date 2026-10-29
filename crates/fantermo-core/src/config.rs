@@ -34,6 +34,12 @@ pub const DEFAULT_SCROLL_BAR_WIDTH: u32 = 12;
 /// スクロールバーの幅として受け付ける範囲（96 DPI でのピクセル）。
 pub const SCROLL_BAR_WIDTH_RANGE: RangeInclusive<u32> = 4..=64;
 
+/// 端末の画面の上・下・左・右の既定の余白（96 DPI でのピクセル）。
+pub const DEFAULT_PADDING: u32 = 4;
+
+/// 余白として受け付ける範囲（96 DPI でのピクセル）。
+pub const PADDING_RANGE: RangeInclusive<u32> = 0..=64;
+
 /// 背景画像の既定の濃さ（不透明度）。
 pub const DEFAULT_IMAGE_OPACITY: f32 = 0.2;
 
@@ -71,6 +77,11 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # 端末の右のスクロールバーの幅（96 DPI でのピクセル。画面の拡大率に合わせて広げる）。4 から 64 まで。
 # 書き換えたら、端末の桁数と行数を保ったまま窓の幅を変える。
 # width = 12
+
+[window]
+# 端末の画面の上・下・左・右に空ける余白（96 DPI でのピクセル。画面の拡大率に合わせて広げる）。0 から 64 まで。
+# 余白は端末の背景色で塗る。書き換えたら、端末の桁数と行数を保ったまま窓の大きさを変える。
+# padding = 4
 
 [colors]
 # 端末の配色。"dark" は黒の背景に白の文字、"light" は白の背景に濃い灰色の文字。背景色・文字の色・16 色を
@@ -157,6 +168,7 @@ pub struct Config {
     pub shell: Option<String>,
     pub paste: PasteConfig,
     pub scroll_bar: ScrollBarConfig,
+    pub window: WindowConfig,
     pub colors: ColorsConfig,
     pub background: BackgroundConfig,
     /// キーの割り当て。`[keys]` に書いた組み合わせを、既定の割り当てに重ねたもの。
@@ -509,6 +521,21 @@ impl Default for ScrollBarConfig {
     }
 }
 
+/// `[window]` の設定。
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowConfig {
+    /// 端末の画面の上・下・左・右の余白（96 DPI でのピクセル）。
+    pub padding: u32,
+}
+
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            padding: DEFAULT_PADDING,
+        }
+    }
+}
+
 /// `[paste]` の設定。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PasteConfig {
@@ -609,6 +636,13 @@ pub fn parse_font_size(text: &str) -> Option<f32> {
 pub fn parse_scroll_bar_width(text: &str) -> Option<u32> {
     let width: u32 = text.trim().parse().ok()?;
     SCROLL_BAR_WIDTH_RANGE.contains(&width).then_some(width)
+}
+
+/// 入力された文字列を、余白として読む。前後の空白は除く。整数でないか、[`PADDING_RANGE`] の外なら
+/// `None`。
+pub fn parse_padding(text: &str) -> Option<u32> {
+    let padding: u32 = text.trim().parse().ok()?;
+    PADDING_RANGE.contains(&padding).then_some(padding)
 }
 
 /// 入力された文字列を、背景画像の濃さとして読む。前後の空白は除く。数でないか、
@@ -795,6 +829,26 @@ pub fn parse(text: &str, previous: &Config) -> Parsed {
                 })
                 .apply(&mut config.scroll_bar.width, DEFAULT_SCROLL_BAR_WIDTH);
             reader.warn_unknown(&scroll_bar, SECTION);
+        }
+    }
+    match reader.take::<Table>(&mut root, None, "window") {
+        Item::Absent => config.window = WindowConfig::default(),
+        Item::Invalid => {}
+        Item::Valid(mut window) => {
+            const SECTION: Option<&str> = Some("window");
+            reader
+                .take::<u32>(&mut window, SECTION, "padding")
+                .check(&mut reader, "window.padding", |padding| {
+                    (!PADDING_RANGE.contains(padding)).then(|| {
+                        format!(
+                            "ignoring window.padding = {padding}: must be between {} and {}",
+                            PADDING_RANGE.start(),
+                            PADDING_RANGE.end()
+                        )
+                    })
+                })
+                .apply(&mut config.window.padding, DEFAULT_PADDING);
+            reader.warn_unknown(&window, SECTION);
         }
     }
     match reader.take::<Table>(&mut root, None, "colors") {
@@ -1214,6 +1268,7 @@ mod tests {
                 confirm: PasteConfirm::Never,
             },
             scroll_bar: ScrollBarConfig { width: 20 },
+            window: WindowConfig { padding: 10 },
             colors: ColorsConfig {
                 scheme: ColorScheme::Light,
                 terminal: [None, Some(Rgb { r: 4, g: 5, b: 6 })],
@@ -1505,7 +1560,7 @@ mod tests {
             .lines()
             .filter(|line| !line.starts_with('#') && line.contains(" = "))
             .count();
-        assert_eq!(settings, 7 + 9 + 3 + 15, "{text}");
+        assert_eq!(settings, 8 + 9 + 3 + 15, "{text}");
         // 背景色と文字の色の例は、既定の配色の色。
         assert_eq!(
             parsed.config.colors.terminal_colors(),
@@ -1804,12 +1859,12 @@ mod tests {
     fn invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults() {
         let previous = customized();
         let parsed = super::parse(
-            "shell = ' '\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[scroll_bar]\nwidth = 2\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors]\nscheme = 'sepia'\nforeground = 'blue'\n[colors.tab_bar]\nbar = 'red'\n[background]\nimages = ''\nimage_opacity = 2\nfit = 0\n",
+            "shell = ' '\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[scroll_bar]\nwidth = 2\n[window]\npadding = 65\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors]\nscheme = 'sepia'\nforeground = 'blue'\n[colors.tab_bar]\nbar = 'red'\n[background]\nimages = ''\nimage_opacity = 2\nfit = 0\n",
             &previous,
         );
         assert!(!parsed.syntax_error);
         assert_eq!(parsed.config, previous);
-        assert_eq!(parsed.warnings.len(), 14, "{:?}", parsed.warnings);
+        assert_eq!(parsed.warnings.len(), 15, "{:?}", parsed.warnings);
 
         let parsed = super::parse("[font]\nsize = 500\n", &previous);
         assert_eq!(
@@ -1828,6 +1883,26 @@ mod tests {
         assert_eq!(parsed.config.paste, previous.paste);
         assert_eq!(parsed.config.scroll_bar, previous.scroll_bar);
         assert_eq!(parsed.config.shell, None);
+    }
+
+    #[test]
+    fn padding_takes_integers_in_range() {
+        let parsed = parse("[window]\npadding = 0\n");
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        assert_eq!(parsed.config.window.padding, 0);
+        let parsed = parse("[window]\npadding = 64\n");
+        assert_eq!(parsed.config.window.padding, 64);
+        let parsed = parse("[window]\npadding = 65\n");
+        assert_eq!(parsed.config.window.padding, DEFAULT_PADDING);
+        assert_eq!(
+            parsed.warnings,
+            ["ignoring window.padding = 65: must be between 0 and 64"]
+        );
+        for text in ["padding = 4.5", "padding = -1", "padding = 'wide'"] {
+            let parsed = parse(&format!("[window]\n{text}\n"));
+            assert_eq!(parsed.config.window.padding, DEFAULT_PADDING);
+            assert_eq!(parsed.warnings.len(), 1, "{text}: {:?}", parsed.warnings);
+        }
     }
 
     #[test]
@@ -1910,6 +1985,8 @@ mod tests {
             confirm = "never"
             [scroll_bar]
             width = 8
+            [window]
+            padding = 0
             "#,
         );
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
@@ -1926,6 +2003,7 @@ mod tests {
                     confirm: PasteConfirm::Never,
                 },
                 scroll_bar: ScrollBarConfig { width: 8 },
+                window: WindowConfig { padding: 0 },
                 ..Config::default()
             }
         );
@@ -2096,6 +2174,11 @@ mod tests {
         assert_eq!(parse_font_size("128"), Some(128.0));
         for text in ["", "0", "0.5", "129", "nan", "inf", "12pt", "-3"] {
             assert_eq!(parse_font_size(text), None, "{text:?}");
+        }
+        assert_eq!(parse_padding(" 0 "), Some(0));
+        assert_eq!(parse_padding("64"), Some(64));
+        for text in ["", "65", "4.5", "-1", "wide"] {
+            assert_eq!(parse_padding(text), None, "{text:?}");
         }
         assert_eq!(parse_image_opacity(" 0.75 "), Some(0.75));
         assert_eq!(parse_image_opacity("0"), Some(0.0));

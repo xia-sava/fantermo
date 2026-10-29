@@ -31,6 +31,7 @@ enum Setting {
     WideGlyph,
     PasteConfirm,
     ScrollBarWidth,
+    WindowPadding,
     ColorScheme,
     BackgroundImages,
     BackgroundImageOpacity,
@@ -38,13 +39,14 @@ enum Setting {
 }
 
 impl Setting {
-    const ALL: [Setting; 10] = [
+    const ALL: [Setting; 11] = [
         Setting::Shell,
         Setting::FontFamily,
         Setting::FontSize,
         Setting::WideGlyph,
         Setting::PasteConfirm,
         Setting::ScrollBarWidth,
+        Setting::WindowPadding,
         Setting::ColorScheme,
         Setting::BackgroundImages,
         Setting::BackgroundImageOpacity,
@@ -58,6 +60,7 @@ impl Setting {
             Setting::FontFamily | Setting::FontSize | Setting::WideGlyph => &["font"],
             Setting::PasteConfirm => &["paste"],
             Setting::ScrollBarWidth => &["scroll_bar"],
+            Setting::WindowPadding => &["window"],
             Setting::ColorScheme => &["colors"],
             Setting::BackgroundImages
             | Setting::BackgroundImageOpacity
@@ -73,6 +76,7 @@ impl Setting {
             Setting::WideGlyph => "wide_glyph",
             Setting::PasteConfirm => "confirm",
             Setting::ScrollBarWidth => "width",
+            Setting::WindowPadding => "padding",
             Setting::ColorScheme => "scheme",
             Setting::BackgroundImages => "images",
             Setting::BackgroundImageOpacity => "image_opacity",
@@ -89,6 +93,7 @@ impl Setting {
             Setting::WideGlyph => Some(Value::from(config.font.wide_glyph.name())),
             Setting::PasteConfirm => Some(Value::from(config.paste.confirm.name())),
             Setting::ScrollBarWidth => Some(Value::from(i64::from(config.scroll_bar.width))),
+            Setting::WindowPadding => Some(Value::from(i64::from(config.window.padding))),
             Setting::ColorScheme => Some(Value::from(config.colors.scheme.name())),
             Setting::BackgroundImages => Some(Value::Array(
                 config
@@ -842,7 +847,7 @@ mod tests {
     use crate::{
         config::{
             self, BackgroundConfig, BackgroundFit, ColorScheme, ColorsConfig, FontConfig,
-            PasteConfig, PasteConfirm, ScrollBarConfig, TEMPLATE, WideGlyph,
+            PasteConfig, PasteConfirm, ScrollBarConfig, TEMPLATE, WideGlyph, WindowConfig,
         },
         frame::Rgb,
         keymap::Keymap,
@@ -976,6 +981,7 @@ mod tests {
                 confirm: PasteConfirm::Never,
             },
             scroll_bar: ScrollBarConfig { width: 20 },
+            window: WindowConfig { padding: 0 },
             // 色は既定に戻すとひな形と違う行になるので、色の書き戻しは別に確かめる。
             colors: ColorsConfig::default(),
             background: BackgroundConfig {
@@ -1021,6 +1027,7 @@ mod tests {
             .replace(r#"# wide_glyph = "shrink""#, r#"wide_glyph = "overflow""#)
             .replace(r#"# confirm = "unsafe""#, r#"confirm = "never""#)
             .replace("# width = 12", "width = 20")
+            .replace("# padding = 4", "padding = 0")
             .replace(
                 "\n# images = []",
                 r"
@@ -1048,8 +1055,9 @@ images = ['C:\walls', 'D:\pics\*.png']",
         let mut current = edited.clone();
         let mut text = text;
         let defaults = Config::default();
-        let steps: [fn(&mut Config, &Config); 9] = [
+        let steps: [fn(&mut Config, &Config); 10] = [
             |c, d| c.font.size_pt = d.font.size_pt,
+            |c, d| c.window = d.window.clone(),
             |c, d| c.background.image_opacity = d.background.image_opacity,
             |c, d| {
                 c.background.images = d.background.images.clone();

@@ -14,7 +14,7 @@ use fantermo_core::{
     background::{Candidate, Random},
     config::{
         BackgroundConfig, ColorsConfig, Config, DEFAULT_FONT_FAMILIES, FontConfig, PasteConfig,
-        PasteConfirm, ScrollBarConfig, WideGlyph,
+        PasteConfirm, ScrollBarConfig, WideGlyph, WindowConfig,
     },
     frame::Rgb,
     keymap::{self, Keymap},
@@ -139,11 +139,6 @@ const KEYBOARD_CONTEXT_MENU_POSITION: (i32, i32) = (-1, -1);
 const INITIAL_COLS: u16 = 100;
 const INITIAL_ROWS: u16 = 30;
 
-/// 端末の画面の上・下・左・右に空ける余白（96 DPI でのピクセル。DPI に比例させる）。上はタブバーとの
-/// 間、右はスクロールバーとの間。何も描かず、描画が端末の背景色で塗るところに任せる
-/// （`Renderer::render` はどの領域にも入らないところを端末の背景色で塗る）。
-const TERMINAL_PADDING: u32 = 4;
-
 /// 開発用。起動したときの窓の DPI を、この環境変数の値とみなす。倍率の違うモニタへ移したときの
 /// 作り直しを、モニタを使わずに確かめるために使う。
 const DPI_ENV: &str = "FANTERMO_DPI";
@@ -188,7 +183,12 @@ pub fn run(
     let font = load_font(&dwrite, &config.font, system_dpi)?;
     log_font(&font, system_dpi);
 
-    let hwnd = create_window(&font, system_dpi, config.scroll_bar.width)?;
+    let hwnd = create_window(
+        &font,
+        system_dpi,
+        config.scroll_bar.width,
+        config.window.padding,
+    )?;
     // 端末の桁数と行数を、戻した大きさから決めさせるため、App を作る前に戻す。
     let restored = state.window;
     if let Some(window) = &restored {
@@ -358,18 +358,22 @@ fn grid_pixels(font: &Font, cols: u16, rows: u16) -> SIZE {
 struct Insets {
     /// 上端のタブバーの高さ（[`tab_bar::height`]）。
     tab_bar_height: u32,
-    /// 端末の画面の上・下・左・右の余白（[`TERMINAL_PADDING`]）。
+    /// 端末の画面の上・下・左・右の余白。上はタブバーとの間、右はスクロールバーとの間。何も描かず、
+    /// 描画が端末の背景色で塗るところに任せる（`Renderer::render` はどの領域にも入らないところを端末の
+    /// 背景色で塗る）。
     padding: u32,
     /// 右端のスクロールバーの幅（[`scroll_bar::Metrics::width`]）。
     scroll_bar_width: u32,
 }
 
 impl Insets {
-    /// DPI が `dpi` の窓での寸法。`scroll_bar_width` は設定のスクロールバーの幅（96 DPI でのピクセル）。
-    fn new(dpi: u32, scroll_bar_width: u32) -> Self {
+    /// DPI が `dpi` の窓での寸法。`scroll_bar_width` は設定のスクロールバーの幅、`padding` は設定の
+    /// 余白（どちらも 96 DPI でのピクセル。DPI に比例させる）。
+    fn new(dpi: u32, scroll_bar_width: u32, padding: u32) -> Self {
         Self {
             tab_bar_height: tab_bar::height(dpi),
-            padding: scale(TERMINAL_PADDING, dpi),
+            // scale は 1 ピクセルより細くしないので、余白なし（0）はそのまま。
+            padding: if padding == 0 { 0 } else { scale(padding, dpi) },
             scroll_bar_width: scroll_bar::Metrics {
                 dpi,
                 base_width: scroll_bar_width,
@@ -466,8 +470,13 @@ fn window_size(client: SIZE, dpi: u32) -> windows::core::Result<SIZE> {
 }
 
 /// 窓を作る。大きさは、`font` のセルを [`INITIAL_COLS`] × [`INITIAL_ROWS`] 並べた端末の画面に、
-/// タブバーと幅 `scroll_bar_width`（設定の値）のスクロールバーを足したもの。
-fn create_window(font: &Font, dpi: u32, scroll_bar_width: u32) -> windows::core::Result<HWND> {
+/// タブバーと幅 `scroll_bar_width` のスクロールバーと余白 `padding`（どちらも設定の値）を足したもの。
+fn create_window(
+    font: &Font,
+    dpi: u32,
+    scroll_bar_width: u32,
+    padding: u32,
+) -> windows::core::Result<HWND> {
     // SAFETY: 自分のモジュールのハンドルを問い合わせるだけ。
     let instance = unsafe { GetModuleHandleW(None)? };
     // クラスのアイコンはプロセスが終わるまで捨てない。DPI が変わったら WM_SETICON で付け直す。
@@ -492,7 +501,7 @@ fn create_window(font: &Font, dpi: u32, scroll_bar_width: u32) -> windows::core:
     let size = window_size(
         client_size_for_terminal(
             grid_pixels(font, INITIAL_COLS, INITIAL_ROWS),
-            Insets::new(dpi, scroll_bar_width),
+            Insets::new(dpi, scroll_bar_width, padding),
         ),
         dpi,
     )?;
@@ -642,6 +651,8 @@ struct App {
     blink_timer_running: bool,
     /// 設定のスクロールバーの幅（96 DPI でのピクセル）。
     scroll_bar_width: u32,
+    /// 設定の端末の画面の余白（96 DPI でのピクセル）。
+    padding: u32,
     /// 窓のクライアント領域のうち、スクロールバーを描く領域。
     scroll_bar_area: Area,
     /// スクロールバーの上で押したマウスのボタンと、左ボタンならその操作。離すまで、マウスの操作を
@@ -674,7 +685,8 @@ impl App {
         let font_config = config.font;
         let (width, height) = client_size(hwnd);
         let scroll_bar_width = config.scroll_bar.width;
-        let insets = Insets::new(dpi, scroll_bar_width);
+        let padding = config.window.padding;
+        let insets = Insets::new(dpi, scroll_bar_width, padding);
         let terminal_area = terminal_area_in_client(width, height, insets);
         let scroll_bar_area = scroll_bar_area_in_client(width, terminal_area, insets);
         let backdrop_area = backdrop_area_in_client(width, height, insets);
@@ -751,6 +763,7 @@ impl App {
             blink_visible: true,
             blink_timer_running: false,
             scroll_bar_width,
+            padding,
             scroll_bar_area,
             scroll_bar_press: None,
             scroll_bar_hover: false,
@@ -1931,7 +1944,8 @@ impl App {
 
     /// 設定ファイルを読み直す。フォントの設定が変わっていて、そのフォントを測れたら設定を入れ替え、
     /// 作り直しに使う DPI を返す。作り直しは借用を手放してから [`change_dpi_in_place`] で行う。
-    /// スクロールバーの幅が変わったときも、端末の桁数と行数を保って窓の大きさを変えるので、同じく返す。
+    /// スクロールバーの幅や余白が変わったときも、端末の桁数と行数を保って窓の大きさを変えるので、同じく
+    /// 返す。
     /// グリフの描き方だけが変わったときは、セルの寸法は変わらないので、この場でアトラスだけを作り直す。
     /// 貼り付けの設定はすぐに入れ替える。`shell` は次に開く端末から使う。
     /// 誤りがあれば、それを見せることを返す（借用を手放してから [`run_deferred`] で見せる）。誤りが
@@ -1995,10 +2009,12 @@ impl App {
             self.colors = config.colors;
             self.invalidate();
         }
-        let scroll_bar_resized = config.scroll_bar.width != self.scroll_bar_width;
+        let insets_changed = config.scroll_bar.width != self.scroll_bar_width
+            || config.window.padding != self.padding;
         self.scroll_bar_width = config.scroll_bar.width;
+        self.padding = config.window.padding;
         let font_changed = self.apply_font_config(config.font);
-        (font_changed || scroll_bar_resized).then_some(self.dpi)
+        (font_changed || insets_changed).then_some(self.dpi)
     }
 
     /// 読み直したフォントの設定を入れ替える。フォントを測り直す作り直しが要れば `true`。
@@ -2030,6 +2046,9 @@ impl App {
             },
             scroll_bar: ScrollBarConfig {
                 width: self.scroll_bar_width,
+            },
+            window: WindowConfig {
+                padding: self.padding,
             },
             colors: self.colors.clone(),
             background: self.background.clone(),
@@ -2224,7 +2243,7 @@ impl App {
 
     /// DPI が `dpi` のときの、端末の画面の周りに取る場所の寸法。
     fn insets(&self, dpi: u32) -> Insets {
-        Insets::new(dpi, self.scroll_bar_width)
+        Insets::new(dpi, self.scroll_bar_width, self.padding)
     }
 
     /// タブバーを描く領域。窓の上端に、窓の幅いっぱい。その下の端末の画面の上の余白は含まない（余白の
@@ -3031,9 +3050,20 @@ mod tests {
 
     #[test]
     fn the_terminal_is_surrounded_by_the_padding() {
-        // 96 DPI ではタブバーの 26、余白 4、既定の幅のスクロールバー 12。192 DPI では 52、8、24。
-        for (dpi, bar, padding, scroll_bar) in [(96, 26, 4, 12), (192, 52, 8, 24)] {
-            let insets = Insets::new(dpi, fantermo_core::config::DEFAULT_SCROLL_BAR_WIDTH);
+        // 96 DPI ではタブバーの 26、既定の余白 4、既定の幅のスクロールバー 12。192 DPI では 52、8、24。
+        // 設定の余白は 0 から、DPI に比例させる。
+        for (dpi, setting, bar, padding, scroll_bar) in [
+            (96, fantermo_core::config::DEFAULT_PADDING, 26, 4, 12),
+            (192, fantermo_core::config::DEFAULT_PADDING, 52, 8, 24),
+            (96, 0, 26, 0, 12),
+            (96, 20, 26, 20, 12),
+            (192, 20, 52, 40, 24),
+        ] {
+            let insets = Insets::new(
+                dpi,
+                fantermo_core::config::DEFAULT_SCROLL_BAR_WIDTH,
+                setting,
+            );
             assert_eq!(
                 insets,
                 Insets {
@@ -3075,6 +3105,16 @@ mod tests {
             assert_eq!(client_to_area(area, left - 1, top - 1), (-1, -1));
             assert_eq!(client_to_area(area, left + 800, top + 480), (800, 480));
             assert_eq!(area_to_client(area, 16, 32), (left + 16, top + 32));
+            // 背景画像は端末と余白に敷く。
+            assert_eq!(
+                backdrop_area_in_client(client.cx as u32, client.cy as u32, insets),
+                Area {
+                    x: 0,
+                    y: bar,
+                    width: 800 + 2 * padding,
+                    height: 480 + 2 * padding
+                }
+            );
         }
         // タブバーより低いクライアント領域では、端末を描く領域は空。スクロールバーと左右の余白より
         // 狭ければ、端末の幅は 0 で、スクロールバーはクライアント領域の右端に設定の幅。
@@ -3098,7 +3138,8 @@ mod tests {
         );
         assert_eq!(scroll_bar_area_in_client(8, narrow, insets).width, 8);
         // 設定の幅は DPI に比例させる。
-        assert_eq!(Insets::new(144, 20).scroll_bar_width, 30);
+        assert_eq!(Insets::new(144, 20, 4).scroll_bar_width, 30);
+        assert_eq!(Insets::new(144, 12, 5).padding, 8);
     }
 
     #[test]
