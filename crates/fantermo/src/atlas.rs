@@ -55,7 +55,8 @@ use crate::{
 /// アトラスの一辺（ピクセル）。
 const ATLAS_SIZE: u32 = 2048;
 
-/// [`WideGlyph::Overflow`] で、文字に割り当てたセルの何倍の幅まで広げて描くか。
+/// [`WideGlyph::Overflow`] と [`WideGlyph::OverflowCenter`] で、文字に割り当てたセルの何倍の幅まで
+/// 広げて描くか。
 const MAX_OVERFLOW_FACTOR: u8 = 2;
 
 /// インクがセルの左右へはみ出す分を描く余白の上限（セルの幅の何倍か）。
@@ -295,8 +296,8 @@ impl GlyphAtlas {
     }
 
     /// `text` を `cells` セル分の幅で描いた場所を返す。まだ描いていなければ描く。
-    /// [`WideGlyph::Overflow`] で描いたグリフと、インクがセルの左右へはみ出すグリフは、`cells`
-    /// セルより広い場所になる。
+    /// [`WideGlyph::Overflow`] と [`WideGlyph::OverflowCenter`] で描いたグリフと、インクがセルの
+    /// 左右へはみ出すグリフは、`cells` セルより広い場所になる。
     pub fn slot(
         &mut self,
         text: &str,
@@ -769,10 +770,11 @@ impl TextPlacement {
 /// 左右の余白はインクの範囲で決める。
 ///
 /// 送り幅が収まる文字はセルの真ん中に置く。収まらない文字は `wide_glyph` に従い、
-/// [`WideGlyph::Overflow`] なら場所を右へ広げる。広げるのは [`MAX_OVERFLOW_FACTOR`] 倍までで、
-/// それでも収まらなければその幅に縮める。置いた結果、インクが場所の左右へはみ出せば、その分の余白を
-/// 足す（セルの幅の [`MAX_INK_MARGIN_FACTOR`] 倍まで）。[`WideGlyph::Clip`] で切った文字には
-/// 余白を足さない。
+/// [`WideGlyph::Overflow`] なら場所を右へ広げる。[`WideGlyph::OverflowCenter`] なら場所は
+/// 広げずに文字をセルの真ん中に置き、左右へはみ出した分をインクのはみ出しと同じ余白で描く。
+/// どちらも [`MAX_OVERFLOW_FACTOR`] 倍の幅までで、それでも収まらなければその幅に縮める。
+/// 置いた結果、インクが場所の左右へはみ出せば、その分の余白を足す（セルの幅の
+/// [`MAX_INK_MARGIN_FACTOR`] 倍まで）。[`WideGlyph::Clip`] で切った文字には余白を足さない。
 fn place_text(
     extent: TextExtent,
     cells: u8,
@@ -800,6 +802,11 @@ fn place_text(
                 let cells = needed.min(limit) as u8;
                 let scale = (cell_width * f32::from(cells) / extent.advance).min(1.0);
                 (cells, scale, 0.0)
+            }
+            WideGlyph::OverflowCenter => {
+                let limit = width * f32::from(MAX_OVERFLOW_FACTOR);
+                let scale = (limit / extent.advance).min(1.0);
+                (cells, scale, (width - extent.advance * scale) / 2.0)
             }
         }
     };
@@ -916,8 +923,6 @@ mod tests {
 
     const CELL_WIDTH: f32 = 16.0;
 
-    const ALL_MODES: [WideGlyph; 3] = [WideGlyph::Shrink, WideGlyph::Clip, WideGlyph::Overflow];
-
     fn placement(cells: u8, scale: f32, offset: f32) -> TextPlacement {
         TextPlacement {
             cells,
@@ -956,7 +961,7 @@ mod tests {
 
     #[test]
     fn narrow_glyphs_are_centered_in_every_mode() {
-        for wide_glyph in ALL_MODES {
+        for wide_glyph in WideGlyph::ALL {
             assert_eq!(
                 place_text(upright(10.0), 1, CELL_WIDTH, wide_glyph),
                 placement(1, 1.0, 3.0)
@@ -1016,6 +1021,56 @@ mod tests {
         );
     }
 
+    /// `left` と `right` の余白を持つ置き方。
+    fn with_margins(placement: TextPlacement, left: u32, right: u32) -> TextPlacement {
+        TextPlacement {
+            left_margin: left,
+            right_margin: right,
+            ..placement
+        }
+    }
+
+    #[test]
+    fn centered_overflowing_glyphs_spill_to_both_sides_up_to_a_limit() {
+        let placed = place_text(upright(32.0), 1, CELL_WIDTH, WideGlyph::OverflowCenter);
+        assert_eq!(placed, with_margins(placement(1, 1.0, -8.0), 8, 8));
+        assert_eq!(placed.slot_width(CELL_WIDTH as u32), 32);
+        // はみ出した分だけ余白を足す。半端なピクセルは切り上げる。
+        assert_eq!(
+            place_text(upright(17.0), 1, CELL_WIDTH, WideGlyph::OverflowCenter),
+            with_margins(placement(1, 1.0, -0.5), 1, 1)
+        );
+        // 2 倍を超える分は縮める。
+        assert_eq!(
+            place_text(upright(64.0), 1, CELL_WIDTH, WideGlyph::OverflowCenter),
+            with_margins(placement(1, 0.5, -8.0), 8, 8)
+        );
+        assert_eq!(
+            place_text(upright(48.0), 2, CELL_WIDTH, WideGlyph::OverflowCenter),
+            with_margins(placement(2, 1.0, -8.0), 8, 8)
+        );
+        // インクが送り幅の外へ出ていれば、その分も余白にする。
+        let slanted = TextExtent {
+            advance: 32.0,
+            ink_left: -1.0,
+            ink_right: 35.0,
+        };
+        assert_eq!(
+            place_text(slanted, 1, CELL_WIDTH, WideGlyph::OverflowCenter),
+            with_margins(placement(1, 1.0, -8.0), 9, 11)
+        );
+        // インクが送り幅より狭ければ、余白はインクの分だけ。
+        let round = TextExtent {
+            advance: 32.0,
+            ink_left: 4.0,
+            ink_right: 28.0,
+        };
+        assert_eq!(
+            place_text(round, 1, CELL_WIDTH, WideGlyph::OverflowCenter),
+            with_margins(placement(1, 1.0, -8.0), 4, 4)
+        );
+    }
+
     #[test]
     fn ink_outside_the_cell_gets_margins_without_shrinking() {
         // 送り幅はセルと同じで、インクが左へ 1.5、右へ 2.25 ピクセルはみ出す。
@@ -1024,7 +1079,7 @@ mod tests {
             ink_left: -1.5,
             ink_right: 18.25,
         };
-        for wide_glyph in ALL_MODES {
+        for wide_glyph in WideGlyph::ALL {
             let placed = place_text(slanted, 1, CELL_WIDTH, wide_glyph);
             assert_eq!(
                 placed,

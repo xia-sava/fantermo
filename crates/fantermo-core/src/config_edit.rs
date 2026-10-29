@@ -960,6 +960,22 @@ mod tests {
         assert_reads_as(&updated, &edited);
     }
 
+    #[test]
+    fn every_wide_glyph_is_written_by_its_name() {
+        for wide_glyph in WideGlyph::ALL {
+            let mut edited = Config::default();
+            edited.font.wide_glyph = wide_glyph;
+            let text = "[font]\nwide_glyph = 'clip'\n";
+            let base = config::parse(text, &Config::default()).config;
+            let updated = update(text, &base, &edited).unwrap();
+            assert_reads_as(&updated, &edited);
+        }
+        let mut edited = Config::default();
+        edited.font.wide_glyph = WideGlyph::OverflowCenter;
+        let updated = update("", &Config::default(), &edited).unwrap();
+        assert_eq!(updated, "[font]\nwide_glyph = \"overflow_center\"\n");
+    }
+
     fn families(names: &[&str]) -> Vec<String> {
         names.iter().map(|&name| name.to_owned()).collect()
     }

@@ -293,10 +293,11 @@ fn default_color(
 const PAGE_APPEARANCE: usize = 0;
 
 /// `font.wide_glyph` の選択肢の表示。[`WideGlyph::ALL`] の順。
-const WIDE_GLYPH_LABELS: [&str; 3] = [
+const WIDE_GLYPH_LABELS: [&str; WideGlyph::ALL.len()] = [
     "横に縮めてセルに収める",
     "縮めずに、はみ出しを切る",
     "縮めずに、右のセルへはみ出す",
+    "縮めずに、真ん中から左右のセルへはみ出す",
 ];
 
 /// `paste.confirm` の選択肢の表示。[`PasteConfirm::ALL`] の順。
@@ -511,7 +512,7 @@ struct Controls {
     font: HWND,
     size: HWND,
     size_spin: HWND,
-    wide_glyph: [HWND; 3],
+    wide_glyph: [HWND; WideGlyph::ALL.len()],
     scroll_bar_width: HWND,
     scroll_bar_width_spin: HWND,
     padding: HWND,
@@ -746,7 +747,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         ID_LABEL,
         Some(rect),
     )?);
-    let mut wide_glyph = [HWND::default(); 3];
+    let mut wide_glyph = [HWND::default(); WideGlyph::ALL.len()];
     for (index, text) in WIDE_GLYPH_LABELS.iter().enumerate() {
         let top = row(2) + index as i32 * ROW_HEIGHT;
         wide_glyph[index] = child(
@@ -759,7 +760,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         )?;
         appearance.push(wide_glyph[index]);
     }
-    let width_row = row(2) + 3 * ROW_HEIGHT + MARGIN;
+    let width_row = row(2) + WideGlyph::ALL.len() as i32 * ROW_HEIGHT + MARGIN;
     let (class, text, rect) = label("スクロールバーの幅(&B):", label_rect(width_row));
     appearance.push(child(
         class,
@@ -2449,7 +2450,8 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     EN_CHANGE,
                 ) => state.schedule_preview(),
                 (id, BN_CLICKED)
-                    if (ID_WIDE_GLYPH..ID_WIDE_GLYPH + 3).contains(&id)
+                    if (ID_WIDE_GLYPH..ID_WIDE_GLYPH + WideGlyph::ALL.len() as i32)
+                        .contains(&id)
                         || (ID_PASTE_CONFIRM..ID_PASTE_CONFIRM + 3).contains(&id) =>
                 {
                     state.preview();

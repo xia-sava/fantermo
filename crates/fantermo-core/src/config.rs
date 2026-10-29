@@ -64,7 +64,8 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 
 # グリフがセルより広いとき（曖昧幅の ○ や ※ が全角の幅でデザインされているときなど）の描き方。
 # セルの数は変えない。"shrink" は横に縮める、"clip" は縮めずにセルの左に置いてはみ出しを切る、
-# "overflow" は縮めずに右のセルへはみ出して描く。
+# "overflow" は縮めずに右のセルへはみ出して描く、"overflow_center" は縮めずにセルの真ん中に置いて
+# 左右のセルへ同じだけはみ出して描く。
 # wide_glyph = "shrink"
 
 [paste]
@@ -608,11 +609,18 @@ pub enum WideGlyph {
     Clip,
     /// 縮めずにセルの左に置き、右のセルへはみ出して描く。
     Overflow,
+    /// 縮めずにセルの真ん中に置き、左右のセルへ同じだけはみ出して描く。
+    OverflowCenter,
 }
 
 impl WideGlyph {
     /// 書ける値のすべて。設定ファイルの説明と同じ順。
-    pub const ALL: [WideGlyph; 3] = [WideGlyph::Shrink, WideGlyph::Clip, WideGlyph::Overflow];
+    pub const ALL: [WideGlyph; 4] = [
+        WideGlyph::Shrink,
+        WideGlyph::Clip,
+        WideGlyph::Overflow,
+        WideGlyph::OverflowCenter,
+    ];
 
     /// 設定ファイルに書く名前。
     pub fn name(self) -> &'static str {
@@ -620,6 +628,7 @@ impl WideGlyph {
             WideGlyph::Shrink => "shrink",
             WideGlyph::Clip => "clip",
             WideGlyph::Overflow => "overflow",
+            WideGlyph::OverflowCenter => "overflow_center",
         }
     }
 }
@@ -2056,7 +2065,9 @@ mod tests {
             ("shrink", WideGlyph::Shrink),
             ("clip", WideGlyph::Clip),
             ("overflow", WideGlyph::Overflow),
+            ("overflow_center", WideGlyph::OverflowCenter),
         ] {
+            assert_eq!(wide_glyph.name(), name);
             let parsed = parse(&format!("[font]\nwide_glyph = '{name}'\n"));
             assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
             assert_eq!(parsed.config.font.wide_glyph, wide_glyph);
@@ -2075,7 +2086,7 @@ mod tests {
             "{warning}"
         );
         assert!(
-            ["shrink", "clip", "overflow"]
+            ["shrink", "clip", "overflow", "overflow_center"]
                 .iter()
                 .all(|name| warning.contains(name)),
             "{warning}"
