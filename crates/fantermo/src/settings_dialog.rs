@@ -15,7 +15,9 @@ use std::{
 };
 
 use fantermo_core::{
-    config::{self, ColorTable, ColorsConfig, Config, PasteConfirm, WideGlyph, format_color},
+    config::{
+        self, ColorScheme, ColorTable, ColorsConfig, Config, PasteConfirm, WideGlyph, format_color,
+    },
     frame::Rgb,
     keymap::{Action, KeyCombo, Keymap},
 };
@@ -60,7 +62,7 @@ use windows::{
     core::{HSTRING, PCWSTR, w},
 };
 
-use crate::{key_capture, modal, ui_font};
+use crate::{key_capture, modal, scroll_bar, ui_font};
 
 const CLASS: PCWSTR = w!("fantermo-settings-dialog");
 const TITLE: &str = "設定";
@@ -95,7 +97,7 @@ const ID_LABEL: i32 = -1;
 /// 96 DPI のときの寸法（ピクセル）。窓の DPI に合わせて拡大する。
 const BASE_DPI: u32 = 96;
 const CLIENT_WIDTH: i32 = 640;
-const CLIENT_HEIGHT: i32 = 400;
+const CLIENT_HEIGHT: i32 = 490;
 const MARGIN: i32 = 12;
 const PAGES_WIDTH: i32 = 120;
 /// ページの見出しの列の幅。コントロールはその右に置く。
@@ -133,7 +135,17 @@ const CHOOSE_WIDTH: i32 = 72;
 const COLOR_RESET_WIDTH: i32 = 88;
 
 /// 色の表の見出し。[`ColorTable::ALL`] の順。
-const COLOR_TABLE_LABELS: [&str; 2] = ["タブバー", "スクロールバー"];
+const COLOR_TABLE_LABELS: [&str; 3] = ["端末", "タブバー", "スクロールバー"];
+
+/// `colors.scheme` のラジオボタン。[`ColorScheme::ALL`] の順に ID が続く。
+const ID_COLOR_SCHEME: i32 = 590;
+/// `colors.scheme` の選択肢の表示。[`ColorScheme::ALL`] の順。
+const COLOR_SCHEME_LABELS: [&str; 2] = ["ダーク", "ライト"];
+/// 配色のラジオボタン一つの幅。
+const COLOR_SCHEME_WIDTH: i32 = 96;
+
+/// 端末の色の表示。[`config::TERMINAL_COLOR_KEYS`] の順。
+const TERMINAL_COLOR_LABELS: [&str; 2] = ["背景色", "文字の色"];
 
 /// タブバーの色の表示。[`config::TAB_BAR_COLOR_KEYS`] の順。
 const TAB_BAR_COLOR_LABELS: [&str; 9] = [
@@ -158,6 +170,7 @@ const SCROLL_BAR_COLOR_LABELS: [&str; 4] = [
 
 fn color_labels(table: ColorTable) -> &'static [&'static str] {
     match table {
+        ColorTable::Terminal => &TERMINAL_COLOR_LABELS,
         ColorTable::TabBar => &TAB_BAR_COLOR_LABELS,
         ColorTable::ScrollBar => &SCROLL_BAR_COLOR_LABELS,
     }
@@ -182,20 +195,29 @@ fn rgb_of(colorref: COLORREF) -> Rgb {
     Rgb { r, g, b }
 }
 
-/// 既定の色（設定に書いていない色に使う色）。それぞれのキーの並びの順。
-pub struct DefaultColors {
-    pub tab_bar: [Rgb; config::TAB_BAR_COLOR_KEYS.len()],
-    pub scroll_bar: [Rgb; config::SCROLL_BAR_COLOR_KEYS.len()],
-}
-
-impl DefaultColors {
-    fn get(&self, table: ColorTable, index: usize) -> Rgb {
-        match table {
-            ColorTable::TabBar => self.tab_bar[index],
-            ColorTable::ScrollBar => self.scroll_bar[index],
+/// 色 `colors` のときの、表 `table` の `index` 番目の既定の色（設定に書いていないときに使う色）。
+/// 端末の色は配色から、スクロールバーの色は端末の背景色と文字の色から、タブバーの色は
+/// `tab_bar_defaults`（システムの色）から決める。
+fn default_color(
+    colors: &ColorsConfig,
+    tab_bar_defaults: &[Rgb; config::TAB_BAR_COLOR_KEYS.len()],
+    table: ColorTable,
+    index: usize,
+) -> Rgb {
+    match table {
+        ColorTable::Terminal => {
+            let scheme = colors.scheme.colors();
+            [scheme.background, scheme.foreground][index]
+        }
+        ColorTable::TabBar => tab_bar_defaults[index],
+        ColorTable::ScrollBar => {
+            let terminal = colors.terminal_colors();
+            scroll_bar::Palette::from_terminal(terminal.background, terminal.foreground).colors()
+                [index]
         }
     }
 }
+
 /// 開いたときに見せるページ。
 const PAGE_APPEARANCE: usize = 0;
 
@@ -290,8 +312,8 @@ pub struct Request {
     pub fonts: Vec<FontChoice>,
     /// いま使っているフォント。一覧に無ければ、一覧の先頭に足す。
     pub font_in_use: FontChoice,
-    /// 色のページで、書いていない色として見せる色。
-    pub default_colors: DefaultColors,
+    /// 色のページで、書いていないタブバーの色として見せる色（システムの色）。
+    pub tab_bar_colors: [Rgb; config::TAB_BAR_COLOR_KEYS.len()],
 }
 
 /// 設定ダイアログを開き、閉じるまで待つ。
@@ -305,7 +327,7 @@ pub fn run(owner: HWND, request: Request, host: &mut dyn Host) {
         family_indices,
         mut fonts,
         font_in_use,
-        default_colors,
+        tab_bar_colors,
     } = request;
     let selected_font = match fonts.iter().position(|font| {
         font.index.is_some() && font.index == font_in_use.index || font.name == font_in_use.name
@@ -335,7 +357,7 @@ pub fn run(owner: HWND, request: Request, host: &mut dyn Host) {
         keys: RefCell::new(current.keys.clone()),
         key_rows: RefCell::new(Vec::new()),
         colors: RefCell::new(current.colors.clone()),
-        default_colors,
+        tab_bar_defaults: tab_bar_colors,
         swatch_brushes: RefCell::new(vec![HBRUSH::default(); color_items().len()]),
         custom_colors: Cell::new([COLORREF(0); CUSTOM_COLORS]),
         font: Cell::new(HFONT::default()),
@@ -422,6 +444,8 @@ struct Controls {
     scroll_bar_width_spin: HWND,
     paste_confirm: [HWND; 3],
     shell: HWND,
+    /// 配色のラジオボタン。[`ColorScheme::ALL`] の順。
+    color_scheme: [HWND; 2],
     /// キーの割り当ての一覧。
     keys_list: HWND,
     /// 追加・変更・外す・既定に戻すのボタン。
@@ -456,7 +480,8 @@ struct State<'a> {
     dpi: Cell<u32>,
     /// 編集中の色。
     colors: RefCell<ColorsConfig>,
-    default_colors: DefaultColors,
+    /// 書いていないタブバーの色として見せる色。
+    tab_bar_defaults: [Rgb; config::TAB_BAR_COLOR_KEYS.len()],
     /// 色の見本を塗るブラシ。[`color_items`] の順。
     swatch_brushes: RefCell<Vec<HBRUSH>>,
     /// 色を選ぶダイアログの「作成した色」。ダイアログを開いている間は覚えておく。
@@ -845,6 +870,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     // 色
     let mut colors_page = Vec::new();
     let mut color_rows = Vec::new();
+    let mut color_scheme = [HWND::default(); 2];
     let mut top = MARGIN;
     for (table_index, table) in ColorTable::ALL.into_iter().enumerate() {
         let (class, text, rect) = label(
@@ -860,6 +886,42 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             Some(rect),
         )?);
         top += COLOR_ROW_HEIGHT;
+        if table == ColorTable::Terminal {
+            let (class, text, rect) = label(
+                "配色(&M):",
+                [
+                    page_left + COLOR_LABEL_INDENT,
+                    top + LABEL_OFFSET,
+                    LABEL_WIDTH - COLOR_LABEL_INDENT,
+                    COLOR_ROW_HEIGHT,
+                ],
+            );
+            colors_page.push(child(
+                class,
+                &text,
+                WINDOW_STYLE(0),
+                none,
+                ID_LABEL,
+                Some(rect),
+            )?);
+            for (index, text) in COLOR_SCHEME_LABELS.iter().enumerate() {
+                color_scheme[index] = child(
+                    w!("BUTTON"),
+                    text,
+                    radio(index == 0),
+                    none,
+                    ID_COLOR_SCHEME + index as i32,
+                    Some([
+                        control_left + index as i32 * COLOR_SCHEME_WIDTH,
+                        top,
+                        COLOR_SCHEME_WIDTH,
+                        COLOR_ROW_HEIGHT,
+                    ]),
+                )?;
+                colors_page.push(color_scheme[index]);
+            }
+            top += COLOR_ROW_HEIGHT;
+        }
         for label_text in color_labels(table) {
             let id = ID_COLORS + color_rows.len() as i32 * COLOR_ID_STRIDE;
             let (class, text, rect) = label(
@@ -977,6 +1039,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             scroll_bar_width_spin,
             paste_confirm,
             shell,
+            color_scheme,
             keys_list,
             key_buttons,
             color_rows,
@@ -1050,16 +1113,31 @@ impl State<'_> {
         *self.keys.borrow_mut() = config.keys.clone();
         self.refresh_keys(None);
         *self.colors.borrow_mut() = config.colors.clone();
+        let scheme = ColorScheme::ALL
+            .iter()
+            .position(|&value| value == config.colors.scheme);
+        check_one(&c.color_scheme, scheme);
+        self.refresh_colors();
+    }
+
+    /// 色のページのすべての色を、編集中の色に合わせる（配色や端末の色を変えると、ほかの色の既定の
+    /// 色も変わる）。
+    fn refresh_colors(&self) {
         for item in 0..self.controls.color_rows.len() {
             self.refresh_color(item);
         }
+    }
+
+    /// 表 `table` の `index` 番目の色の、編集中の色での既定の色。
+    fn default_color(&self, table: ColorTable, index: usize) -> Rgb {
+        default_color(&self.colors.borrow(), &self.tab_bar_defaults, table, index)
     }
 
     /// 色のページの `item` 番目の色の、見本・値・既定に戻すボタンを、編集中の色に合わせる。
     fn refresh_color(&self, item: usize) {
         let (table, index) = color_items()[item];
         let written = self.colors.borrow().table(table)[index];
-        let color = written.unwrap_or(self.default_colors.get(table, index));
+        let color = written.unwrap_or(self.default_color(table, index));
         let row = &self.controls.color_rows[item];
         let text = match written {
             Some(_) => format_color(color),
@@ -1090,8 +1168,8 @@ impl State<'_> {
         };
         let new = match offset % COLOR_ID_STRIDE {
             COLOR_CHOOSE => {
-                let current = self.colors.borrow().table(table)[index]
-                    .unwrap_or(self.default_colors.get(table, index));
+                let written = self.colors.borrow().table(table)[index];
+                let current = written.unwrap_or(self.default_color(table, index));
                 let Some(chosen) = self.choose_color(current) else {
                     return;
                 };
@@ -1101,7 +1179,17 @@ impl State<'_> {
             _ => return,
         };
         self.colors.borrow_mut().table_mut(table)[index] = new;
-        self.refresh_color(item);
+        self.refresh_colors();
+        self.preview();
+    }
+
+    /// 配色のラジオボタンが押された。
+    fn on_color_scheme(&self) {
+        let Some(index) = checked(&self.controls.color_scheme) else {
+            return;
+        };
+        self.colors.borrow_mut().scheme = ColorScheme::ALL[index];
+        self.refresh_colors();
         self.preview();
     }
 
@@ -1664,6 +1752,12 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     state.on_key_button(id);
                 }
                 (id, BN_CLICKED) if id >= ID_COLORS => state.on_color_button(id),
+                (id, BN_CLICKED)
+                    if (ID_COLOR_SCHEME..ID_COLOR_SCHEME + ColorScheme::ALL.len() as i32)
+                        .contains(&id) =>
+                {
+                    state.on_color_scheme();
+                }
                 (ID_SIZE | ID_SCROLL_BAR_WIDTH | ID_SHELL, EN_CHANGE) => state.schedule_preview(),
                 (id, BN_CLICKED)
                     if (ID_WIDE_GLYPH..ID_WIDE_GLYPH + 3).contains(&id)
@@ -1843,10 +1937,14 @@ mod tests {
         for table in ColorTable::ALL {
             assert_eq!(color_labels(table).len(), table.keys().len());
         }
+        assert_eq!(COLOR_TABLE_LABELS.len(), ColorTable::ALL.len());
+        assert_eq!(COLOR_SCHEME_LABELS.len(), ColorScheme::ALL.len());
         let items = color_items();
-        assert_eq!(items.len(), 13);
-        assert_eq!(items[9], (ColorTable::ScrollBar, 0));
-        let rows = (ColorTable::ALL.len() + items.len()) as i32;
+        assert_eq!(items.len(), 15);
+        assert_eq!(items[0], (ColorTable::Terminal, 0));
+        assert_eq!(items[11], (ColorTable::ScrollBar, 0));
+        // 表の見出しと配色の行と色の行。
+        let rows = (ColorTable::ALL.len() + 1 + items.len()) as i32;
         let button_top = CLIENT_HEIGHT - MARGIN - BUTTON_HEIGHT;
         assert!(MARGIN + rows * COLOR_ROW_HEIGHT <= button_top - MARGIN);
         let row_width = LABEL_WIDTH
@@ -1856,6 +1954,48 @@ mod tests {
             + COLOR_RESET_WIDTH
             + 3 * BUTTON_GAP;
         assert!(row_width <= CLIENT_WIDTH - (MARGIN + PAGES_WIDTH + MARGIN) - MARGIN);
+    }
+
+    #[test]
+    fn default_colors_follow_the_scheme_and_the_terminal_colors() {
+        let tab_bar = [Rgb { r: 9, g: 9, b: 9 }; config::TAB_BAR_COLOR_KEYS.len()];
+        let light = ColorsConfig {
+            scheme: ColorScheme::Light,
+            ..ColorsConfig::default()
+        };
+        let scheme = config::LIGHT_COLORS;
+        assert_eq!(
+            default_color(&light, &tab_bar, ColorTable::Terminal, 0),
+            scheme.background
+        );
+        assert_eq!(
+            default_color(&light, &tab_bar, ColorTable::Terminal, 1),
+            scheme.foreground
+        );
+        assert_eq!(
+            default_color(&light, &tab_bar, ColorTable::TabBar, 3),
+            tab_bar[3]
+        );
+        let thumb =
+            |colors: &ColorsConfig| default_color(colors, &tab_bar, ColorTable::ScrollBar, 1);
+        assert_eq!(
+            thumb(&light),
+            scroll_bar::Palette::from_terminal(scheme.background, scheme.foreground).colors()[1]
+        );
+        // 書いた背景色は、端末の色の既定には効かず、スクロールバーの既定には効く。
+        let black = Rgb { r: 0, g: 0, b: 0 };
+        let written = ColorsConfig {
+            terminal: [Some(black), None],
+            ..light.clone()
+        };
+        assert_eq!(
+            default_color(&written, &tab_bar, ColorTable::Terminal, 0),
+            scheme.background
+        );
+        assert_eq!(
+            thumb(&written),
+            scroll_bar::Palette::from_terminal(black, scheme.foreground).colors()[1]
+        );
     }
 
     #[test]

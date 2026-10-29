@@ -658,6 +658,7 @@ impl App {
             first_id,
             &command_line_for(arguments.as_deref(), config.shell.as_deref()),
             size,
+            &config.colors.terminal_colors(),
             Arc::new(poster(hwnd, WM_APP_WAKE, WPARAM(first_id.0))),
         )?;
         if let Some(path) = &config_path {
@@ -832,6 +833,7 @@ impl App {
             id,
             &command_line,
             size,
+            &self.colors.terminal_colors(),
             Arc::new(poster(self.hwnd, WM_APP_WAKE, WPARAM(id.0))),
         ) {
             Ok(session) => session,
@@ -1871,6 +1873,14 @@ impl App {
         self.shell = config.shell;
         self.keymap = config.keys;
         if config.colors != self.colors {
+            let terminal_colors = config.colors.terminal_colors();
+            if terminal_colors != self.colors.terminal_colors() {
+                for session in &mut self.sessions {
+                    if let Err(e) = session.vt.set_default_colors(&terminal_colors) {
+                        tracing::warn!("failed to change the terminal colors: {e}");
+                    }
+                }
+            }
             self.colors = config.colors;
             self.invalidate();
         }
@@ -1918,24 +1928,7 @@ impl App {
     /// 設定ダイアログに渡すもの。いま使っている設定と、フォントの一覧。
     fn settings_request(&mut self) -> settings_dialog::Request {
         let current = self.config_in_use();
-        let scroll_bar_defaults = match self.session_mut().vt.frame() {
-            Ok(frame) => scroll_bar::Palette::from_terminal(frame.background, frame.foreground),
-            Err(e) => {
-                tracing::warn!("failed to read the terminal colors: {e}");
-                scroll_bar::Palette::from_terminal(
-                    Rgb { r: 0, g: 0, b: 0 },
-                    Rgb {
-                        r: 0xff,
-                        g: 0xff,
-                        b: 0xff,
-                    },
-                )
-            }
-        };
-        let default_colors = settings_dialog::DefaultColors {
-            tab_bar: tab_bar::Palette::from_system(system_colors()).colors(),
-            scroll_bar: scroll_bar_defaults.colors(),
-        };
+        let tab_bar_colors = tab_bar::Palette::from_system(system_colors()).colors();
         let fonts = match font::monospaced_families(&self.dwrite) {
             Ok(families) => families
                 .into_iter()
@@ -1964,7 +1957,7 @@ impl App {
             family_indices,
             fonts,
             font_in_use,
-            default_colors,
+            tab_bar_colors,
         }
     }
 

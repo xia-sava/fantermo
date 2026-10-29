@@ -9,7 +9,8 @@
 //!   表の最後に足す。表がなければ、ファイルの最後に表ごと足す。
 //! - 既定値に戻した項目は、その行を既定値の `# キー = …` のコメントの行にする（`shell` は既定値が
 //!   ないので、それまでの値をコメントにする）。上に書いた説明のコメントは残る。
-//! - `[colors.…]` の色は既定の色を一つに書けないので、既定に戻した色はそれまでの値をコメントにする。
+//! - `[colors]` と `[colors.…]` の色は既定の色を一つに書けないので、既定に戻した色はそれまでの値を
+//!   コメントにする。
 //! - `[keys]` の組み合わせは、書き方（大文字小文字、修飾キーの順）によらず同じ組み合わせの行を探す。
 //!   既定の割り当てに戻した組み合わせは、既定の割り当ての `# "…" = "…"` のコメントの行にし、既定で
 //!   割り当てていない組み合わせは行を消す。
@@ -30,16 +31,18 @@ enum Setting {
     WideGlyph,
     PasteConfirm,
     ScrollBarWidth,
+    ColorScheme,
 }
 
 impl Setting {
-    const ALL: [Setting; 6] = [
+    const ALL: [Setting; 7] = [
         Setting::Shell,
         Setting::FontFamily,
         Setting::FontSize,
         Setting::WideGlyph,
         Setting::PasteConfirm,
         Setting::ScrollBarWidth,
+        Setting::ColorScheme,
     ];
 
     /// 項目を置く表の道筋。最上位なら空。
@@ -49,6 +52,7 @@ impl Setting {
             Setting::FontFamily | Setting::FontSize | Setting::WideGlyph => &["font"],
             Setting::PasteConfirm => &["paste"],
             Setting::ScrollBarWidth => &["scroll_bar"],
+            Setting::ColorScheme => &["colors"],
         }
     }
 
@@ -60,6 +64,7 @@ impl Setting {
             Setting::WideGlyph => "wide_glyph",
             Setting::PasteConfirm => "confirm",
             Setting::ScrollBarWidth => "width",
+            Setting::ColorScheme => "scheme",
         }
     }
 
@@ -72,6 +77,7 @@ impl Setting {
             Setting::WideGlyph => Some(Value::from(config.font.wide_glyph.name())),
             Setting::PasteConfirm => Some(Value::from(config.paste.confirm.name())),
             Setting::ScrollBarWidth => Some(Value::from(i64::from(config.scroll_bar.width))),
+            Setting::ColorScheme => Some(Value::from(config.colors.scheme.name())),
         }
     }
 }
@@ -191,11 +197,11 @@ pub fn update(text: &str, base: &Config, edited: &Config) -> Result<String, Stri
     Ok(format!("{bom}{out}"))
 }
 
-/// `[colors.…]` の表で、`base` と `edited` で違う色を書き換える。既定の色に戻した色は、既定の色が
-/// システムの色などで決まり一つに書けないので、それまでの値をコメントにする。
+/// `[colors]` と `[colors.…]` の表で、`base` と `edited` で違う色を書き換える。既定の色に戻した色は、
+/// 既定の色が配色やシステムの色などで決まり一つに書けないので、それまでの値をコメントにする。
 fn update_colors(doc: &mut DocumentMut, base: &Config, edited: &Config) -> Result<(), String> {
     for table in ColorTable::ALL {
-        let path = ["colors", table.name()];
+        let path = table.path();
         let old = base.colors.table(table);
         let new = edited.colors.table(table);
         for (index, key) in table.keys().iter().enumerate() {
@@ -208,8 +214,8 @@ fn update_colors(doc: &mut DocumentMut, base: &Config, edited: &Config) -> Resul
                 matches: &matches,
             };
             match new[index] {
-                Some(color) => set(doc, &path, &target, Value::from(format_color(color)))?,
-                None => reset(doc, &path, &target, Reset::CommentOld)?,
+                Some(color) => set(doc, path, &target, Value::from(format_color(color)))?,
+                None => reset(doc, path, &target, Reset::CommentOld)?,
             }
         }
     }
@@ -638,8 +644,8 @@ mod tests {
     use super::*;
     use crate::{
         config::{
-            self, ColorsConfig, FontConfig, PasteConfig, PasteConfirm, ScrollBarConfig, TEMPLATE,
-            WideGlyph,
+            self, ColorScheme, ColorsConfig, FontConfig, PasteConfig, PasteConfirm,
+            ScrollBarConfig, TEMPLATE, WideGlyph,
         },
         frame::Rgb,
         keymap::Keymap,
@@ -669,6 +675,55 @@ mod tests {
             TEMPLATE
                 .replace("# bar = \"#cccccc\"", "# bar = \"#ff0000\"")
                 .replace("# thumb = \"#595959\"", "# thumb = \"#0000ff\"")
+        );
+    }
+
+    #[test]
+    fn scheme_and_terminal_colors_replace_the_commented_lines_of_the_template() {
+        let mut edited = Config::default();
+        edited.colors.scheme = ColorScheme::Light;
+        edited.colors.terminal[1] = Some(BLUE);
+        let text = update(TEMPLATE, &Config::default(), &edited).unwrap();
+        assert_reads_as(&text, &edited);
+        assert_eq!(
+            text,
+            TEMPLATE
+                .replace("# scheme = \"dark\"", "scheme = \"light\"")
+                .replace("# foreground = \"#ffffff\"", "foreground = \"#0000ff\"")
+        );
+        // 配色は既定のコメントの行に、色はそれまでの値をコメントにした行に戻す。
+        let back = update(&text, &edited, &Config::default()).unwrap();
+        assert_reads_as(&back, &Config::default());
+        assert_eq!(
+            back,
+            TEMPLATE.replace("# foreground = \"#ffffff\"", "# foreground = \"#0000ff\"")
+        );
+    }
+
+    #[test]
+    fn scheme_is_added_before_the_color_tables() {
+        let mut edited = Config::default();
+        edited.colors.scheme = ColorScheme::Light;
+        edited.colors.terminal[0] = Some(RED);
+        // `[colors]` の見出しのないファイル（`[colors.tab_bar]` だけ）。
+        let text =
+            "[font]\nsize = 9\n\n[colors.tab_bar]\nbar = '#000000'\n\n[paste]\nconfirm = 'never'\n";
+        let base = config::parse(text, &Config::default()).config;
+        let mut edited_from_text = base.clone();
+        edited_from_text.colors.scheme = edited.colors.scheme;
+        edited_from_text.colors.terminal = edited.colors.terminal;
+        let updated = update(text, &base, &edited_from_text).unwrap();
+        assert_reads_as(&updated, &edited_from_text);
+        assert_eq!(
+            updated,
+            "[font]\nsize = 9\n\n[colors]\nscheme = \"light\"\nbackground = \"#ff0000\"\n\n[colors.tab_bar]\nbar = '#000000'\n\n[paste]\nconfirm = 'never'\n"
+        );
+        // 何もないファイル。
+        let updated = update("", &Config::default(), &edited).unwrap();
+        assert_reads_as(&updated, &edited);
+        assert_eq!(
+            updated,
+            "[colors]\nscheme = \"light\"\nbackground = \"#ff0000\"\n"
         );
     }
 

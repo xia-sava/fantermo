@@ -66,6 +66,15 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # 書き換えたら、端末の桁数と行数を保ったまま窓の幅を変える。
 # width = 12
 
+[colors]
+# 端末の配色。"dark" は黒の背景に白の文字、"light" は白の背景に濃い灰色の文字。背景色・文字の色・16 色を
+# まとめて変える。カーソルは文字の色で描き、選んだ範囲は文字の色と背景色を入れ替えて描く。
+# scheme = "dark"
+
+# 端末の背景色と文字の色。"#rrggbb" の形で書く。書かない色は配色の色（下の値は "dark" の色）。
+# background = "#000000"
+# foreground = "#ffffff"
+
 [colors.tab_bar]
 # タブバーの色。"#rrggbb" の形で書く。書かない色は Windows のシステムの色から決める（下の値は Windows 11
 # の既定の色のときのもの）。bar は地、active_tab は表示しているタブ、active_border はその左・右・上の縁の
@@ -83,8 +92,8 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # bell = "#f0b030"
 
 [colors.scroll_bar]
-# スクロールバーの色。"#rrggbb" の形で書く。書かない色は端末の背景色と文字の色から決める（下の値は既定の
-# 黒の背景と白の文字のときのもの）。track はマウスを載せている間とドラッグしている間のトラック、thumb は
+# スクロールバーの色。"#rrggbb" の形で書く。書かない色は端末の背景色と文字の色から決める（下の値は配色が
+# "dark" の黒の背景と白の文字のときのもの）。track はマウスを載せている間とドラッグしている間のトラック、thumb は
 # つまみ、hovered_thumb はマウスを載せているつまみ、dragged_thumb はドラッグしているつまみ。
 # track = "#0f0f0f"
 # thumb = "#595959"
@@ -127,9 +136,11 @@ pub struct Config {
     pub keys: Keymap,
 }
 
-/// 色を書く表（`[colors.<名前>]`）。
+/// 色を書く表（`[colors]` と `[colors.<名前>]`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColorTable {
+    /// 端末の色（`[colors]` に書く）。
+    Terminal,
     /// タブバーの色。
     TabBar,
     /// スクロールバーの色。
@@ -138,24 +149,137 @@ pub enum ColorTable {
 
 impl ColorTable {
     /// すべての表。設定ファイルの順。
-    pub const ALL: [ColorTable; 2] = [ColorTable::TabBar, ColorTable::ScrollBar];
+    pub const ALL: [ColorTable; 3] = [
+        ColorTable::Terminal,
+        ColorTable::TabBar,
+        ColorTable::ScrollBar,
+    ];
 
-    /// `[colors]` の中の表の名前。
-    pub fn name(self) -> &'static str {
+    /// 表の道筋（`["colors", "tab_bar"]` など）。
+    pub fn path(self) -> &'static [&'static str] {
         match self {
-            ColorTable::TabBar => "tab_bar",
-            ColorTable::ScrollBar => "scroll_bar",
+            ColorTable::Terminal => &["colors"],
+            ColorTable::TabBar => &["colors", "tab_bar"],
+            ColorTable::ScrollBar => &["colors", "scroll_bar"],
         }
     }
 
     /// 表に書ける色のキー。設定ファイルの順。
     pub fn keys(self) -> &'static [&'static str] {
         match self {
+            ColorTable::Terminal => &TERMINAL_COLOR_KEYS,
             ColorTable::TabBar => &TAB_BAR_COLOR_KEYS,
             ColorTable::ScrollBar => &SCROLL_BAR_COLOR_KEYS,
         }
     }
 }
+
+/// `[colors]` に書ける端末の色のキー。
+pub const TERMINAL_COLOR_KEYS: [&str; 2] = ["background", "foreground"];
+
+/// 端末の配色（`colors.scheme`）。背景色・文字の色・16 色をまとめて決める。カーソルは文字の色で
+/// 描き、選んだ範囲は文字の色と背景色を入れ替えて描くので、どちらも配色に従う。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorScheme {
+    /// 黒の背景に白の文字。
+    #[default]
+    Dark,
+    /// 白の背景に濃い灰色の文字。
+    Light,
+}
+
+impl ColorScheme {
+    /// 書ける値のすべて。設定ファイルの説明と同じ順。
+    pub const ALL: [ColorScheme; 2] = [ColorScheme::Dark, ColorScheme::Light];
+
+    /// 設定ファイルに書く名前。
+    pub fn name(self) -> &'static str {
+        match self {
+            ColorScheme::Dark => "dark",
+            ColorScheme::Light => "light",
+        }
+    }
+
+    /// 配色の端末の色。
+    pub fn colors(self) -> TerminalColors {
+        match self {
+            ColorScheme::Dark => DARK_COLORS,
+            ColorScheme::Light => LIGHT_COLORS,
+        }
+    }
+}
+
+/// 端末の 16 色（SGR 30〜37、90〜97 とその背景）の数。256 色の残りは標準の計算で決める。
+pub const ANSI_COLOR_COUNT: usize = 16;
+
+/// 端末の既定の色。アプリが OSC 10 / 11 / 4 で変えた色は、これより優先する。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TerminalColors {
+    pub background: Rgb,
+    pub foreground: Rgb,
+    /// 黒・赤・緑・黄・青・マゼンタ・シアン・白と、その明るい色の順。
+    pub ansi: [Rgb; ANSI_COLOR_COUNT],
+}
+
+/// `0xrrggbb` の色。
+const fn hex(value: u32) -> Rgb {
+    Rgb {
+        r: (value >> 16) as u8,
+        g: (value >> 8) as u8,
+        b: value as u8,
+    }
+}
+
+/// ダークの配色。libghostty-vt の既定の色（黒の背景、白の文字、Ghostty の既定の 16 色）と同じ。
+pub const DARK_COLORS: TerminalColors = TerminalColors {
+    background: hex(0x000000),
+    foreground: hex(0xffffff),
+    ansi: [
+        hex(0x1d1f21),
+        hex(0xcc6666),
+        hex(0xb5bd68),
+        hex(0xf0c674),
+        hex(0x81a2be),
+        hex(0xb294bb),
+        hex(0x8abeb7),
+        hex(0xc5c8c6),
+        hex(0x666666),
+        hex(0xd54e53),
+        hex(0xb9ca4a),
+        hex(0xe7c547),
+        hex(0x7aa6da),
+        hex(0xc397d8),
+        hex(0x70c0b1),
+        hex(0xeaeaea),
+    ],
+};
+
+/// ライトの配色。Windows Terminal の One Half Light を元に、白の背景でも読めるように黄・緑・シアンと
+/// 明るい色を暗めにした（明るい色も白の背景に対してコントラスト比 3.4 以上。明るい白だけは 2.2）。白と
+/// 明るい白は、文字として読めるように灰色にした。背景は表示しているタブと同じ白。
+pub const LIGHT_COLORS: TerminalColors = TerminalColors {
+    background: hex(0xffffff),
+    foreground: hex(0x383a42),
+    ansi: [
+        hex(0x000000),
+        hex(0xc4262e),
+        hex(0x2e7d32),
+        hex(0x8a6400),
+        hex(0x1f5fc8),
+        hex(0xa626a4),
+        hex(0x0a7a8a),
+        hex(0x6c6c6c),
+        hex(0x8a8a8a),
+        hex(0xe0443e),
+        hex(0x3e9a3e),
+        hex(0xa87a00),
+        hex(0x3b82e0),
+        hex(0xbf4fc9),
+        hex(0x1593a3),
+        hex(0xb0b0b0),
+    ],
+};
 
 /// `[colors.tab_bar]` に書ける色のキー。
 pub const TAB_BAR_COLOR_KEYS: [&str; 9] = [
@@ -173,10 +297,12 @@ pub const TAB_BAR_COLOR_KEYS: [&str; 9] = [
 /// `[colors.scroll_bar]` に書ける色のキー。
 pub const SCROLL_BAR_COLOR_KEYS: [&str; 4] = ["track", "thumb", "hovered_thumb", "dragged_thumb"];
 
-/// `[colors]` の設定。書いた色だけを持ち、書いていない色（`None`）は既定の色（システムの色や端末の
-/// 色から決めるもの）を使う。並びはそれぞれのキーの並び（[`ColorTable::keys`]）の順。
+/// `[colors]` の設定。色は書いた色だけを持ち、書いていない色（`None`）は既定の色（配色、システムの
+/// 色、端末の色から決めるもの）を使う。並びはそれぞれのキーの並び（[`ColorTable::keys`]）の順。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ColorsConfig {
+    pub scheme: ColorScheme,
+    pub terminal: [Option<Rgb>; TERMINAL_COLOR_KEYS.len()],
     pub tab_bar: [Option<Rgb>; TAB_BAR_COLOR_KEYS.len()],
     pub scroll_bar: [Option<Rgb>; SCROLL_BAR_COLOR_KEYS.len()],
 }
@@ -185,6 +311,7 @@ impl ColorsConfig {
     /// 表 `table` の色。キーの並びの順。
     pub fn table(&self, table: ColorTable) -> &[Option<Rgb>] {
         match table {
+            ColorTable::Terminal => &self.terminal,
             ColorTable::TabBar => &self.tab_bar,
             ColorTable::ScrollBar => &self.scroll_bar,
         }
@@ -192,9 +319,19 @@ impl ColorsConfig {
 
     pub fn table_mut(&mut self, table: ColorTable) -> &mut [Option<Rgb>] {
         match table {
+            ColorTable::Terminal => &mut self.terminal,
             ColorTable::TabBar => &mut self.tab_bar,
             ColorTable::ScrollBar => &mut self.scroll_bar,
         }
+    }
+
+    /// 端末の既定の色。配色の色を、書いた背景色と文字の色で上書きしたもの。
+    pub fn terminal_colors(&self) -> TerminalColors {
+        let mut colors = self.scheme.colors();
+        let [background, foreground] = self.terminal;
+        colors.background = background.unwrap_or(colors.background);
+        colors.foreground = foreground.unwrap_or(colors.foreground);
+        colors
     }
 }
 
@@ -560,30 +697,49 @@ fn read_font(reader: &mut Reader, table: &mut Table, font: &mut FontConfig) {
         .apply(&mut font.wide_glyph, defaults.wide_glyph);
 }
 
-/// `[colors]` の中の色の表を読む。
+/// `[colors]` の配色と、その中の色の表を読む。
 fn read_colors(reader: &mut Reader, colors: &mut Table, config: &mut ColorsConfig) {
+    const SECTION: Option<&str> = Some("colors");
+    reader
+        .take::<ColorScheme>(colors, SECTION, "scheme")
+        .apply(&mut config.scheme, ColorScheme::default());
     for table in ColorTable::ALL {
-        let section = key_path(Some("colors"), table.name());
-        match reader.take::<Table>(colors, Some("colors"), table.name()) {
-            Item::Absent => config.table_mut(table).fill(None),
+        let section = table.path().join(".");
+        let slots = config.table_mut(table);
+        let Some(name) = table.path().get(1) else {
+            // 端末の色は `[colors]` に直に書く。残りのキーは呼び出し元が知らないものとして扱う。
+            read_color_values(reader, colors, &section, table, slots);
+            continue;
+        };
+        match reader.take::<Table>(colors, SECTION, name) {
+            Item::Absent => slots.fill(None),
             Item::Invalid => {}
             Item::Valid(mut values) => {
-                let slots = config.table_mut(table);
-                for (slot, key) in slots.iter_mut().zip(table.keys()) {
-                    let path = key_path(Some(&section), key);
-                    reader
-                        .take::<String>(&mut values, Some(&section), key)
-                        .parse(reader, &path, |text| {
-                            parse_color(&text).ok_or_else(|| {
-                                format!("ignoring {path} = {text:?}: expected \"#rrggbb\"")
-                            })
-                        })
-                        .map(Some)
-                        .apply(slot, None);
-                }
+                read_color_values(reader, &mut values, &section, table, slots);
                 reader.warn_unknown(&values, Some(&section));
             }
         }
+    }
+}
+
+/// 表 `values`（道筋は `section`）から、`table` の色を `slots` に読む。
+fn read_color_values(
+    reader: &mut Reader,
+    values: &mut Table,
+    section: &str,
+    table: ColorTable,
+    slots: &mut [Option<Rgb>],
+) {
+    for (slot, key) in slots.iter_mut().zip(table.keys()) {
+        let path = key_path(Some(section), key);
+        reader
+            .take::<String>(values, Some(section), key)
+            .parse(reader, &path, |text| {
+                parse_color(&text)
+                    .ok_or_else(|| format!("ignoring {path} = {text:?}: expected \"#rrggbb\""))
+            })
+            .map(Some)
+            .apply(slot, None);
     }
 }
 
@@ -775,6 +931,8 @@ mod tests {
             },
             scroll_bar: ScrollBarConfig { width: 20 },
             colors: ColorsConfig {
+                scheme: ColorScheme::Light,
+                terminal: [None, Some(Rgb { r: 4, g: 5, b: 6 })],
                 tab_bar: {
                     let mut colors = [None; TAB_BAR_COLOR_KEYS.len()];
                     colors[0] = Some(Rgb { r: 1, g: 2, b: 3 });
@@ -838,12 +996,14 @@ mod tests {
             Config {
                 shell: Some(r"C:\cygwin64\bin\zsh.exe -l".to_owned()),
                 colors: ColorsConfig {
+                    terminal: ["#000000", "#ffffff"].map(hex),
                     tab_bar: [
                         "#cccccc", "#ffffff", "#a0a0a0", "#000000", "#000000", "#a0a0a0",
                         "#e6e6e6", "#6d6d6d", "#f0b030"
                     ]
                     .map(hex),
                     scroll_bar: ["#0f0f0f", "#595959", "#808080", "#a6a6a6"].map(hex),
+                    ..ColorsConfig::default()
                 },
                 ..Config::default()
             }
@@ -853,7 +1013,12 @@ mod tests {
             .lines()
             .filter(|line| !line.starts_with('#') && line.contains(" = "))
             .count();
-        assert_eq!(settings, 6 + 9 + 13, "{text}");
+        assert_eq!(settings, 7 + 9 + 15, "{text}");
+        // 背景色と文字の色の例は、既定の配色の色。
+        assert_eq!(
+            parsed.config.colors.terminal_colors(),
+            ColorScheme::default().colors()
+        );
     }
 
     #[test]
@@ -903,10 +1068,51 @@ mod tests {
     }
 
     #[test]
+    fn scheme_and_terminal_colors_are_read() {
+        for scheme in ColorScheme::ALL {
+            let parsed = parse(&format!("[colors]\nscheme = \"{}\"\n", scheme.name()));
+            assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+            assert_eq!(parsed.config.colors.scheme, scheme);
+            assert_eq!(parsed.config.colors.terminal_colors(), scheme.colors());
+        }
+        assert_eq!(ColorScheme::default(), ColorScheme::Dark);
+        assert_eq!(
+            parse("").config.colors.terminal_colors(),
+            ColorScheme::Dark.colors()
+        );
+
+        // 背景色と文字の色は、書いたほうだけ配色の色を上書きする。16 色は配色のまま。
+        let parsed = parse("[colors]\nscheme = 'light'\nforeground = '#102030'\n");
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        let colors = parsed.config.colors.terminal_colors();
+        assert_eq!(colors.background, LIGHT_COLORS.background);
+        assert_eq!(colors.foreground, hex(0x102030));
+        assert_eq!(colors.ansi, LIGHT_COLORS.ansi);
+        let parsed = parse("colors.background = '#fafafa'\n");
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        let colors = parsed.config.colors.terminal_colors();
+        assert_eq!(colors.background, hex(0xfafafa));
+        assert_eq!(colors.foreground, DARK_COLORS.foreground);
+        assert_eq!(colors.ansi, DARK_COLORS.ansi);
+    }
+
+    #[test]
+    fn schemes_differ_in_every_color() {
+        let (dark, light) = (DARK_COLORS, LIGHT_COLORS);
+        assert_ne!(dark.background, light.background);
+        assert_ne!(dark.foreground, light.foreground);
+        for index in 0..ANSI_COLOR_COUNT {
+            assert_ne!(dark.ansi[index], light.ansi[index], "{index}");
+        }
+        // ライトの背景は表示しているタブと同じ白。
+        assert_eq!(light.background, hex(0xffffff));
+    }
+
+    #[test]
     fn invalid_colors_keep_the_previous_values_with_their_lines() {
         let previous = customized();
         let parsed = super::parse(
-            "[colors.tab_bar]\nbar = '#12345'\nactive_tab = 5\nseparator = '#00ff00'\nshade = '#000000'\n[colors.scroll_bar]\nthumb = 'gray'\n[colors]\nscheme = 'dark'\n",
+            "[colors.tab_bar]\nbar = '#12345'\nactive_tab = 5\nseparator = '#00ff00'\nshade = '#000000'\n[colors.scroll_bar]\nthumb = 'gray'\n[colors]\ntheme = 'dark'\nscheme = 'sepia'\nbackground = 'white'\n",
             &previous,
         );
         let warnings: Vec<(Option<usize>, &str)> = parsed
@@ -914,7 +1120,7 @@ mod tests {
             .iter()
             .map(|w| (w.line, w.message.as_str()))
             .collect();
-        assert_eq!(warnings.len(), 5, "{warnings:?}");
+        assert_eq!(warnings.len(), 7, "{warnings:?}");
         assert_eq!(
             warnings[0],
             (
@@ -942,10 +1148,24 @@ mod tests {
         );
         assert_eq!(
             warnings[4],
-            (Some(9), "ignoring unknown setting colors.scheme")
+            (Some(9), "ignoring unknown setting colors.theme")
         );
-        // 誤りの色は前の値のまま、書いた色は読む。
+        assert_eq!(warnings[5].0, Some(10));
+        assert!(
+            warnings[5].1.starts_with("ignoring colors.scheme:"),
+            "{warnings:?}"
+        );
+        assert_eq!(
+            warnings[6],
+            (
+                Some(11),
+                "ignoring colors.background = \"white\": expected \"#rrggbb\""
+            )
+        );
+        // 誤りの色と配色は前の値のまま、書いた色は読み、書いていない色は既定に戻る。
         let colors = &parsed.config.colors;
+        assert_eq!(colors.scheme, previous.colors.scheme);
+        assert_eq!(colors.terminal, [previous.colors.terminal[0], None]);
         assert_eq!(colors.tab_bar[0], previous.colors.tab_bar[0]);
         assert_eq!(colors.tab_bar[5], Some(Rgb { r: 0, g: 255, b: 0 }));
         assert_eq!(colors.scroll_bar, [None; 4]);
@@ -1092,12 +1312,12 @@ mod tests {
     fn invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults() {
         let previous = customized();
         let parsed = super::parse(
-            "shell = ' '\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[scroll_bar]\nwidth = 2\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors.tab_bar]\nbar = 'red'\n",
+            "shell = ' '\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[scroll_bar]\nwidth = 2\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors]\nscheme = 'sepia'\nforeground = 'blue'\n[colors.tab_bar]\nbar = 'red'\n",
             &previous,
         );
         assert!(!parsed.syntax_error);
         assert_eq!(parsed.config, previous);
-        assert_eq!(parsed.warnings.len(), 9, "{:?}", parsed.warnings);
+        assert_eq!(parsed.warnings.len(), 11, "{:?}", parsed.warnings);
 
         let parsed = super::parse("[font]\nsize = 500\n", &previous);
         assert_eq!(

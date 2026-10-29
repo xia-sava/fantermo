@@ -3,6 +3,7 @@
 
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize},
+    config::TerminalColors,
     link::Link,
     vt::Vt,
 };
@@ -48,15 +49,17 @@ pub struct OutputEvents {
 }
 
 impl Session {
-    /// `size` の端末を作り、`command_line` を子プロセスとして起動する。`wake` は出力が届いたときと
-    /// 子プロセスが終了したときに、別のスレッドから呼ばれる。
+    /// 既定の色が `colors` の `size` の端末を作り、`command_line` を子プロセスとして起動する。`wake` は
+    /// 出力が届いたときと子プロセスが終了したときに、別のスレッドから呼ばれる。
     pub fn spawn(
         id: SessionId,
         command_line: &str,
         size: GridSize,
+        colors: &TerminalColors,
         wake: Wake,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let vt = Vt::new(size, TERM)?;
+        let mut vt = Vt::new(size, TERM)?;
+        vt.set_default_colors(colors)?;
         let backend = ConPty::spawn(
             &SpawnOptions {
                 command_line,
