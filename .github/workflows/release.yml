@@ -1,0 +1,229 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+# 既定では GITHUB_TOKEN に何の権限も与えない。必要なジョブが必要な分だけ宣言する。
+permissions: {}
+
+# 連続して打ったタグを取りこぼさないよう、キャンセルせず順に流す。
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  # Zig がビルドの途中に作る補助の exe のパスが MAX_PATH を超えないよう、出力先を短くする。
+  CARGO_TARGET_DIR: 'C:\t'
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      name: ${{ steps.compute.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # 版はタグ名から v を除いたもの。Cargo の版（Cargo.toml の [workspace.package] の version）と
+      # 食い違えば止める。食い違ったまま配ると、アプリが見せる版と配布物の版が合わなくなる。
+      # 配布しない手動実行は識別できる名前を付ける。
+      - name: Compute version
+        id: compute
+        run: |
+          set -euo pipefail
+          cargo_version=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version = "\(.*\)"$/\1/p}' Cargo.toml)
+          if [ -z "$cargo_version" ]; then
+            echo "Cargo.toml の [workspace.package] に version が見つかりません" >&2
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            name="${GITHUB_REF_NAME#v}"
+            # MSI の版は major.minor.patch しか受け付けないため、接尾辞つきのタグも弾く。
+            if ! printf '%s' "$name" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "タグは vMAJOR.MINOR.PATCH の形で打つこと（受け取った値: $GITHUB_REF_NAME）" >&2
+              exit 1
+            fi
+            if [ "$name" != "$cargo_version" ]; then
+              echo "タグ（$GITHUB_REF_NAME）と Cargo の版（$cargo_version）が食い違っています" >&2
+              exit 1
+            fi
+          else
+            name="dev-$(git rev-parse --short HEAD)"
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$name (Cargo: $cargo_version)"
+
+  # 配布物を作る前に fmt・clippy・test を通す。ここが落ちればリリースまで進まない。
+  check:
+    needs: [version]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  # 手動実行でも組む。配布はしないが、手元で試すための zip を成果物として残す。
+  build:
+    needs: [version, check]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-toolchain
+
+      # タグを打ったときだけリリースのビルドとして版を見せる（手動実行は 0.0.1 (dev-<短い SHA>)）。
+      - name: Build
+        shell: cmd
+        env:
+          FANTERMO_RELEASE: ${{ github.ref_type == 'tag' && '1' || '0' }}
+        run: call tools\dev.bat build --release --locked -p fantermo
+
+      - name: Pack zip
+        shell: pwsh
+        env:
+          VERSION_NAME: ${{ needs.version.outputs.name }}
+        run: |
+          $name = "fantermo-$env:VERSION_NAME-x64"
+          $stage = Join-Path $env:RUNNER_TEMP $name
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item (Join-Path $env:CARGO_TARGET_DIR "release\fantermo.exe") $stage
+          Copy-Item LICENSE, THIRD-PARTY-NOTICES.txt, README.md $stage
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Compress-Archive -Path $stage -DestinationPath "artifacts/$name.zip"
+
+      # タグを打ったときの zip はリリースへ載るため、保持期間は release ジョブへ渡すまででよい。
+      # 手動実行の zip は成果物としてしか残らないため、手元へ落とすまでの猶予を置く。
+      # Actions のストレージ枠はアカウント全体で共有していて、既定の 90 日で抱え続けると
+      # 他のリポジトリの CI まで止まる。
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zip
+          path: artifacts/*.zip
+          if-no-files-found: error
+          retention-days: ${{ github.ref_type == 'tag' && 1 || 3 }}
+
+  # 配布物の照合値から latest.json を組み、署名する。公開の権限は持たず、成果物として release へ渡す。
+  # 署名鍵を持つのはこのジョブだけで、リリースを書き換える権限とは同居させない。
+  manifest:
+    if: github.ref_type == 'tag'
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # tools/manifest.sh と、アプリに埋め込む公開鍵 assets/manifest-public-key.der を使う。
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # アプリが引く latest.json。配布物は latest に固定の名前で置くので、その名前で照合値を採る。
+      - name: Write latest.json
+        env:
+          VERSION_NAME: ${{ needs.version.outputs.name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p latest
+          cp "artifacts/fantermo-${VERSION_NAME}-x64.zip" latest/fantermo.zip
+          ./tools/manifest.sh write "$VERSION_NAME" \
+            "https://github.com/${REPOSITORY}/releases/download/latest" \
+            latest/latest.json zip=latest/fantermo.zip
+          cat latest/latest.json
+
+      # latest.json の生バイトへ署名し、リポジトリの公開鍵で確かめる。アプリは署名を確かめてからで
+      # ないと latest.json を解釈しない。鍵は環境変数で受け取り、権限を絞った一時ファイルへ書いて使い、
+      # ステップを抜けるときに消す。引数へ載せるとプロセス一覧から読める。
+      - name: Sign latest.json
+        env:
+          SIGNING_KEY: ${{ secrets.FANTERMO_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "FANTERMO_SIGNING_KEY が未設定です" >&2
+            exit 1
+          fi
+          key_file="$RUNNER_TEMP/manifest-signing-key.pem"
+          trap 'rm -f "$key_file"' EXIT
+          (umask 077 && printf '%s\n' "$SIGNING_KEY" > "$key_file")
+          ./tools/manifest.sh sign latest/latest.json "$key_file" assets/manifest-public-key.der
+
+      # latest.json もリリースへ載るため、保持期間は release ジョブへ渡すまででよい。
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manifest
+          path: |
+            latest/latest.json
+            latest/latest.json.sig
+          if-no-files-found: error
+          retention-days: 1
+
+  # 成果物を公開するだけのジョブ。contents: write を持つのはここだけ。
+  release:
+    if: github.ref_type == 'tag'
+    needs: [version, build, manifest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Name the files for latest
+        env:
+          VERSION_NAME: ${{ needs.version.outputs.name }}
+        run: |
+          set -euo pipefail
+          mkdir -p latest
+          cp "artifacts/fantermo-${VERSION_NAME}-x64.zip" latest/fantermo.zip
+          cp artifacts/latest.json artifacts/latest.json.sig latest/
+          # latest.json の照合値と、latest に置く zip が同じものであることを確かめる。
+          expected=$(jq -r '.zip.sha256' latest/latest.json)
+          actual=$(sha256sum latest/fantermo.zip | cut -d' ' -f1)
+          if [ "$expected" != "$actual" ]; then
+            echo "latest.json の sha256 と zip が合いません" >&2
+            exit 1
+          fi
+
+      # 版ごとのリリース。配布物の実物が残るので、後からどの版で何を配ったかを辿れる。
+      # 配布物を書き込む唯一の外部コードなので、可変タグではなくコミットで固定する。
+      - name: Publish versioned release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ needs.version.outputs.name }}
+          body: |
+            fantermo ${{ needs.version.outputs.name }}
+
+            zip を展開し、中の fantermo.exe を起動する。
+          files: |
+            artifacts/fantermo-${{ needs.version.outputs.name }}-x64.zip
+
+      # 更新の取得先。アプリは latest から latest.json と配布物を引くため、置き場を動かさずに
+      # 中身だけ差し替える。
+      - name: Update latest release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: latest
+          name: "Latest build"
+          body: |
+            配布中の版（${{ needs.version.outputs.name }}）。
+          prerelease: true
+          files: |
+            latest/fantermo.zip
+            latest/latest.json
+            latest/latest.json.sig

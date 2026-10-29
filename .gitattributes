@@ -8,3 +8,6 @@
 
 # シェルスクリプトは LF
 *.sh text eol=lf
+
+# 鍵はバイト列のまま
+*.der binary
