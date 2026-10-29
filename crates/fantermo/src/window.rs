@@ -574,10 +574,9 @@ impl App {
         match bound {
             // 選んでいなければシェルへ送る。押し続けたときも同じ。
             keymap::Action::Copy => self.copy_selection().then_some(None),
-            // 押し続けたときの繰り返しはシェルへ送る。
-            keymap::Action::Paste => (!repeated).then(|| self.paste_clipboard()),
-            // ここから下は、押し続けたときの繰り返しもシェルへ送らない。メニュー・開く・閉じるは
-            // 繰り返さず、次・前は繰り返す。
+            // ここから下は、押し続けたときの繰り返しもシェルへ送らない。貼り付け・メニュー・開く・
+            // 閉じるは繰り返さず、次・前は繰り返す。
+            keymap::Action::Paste => Some((!repeated).then(|| self.paste_clipboard()).flatten()),
             keymap::Action::ContextMenu => Some((!repeated).then(|| self.context_menu_at_cursor())),
             keymap::Action::NewTab => Some(
                 (!repeated)
