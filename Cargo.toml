@@ -16,6 +16,7 @@ fantermo-core = { path = "crates/fantermo-core" }
 libghostty-vt = { git = "https://github.com/uzaaft/libghostty-rs", rev = "9ede35b8ea94a55ed3608408d67e102883129f1e" }
 png = "0.18.1"
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.154"
 toml = "1.1.2"
 toml_edit = "0.25.17"
 tracing = "0.1.44"

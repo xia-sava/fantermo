@@ -5,7 +5,7 @@ use std::{
     hash::{BuildHasher, Hasher, RandomState},
     path::{Path, PathBuf},
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, mpsc},
     time::{Duration, Instant, SystemTime},
 };
 
@@ -92,7 +92,7 @@ use crate::{
     tab_bar::{self, Hit, TabView},
     text_dialog,
     ui_font::UiFont,
-    window_state,
+    update, window_state,
 };
 
 const WINDOW_CLASS: PCWSTR = w!("fantermo");
@@ -107,6 +107,9 @@ const WM_APP_WAKE: u32 = WM_APP + 1;
 
 /// 設定ファイルを監視するスレッドが、書き換えを知らせるメッセージ。
 const WM_APP_CONFIG_CHANGED: u32 = WM_APP + 2;
+
+/// 更新の確認かダウンロードをするスレッドが、結果を `App::update_events` に送ったと知らせるメッセージ。
+const WM_APP_UPDATE: u32 = WM_APP + 3;
 
 /// 画面の書き出しに使うタイマー。
 const DUMP_TIMER_ID: usize = 1;
@@ -554,6 +557,8 @@ enum Deferred {
     CloseWindow,
     /// `topic` についての警告 `text` を見せる。
     Warn { topic: Topic, text: String },
+    /// 更新のスレッドの結果を見せ、次にすることを決める。
+    Update(update::Event),
 }
 
 /// スクロールバーの上で左ボタンを押してから離すまでの操作。
@@ -670,6 +675,11 @@ struct App {
     /// 設定ダイアログが最後に設定ファイルに書いた中身。読み直すときに中身がこれと同じなら、使っている
     /// 設定と同じなので読まない。違えば捨てる。
     settings_written: Option<String>,
+    /// 更新の確認かダウンロードを別のスレッドでしているか、その結果を見せている。その間は新しく始めない。
+    update_busy: bool,
+    /// 更新のスレッドが結果を送る口と、窓が受け取る口。送ったら `WM_APP_UPDATE` で知らせる。
+    update_sender: mpsc::Sender<update::Event>,
+    update_events: mpsc::Receiver<update::Event>,
 }
 
 impl App {
@@ -726,6 +736,7 @@ impl App {
                 )
             };
         }
+        let (update_sender, update_events) = mpsc::channel();
 
         let mut app = Self {
             hwnd,
@@ -771,6 +782,9 @@ impl App {
             settings_dialog_open: false,
             reload_pending: false,
             settings_written: None,
+            update_busy: false,
+            update_sender,
+            update_events,
         };
         app.sessions[0].background_image = app.choose_background_image();
         Ok(app)
@@ -1594,6 +1608,19 @@ impl App {
         }
     }
 
+    /// 更新の確認かダウンロードを別のスレッドで始める。前のものが終わっていなければ始めない。
+    fn start_update(&mut self, work: update::Work) {
+        if self.update_busy {
+            tracing::info!("an update check or download is already running");
+            return;
+        }
+        self.update_busy = update::start(
+            work,
+            self.update_sender.clone(),
+            poster(self.hwnd, WM_APP_UPDATE, WPARAM(0)),
+        );
+    }
+
     /// テキストカーソルのセルの左下にコンテキストメニューを出すよう返す。キーボードから開くときに使う。
     fn context_menu_at_cursor(&self) -> Deferred {
         let (col, row) = self.session().vt.cursor_cell().unwrap_or_else(|e| {
@@ -2379,7 +2406,9 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
                 }
             }
             Deferred::ShowAbout { font } => {
-                about::show(hwnd, &font);
+                if about::show(hwnd, &font) {
+                    with_app(&mut |app| app.start_update(update::Work::Check));
+                }
             }
             Deferred::EditSettings => edit_settings(hwnd, with_app),
             Deferred::Menu(request) => match context_menu::show(hwnd, &request) {
@@ -2407,6 +2436,20 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
             // DestroyWindow はこの場で WM_DESTROY を送るので、借用を手放してから呼ぶ。
             Deferred::CloseWindow => destroy_window(hwnd),
             Deferred::Warn { topic, text } => notice::warn(hwnd, topic, text),
+            Deferred::Update(event) => match update::prompt::on_event(hwnd, event) {
+                update::prompt::Next::Nothing => with_app(&mut |app| app.update_busy = false),
+                update::prompt::Next::Download(release) => {
+                    let mut work = Some(update::Work::Download(release));
+                    with_app(&mut |app| {
+                        app.update_busy = false;
+                        if let Some(work) = work.take() {
+                            app.start_update(work);
+                        }
+                    });
+                }
+                // 窓を閉じるので、新しく始めないよう `update_busy` は立てたままにする。
+                update::prompt::Next::Quit => next = Some(Deferred::CloseWindow),
+            },
         }
     }
 }
@@ -2710,6 +2753,15 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         WM_TIMER if wparam.0 == DUMP_TIMER_ID => {
             with_app(&mut |app| app.write_dump());
+            LRESULT(0)
+        }
+        WM_APP_UPDATE => {
+            let mut event = None;
+            with_app(&mut |app| event = app.update_events.try_recv().ok());
+            // メッセージボックスを開くので、借用を手放してから見せる。
+            if let Some(event) = event {
+                run_deferred(hwnd, Some(Deferred::Update(event)), &with_app);
+            }
             LRESULT(0)
         }
         // 知らせが続けて届くたびにタイマーを掛け直し、止んでから一度だけ読み直す。

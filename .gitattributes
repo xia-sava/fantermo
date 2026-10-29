@@ -11,3 +11,6 @@
 
 # 鍵はバイト列のまま
 *.der binary
+
+# 署名を確かめるテストのデータは、署名したバイト列のまま
+crates/fantermo/testdata/update/* binary

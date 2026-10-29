@@ -59,7 +59,7 @@ fn filter() -> EnvFilter {
 }
 
 /// ログを置くフォルダ（`%LOCALAPPDATA%\fantermo\logs`）。
-fn log_dir() -> Option<PathBuf> {
+pub fn log_dir() -> Option<PathBuf> {
     let mut dir = known_folder::path(&FOLDERID_LocalAppData)?;
     dir.extend(LOG_DIR_COMPONENTS);
     Some(dir)

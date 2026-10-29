@@ -1424,7 +1424,7 @@ mod tests {
             hovered: Some(Hit::Close(3)),
             pressed: None,
         };
-        assert_eq!(separators(hovered), vec![]);
+        assert!(separators(hovered).is_empty());
     }
 
     /// `paints` のうち、`icon` を描くものの矩形と色。

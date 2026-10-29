@@ -1,0 +1,11 @@
+{
+  "versionName": "0.0.2",
+  "zip": {
+    "url": "https://github.com/xia-sava/fantermo/releases/download/latest/fantermo.zip",
+    "sha256": "257a4c075a4c2721970ffc7ef0380d0bf7329185de8f34ff9a6ac8336561c34c"
+  },
+  "msi": {
+    "url": "https://github.com/xia-sava/fantermo/releases/download/latest/fantermo.msi",
+    "sha256": "8b25505cb8d6a75a790f7aee75930a62dc03dfabdab4d43acc40468485509f4b"
+  }
+}
