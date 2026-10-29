@@ -430,6 +430,8 @@ struct App {
     /// タブバーの上で押したマウスのボタンと、そのときマウスの下にあったもの。離すまで、マウスの
     /// 操作を端末へ送らない。
     tab_bar_press: Option<(MouseButton, Option<Hit>)>,
+    /// タブバーの上の、マウスの下にあるもの。変わったときだけタブバーを描き直す。
+    tab_bar_hover: Option<Hit>,
     /// 窓がアクティブ（前面）。WM_ACTIVATE で決める。
     window_active: bool,
     /// 点滅の文字を見せている。点滅させていないときは `true`。
@@ -503,6 +505,7 @@ impl App {
             keymap: Keymap::default(),
             suppressed_release: None,
             tab_bar_press: None,
+            tab_bar_hover: None,
             window_active: false,
             blink_visible: true,
             blink_timer_running: false,
@@ -649,7 +652,8 @@ impl App {
         if was_active {
             self.on_activated();
         }
-        // タブバーのタブが減った。
+        // タブバーのタブが減り、マウスの下にあるものも変わりうる。
+        self.update_tab_bar_hover();
         self.invalidate();
         false
     }
@@ -675,7 +679,7 @@ impl App {
         self.session_mut().release_pointer();
     }
 
-    /// 表示する端末が替わった。窓のタイトルとマウスの下のリンクを合わせ、描き直す。
+    /// 表示する端末が替わった。窓のタイトルとマウスの下のリンクとタブバーのものを合わせ、描き直す。
     fn on_activated(&mut self) {
         tracing::debug!(
             "showing terminal {:?} ({} of {})",
@@ -686,6 +690,8 @@ impl App {
         self.session_mut().bell_marked = false;
         self.update_window_title();
         self.refresh_hovered_link_now();
+        // タブが入りきらないときは、表示するタブでタブの並びがずれる。
+        self.update_tab_bar_hover();
         self.invalidate();
     }
 
@@ -871,6 +877,22 @@ impl App {
     fn on_mouse_leave(&mut self) {
         self.pointer_in_window = None;
         self.refresh_hovered_link(false);
+        self.update_tab_bar_hover();
+    }
+
+    /// タブバーの上の、マウスの下にあるものを決め直す。変わったら描き直す。マウスの位置やタブの並びが
+    /// 変わったときに使う。
+    fn update_tab_bar_hover(&mut self) {
+        let hover = self
+            .pointer_in_window
+            .and_then(|(x, y)| self.tab_bar_hit(x, y))
+            .flatten();
+        if hover == self.tab_bar_hover {
+            return;
+        }
+        tracing::debug!("tab bar under the pointer: {hover:?}");
+        self.tab_bar_hover = hover;
+        self.invalidate();
     }
 
     /// マウスのボタンを押した。Ctrl を押しながらリンクの上で左ボタンを押したら、離すまで何もしない
@@ -883,10 +905,13 @@ impl App {
         let (x, y) = client_position(lparam);
         if let Some(hit) = self.tab_bar_hit(x, y) {
             self.tab_bar_press = Some((button, hit));
-            if button == MouseButton::Left
-                && let Some(Hit::Tab(index)) = hit
-            {
-                self.activate(index);
+            if button == MouseButton::Left {
+                // タブは押したときに表示する。ボタンは離したときに働くので、押している色で描き直す。
+                match hit {
+                    Some(Hit::Tab(index)) => self.activate(index),
+                    Some(_) => self.invalidate(),
+                    None => {}
+                }
             }
             return;
         }
@@ -918,6 +943,7 @@ impl App {
     fn on_mouse_move(&mut self, lparam: LPARAM, wparam: WPARAM) {
         let (x, y) = client_position(lparam);
         self.track_pointer(x, y);
+        self.update_tab_bar_hover();
         self.refresh_hovered_link(is_link_modifier(mouse_mods(wparam)));
         // リンクやタブバーを押している間の動きと、タブバーの上の動きは、アプリへ送らない。
         if self.session().pressed_link.is_some() || self.tab_bar_press.is_some() {
@@ -1004,8 +1030,10 @@ impl App {
     }
 
     /// タブバーの上で押した `button` を (`x`, `y`) で離した。押したときのマウスの下のものは `pressed`。
-    /// 中ボタンを同じタブの上で離したらそのタブを閉じ、右ボタンならコンテキストメニューを出すよう返す。
-    /// 左ボタンは押したときに切り替えてある。
+    /// 左ボタンは押したのと同じボタンの上で離したら、閉じるボタンならそのタブを閉じ、新しいタブのボタン
+    /// なら新しいタブを開く（タブは押したときに切り替えてある）。中ボタンを同じタブの上で離したら
+    /// そのタブを閉じ、右ボタンならコンテキストメニューを出すよう返す。最後のタブを閉じたら、窓を
+    /// 閉じるよう返す。
     fn on_tab_bar_click(
         &mut self,
         button: MouseButton,
@@ -1013,10 +1041,26 @@ impl App {
         x: i32,
         y: i32,
     ) -> Option<Deferred> {
+        let released = self.tab_bar_hit(x, y).flatten();
         match button {
+            MouseButton::Left => {
+                // 押している色を戻す。
+                self.invalidate();
+                if released != pressed {
+                    return None;
+                }
+                match pressed? {
+                    Hit::Close(index) => self.close_session(index).then_some(Deferred::CloseWindow),
+                    Hit::NewTab => {
+                        self.open_session();
+                        None
+                    }
+                    Hit::Tab(_) => None,
+                }
+            }
             MouseButton::Middle => {
-                let Hit::Tab(index) = pressed?;
-                if self.tab_bar_hit(x, y) != Some(pressed) {
+                let index = pressed?.tab()?;
+                if released.and_then(Hit::tab) != Some(index) {
                     return None;
                 }
                 self.close_session(index).then_some(Deferred::CloseWindow)
@@ -1302,6 +1346,7 @@ impl App {
         self.terminal_area =
             terminal_area_in_client(width, height, tab_bar::height(self.font.cell_height_px));
         self.resize_sessions();
+        self.update_tab_bar_hover();
     }
 
     /// すべての端末の大きさを、端末を描く領域に合わせる。表示していない端末も同じ大きさにする。
@@ -1471,10 +1516,18 @@ impl App {
                 bell: session.bell_marked,
             })
             .collect();
+        let pressed = match self.tab_bar_press {
+            Some((MouseButton::Left, hit)) => hit,
+            _ => None,
+        };
         tab_bar::paints(
             &self.tab_bar_layout(),
             &tabs,
             self.active,
+            tab_bar::Highlight {
+                hovered: self.tab_bar_hover,
+                pressed,
+            },
             background,
             foreground,
         )

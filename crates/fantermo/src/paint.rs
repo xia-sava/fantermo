@@ -79,6 +79,10 @@ pub enum Icon {
     Flare(Side),
     /// 塗りつぶした円。
     Dot,
+    /// タブを閉じるボタンの「×」。
+    Close,
+    /// 新しいタブのボタンの「+」。
+    Plus,
 }
 
 impl Icon {
@@ -87,6 +91,33 @@ impl Icon {
         match self {
             Icon::Corner(corner) => vec![corner_shape(corner, width, height)],
             Icon::Flare(side) => vec![flare_shape(side, width, height)],
+            Icon::Close => {
+                let thickness = stroke(width.min(height));
+                // 線の端の角が矩形からはみ出さないよう、太さの半分だけ内へ寄せる。
+                let inset = thickness / 2.0;
+                vec![
+                    Shape::Line {
+                        from: (inset, inset),
+                        to: (width - inset, height - inset),
+                        width: thickness,
+                    },
+                    Shape::Line {
+                        from: (width - inset, inset),
+                        to: (inset, height - inset),
+                        width: thickness,
+                    },
+                ]
+            }
+            Icon::Plus => {
+                // 縦横の線をピクセルの境目に合わせ、にじませない。
+                let thickness = stroke(width.min(height)).round();
+                let x = ((width - thickness) / 2.0).round();
+                let y = ((height - thickness) / 2.0).round();
+                vec![
+                    rect(0.0, y, width, y + thickness),
+                    rect(x, 0.0, x + thickness, height),
+                ]
+            }
             Icon::Dot => {
                 let radius = width.min(height) / 2.0;
                 let center = (width / 2.0, height / 2.0);
@@ -96,6 +127,21 @@ impl Icon {
                 }]
             }
         }
+    }
+}
+
+/// 一辺 `size` の「×」と「+」の線の太さ。
+fn stroke(size: f32) -> f32 {
+    (size / 8.0).max(1.0)
+}
+
+fn rect(left: f32, top: f32, right: f32, bottom: f32) -> Shape {
+    Shape::Rect {
+        left,
+        top,
+        right,
+        bottom,
+        alpha: 1.0,
     }
 }
 
@@ -220,6 +266,34 @@ mod tests {
         let points = polygon_points(&right[0]);
         assert!(points.iter().any(|&p| near(p, (0.0, 8.0))));
         assert!(!points.iter().any(|&p| near(p, (8.0, 0.0))));
+    }
+
+    #[test]
+    fn the_close_mark_crosses_the_square() {
+        let shapes = Icon::Close.shapes(16.0, 16.0);
+        assert_eq!(
+            shapes,
+            vec![
+                Shape::Line {
+                    from: (1.0, 1.0),
+                    to: (15.0, 15.0),
+                    width: 2.0
+                },
+                Shape::Line {
+                    from: (15.0, 1.0),
+                    to: (1.0, 15.0),
+                    width: 2.0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_plus_mark_lies_on_whole_pixels() {
+        assert_eq!(
+            Icon::Plus.shapes(13.0, 13.0),
+            vec![rect(0.0, 6.0, 13.0, 8.0), rect(6.0, 0.0, 8.0, 13.0)]
+        );
     }
 
     #[test]
