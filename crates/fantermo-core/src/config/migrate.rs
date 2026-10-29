@@ -51,8 +51,8 @@ pub const STEPS: &[Step] = &[
     },
     Step {
         name: "background.images",
-        description: "background.images = [ … ]（文字列とインラインテーブルの配列、文字列一つ、\
-                      インラインテーブル一つ）を [[background.images]] のテーブルの配列にする",
+        description: "background.images = [ … ]（文字列とインラインの表の配列、文字列一つ、\
+                      インラインの表一つ）を [[background.images]] の表の配列にする",
         apply: background_images,
     },
 ];
@@ -144,12 +144,12 @@ fn background_opacity(doc: &mut DocumentMut) -> Option<Change> {
 }
 
 /// `background.images = [ … ]` を `[[background.images]]` の表の配列にする。配列の要素の文字列は
-/// `path` だけの表に、インラインテーブルはそのキー（知らないキーも）を持つ表にする。文字列一つ、
-/// インラインテーブル一つも同じ。表は `[background]` の値の後ろに置く。要素の前後のコメントは、その
+/// `path` だけの表に、インラインの表はそのキー（知らないキーも）を持つ表にする。文字列一つ、
+/// インラインの表一つも同じ。表は `[background]` の値の後ろに置く。要素の前後のコメントは、その
 /// 要素の表の前に移す（要素の行末のコメントも）。`images` のキーの前のコメントと `[` の行のコメントは
 /// 最初の表の前に、最後の要素の後ろと `]` の行のコメントは最後の表の後ろに移す。表にできない要素（数など）は捨て、
 /// 捨てたものを返す。`[background]` を点で区切ったキーで書いたときと、`images` が配列・文字列・
-/// インラインテーブルのどれでもないときは何もしない（読むときに警告する）。
+/// インラインの表のどれでもないときは何もしない（読むときに警告する）。
 fn background_images(doc: &mut DocumentMut) -> Option<Change> {
     let background = config_edit::table_at(doc, BACKGROUND_PATH)?;
     if !config_edit::is_standard(background) {
@@ -261,7 +261,7 @@ fn background_images(doc: &mut DocumentMut) -> Option<Change> {
     Some(Change { message, dropped })
 }
 
-/// 配列の要素一つ `item` の表。文字列なら `path` だけの表、インラインテーブルならそのキーの表。どちらでも
+/// 配列の要素一つ `item` の表。文字列なら `path` だけの表、インラインの表ならそのキーの表。どちらでも
 /// なければ `None`。
 fn image_table(item: &Value) -> Option<Table> {
     match item {
