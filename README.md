@@ -28,3 +28,5 @@ Windows + Rust（edition 2024）+ MSVC ツールチェインと，Zig が必要�
 ## ライセンス
 
 [MIT](LICENSE)
+
+fantermo に含まれる第三者のソフトウェアのライセンスは [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) にまとめています．Rust の crate は [cargo-about](https://github.com/EmbarkStudios/cargo-about) で集め，libghostty-vt に静的にリンクされる Zig 側のライブラリは手で確かめて `tools/licenses/zig-notices.txt` に書いています．依存を変えたら `./tools/licenses.sh` で作り直してください．

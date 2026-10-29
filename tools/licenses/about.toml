@@ -1,0 +1,77 @@
+# cargo-about の設定。tools/licenses.sh から使う。
+#
+# 受け入れるライセンスの並びは優先の順。`MIT OR Apache-2.0` のように選べるものは前にあるほうを選ぶ。
+# ここにないライセンスの依存が入ると、生成が失敗する。
+accepted = ["MIT", "Apache-2.0", "BSD-3-Clause", "Zlib", "Unicode-3.0"]
+
+# 配布する実行ファイルの対象だけを見る。
+targets = ["x86_64-pc-windows-msvc"]
+
+# 実行ファイルに入らない依存を外す。proc-macro の crate は外せないので一覧に残る。
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# workspace の crate（fantermo、fantermo-core）は publish = false なので外す。
+private = { ignore = true }
+
+# 以下は、crate の中のライセンスの文を cargo-about が見つけられず、汎用の文（著作者の欄が空）に
+# なってしまうものに、使う文のファイルを指定する。checksum はそのファイルの SHA-256 で、版を上げて
+# ファイルが変わると生成が失敗するので、中身を確かめてから書き換える。
+
+# libghostty-rs の crate は、リポジトリの根にある LICENSE を使う（crate の中にはない）。
+[libghostty-vt.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "../../LICENSE", license = "MIT", checksum = "64afe9aa17b5a1bf58375ea0e1bcfef3503b2ef85c1cfae7e00c3f7555f29137" }]
+
+[libghostty-vt-sys.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "../../LICENSE", license = "MIT", checksum = "64afe9aa17b5a1bf58375ea0e1bcfef3503b2ef85c1cfae7e00c3f7555f29137" }]
+
+# windows-rs の crate の license-mit は字下げされていて、cargo-about が MIT と見分けられない。
+[windows.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-collections.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-core.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-future.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-implement.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-interface.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-link.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-numerics.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-result.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-strings.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-sys.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-threading.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
