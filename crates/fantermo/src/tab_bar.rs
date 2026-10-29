@@ -27,7 +27,7 @@ const ELLIPSIS: &str = "…";
 const BELL_MARK: &str = "●";
 
 /// [`BELL_MARK`] を描く幅（セル）。曖昧幅の文字だが、全角の幅でデザインしたフォントでも縮めずに丸く
-/// 描けるよう、2 セルを充てる。
+/// 描けるよう、2 セルを充てる。タブがそれより狭ければタブの幅に縮める。
 const BELL_MARK_WIDTH: u8 = 2;
 
 /// [`BELL_MARK`] と、タイトルとの間のすき間を合わせた幅（セル）。
@@ -129,6 +129,50 @@ pub fn fit_title(title: &str, cols: u16) -> Vec<vt::Grapheme> {
     fitted
 }
 
+/// タブ一つの中の、[`BELL_MARK`] とタイトルの位置。単位はセルで、タブの左端から数える。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TabParts {
+    /// [`BELL_MARK`] の位置と幅。印を付けないときは `None`。
+    mark: Option<(u16, u8)>,
+    /// タイトルを置く位置。
+    title_col: u16,
+    /// タイトルに充てる幅。
+    title_cols: u16,
+}
+
+/// 幅 `cols` のタブの中に、[`BELL_MARK`]（`bell` のとき）とタイトルを置く。印はタイトルの左に置き、
+/// タイトルを省略する前にその幅を取る。タイトルに残る幅がなくても印は消さず、狭ければ印とタイトルの
+/// すき間、左右の余白の順に詰め、それでも足りなければ印をタブの幅に縮める。
+fn tab_parts(cols: u16, bell: bool) -> TabParts {
+    let inner = cols.saturating_sub(TAB_PADDING_COLS * 2);
+    let padding = TAB_PADDING_COLS.min(cols);
+    if !bell {
+        return TabParts {
+            mark: None,
+            title_col: padding,
+            title_cols: inner,
+        };
+    }
+    let mark_width = u16::from(BELL_MARK_WIDTH);
+    if inner >= BELL_MARK_COLS {
+        return TabParts {
+            mark: Some((padding, BELL_MARK_WIDTH)),
+            title_col: padding + BELL_MARK_COLS,
+            title_cols: inner - BELL_MARK_COLS,
+        };
+    }
+    let mark = if inner >= mark_width {
+        (padding, BELL_MARK_WIDTH)
+    } else {
+        (0, mark_width.min(cols) as u8)
+    };
+    TabParts {
+        mark: (mark.1 > 0).then_some(mark),
+        title_col: mark.0 + u16::from(mark.1),
+        title_cols: 0,
+    }
+}
+
 /// タブ一つに描くもの。
 #[derive(Clone, Copy, Debug)]
 pub struct TabView<'a> {
@@ -206,24 +250,26 @@ pub fn frame(
             blink: false,
         };
         let end = span.col + span.cols;
-        let mut text_cols = span.cols.saturating_sub(TAB_PADDING_COLS * 2);
+        let parts = tab_parts(span.cols, tab.bell);
         let mut col = span.col;
-        while col < (span.col + TAB_PADDING_COLS).min(end) {
-            cells.push(blank(col));
-            col += 1;
-        }
-        if tab.bell && text_cols >= BELL_MARK_COLS {
+        if let Some((offset, width)) = parts.mark {
+            while col < span.col + offset {
+                cells.push(blank(col));
+                col += 1;
+            }
             cells.push(CellView {
                 text: BELL_MARK.to_owned(),
-                width: BELL_MARK_WIDTH,
+                width,
                 fg: BELL_COLOR,
                 ..blank(col)
             });
-            cells.push(blank(col + u16::from(BELL_MARK_WIDTH)));
-            col += BELL_MARK_COLS;
-            text_cols -= BELL_MARK_COLS;
+            col += u16::from(width);
         }
-        for grapheme in fit_title(tab.title, text_cols) {
+        while col < span.col + parts.title_col {
+            cells.push(blank(col));
+            col += 1;
+        }
+        for grapheme in fit_title(tab.title, parts.title_cols) {
             cells.push(CellView {
                 text: grapheme.text,
                 width: grapheme.width,
@@ -329,6 +375,126 @@ mod tests {
     #[test]
     fn control_characters_are_dropped() {
         assert_eq!(text(&fit_title("a\u{7}b", 10)), "ab");
+    }
+
+    /// `tabs` 個のタブのうち、0 番だけベルが鳴ったタブバー（幅 `cols`、1 番を表示）。
+    fn bell_frame(titles: &[&str], cols: u16) -> Frame {
+        let tabs: Vec<TabView> = titles
+            .iter()
+            .enumerate()
+            .map(|(index, title)| TabView {
+                title,
+                bell: index == 0,
+            })
+            .collect();
+        frame(&tabs, 1, cols, BLACK, WHITE)
+    }
+
+    /// 印のセルの位置と幅。
+    fn marks(frame: &Frame) -> Vec<(u16, u8)> {
+        frame
+            .cells
+            .iter()
+            .filter(|cell| cell.text == BELL_MARK)
+            .map(|cell| (cell.col, cell.width))
+            .collect()
+    }
+
+    /// `span` の中の、文字のあるセルの位置と文字（印を除く）。
+    fn title_cells(frame: &Frame, span: TabSpan) -> Vec<(u16, String)> {
+        frame
+            .cells
+            .iter()
+            .filter(|cell| (span.col..span.col + span.cols).contains(&cell.col))
+            .filter(|cell| !cell.text.is_empty() && cell.text != BELL_MARK)
+            .map(|cell| (cell.col, cell.text.clone()))
+            .collect()
+    }
+
+    /// `span` の中のセルが、すき間も重なりもなくタブの幅を埋めている。
+    fn covers(frame: &Frame, span: TabSpan) -> bool {
+        let mut col = span.col;
+        for cell in frame
+            .cells
+            .iter()
+            .filter(|cell| (span.col..span.col + span.cols).contains(&cell.col))
+        {
+            if cell.col != col {
+                return false;
+            }
+            col += u16::from(cell.width);
+        }
+        col == span.col + span.cols
+    }
+
+    #[test]
+    fn a_bell_mark_survives_a_long_title() {
+        let powershell = r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe";
+        let frame = bell_frame(&[powershell, powershell], 100);
+        let spans = layout(2, 100);
+        assert_eq!(marks(&frame), vec![(1, BELL_MARK_WIDTH)]);
+        // 印（2 セル）とすき間の 3 セルを取ってから、残りの 19 セルにタイトルを省略して収める。
+        let title = title_cells(&frame, spans[0]);
+        assert_eq!(title[0].0, 4);
+        let text: String = title.iter().map(|(_, text)| text.as_str()).collect();
+        assert_eq!(text, r"C:\WINDOWS\System3…");
+        assert!(covers(&frame, spans[0]));
+        // 印のないタブのタイトルの幅は変わらない。
+        let other: String = title_cells(&frame, spans[1])
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect();
+        assert_eq!(other, r"C:\WINDOWS\System32\W…");
+    }
+
+    #[test]
+    fn a_bell_mark_comes_before_a_short_title() {
+        let frame = bell_frame(&["cmd", "cmd"], 100);
+        let spans = layout(2, 100);
+        assert_eq!(marks(&frame), vec![(1, BELL_MARK_WIDTH)]);
+        assert_eq!(
+            title_cells(&frame, spans[0]),
+            vec![
+                (4, "c".to_owned()),
+                (5, "m".to_owned()),
+                (6, "d".to_owned())
+            ]
+        );
+        assert!(covers(&frame, spans[0]));
+        assert_eq!(title_cells(&frame, spans[1])[0].0, spans[1].col + 1);
+    }
+
+    #[test]
+    fn a_bell_mark_stays_in_narrow_tabs() {
+        let title = "abcdefghijklmnopqrstuvwxyz";
+        // タブの幅ごとに、印の位置（タブの左端から）と幅、残るタイトル。
+        let cases: [(usize, u16, (u16, u8), &str); 6] = [
+            // 6 セル: 余白、印、すき間、タイトル 1 セル、余白。
+            (14, 6, (1, 2), "…"),
+            // 5 セル: タイトルに残る幅はない。
+            (16, 5, (1, 2), ""),
+            // 4 セル: 印とタイトルのすき間を詰める。
+            (20, 4, (1, 2), ""),
+            // 3 セル: 左右の余白も詰める。
+            (25, 3, (0, 2), ""),
+            (30, 2, (0, 2), ""),
+            // 1 セル: 印をタブの幅に縮める。
+            (40, 1, (0, 1), ""),
+        ];
+        for (tabs, width, (offset, mark_width), expected) in cases {
+            let titles = vec![title; tabs];
+            let spans = layout(tabs, 100);
+            assert_eq!(spans[0].cols, width, "{tabs} tabs");
+            let frame = bell_frame(&titles, 100);
+            assert_eq!(marks(&frame), vec![(offset, mark_width)], "{tabs} tabs");
+            let text: String = title_cells(&frame, spans[0])
+                .iter()
+                .map(|(_, text)| text.as_str())
+                .collect();
+            assert_eq!(text, expected, "{tabs} tabs");
+            assert!(covers(&frame, spans[0]), "{tabs} tabs");
+            assert!(covers(&frame, spans[1]), "{tabs} tabs");
+        }
     }
 
     #[test]
