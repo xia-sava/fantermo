@@ -1,7 +1,9 @@
 //! 設定ファイルの場所、読み込み、書き換えの監視。
 //!
 //! 置き場所は `%APPDATA%\fantermo\config.toml`。起動したときに無ければ、各項目を既定値のまま
-//! コメントにして並べたファイルを作る。中身の解釈は `fantermo_core::config` が受け持つ。
+//! コメントにして並べたファイルを作る。中身の解釈は `fantermo_core::config` が受け持つ。古い書き方で
+//! 書いてあれば、読むたびに今の書き方に読み替え（`fantermo_core::config::migrate`）、変えたところだけを
+//! ファイルに書き戻す。
 //!
 //! 書き換えは、ファイルを置くフォルダを監視するスレッドで知る。エディタは一度の保存で何度も
 //! 書き込んだり、別名で書いてから名前を変えたりするので、フォルダの中の名前の変化も見る。
@@ -71,6 +73,9 @@ pub struct Loaded {
     pub config: Config,
     /// 作れなかった・読めなかった・エラーがあったときに、利用者に見せる文。何もなければ `None`。
     pub notice: Option<String>,
+    /// 古い書き方を読み替えてファイルに書き戻したときの、書いた中身。書き戻していなければ `None`。
+    /// この書き込みの知らせで読み直さないように覚えておく。
+    pub written: Option<String>,
 }
 
 /// いつ読んだか。エラーがあったときに、どの設定で動いているかの言い方を決める。
@@ -117,6 +122,7 @@ pub fn load(path: Option<&Path>) -> Loaded {
                 Occasion::Startup.whole(),
                 path.display()
             )),
+            written: None,
         };
     }
     read(path, &Config::default(), Occasion::Startup)
@@ -173,9 +179,11 @@ fn read(path: Option<&Path>, previous: &Config, occasion: Occasion) -> Loaded {
                     occasion.whole(),
                     path.display()
                 )),
+                written: None,
             };
         }
     };
+    let (text, written) = migrate(path, text);
     let parsed = config::parse(&text, previous);
     for warning in &parsed.warnings {
         tracing::warn!("{}", log_line(path, warning));
@@ -188,6 +196,40 @@ fn read(path: Option<&Path>, previous: &Config, occasion: Occasion) -> Loaded {
     Loaded {
         notice: notice_text(path, &parsed, occasion),
         config: parsed.config,
+        written,
+    }
+}
+
+/// 設定ファイル `path` の中身 `text` の古い書き方を今の書き方に読み替え、読み替えたら何をどう変えたかを
+/// ログに残してファイルに書き戻す。読み替えた中身と、書き戻したならその中身を返す。書けなければ警告を
+/// ログに残し、読み替えた中身で動く（ファイルは前のまま）。
+fn migrate(path: &Path, text: String) -> (String, Option<String>) {
+    let migrated = config::migrate::migrate(&text);
+    if !migrated.changed() {
+        return (text, None);
+    }
+    for (step, change) in &migrated.changes {
+        tracing::info!("{}: {}", path.display(), change.message);
+        tracing::debug!("{}: {}", step.name, step.description);
+        for dropped in &change.dropped {
+            tracing::warn!("{}: {dropped}", path.display());
+        }
+    }
+    match window_state::write_replacing(path, &migrated.text) {
+        Ok(()) => {
+            tracing::info!(
+                "rewrote the settings file {} in the current format",
+                path.display()
+            );
+            (migrated.text.clone(), Some(migrated.text))
+        }
+        Err(e) => {
+            tracing::warn!(
+                "cannot rewrite the settings file {} in the current format, using the settings read in the current format: {e}",
+                path.display()
+            );
+            (migrated.text, None)
+        }
     }
 }
 
@@ -464,6 +506,42 @@ mod tests {
             "{error}"
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[font\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn old_forms_are_rewritten_in_the_file() {
+        let dir = scratch_dir("migrate");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let old = "# mine\n[background]\nimages = ['a.png']\nopacity = 0.8\n";
+        let current =
+            "# mine\n[background]\nimage_opacity = 0.2\n\n[[background.images]]\npath = 'a.png'\n";
+        std::fs::write(&path, old).unwrap();
+        let loaded = load(Some(&path));
+        assert_eq!(loaded.notice, None);
+        assert_eq!(loaded.written.as_deref(), Some(current));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), current);
+        assert_eq!(loaded.config.background.images[0].path, "a.png");
+        assert_eq!(loaded.config.background.image_opacity, 0.2);
+        // 今の書き方なら書かない。
+        let again = reload(Some(&path), &loaded.config);
+        assert_eq!(again.written, None);
+        assert_eq!(again.config, loaded.config);
+
+        // 書けなければファイルはそのままで、読み替えた中身で動く。
+        std::fs::write(&path, old).unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions.clone()).unwrap();
+        let loaded = load(Some(&path));
+        assert_eq!(loaded.written, None);
+        assert_eq!(loaded.notice, None);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
+        assert_eq!(loaded.config, again.config);
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&path, permissions).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -4,7 +4,10 @@
 //! 値のまま（起動したときは既定値）にし、知らないキーは無視する。どちらも、エラーのある行を添えた
 //! 警告として返す。TOML として読めないときは、すべてを前の値のままにする。
 //!
-//! 書ける項目と既定値は [`TEMPLATE`] にある。
+//! 書ける項目と既定値は [`TEMPLATE`] にある。古い書き方は、解釈する前に [`migrate`] で今の書き方に
+//! 読み替える（[`parse`] は今の書き方だけを読む）。
+
+pub mod migrate;
 
 use std::{collections::HashMap, ops::RangeInclusive};
 
@@ -135,25 +138,30 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # dragged_thumb = "#a6a6a6"
 
 [background]
-# 端末の背景に敷く画像。画像のファイル、フォルダ（中の画像から選ぶ。下のフォルダは見ない）、ファイルの名前に
-# 「*」「?」を使ったワイルドカードを並べる。新しいタブを開くたびに、この中からランダムに一枚選ぶ。フォルダと
-# ワイルドカードから選ぶのは png、jpg、jpeg、bmp、gif（最初のコマ）、webp（Windows で読めるとき）。読めない
-# 画像は飛ばして別の画像を選ぶ。相対パスはこのファイルのフォルダから。空なら画像を敷かない。
-# 項目は文字列のほか、{ path = '…', fit = "tile", image_opacity = 0.3 } の形の表でも書ける。表に書いた表示方法と
-# 不透明度は、その項目（フォルダやワイルドカードなら、そこから選んだ画像）にだけ効く。書かなかったものは下の値に
-# 従う。
-# 例: images = ['C:\画像\壁紙', 'C:\画像\*.jpg', { path = 'C:\画像\模様.png', fit = "tile" }]
-# images = []
-
-# 画像の不透明度。0 から 1 まで。1 は画像をそのまま見せ、0 は画像を消して端末の背景色だけにする。間の値は、
+# 背景画像の不透明度。0 から 1 まで。1 は画像をそのまま見せ、0 は画像を消して端末の背景色だけにする。間の値は、
 # 画像の上に端末の背景色を重ねて薄める。アプリが背景色を付けた文字、反転した文字、選択範囲は、その色で
 # 塗りつぶす。
 # image_opacity = 0.2
 
-# 画像の表示方法。"fill"（ページ幅に合わせる）は縦横比を保って端末を覆い、はみ出しを切る、"fit"（画面のサイズに
-# 合わせる）は縦横比を保って端末に収め、余りは背景色にする、"stretch"（拡大して表示）は端末に合わせて引き伸ばす、
-# "tile"（並べて表示）は元の大きさで敷き詰める、"center"（中央に表示）は元の大きさで真ん中に置く。
+# 背景画像の表示方法。"fill"（ページ幅に合わせる）は縦横比を保って端末を覆い、はみ出しを切る、"fit"（画面の
+# サイズに合わせる）は縦横比を保って端末に収め、余りは背景色にする、"stretch"（拡大して表示）は端末に合わせて
+# 引き伸ばす、"tile"（並べて表示）は元の大きさで敷き詰める、"center"（中央に表示）は元の大きさで真ん中に置く。
 # fit = "fill"
+
+# 端末の背景に敷く画像の一覧。[[background.images]] のテーブルを画像の項目ごとに並べ、path に画像のファイル、
+# フォルダ（中の画像から選ぶ。下のフォルダは見ない）、ファイルの名前に「*」「?」を使ったワイルドカードを書く。
+# 新しいタブを開くたびに、この中からランダムに一枚選ぶ。フォルダとワイルドカードから選ぶのは png、jpg、jpeg、
+# bmp、gif（最初のコマ）、webp（Windows で読めるとき）。読めない画像は飛ばして別の画像を選ぶ。相対パスはこの
+# ファイルのフォルダから。書かなければ画像を敷かない。
+# テーブルに fit と image_opacity を書くと、その項目（フォルダやワイルドカードなら、そこから選んだ画像）にだけ
+# 効く。書かなかったものは上の値に従う。[[background.images]] は [background] の値より後ろに書く。
+# 例: [[background.images]]
+# 例: path = 'C:\画像\壁紙'
+# 例: [[background.images]]
+# 例: path = 'C:\画像\*.jpg'
+# 例: [[background.images]]
+# 例: path = 'C:\画像\模様.png'
+# 例: fit = "tile"
 
 [keys]
 # キーの組み合わせと、押したときの動作。書いた組み合わせだけ、下に並べた既定の割り当てを変える。
@@ -355,11 +363,6 @@ impl BackgroundImage {
             fit: None,
             image_opacity: None,
         }
-    }
-
-    /// 収め方も濃さも全体の値に任せる（設定ファイルには文字列で書く）。
-    pub fn follows_background(&self) -> bool {
-        self.fit.is_none() && self.image_opacity.is_none()
     }
 }
 
@@ -1209,84 +1212,63 @@ fn read_image_opacity(reader: &mut Reader, table: &mut Table, section: Option<&s
         })
 }
 
-/// `background.images` の値を読む。文字列か表なら項目一つ、配列なら項目の並び。配列の中の読めない
-/// 項目は、警告してその項目だけを飛ばす。項目一つが読めなければ、全体を読めなかったことにする。
+/// `background.images`（`[[background.images]]` の表の配列）を読む。読めない表は、警告してその表だけを
+/// 飛ばす。表の配列でなければ、全体を読めなかったことにする。
 fn read_background_images(reader: &mut Reader, value: Value) -> Item<Vec<BackgroundImage>> {
     const PATH: &str = "background.images";
-    match value {
-        Value::Array(items) => Item::Valid(
-            items
-                .into_iter()
-                .enumerate()
-                .filter_map(|(index, item)| {
-                    read_background_image(reader, &format!("{PATH}[{index}]"), item)
-                })
-                .collect(),
-        ),
-        Value::String(_) | Value::Table(_) => match read_background_image(reader, PATH, value) {
-            Some(image) => Item::Valid(vec![image]),
-            None => Item::Invalid,
-        },
-        _ => {
-            reader.warn(
-                PATH,
-                format!("ignoring {PATH}: expected a string, a table, or an array of them"),
-            );
-            Item::Invalid
-        }
-    }
+    let Value::Array(items) = value else {
+        reader.warn(PATH, format!("ignoring {PATH}: expected [[{PATH}]] tables"));
+        return Item::Invalid;
+    };
+    Item::Valid(
+        items
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                read_background_image(reader, &format!("{PATH}[{index}]"), item)
+            })
+            .collect(),
+    )
 }
 
-/// `background.images` の項目一つ（キーのパスは `path`）を読む。文字列ならそのパス、表なら `path`
-/// と、書いてあれば `fit` と `image_opacity`。読めなければ警告して `None`。表の中の読めない `fit` と
-/// `image_opacity` は、警告してその値だけを全体の値に任せる。
+/// `[[background.images]]` の表一つ（キーのパスは `path`）を読む。`path` と、書いてあれば `fit` と
+/// `image_opacity`。読めなければ警告して `None`。読めない `fit` と `image_opacity` は、警告してその値
+/// だけを全体の値に任せる。
 fn read_background_image(reader: &mut Reader, path: &str, value: Value) -> Option<BackgroundImage> {
-    let empty = || format!("ignoring {path}: names must not be empty");
-    match value {
-        Value::String(name) => {
-            if name.trim().is_empty() {
-                reader.warn(path, empty());
-                return None;
-            }
-            Some(BackgroundImage::new(name))
-        }
-        Value::Table(mut table) => {
-            let section = Some(path);
-            let name = match reader.take::<String>(&mut table, section, "path") {
-                Item::Valid(name) if !name.trim().is_empty() => name,
-                Item::Valid(_) => {
-                    reader.warn(&key_path(section, "path"), empty());
-                    return None;
-                }
-                Item::Absent => {
-                    reader.warn(path, format!("ignoring {path}: expected a path"));
-                    return None;
-                }
-                Item::Invalid => return None,
-            };
-            let fit = match reader.take::<BackgroundFit>(&mut table, section, "fit") {
-                Item::Valid(fit) => Some(fit),
-                Item::Absent | Item::Invalid => None,
-            };
-            let image_opacity = match read_image_opacity(reader, &mut table, section) {
-                Item::Valid(opacity) => Some(opacity),
-                Item::Absent | Item::Invalid => None,
-            };
-            reader.warn_unknown(&table, section);
-            Some(BackgroundImage {
-                path: name,
-                fit,
-                image_opacity,
-            })
-        }
-        _ => {
+    let Value::Table(mut table) = value else {
+        reader.warn(path, format!("ignoring {path}: expected a table"));
+        return None;
+    };
+    let section = Some(path);
+    let name = match reader.take::<String>(&mut table, section, "path") {
+        Item::Valid(name) if !name.trim().is_empty() => name,
+        Item::Valid(_) => {
             reader.warn(
-                path,
-                format!("ignoring {path}: expected a string or a table"),
+                &key_path(section, "path"),
+                format!("ignoring {path}: the path must not be empty"),
             );
-            None
+            return None;
         }
-    }
+        Item::Absent => {
+            reader.warn(path, format!("ignoring {path}: expected a path"));
+            return None;
+        }
+        Item::Invalid => return None,
+    };
+    let fit = match reader.take::<BackgroundFit>(&mut table, section, "fit") {
+        Item::Valid(fit) => Some(fit),
+        Item::Absent | Item::Invalid => None,
+    };
+    let image_opacity = match read_image_opacity(reader, &mut table, section) {
+        Item::Valid(opacity) => Some(opacity),
+        Item::Absent | Item::Invalid => None,
+    };
+    reader.warn_unknown(&table, section);
+    Some(BackgroundImage {
+        path: name,
+        fit,
+        image_opacity,
+    })
 }
 
 /// `[colors]` の配色と、その中の色の表を読む。
@@ -1566,7 +1548,7 @@ mod tests {
     #[test]
     fn background_is_read() {
         let parsed = parse(
-            "[background]\nimages = ['C:\\walls', 'D:\\a\\*.png']\nimage_opacity = 0.65\nfit = \"center\"\n",
+            "[background]\nimage_opacity = 0.65\nfit = \"center\"\n\n[[background.images]]\npath = 'C:\\walls'\n\n[[background.images]]\npath = 'D:\\a\\*.png'\n",
         );
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
         assert_eq!(
@@ -1580,15 +1562,38 @@ mod tests {
                 fit: BackgroundFit::Center,
             }
         );
-        // 一つなら文字列でもよく、濃さは整数でもよい。
-        let parsed = parse("[background]\nimages = 'C:\\one.png'\nimage_opacity = 1\n");
+        // `[background]` の見出しはなくてもよく、不透明度は整数でもよい。
+        let parsed = parse("[[background.images]]\npath = 'C:\\one.png'\nimage_opacity = 1\n");
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
         assert_eq!(
             parsed.config.background.images,
-            [BackgroundImage::new(r"C:\one.png")]
+            [BackgroundImage {
+                path: r"C:\one.png".to_owned(),
+                fit: None,
+                image_opacity: Some(1.0),
+            }]
         );
-        assert_eq!(parsed.config.background.image_opacity, 1.0);
-        // `opacity` は知らないキー。
+        // 前の書き方（文字列やインラインテーブルの配列、文字列一つ）は読み替えてから読む。
+        for (old, warning) in [
+            (
+                "[background]\nimages = 'C:\\one.png'\n",
+                "ignoring background.images: expected [[background.images]] tables",
+            ),
+            (
+                "[background]\nimages = ['C:\\one.png']\n",
+                "ignoring background.images[0]: expected a table",
+            ),
+        ] {
+            assert_eq!(parse(old).warnings, [warning]);
+            let migrated = migrate::migrate(old);
+            let parsed = parse(&migrated.text);
+            assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+            assert_eq!(
+                parsed.config.background.images,
+                [BackgroundImage::new(r"C:\one.png")]
+            );
+        }
+        // `opacity` は知らないキー（読み替える前）。
         let parsed = parse("[background]\nopacity = 0.8\n");
         assert_eq!(parsed.config.background, BackgroundConfig::default());
         assert_eq!(
@@ -1604,7 +1609,7 @@ mod tests {
     #[test]
     fn background_images_may_be_tables_with_their_own_fit_and_opacity() {
         let parsed = parse(
-            "[background]\nfit = 'fit'\nimage_opacity = 0.4\nimages = [\n  'C:\\walls',\n  { path = 'C:\\tiles\\*.png', fit = 'tile' },\n  { path = 'C:\\a.png', image_opacity = 0.3 },\n  { path = 'C:\\b.png', fit = 'center', image_opacity = 1 },\n]\n",
+            "[background]\nfit = 'fit'\nimage_opacity = 0.4\n\n[[background.images]]\npath = 'C:\\walls'\n\n[[background.images]]\npath = 'C:\\tiles\\*.png'\nfit = 'tile'\n\n[[background.images]]\npath = 'C:\\a.png'\nimage_opacity = 0.3\n\n[[background.images]]\npath = 'C:\\b.png'\nfit = 'center'\nimage_opacity = 1\n",
         );
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
         let background = &parsed.config.background;
@@ -1635,23 +1640,16 @@ mod tests {
         assert_eq!(background.settings_for(2), (BackgroundFit::Fit, 0.3));
         assert_eq!(background.settings_for(3), (BackgroundFit::Center, 1.0));
         assert_eq!(background.settings_for(9), (BackgroundFit::Fit, 0.4));
-        // 表一つでもよい。
-        let parsed = parse("[background]\nimages = { path = 'C:\\x.png', fit = 'stretch' }\n");
-        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
-        assert_eq!(
-            parsed.config.background.images[0].fit,
-            Some(BackgroundFit::Stretch)
-        );
     }
 
     #[test]
     fn invalid_background_items_are_reported_with_their_lines() {
         let previous = customized();
         let parsed = super::parse(
-            "[background]\nimages = [\n  'C:\\ok',\n  { path = 'C:\\a.png', fit = 'cover', image_opacity = 2 },\n  { fit = 'tile' },\n  { path = ' ' },\n  3,\n  { path = 'C:\\b.png', blur = 1 },\n]\n",
+            "[background]\n\n[[background.images]]\npath = 'C:\\ok'\n\n[[background.images]]\npath = 'C:\\a.png'\nfit = 'cover'\nimage_opacity = 2\n\n[[background.images]]\nfit = 'tile'\n\n[[background.images]]\npath = ' '\n\n[[background.images]]\npath = 3\n\n[[background.images]]\npath = 'C:\\b.png'\nblur = 1\n",
             &previous,
         );
-        // 読めない値は全体の値に任せ、パスのない項目と表でも文字列でもない項目は飛ばす。
+        // 読めない値は全体の値に任せ、パスのない表と、パスを読めない表は飛ばす。
         assert_eq!(
             parsed.config.background.images,
             [
@@ -1660,37 +1658,43 @@ mod tests {
                 BackgroundImage::new(r"C:\b.png"),
             ]
         );
-        let lines: Vec<Option<usize>> = parsed.warnings.iter().map(|w| w.line).collect();
-        assert_eq!(
-            lines,
-            [Some(4), Some(4), Some(5), Some(6), Some(7), Some(8)],
-            "{:?}",
-            parsed.warnings
-        );
-        let messages: Vec<&str> = parsed.warnings.iter().map(|w| w.message.as_str()).collect();
-        assert!(messages[0].starts_with("ignoring background.images[1].fit"));
-        assert_eq!(
-            messages[1],
-            "ignoring background.images[1].image_opacity = 2: must be between 0 and 1"
-        );
-        assert_eq!(
-            messages[2],
-            "ignoring background.images[2]: expected a path"
+        // 表の中のキーはその行、パスのない表は見出しの行。
+        let warnings: Vec<(Option<usize>, &str)> = parsed
+            .warnings
+            .iter()
+            .map(|w| (w.line, w.message.as_str()))
+            .collect();
+        assert_eq!(warnings.len(), 6, "{warnings:?}");
+        assert_eq!(warnings[0].0, Some(8));
+        assert!(
+            warnings[0]
+                .1
+                .starts_with("ignoring background.images[1].fit")
         );
         assert_eq!(
-            messages[3],
-            "ignoring background.images[3]: names must not be empty"
+            warnings[1..],
+            [
+                (
+                    Some(9),
+                    "ignoring background.images[1].image_opacity = 2: must be between 0 and 1"
+                ),
+                (Some(11), "ignoring background.images[2]: expected a path"),
+                (
+                    Some(15),
+                    "ignoring background.images[3]: the path must not be empty"
+                ),
+                (
+                    Some(18),
+                    "ignoring background.images[4].path: invalid type: integer `3`, expected a string"
+                ),
+                (
+                    Some(22),
+                    "ignoring unknown setting background.images[5].blur"
+                ),
+            ]
         );
-        assert_eq!(
-            messages[4],
-            "ignoring background.images[4]: expected a string or a table"
-        );
-        assert_eq!(
-            messages[5],
-            "ignoring unknown setting background.images[5].blur"
-        );
-        // 一つだけ書いた項目が読めなければ、一覧は前のまま。
-        let parsed = super::parse("[background]\nimages = { fit = 'tile' }\n", &previous);
+        // 表の配列でなければ、一覧は前のまま。
+        let parsed = super::parse("[background]\nimages = 3\n", &previous);
         assert_eq!(parsed.config.background.images, previous.background.images);
         assert_eq!(parsed.warnings.len(), 1);
     }
@@ -1717,10 +1721,10 @@ mod tests {
     fn invalid_background_values_keep_the_previous_values_with_their_lines() {
         let previous = customized();
         let parsed = super::parse(
-            "[background]\nimages = ['C:\\ok', ' ']\nimage_opacity = 1.5\nfit = 'cover'\nblur = 3\n",
+            "[background]\nimage_opacity = 1.5\nfit = 'cover'\nblur = 3\n[[background.images]]\npath = 'C:\\ok'\n[[background.images]]\npath = ' '\n",
             &previous,
         );
-        // 一覧の空の名前は、その項目だけを飛ばす。
+        // 一覧の空のパスは、その表だけを飛ばす。
         assert_eq!(
             parsed.config.background,
             BackgroundConfig {
@@ -1731,23 +1735,23 @@ mod tests {
         let lines: Vec<Option<usize>> = parsed.warnings.iter().map(|w| w.line).collect();
         assert_eq!(
             lines,
-            [Some(2), Some(3), Some(4), Some(5)],
+            [Some(2), Some(3), Some(4), Some(8)],
             "{:?}",
             parsed.warnings
         );
-        assert!(parsed.warnings[0].message.contains("must not be empty"));
-        assert!(parsed.warnings[1].message.contains("between 0 and 1"));
+        assert!(parsed.warnings[0].message.contains("between 0 and 1"));
         assert!(
             ["fill", "fit", "stretch", "tile", "center"]
                 .iter()
-                .all(|name| parsed.warnings[2].message.contains(name)),
+                .all(|name| parsed.warnings[1].message.contains(name)),
             "{:?}",
             parsed.warnings
         );
         assert_eq!(
-            parsed.warnings[3].message,
+            parsed.warnings[2].message,
             "ignoring unknown setting background.blur"
         );
+        assert!(parsed.warnings[3].message.contains("must not be empty"));
         // 表でなければ全体が前のまま。書いていなければ既定値。
         let parsed = super::parse("background = 'C:\\walls'\n", &previous);
         assert_eq!(parsed.config.background, previous.background);
@@ -1826,12 +1830,44 @@ mod tests {
             .lines()
             .filter(|line| !line.starts_with('#') && line.contains(" = "))
             .count();
-        assert_eq!(settings, 8 + 9 + 3 + 15, "{text}");
+        assert_eq!(settings, 8 + 9 + 2 + 15, "{text}");
         // 背景色と文字の色の例は、既定の配色の色。
         assert_eq!(
             parsed.config.colors.terminal_colors(),
             ColorScheme::default().colors()
         );
+    }
+
+    #[test]
+    fn template_examples_read_as_written() {
+        let text: String = TEMPLATE
+            .lines()
+            .map(|line| {
+                let example = line.strip_prefix("# 例: ").filter(|rest| {
+                    rest.starts_with("[[")
+                        || rest.split_once(" = ").is_some_and(|(key, _)| {
+                            key.starts_with('"')
+                                || key.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                        })
+                });
+                format!("{}\n", example.unwrap_or(line))
+            })
+            .collect();
+        let parsed = parse(&text);
+        assert!(parsed.warnings.is_empty(), "{:?}\n{text}", parsed.warnings);
+        assert_eq!(
+            parsed.config.background.images,
+            [
+                BackgroundImage::new(r"C:\画像\壁紙"),
+                BackgroundImage::new(r"C:\画像\*.jpg"),
+                BackgroundImage {
+                    path: r"C:\画像\模様.png".to_owned(),
+                    fit: Some(BackgroundFit::Tile),
+                    image_opacity: None,
+                },
+            ]
+        );
+        assert_eq!(parsed.config.profiles[0].name, "zsh");
     }
 
     #[test]

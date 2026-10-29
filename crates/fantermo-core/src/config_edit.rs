@@ -18,16 +18,57 @@
 //! - `[keys]` の組み合わせは、書き方（大文字小文字、修飾キーの順）によらず同じ組み合わせの行を探す。
 //!   既定の割り当てに戻した組み合わせは、既定の割り当ての `# "…" = "…"` のコメントの行にし、既定で
 //!   割り当てていない組み合わせは行を消す。
+//! - 背景画像の一覧（`[[background.images]]`）は、パスで照合して変えた値だけを書き換え、一覧から外した
+//!   表を消し、足した画像の表を最後に足す。表は `[background]` の値の後ろに置く。一覧を空にしたら表を消す。
+//!
+//! 書き換える前に、古い書き方を今の書き方に読み替える（[`config::migrate`]）。
 
 use toml_edit::{Array, ArrayOfTables, Decor, DocumentMut, InlineTable, Item, Key, Table, Value};
 
 use crate::{
     config::{
         self, BackendKind, BackgroundFit, BackgroundImage, ColorTable, Config, Profile,
-        format_color,
+        format_color, migrate,
     },
     keymap::{self, Action, KeyCombo},
 };
+
+/// 書き換える設定ファイルの中身。先頭の BOM と、改行が CRLF かどうかを覚えておき、書き出すときに戻す。
+pub(crate) struct Document {
+    pub(crate) doc: DocumentMut,
+    bom: bool,
+    crlf: bool,
+}
+
+impl Document {
+    /// `text` を読む。TOML として読めなければ、そのエラーメッセージを返す。
+    pub(crate) fn parse(text: &str) -> Result<Self, String> {
+        let (bom, body) = match text.strip_prefix('\u{feff}') {
+            Some(body) => (true, body),
+            None => (false, text),
+        };
+        let doc = body
+            .parse()
+            .map_err(|e: toml_edit::TomlError| e.message().trim_end().to_owned())?;
+        Ok(Self {
+            doc,
+            bom,
+            crlf: body.contains("\r\n"),
+        })
+    }
+
+    /// 書き出す中身。BOM と改行は読んだ中身に合わせる。
+    pub(crate) fn finish(self) -> String {
+        let mut out = self.doc.to_string();
+        if self.crlf {
+            out = out.replace("\r\n", "\n").replace('\n', "\r\n");
+        }
+        if self.bom {
+            out.insert(0, '\u{feff}');
+        }
+        out
+    }
+}
 
 /// 書き換える項目。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,13 +81,12 @@ enum Setting {
     ScrollBarWidth,
     WindowPadding,
     ColorScheme,
-    BackgroundImages,
     BackgroundImageOpacity,
     BackgroundFit,
 }
 
 impl Setting {
-    const ALL: [Setting; 11] = [
+    const ALL: [Setting; 10] = [
         Setting::DefaultProfile,
         Setting::FontFamily,
         Setting::FontSize,
@@ -55,7 +95,6 @@ impl Setting {
         Setting::ScrollBarWidth,
         Setting::WindowPadding,
         Setting::ColorScheme,
-        Setting::BackgroundImages,
         Setting::BackgroundImageOpacity,
         Setting::BackgroundFit,
     ];
@@ -69,9 +108,7 @@ impl Setting {
             Setting::ScrollBarWidth => &["scroll_bar"],
             Setting::WindowPadding => &["window"],
             Setting::ColorScheme => &["colors"],
-            Setting::BackgroundImages
-            | Setting::BackgroundImageOpacity
-            | Setting::BackgroundFit => &["background"],
+            Setting::BackgroundImageOpacity | Setting::BackgroundFit => BACKGROUND_PATH,
         }
     }
 
@@ -85,8 +122,7 @@ impl Setting {
             Setting::ScrollBarWidth => "width",
             Setting::WindowPadding => "padding",
             Setting::ColorScheme => "scheme",
-            Setting::BackgroundImages => "images",
-            Setting::BackgroundImageOpacity => "image_opacity",
+            Setting::BackgroundImageOpacity => IMAGE_OPACITY,
             Setting::BackgroundFit => "fit",
         }
     }
@@ -102,14 +138,6 @@ impl Setting {
             Setting::ScrollBarWidth => Some(Value::from(i64::from(config.scroll_bar.width))),
             Setting::WindowPadding => Some(Value::from(i64::from(config.window.padding))),
             Setting::ColorScheme => Some(Value::from(config.colors.scheme.name())),
-            Setting::BackgroundImages => Some(Value::Array(
-                config
-                    .background
-                    .images
-                    .iter()
-                    .map(image_value)
-                    .collect::<Array>(),
-            )),
             Setting::BackgroundImageOpacity => Some(number_value(config.background.image_opacity)),
             Setting::BackgroundFit => Some(Value::from(config.background.fit.name())),
         }
@@ -137,171 +165,265 @@ fn families_value(families: &[String]) -> Value {
     }
 }
 
-/// `background.images` の項目一つ。収め方も濃さも全体の値に任せるなら文字列、そうでなければ
-/// `{ path = …, fit = …, image_opacity = … }` の表（書かない値は入れない）。
-fn image_value(image: &BackgroundImage) -> Value {
-    image_item(Value::from(image.path.as_str()), image, Vec::new())
-}
+/// `[background]` の表のキーのパス。
+pub(crate) const BACKGROUND_PATH: &[&str] = &["background"];
 
-/// パスを `path` と書いた、`image` の項目一つ。表にするときは、`others`（知らないキー）を後ろに続ける。
-fn image_item(mut path: Value, image: &BackgroundImage, others: Vec<(String, Value)>) -> Value {
-    path.decor_mut().clear();
-    if image.follows_background() && others.is_empty() {
-        return path;
-    }
-    let mut table = InlineTable::new();
-    table.insert(IMAGE_PATH, path);
+/// `[background]` の、背景画像の一覧（`[[background.images]]`）のキー。
+pub(crate) const IMAGES: &str = "images";
+
+/// `[[background.images]]` の表のキー。`image_opacity` は `[background]` のキーと同じ名前。
+pub(crate) const IMAGE_PATH: &str = "path";
+const IMAGE_FIT: &str = "fit";
+pub(crate) const IMAGE_OPACITY: &str = "image_opacity";
+
+/// `[[background.images]]` の表一つ。書かない値（全体の値に従う表示方法と不透明度）は入れない。
+fn image_table(image: &BackgroundImage) -> Table {
+    let mut table = Table::new();
+    table.insert(IMAGE_PATH, Item::Value(Value::from(image.path.as_str())));
     if let Some(fit) = image.fit {
-        table.insert(IMAGE_FIT, Value::from(fit.name()));
+        table.insert(IMAGE_FIT, Item::Value(Value::from(fit.name())));
     }
     if let Some(opacity) = image.image_opacity {
-        table.insert(IMAGE_OPACITY, number_value(opacity));
+        table.insert(IMAGE_OPACITY, Item::Value(number_value(opacity)));
     }
-    for (key, mut value) in others {
-        value.decor_mut().clear();
-        table.insert(&key, value);
-    }
-    table.fmt();
-    Value::InlineTable(table)
+    table
 }
 
-/// `background.images` の表の項目のキー。
-const IMAGE_PATH: &str = "path";
-const IMAGE_FIT: &str = "fit";
-const IMAGE_OPACITY: &str = "image_opacity";
-
-/// ファイルに書いてある `background.images` の項目一つ `item` のパス。読めない項目（パスのない表や、
-/// 文字列でも表でもないもの）なら `None`。
-fn written_image_path(item: &Value) -> Option<&str> {
-    let path = match item {
-        Value::String(path) => path.value(),
-        Value::InlineTable(table) => table.get(IMAGE_PATH)?.as_str()?,
-        _ => return None,
-    };
+/// ファイルに書いてある `[[background.images]]` の表一つ `table` のパス。読めない表（パスのない表や、
+/// パスが空のもの）なら `None`。
+fn written_image_path(table: &Table) -> Option<&str> {
+    let path = table.get(IMAGE_PATH)?.as_str()?;
     (!path.trim().is_empty()).then_some(path)
 }
 
-/// ファイルに書いてある `background.images` の項目一つ `item` の、収め方と濃さ。読めない値は書いて
-/// いないものとする（設定を読むときと同じ）。
-fn written_image_settings(item: &Value) -> (Option<BackgroundFit>, Option<f32>) {
-    let Value::InlineTable(table) = item else {
-        return (None, None);
-    };
+/// ファイルに書いてある `[[background.images]]` の表一つ `table` の、表示方法と不透明度。読めない値は
+/// 書いていないものとする（設定を読むときと同じ）。
+fn written_image_settings(table: &Table) -> (Option<BackgroundFit>, Option<f32>) {
     let fit = table
         .get(IMAGE_FIT)
-        .and_then(Value::as_str)
+        .and_then(Item::as_str)
         .and_then(BackgroundFit::from_name);
     let opacity = table
         .get(IMAGE_OPACITY)
-        .and_then(|value| {
-            value
-                .as_float()
-                .or_else(|| value.as_integer().map(|integer| integer as f64))
-        })
+        .and_then(Item::as_value)
+        .and_then(number_of)
         .map(|opacity| opacity as f32)
         .filter(|opacity| config::IMAGE_OPACITY_RANGE.contains(opacity));
     (fit, opacity)
 }
 
-/// ファイルに書いてある `background.images` の配列 `written` を、一覧 `images` に合わせて書き換えた
-/// 配列。項目はパスで照合し（同じパスが二つあれば前から順に）、一覧にない項目は消し、一覧にしか
-/// ない項目は最後に足す。読めない項目、項目の前のコメント、並びは残す。収め方と濃さを変えた項目だけを
-/// 書き換え、全体の値に任せるようにした表は（ほかのキーがなければ）文字列に戻す。
-fn merged_images(written: &Array, images: &[BackgroundImage]) -> Array {
-    let mut array = written.clone();
+/// 数の値（整数か小数）。
+pub(crate) fn number_of(value: &Value) -> Option<f64> {
+    value
+        .as_float()
+        .or_else(|| value.as_integer().map(|integer| integer as f64))
+}
+
+/// 背景画像の一覧が `base` と `edited` で違えば、`[[background.images]]` の表を書き換える。表を
+/// 書いていなければ `[background]` の値の後ろに足す。`images` に表の配列でない値が書いてあれば
+/// （`images = 3` など）、その行を消して表を足す。
+fn update_background_images(
+    doc: &mut DocumentMut,
+    base: &Config,
+    edited: &Config,
+) -> Result<(), String> {
+    let images = &edited.background.images;
+    if base.background.images == *images {
+        return Ok(());
+    }
+    match table_at(doc, BACKGROUND_PATH).and_then(|table| table.get(IMAGES)) {
+        None => {}
+        Some(Item::ArrayOfTables(_)) => {
+            merge_image_tables(doc, images);
+            return Ok(());
+        }
+        Some(Item::Value(_)) => replace_line(doc, BACKGROUND_PATH, IMAGES, None),
+        Some(_) => return Err(format!("background.{IMAGES} is not an array of tables")),
+    }
+    if images.is_empty() {
+        return Ok(());
+    }
+    let tables = images
+        .iter()
+        .map(|image| (String::new(), image_table(image)))
+        .collect();
+    insert_image_tables(doc, tables, String::new())
+}
+
+/// 書いてある `[[background.images]]` の表を、一覧 `images` に合わせる。表はパスで照合し（同じパスが
+/// 二つあれば前から順に）、一覧にない表は消し、一覧にしかない画像は表を最後に足す。読めない表、表の
+/// コメント、並びは残す。表示方法と不透明度を変えた表だけを書き換える。最初の表の前のコメントは、最初の
+/// 表を消しても次の表の前に残し、表がなくなれば続く表の前へ返す。
+fn merge_image_tables(doc: &mut DocumentMut, images: &[BackgroundImage]) {
+    let Some(background) = table_at_mut(doc, BACKGROUND_PATH) else {
+        return;
+    };
+    let background_position = background.position();
+    let old: Vec<Table> = match background.remove(IMAGES) {
+        Some(Item::ArrayOfTables(old)) => old.into_iter().collect(),
+        _ => return,
+    };
+    let head = old
+        .first()
+        .map(|table| decor_prefix(table.decor()))
+        .unwrap_or_default();
+    let position = old
+        .iter()
+        .filter_map(Table::position)
+        .max()
+        .or(background_position);
     let mut used = vec![false; images.len()];
-    let mut index = 0;
-    while index < array.len() {
-        let Some(path) = array.get(index).and_then(written_image_path) else {
-            index += 1;
+    // 残す表と、書いてあった位置（足す表は `None`）。
+    let mut kept: Vec<(Option<usize>, Table)> = Vec::new();
+    for (index, mut table) in old.into_iter().enumerate() {
+        let Some(path) = written_image_path(&table) else {
+            kept.push((Some(index), table));
             continue;
         };
         let found = images
             .iter()
             .enumerate()
             .position(|(i, image)| !used[i] && image.path == path);
-        match found {
-            Some(found) => {
-                used[found] = true;
-                if let Some(item) = array.get_mut(index) {
-                    update_image_item(item, &images[found]);
-                }
-                index += 1;
-            }
-            None => remove_array_item(&mut array, index),
+        if let Some(found) = found {
+            used[found] = true;
+            update_image_table(&mut table, &images[found]);
+            kept.push((Some(index), table));
         }
     }
     for (image, _) in images.iter().zip(&used).filter(|(_, used)| !**used) {
-        let prefix = appended_item_prefix(&array);
-        let mut value = image_value(image);
-        value.decor_mut().set_prefix(prefix);
-        value.decor_mut().set_suffix("");
-        array.push_formatted(value);
+        let mut table = image_table(image);
+        table.decor_mut().set_prefix("\n");
+        table.set_position(position);
+        kept.push((None, table));
     }
-    array
-}
-
-/// 配列 `array` の `index` 番目の項目を消す。先頭を消したら、次の項目の前の空白（コメントでなければ）を
-/// 消した項目の前のものにする（`['a', 'b']` から `'a'` を消して `[ 'b']` にしないため）。
-fn remove_array_item(array: &mut Array, index: usize) {
-    let removed_prefix = array
-        .get(index)
-        .map(|item| decor_prefix(item.decor()))
-        .unwrap_or_default();
-    array.remove(index);
-    if index != 0 {
+    if kept.is_empty() {
+        let following = following(doc, BACKGROUND_PATH);
+        let after = following_prefix(doc, &following);
+        let rest = after.strip_prefix('\n').unwrap_or(&after);
+        let head = match following {
+            // ファイルの最後なら、表の前に空けた空行を残さない。
+            Following::End => {
+                let comments = head.trim_end_matches('\n');
+                if comments.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("{comments}\n")
+                }
+            }
+            Following::Table(_) => head,
+        };
+        set_following_prefix(doc, &following, format!("{head}{rest}"));
         return;
     }
-    if let Some(next) = array.get_mut(0)
-        && decor_prefix(next.decor()).trim().is_empty()
+    if let Some((from, first)) = kept.first_mut()
+        && *from != Some(0)
     {
-        next.decor_mut().set_prefix(removed_prefix);
+        let own = decor_prefix(first.decor());
+        let own = own.strip_prefix('\n').unwrap_or(&own);
+        first.decor_mut().set_prefix(format!("{head}{own}"));
+    }
+    let mut array = ArrayOfTables::new();
+    for (_, table) in kept {
+        array.push(table);
+    }
+    if let Some(background) = table_at_mut(doc, BACKGROUND_PATH) {
+        background.insert(IMAGES, Item::ArrayOfTables(array));
     }
 }
 
-/// 配列 `array` の最後に足す項目の前に置く空白。二つ目からの項目と同じにする（項目を行ごとに書いて
-/// いればその改行と字下げ、一行に並べていれば空白一つ）。
-fn appended_item_prefix(array: &Array) -> String {
-    let last = array.iter().last().map(|item| decor_prefix(item.decor()));
-    match (array.len(), last) {
-        (0, _) | (_, None) => String::new(),
-        (1, Some(prefix)) if !prefix.contains('\n') => " ".to_owned(),
-        (_, Some(prefix)) => {
-            // コメントを写さないように、最後の行（改行のあとの字下げ）だけを使う。
-            match prefix.rfind('\n') {
-                Some(newline) => format!("\n{}", &prefix[newline + 1..]),
-                None => prefix,
+/// `[background]` の値の後ろに、`[[background.images]]` の表 `tables` を置く（表はまだ書いていない
+/// ものとする）。`tables` はそれぞれ、表の前に置くコメントの行と表。`[background]` がなければ作る。
+/// 続く表の前のコメントのうち、空行で見出しと離れたところまでを最初の表の前に移す（[`TEMPLATE`] の
+/// 一覧の説明の下に表が入る）。`trailing` は最後の表の後ろに置くコメントの行。
+///
+/// [`TEMPLATE`]: crate::config::TEMPLATE
+pub(crate) fn insert_image_tables(
+    doc: &mut DocumentMut,
+    tables: Vec<(String, Table)>,
+    trailing: String,
+) -> Result<(), String> {
+    let background = section_mut(doc, BACKGROUND_PATH, true)?.expect("created");
+    if !is_standard(background) {
+        return Err("background is not written as a [background] table".to_owned());
+    }
+    let position = background.position();
+    // 値の行があれば、その後ろに空行を挟む。
+    let mut first = if value_prefixes(background).is_empty() {
+        String::new()
+    } else {
+        "\n".to_owned()
+    };
+    let following = following(doc, BACKGROUND_PATH);
+    match following {
+        Following::Table(_) => {
+            let after = following_prefix(doc, &following);
+            let (moved, rest) = split_after_last_blank_line(&after);
+            if !moved.is_empty() {
+                first = moved;
             }
+            set_following_prefix(doc, &following, format!("{trailing}\n{rest}"));
+        }
+        Following::End => {
+            let after = following_prefix(doc, &following);
+            set_following_prefix(doc, &following, format!("{trailing}{after}"));
+        }
+    }
+    let mut array = ArrayOfTables::new();
+    for (index, (comments, mut table)) in tables.into_iter().enumerate() {
+        let separator = if index == 0 { first.as_str() } else { "\n" };
+        table
+            .decor_mut()
+            .set_prefix(format!("{separator}{comments}"));
+        table.set_position(position);
+        array.push(table);
+    }
+    let background = section_mut(doc, BACKGROUND_PATH, false)?.expect("exists");
+    background.insert(IMAGES, Item::ArrayOfTables(array));
+    Ok(())
+}
+
+/// 書いてある `[[background.images]]` の表一つ `table` の表示方法と不透明度を、`image` に合わせる。
+/// 同じ値は変えない。パスは書いてあった形（引用符の種類など）のまま、知らないキーとコメントも残す。
+fn update_image_table(table: &mut Table, image: &BackgroundImage) {
+    let (fit, opacity) = written_image_settings(table);
+    if fit != image.fit {
+        match image.fit {
+            Some(fit) => set_table_value(table, IMAGE_FIT, Value::from(fit.name())),
+            None => remove_table_value(table, IMAGE_FIT),
+        }
+    }
+    if opacity != image.image_opacity {
+        match image.image_opacity {
+            Some(opacity) => set_table_value(table, IMAGE_OPACITY, number_value(opacity)),
+            None => remove_table_value(table, IMAGE_OPACITY),
         }
     }
 }
 
-/// ファイルに書いてある項目一つ `item` の収め方と濃さを、`image` に合わせる。同じなら変えない。パスは
-/// 書いてあった形（引用符の種類など）のまま、知らないキーも残す。項目の前後の空白とコメントは残す。
-fn update_image_item(item: &mut Value, image: &BackgroundImage) {
-    if written_image_settings(item) == (image.fit, image.image_opacity) {
+/// 表 `table` の値の行 `key` を消す。その行の前に書いたコメントは、次の値の行の前に移す（次の値の行が
+/// なければ消す）。
+fn remove_table_value(table: &mut Table, key: &str) {
+    let prefixes = value_prefixes(table);
+    let Some(index) = prefixes.iter().position(|(name, _)| name == key) else {
+        table.remove(key);
         return;
-    }
-    let (path, others) = match &*item {
-        Value::InlineTable(table) => (
-            table.get(IMAGE_PATH).cloned(),
-            table
-                .iter()
-                .filter(|(key, _)| ![IMAGE_PATH, IMAGE_FIT, IMAGE_OPACITY].contains(key))
-                .map(|(key, value)| (key.to_owned(), value.clone()))
-                .collect(),
-        ),
-        other => (Some(other.clone()), Vec::new()),
     };
-    let path = path.unwrap_or_else(|| Value::from(image.path.as_str()));
-    let mut value = image_item(path, image, others);
-    *value.decor_mut() = item.decor().clone();
-    *item = value;
+    let Some((removed, _)) = table.remove_entry(key) else {
+        return;
+    };
+    let kept = decor_prefix(removed.leaf_decor());
+    if let Some((next, prefix)) = prefixes.get(index + 1)
+        && let Some(mut next_key) = table.key_mut(next)
+    {
+        next_key
+            .leaf_decor_mut()
+            .set_prefix(format!("{kept}{prefix}"));
+    }
 }
 
-/// フォントの大きさや画像の濃さの数。整数なら整数で、そうでなければ小数で書く（`f32` を `f64` に
+/// フォントの大きさや画像の不透明度の数。整数なら整数で、そうでなければ小数で書く（`f32` を `f64` に
 /// 広げた端数を出さないように、`f32` の短い表記から読み直す）。
-fn number_value(number: f32) -> Value {
+pub(crate) fn number_value(number: f32) -> Value {
     if number.fract() == 0.0 {
         return Value::from(number as i64);
     }
@@ -315,7 +437,7 @@ fn action_value(action: Option<Action>) -> Value {
 }
 
 /// 値を書いたときの文字列。前後の空白やコメントは含めない。
-fn bare_repr(value: &Value) -> String {
+pub(crate) fn bare_repr(value: &Value) -> String {
     let mut value = value.clone();
     value.decor_mut().clear();
     value.to_string()
@@ -358,16 +480,12 @@ enum Reset {
 /// 設定ファイルの中身 `text` を、`base` から `edited` へ変えた項目だけ書き換えて返す。`base` は
 /// 編集を始めたときの設定。TOML として読めなければ、そのエラーメッセージを返す。
 ///
-/// 先頭の BOM と、改行が CRLF かどうかは `text` に合わせる。
+/// 先頭の BOM と、改行が CRLF かどうかは `text` に合わせる。古い書き方は今の書き方に読み替えてから
+/// 書き換える（`base` は読み替えた中身から読んだ設定）。
 pub fn update(text: &str, base: &Config, edited: &Config) -> Result<String, String> {
-    let (bom, body) = match text.strip_prefix('\u{feff}') {
-        Some(body) => ("\u{feff}", body),
-        None => ("", text),
-    };
-    let crlf = body.contains("\r\n");
-    let mut doc: DocumentMut = body
-        .parse()
-        .map_err(|e: toml_edit::TomlError| e.message().trim_end().to_owned())?;
+    let migrated = migrate::migrate(text);
+    let mut document = Document::parse(&migrated.text)?;
+    let doc = &mut document.doc;
     let defaults = Config::default();
     for setting in Setting::ALL {
         let new = setting.value(edited);
@@ -383,38 +501,22 @@ pub fn update(text: &str, base: &Config, edited: &Config) -> Result<String, Stri
         let default = setting.value(&defaults);
         match new {
             Some(value) if !same(&Some(value.clone()), &default) => {
-                let value = match (setting, written_value(&doc, setting)) {
-                    (Setting::BackgroundImages, Some(Value::Array(written))) => {
-                        Value::Array(merged_images(written, &edited.background.images))
-                    }
-                    _ => value,
-                };
-                set(&mut doc, setting.path(), &target, value)?;
+                set(doc, setting.path(), &target, value)?;
             }
             _ => {
                 let reset = match default {
                     Some(default) => Reset::Comment(default),
                     None => Reset::CommentOld,
                 };
-                self::reset(&mut doc, setting.path(), &target, reset)?;
+                self::reset(doc, setting.path(), &target, reset)?;
             }
         }
     }
-    update_profiles(&mut doc, base, edited)?;
-    update_colors(&mut doc, base, edited)?;
-    update_keys(&mut doc, base, edited)?;
-    let mut out = doc.to_string();
-    if crlf {
-        out = out.replace("\r\n", "\n").replace('\n', "\r\n");
-    }
-    Ok(format!("{bom}{out}"))
-}
-
-/// ファイルに書いてある、`setting` の最初の値。
-fn written_value(doc: &DocumentMut, setting: Setting) -> Option<&Value> {
-    table_at(doc, setting.path())?
-        .get(setting.key())?
-        .as_value()
+    update_background_images(doc, base, edited)?;
+    update_profiles(doc, base, edited)?;
+    update_colors(doc, base, edited)?;
+    update_keys(doc, base, edited)?;
+    Ok(document.finish())
 }
 
 /// `[colors]` と `[colors.…]` の表で、`base` と `edited` で違う色を書き換える。既定の色に戻した色は、
@@ -684,7 +786,11 @@ fn set_table_text(table: &mut Table, key: &str, text: &str) {
     if table.get(key).and_then(Item::as_str) == Some(text) {
         return;
     }
-    let mut value = Value::from(text);
+    set_table_value(table, key, Value::from(text));
+}
+
+/// 表 `table` の `key` の値を `value` にする。書いてあれば行のコメントは残し、なければ表の最後に足す。
+fn set_table_value(table: &mut Table, key: &str, mut value: Value) {
     match table.get_mut(key) {
         Some(item) => {
             if let Some(old) = item.as_value() {
@@ -700,7 +806,7 @@ fn set_table_text(table: &mut Table, key: &str, text: &str) {
 
 /// 表のうち、ほかの表の見出しとファイルの最後との位置関係で扱えるもの（`[font]` の形の見出しを
 /// 持つ表と最上位）か。`font.size = 9` のような点で区切ったキーや、インラインの表は違う。
-fn is_standard(table: &Table) -> bool {
+pub(crate) fn is_standard(table: &Table) -> bool {
     !table.is_dotted()
 }
 
@@ -709,7 +815,7 @@ fn path_name(path: &[&str]) -> String {
 }
 
 /// キーのパス `path` の表。
-fn table_at<'a>(doc: &'a DocumentMut, path: &[&str]) -> Option<&'a Table> {
+pub(crate) fn table_at<'a>(doc: &'a DocumentMut, path: &[&str]) -> Option<&'a Table> {
     let mut table = doc.as_table();
     for name in path {
         table = table.get(name)?.as_table()?;
@@ -717,7 +823,7 @@ fn table_at<'a>(doc: &'a DocumentMut, path: &[&str]) -> Option<&'a Table> {
     Some(table)
 }
 
-fn table_at_mut<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> Option<&'a mut Table> {
+pub(crate) fn table_at_mut<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> Option<&'a mut Table> {
     let mut table = doc.as_table_mut();
     for name in path {
         table = table.get_mut(name)?.as_table_mut()?;
@@ -755,6 +861,21 @@ fn section_mut<'a>(
             Some(Item::Table(inner)) => inner,
             _ => return Err(format!("{} is not a table", path_name(&path[..=depth]))),
         };
+    }
+    if create && table.is_implicit() && !path.is_empty() {
+        // `[[background.images]]` だけを書いたときの `background` のような、見出しのない表に値を書く
+        // ので、見出しを中の表の最初のものの前に書く。
+        let first_inner = table
+            .iter()
+            .flat_map(|(_, item)| match item {
+                Item::Table(inner) => vec![inner.position()],
+                Item::ArrayOfTables(array) => array.iter().map(Table::position).collect(),
+                _ => Vec::new(),
+            })
+            .flatten()
+            .min();
+        table.set_implicit(false);
+        table.set_position(first_inner.or(Some(last + 1)));
     }
     Ok(Some(table))
 }
@@ -862,12 +983,20 @@ fn following(doc: &DocumentMut, path: &[&str]) -> Following {
     first_after(doc, &me, after)
 }
 
-/// `me` のほかの、位置が `after` より後ろ（`None` ならどこでも）の、いちばん前の表。
+/// `me` のほかの、位置が `after` より後ろ（`None` ならどこでも）の、いちばん前の表。`me` の中の表
+/// （`[background]` の中の `[[background.images]]` など）は、位置が `after` と同じでも後ろにあるものと
+/// する（同じ位置の表は、外の表、中の表の順に書き出される）。
 fn first_after(doc: &DocumentMut, me: &Header, after: Option<isize>) -> Following {
+    let inside_me =
+        |other: &Header| other.path.len() > me.path.len() && other.path.starts_with(&me.path);
     tables(doc)
         .into_iter()
         .filter(|(other, position)| other != me && position.is_some())
-        .filter(|(_, position)| after.is_none_or(|after| position.is_some_and(|p| p > after)))
+        .filter(|(other, position)| {
+            after.is_none_or(|after| {
+                position.is_some_and(|p| p > after || (p == after && inside_me(other)))
+            })
+        })
         .min_by_key(|(_, position)| *position)
         .map_or(Following::End, |(other, _)| Following::Table(other))
 }
@@ -893,7 +1022,7 @@ fn set_following_prefix(doc: &mut DocumentMut, following: &Following, prefix: St
     }
 }
 
-fn decor_prefix(decor: &Decor) -> String {
+pub(crate) fn decor_prefix(decor: &Decor) -> String {
     decor
         .prefix()
         .and_then(|prefix| prefix.as_str())
@@ -910,7 +1039,7 @@ fn decor_suffix(decor: &Decor) -> String {
 }
 
 /// 表の値の行のキーと、その行の前に書いたもの（コメントと空行）。行の順。
-fn value_prefixes(table: &Table) -> Vec<(String, String)> {
+pub(crate) fn value_prefixes(table: &Table) -> Vec<(String, String)> {
     table
         .iter()
         .filter(|(_, item)| item.is_value())
@@ -1040,7 +1169,7 @@ fn key_with_prefix(key: Key, prefix: String) -> Key {
 }
 
 /// 表の値の行の `index` 番目の前に、`key` の行を入れる。
-fn insert_at(table: &mut Table, index: usize, key: Key, value: Value) {
+pub(crate) fn insert_at(table: &mut Table, index: usize, key: Key, value: Value) {
     let later: Vec<String> = value_prefixes(table)
         .into_iter()
         .skip(index)
@@ -1113,7 +1242,7 @@ fn comment_line(key: &str, value: &Value, old: &Value) -> String {
 
 /// 表 `path` の値の行 `name` を消し、その行の前に書いたもの（コメントと空行）と `line` を、次の値の
 /// 行の前（なければ表の後ろ）に置く。
-fn replace_line(doc: &mut DocumentMut, path: &[&str], name: &str, line: Option<String>) {
+pub(crate) fn replace_line(doc: &mut DocumentMut, path: &[&str], name: &str, line: Option<String>) {
     let Some(table) = table_at_mut(doc, path) else {
         return;
     };
@@ -1350,13 +1479,12 @@ mod tests {
             .replace(r#"# confirm = "unsafe""#, r#"confirm = "never""#)
             .replace("# width = 12", "width = 20")
             .replace("# padding = 4", "padding = 0")
-            .replace(
-                "\n# images = []",
-                r"
-images = ['C:\walls', 'D:\pics\*.png']",
-            )
             .replace("# image_opacity = 0.2", "image_opacity = 0.65")
             .replace(r#"# fit = "fill""#, r#"fit = "center""#)
+            .replace(
+                "# 例: fit = \"tile\"\n\n[keys]",
+                "# 例: fit = \"tile\"\n\n[[background.images]]\npath = 'C:\\walls'\n\n[[background.images]]\npath = 'D:\\pics\\*.png'\n\n[keys]",
+            )
             .replace(
                 "\n# \"ctrl+tab\" = \"next_tab\"",
                 "\n\"ctrl+tab\" = \"none\"",
@@ -1553,15 +1681,44 @@ images = ['C:\walls', 'D:\pics\*.png']",
         let updated = update(text, &base, &edited).unwrap();
         assert_eq!(
             updated,
-            "[font]\nsize = 9\n\n[background]\nimages = ['C:\\walls']\nimage_opacity = 1\n"
+            "[font]\nsize = 9\n\n[background]\nimage_opacity = 1\n\n[[background.images]]\npath = 'C:\\walls'\n"
         );
         assert_reads_as(&updated, &edited);
-        // 一覧を空に戻すと、既定値をコメントにした行にする。
+        // 一覧を空に戻すと表を消し、不透明度は既定値をコメントにした行にする。
         let back = update(&updated, &edited, &base).unwrap();
         assert_eq!(
             back,
-            "[font]\nsize = 9\n\n[background]\n# images = []\n# image_opacity = 0.2\n"
+            "[font]\nsize = 9\n\n[background]\n# image_opacity = 0.2\n"
         );
+        assert_reads_as(&back, &base);
+    }
+
+    #[test]
+    fn background_header_is_written_when_only_image_tables_are_written() {
+        let text = "[font]\nsize = 9\n\n[[background.images]]\npath = 'a'\n\n[keys]\n";
+        let base = config::parse(text, &Config::default()).config;
+        let mut edited = base.clone();
+        edited.background.image_opacity = 0.5;
+        let updated = update(text, &base, &edited).unwrap();
+        assert_eq!(
+            updated,
+            "[font]\nsize = 9\n\n[background]\nimage_opacity = 0.5\n\n[[background.images]]\npath = 'a'\n\n[keys]\n"
+        );
+        assert_reads_as(&updated, &edited);
+    }
+
+    #[test]
+    fn old_forms_are_read_in_the_current_form_before_writing() {
+        let text = "[background]\nimages = ['C:\\a.png'] # mine\nopacity = 0.7\n";
+        let base = config::parse(&migrate::migrate(text).text, &Config::default()).config;
+        let mut edited = base.clone();
+        edited.background.images[0].fit = Some(BackgroundFit::Tile);
+        let updated = update(text, &base, &edited).unwrap();
+        assert_eq!(
+            updated,
+            "[background]\nimage_opacity = 0.3\n\n[[background.images]]\npath = 'C:\\a.png'\nfit = \"tile\"\n# mine\n"
+        );
+        assert_reads_as(&updated, &edited);
     }
 
     fn image(
@@ -1577,36 +1734,35 @@ images = ['C:\walls', 'D:\pics\*.png']",
     }
 
     #[test]
-    fn image_items_become_tables_and_strings_again_in_place() {
-        let text = "[background]\n# mine\nimages = [\n  # walls\n  'C:\\walls',\n  'C:\\a.png', # the cat\n  { path = 'C:\\b.png', fit = 'tile' },\n]\n";
+    fn image_tables_change_only_the_changed_values() {
+        let text = "[background]\nfit = 'fit'\n\n# walls\n[[background.images]]\npath = 'C:\\walls'\n\n[[background.images]]\npath = 'C:\\a.png' # the cat\n\n[[background.images]]\n# tiled\npath = 'C:\\b.png'\nfit = 'tile' # mine\nimage_opacity = 0.5\n";
         let base = config::parse(text, &Config::default()).config;
         let mut edited = base.clone();
         edited.background.images[0].image_opacity = Some(0.3);
         edited.background.images[1].fit = Some(BackgroundFit::Center);
         edited.background.images[2].fit = None;
         let updated = update(text, &base, &edited).unwrap();
-        // コメントと並びは残し、変えた項目だけを書き換える。パスの引用符は書いたまま。
+        // コメントと並びは残し、変えた値だけを書き換える。パスの引用符は書いたまま。
         assert_eq!(
             updated,
-            "[background]\n# mine\nimages = [\n  # walls\n  { path = 'C:\\walls', image_opacity = 0.3 },\n  { path = 'C:\\a.png', fit = \"center\" }, # the cat\n  'C:\\b.png',\n]\n"
+            "[background]\nfit = 'fit'\n\n# walls\n[[background.images]]\npath = 'C:\\walls'\nimage_opacity = 0.3\n\n[[background.images]]\npath = 'C:\\a.png' # the cat\nfit = \"center\"\n\n[[background.images]]\n# tiled\npath = 'C:\\b.png'\nimage_opacity = 0.5\n"
         );
         assert_reads_as(&updated, &edited);
-        // 全体の設定に従うように戻すと、文字列に戻る。
+        // 全体の値に従うように戻すと、その行を消す。
         let back = update(&updated, &edited, &base).unwrap();
         assert_eq!(
             back,
-            "[background]\n# mine\nimages = [\n  # walls\n  'C:\\walls',\n  'C:\\a.png', # the cat\n  { path = 'C:\\b.png', fit = \"tile\" },\n]\n"
+            "[background]\nfit = 'fit'\n\n# walls\n[[background.images]]\npath = 'C:\\walls'\n\n[[background.images]]\npath = 'C:\\a.png' # the cat\n\n[[background.images]]\n# tiled\npath = 'C:\\b.png'\nimage_opacity = 0.5\nfit = \"tile\"\n"
         );
         assert_reads_as(&back, &base);
     }
 
     #[test]
-    fn image_items_are_removed_and_added_keeping_the_others() {
-        let text = "[background]\nimages = ['C:\\a.png', { path = 'C:\\b.png', fit = 'tile', note = 'x' }, 3, 'C:\\c.png']\n";
-        let parsed = config::parse(text, &Config::default());
-        let base = parsed.config;
+    fn image_tables_are_removed_and_added_keeping_the_others() {
+        let text = "[background]\n[[background.images]]\npath = 'C:\\a.png'\n\n# b\n[[background.images]]\npath = 'C:\\b.png'\nfit = 'tile'\nnote = 'x'\n\n[[background.images]]\nfit = 'center'\n\n[[background.images]]\npath = 'C:\\c.png'\n\n[keys]\n";
+        let base = config::parse(text, &Config::default()).config;
         let mut edited = base.clone();
-        // 先頭を外し、知らないキーのある表を全体の設定に従わせ、二つ足す。
+        // 先頭を外し、知らないキーのある表を全体の値に従わせ、二つ足す。
         edited.background.images.remove(0);
         edited.background.images[0].fit = None;
         edited
@@ -1615,26 +1771,23 @@ images = ['C:\walls', 'D:\pics\*.png']",
             .push(image(r"D:\d.png", Some(BackgroundFit::Fit), None));
         edited.background.images.push(BackgroundImage::new(r"D:\e"));
         let updated = update(text, &base, &edited).unwrap();
-        // 読めない項目（3）はそのまま。知らないキーのある表は表のまま。
+        // 読めない表（パスのない表）と知らないキーはそのまま。足す表は最後の表の後ろ。
         assert_eq!(
             updated,
-            "[background]\nimages = [{ path = 'C:\\b.png', note = 'x' }, 3, 'C:\\c.png', { path = 'D:\\d.png', fit = \"fit\" }, 'D:\\e']\n"
+            "[background]\n# b\n[[background.images]]\npath = 'C:\\b.png'\nnote = 'x'\n\n[[background.images]]\nfit = 'center'\n\n[[background.images]]\npath = 'C:\\c.png'\n\n[[background.images]]\npath = 'D:\\d.png'\nfit = \"fit\"\n\n[[background.images]]\npath = 'D:\\e'\n\n[keys]\n"
         );
         let reread = config::parse(&updated, &Config::default());
         assert_eq!(reread.config.background, edited.background);
 
-        // 行ごとに書いた配列には、同じ字下げで足す。
-        let text = "[background]\nimages = [\n    # first\n    'C:\\a.png',\n]\n";
+        // 一覧を空にすると表を消し、最初の表の前のコメントは続く表の前に残す。
+        let text = "[background]\nfit = 'tile'\n\n# my images\n[[background.images]]\npath = 'a'\n\n[[background.images]]\npath = 'b'\n\n[keys]\n";
         let base = config::parse(text, &Config::default()).config;
         let mut edited = base.clone();
-        edited
-            .background
-            .images
-            .push(image(r"C:\b.png", None, Some(0.5)));
+        edited.background.images.clear();
         let updated = update(text, &base, &edited).unwrap();
         assert_eq!(
             updated,
-            "[background]\nimages = [\n    # first\n    'C:\\a.png',\n    { path = 'C:\\b.png', image_opacity = 0.5 },\n]\n"
+            "[background]\nfit = 'tile'\n\n# my images\n[keys]\n"
         );
         assert_reads_as(&updated, &edited);
     }
@@ -1648,11 +1801,12 @@ images = ['C:\walls', 'D:\pics\*.png']",
         ];
         let text = update(TEMPLATE, &Config::default(), &edited).unwrap();
         assert_reads_as(&text, &edited);
+        // 一覧の説明の下、続く表の前に置く。
         assert_eq!(
             text,
             TEMPLATE.replace(
-                "\n# images = []",
-                "\nimages = ['C:\\walls', { path = 'C:\\tiles', fit = \"tile\", image_opacity = 0.25 }]"
+                "# 例: fit = \"tile\"\n\n[keys]",
+                "# 例: fit = \"tile\"\n\n[[background.images]]\npath = 'C:\\walls'\n\n[[background.images]]\npath = 'C:\\tiles'\nfit = \"tile\"\nimage_opacity = 0.25\n\n[keys]"
             )
         );
         assert_eq!(

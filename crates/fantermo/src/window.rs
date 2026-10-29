@@ -209,7 +209,11 @@ pub fn run(
     state_path: Option<PathBuf>,
     state: State,
 ) -> Result<u32, Box<dyn std::error::Error>> {
-    let Loaded { config, notice } = loaded;
+    let Loaded {
+        config,
+        notice,
+        written,
+    } = loaded;
     let dwrite = font::create_factory()?;
     // SAFETY: 引数のない問い合わせ。
     let system_dpi = unsafe { GetDpiForSystem() };
@@ -237,6 +241,7 @@ pub fn run(
         arguments,
     )?;
     app.state_path = state_path;
+    app.settings_written = written;
     let app = Box::into_raw(Box::new(RefCell::new(app)));
     // SAFETY: hwnd はこのスレッドが作ったウィンドウ。ポインタは WM_NCDESTROY で取り戻して解放する。
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, app as isize) };
@@ -704,8 +709,8 @@ struct App {
     settings_dialog_open: bool,
     /// 設定ダイアログを開いている間に、設定ファイルが書き換えられた。閉じたら読み直す。
     reload_pending: bool,
-    /// 設定ダイアログが最後に設定ファイルに書いた中身。読み直すときに中身がこれと同じなら、使っている
-    /// 設定と同じなので読まない。違えば捨てる。
+    /// 設定ダイアログか、古い書き方の読み替えが最後に設定ファイルに書いた中身。読み直すときに中身が
+    /// これと同じなら、使っている設定と同じなので読まない。違えば捨てる。
     settings_written: Option<String>,
     /// 更新の確認かダウンロードを別のスレッドでしているか、その結果を見せている。その間は新しく始めない。
     update_busy: bool,
@@ -2079,6 +2084,7 @@ impl App {
     /// なければ、設定の警告を取り下げる（開いているメッセージボックスも閉じさせる）。
     ///
     /// 設定ダイアログを開いている間は読まず、閉じてから読む。設定ダイアログが書いた中身のままなら読まない。
+    /// 古い書き方を読み替えて書き戻したら、その中身を覚え、書き戻した知らせでは読み直さない。
     fn reload_config(&mut self) -> (Option<u32>, Option<Deferred>) {
         if self.settings_dialog_open {
             self.reload_pending = true;
@@ -2089,12 +2095,18 @@ impl App {
             && let Some(path) = &self.config_path
             && std::fs::read_to_string(path).is_ok_and(|text| text == written)
         {
-            tracing::debug!("the settings file is as the settings dialog wrote it");
+            tracing::debug!("the settings file is as fantermo wrote it");
             self.settings_written = Some(written);
             return (None, None);
         }
-        let Loaded { config, notice } =
-            config_file::reload(self.config_path.as_deref(), &self.config_in_use());
+        let Loaded {
+            config,
+            notice,
+            written,
+        } = config_file::reload(self.config_path.as_deref(), &self.config_in_use());
+        if written.is_some() {
+            self.settings_written = written;
+        }
         let warn = match notice {
             Some(text) => Some(Deferred::Warn {
                 topic: Topic::Settings,
