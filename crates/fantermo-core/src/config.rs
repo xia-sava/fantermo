@@ -56,11 +56,11 @@ pub const DEFAULT_PROFILE_NAME: &str = "PowerShell";
 pub const DEFAULT_COMMAND_LINE: &str = "powershell.exe -NoLogo";
 
 /// 設定ファイルが無いときに作る中身。どの項目も既定値のままコメントにして並べ、利用者が `#` を消して
-/// 書き換えられるようにする。プロファイルの表は例として載せる。
+/// 書き換えられるようにする。プロファイルのテーブルは例として載せる。
 pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # 行頭の「#」を消して値を書き換え、保存すると読み直す。書いていない項目は既定値になる。
 
-# 新しいタブで起動するプロファイル。[[profiles]] の表を並べ、name に名前、command に起動するコマンドラインを
+# 新しいタブで起動するプロファイル。[[profiles]] のテーブルを並べ、name に名前、command に起動するコマンドラインを
 # 書く。backend はシェルとのつなぎ方で、"conpty"（Windows の疑似コンソール）だけを書ける。書かなければ "conpty"。
 # タブバーの「+」は既定のプロファイルを開き、その右の「▾」か「+」の右クリックで一覧から選んで開く。fantermo を
 # 引数つきで起動したときは、「+」とキーとメニューの「新しいタブ」も引数のコマンドラインを使う。
@@ -148,12 +148,12 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # 引き伸ばす、"tile"（並べて表示）は元の大きさで敷き詰める、"center"（中央に表示）は元の大きさで真ん中に置く。
 # fit = "fill"
 
-# 端末の背景に敷く画像の一覧。[[background.images]] の表を画像の項目ごとに並べ、path に画像のファイル、
+# 端末の背景に敷く画像の一覧。[[background.images]] のテーブルを画像の項目ごとに並べ、path に画像のファイル、
 # フォルダ（中の画像から選ぶ。下のフォルダは見ない）、ファイルの名前に「*」「?」を使ったワイルドカードを書く。
 # 新しいタブを開くたびに、この中からランダムに一枚選ぶ。フォルダとワイルドカードから選ぶのは png、jpg、jpeg、
 # bmp、gif（最初のコマ）、webp（Windows で読めるとき）。読めない画像は飛ばして別の画像を選ぶ。相対パスはこの
 # ファイルのフォルダから。書かなければ画像を敷かない。
-# 表に fit と image_opacity を書くと、その項目（フォルダやワイルドカードなら、そこから選んだ画像）にだけ
+# テーブルに fit と image_opacity を書くと、その項目（フォルダやワイルドカードなら、そこから選んだ画像）にだけ
 # 効く。書かなかったものは上の値に従う。[[background.images]] は [background] の値より後ろに書く。
 # 例: [[background.images]]
 # 例: path = 'C:\画像\壁紙'
@@ -235,7 +235,7 @@ pub fn default_profile_index(profiles: &[Profile], default: Option<&str>) -> usi
         .unwrap_or(0)
 }
 
-/// 新しいタブで起動するもの（`[[profiles]]` の表一つ）。
+/// 新しいタブで起動するもの（`[[profiles]]` のテーブル一つ）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Profile {
     /// タブバーの一覧に見せる名前。空ではない。
@@ -420,7 +420,7 @@ impl BackgroundFit {
     }
 }
 
-/// 色を書く表（`[colors]` と `[colors.<名前>]`）。
+/// 色を書くテーブル（`[colors]` と `[colors.<名前>]`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColorTable {
     /// 端末の色（`[colors]` に書く）。
@@ -432,14 +432,14 @@ pub enum ColorTable {
 }
 
 impl ColorTable {
-    /// すべての表。設定ファイルの順。
+    /// すべてのテーブル。設定ファイルの順。
     pub const ALL: [ColorTable; 3] = [
         ColorTable::Terminal,
         ColorTable::TabBar,
         ColorTable::ScrollBar,
     ];
 
-    /// 表のキーのパス（`["colors", "tab_bar"]` など）。
+    /// テーブルのキーのパス（`["colors", "tab_bar"]` など）。
     pub fn path(self) -> &'static [&'static str] {
         match self {
             ColorTable::Terminal => &["colors"],
@@ -448,7 +448,7 @@ impl ColorTable {
         }
     }
 
-    /// 表に書ける色のキー。設定ファイルの順。
+    /// テーブルに書ける色のキー。設定ファイルの順。
     pub fn keys(self) -> &'static [&'static str] {
         match self {
             ColorTable::Terminal => &TERMINAL_COLOR_KEYS,
@@ -592,7 +592,7 @@ pub struct ColorsConfig {
 }
 
 impl ColorsConfig {
-    /// 表 `table` の色。キーの並びの順。
+    /// テーブル `table` の色。キーの並びの順。
     pub fn table(&self, table: ColorTable) -> &[Option<Rgb>] {
         match table {
             ColorTable::Terminal => &self.terminal,
@@ -1101,7 +1101,7 @@ fn read_profiles(reader: &mut Reader, root: &mut Table, config: &mut Config) {
     }
 }
 
-/// `profiles` の項目一つ（キーのパスは `path`）を読む。表で、`name` と `command` が空でない文字列で、
+/// `profiles` の項目一つ（キーのパスは `path`）を読む。テーブルで、`name` と `command` が空でない文字列で、
 /// `backend` が書いていないか知っている名前なら、そのプロファイル。そうでなければ警告して `None`。
 fn read_profile(reader: &mut Reader, path: &str, value: Value) -> Option<Profile> {
     let Value::Table(mut table) = value else {
@@ -1195,7 +1195,7 @@ fn read_background(reader: &mut Reader, table: &mut Table, background: &mut Back
         .apply(&mut background.fit, defaults.fit);
 }
 
-/// 表 `table`（キーのパスは `section`）の `image_opacity` を読む。範囲の外は警告して読めなかったことに
+/// テーブル `table`（キーのパスは `section`）の `image_opacity` を読む。範囲の外は警告して読めなかったことに
 /// する。
 fn read_image_opacity(reader: &mut Reader, table: &mut Table, section: Option<&str>) -> Item<f32> {
     let path = key_path(section, "image_opacity");
@@ -1212,8 +1212,8 @@ fn read_image_opacity(reader: &mut Reader, table: &mut Table, section: Option<&s
         })
 }
 
-/// `background.images`（`[[background.images]]` の表の配列）を読む。読めない表は、警告してその表だけを
-/// 飛ばす。表の配列でなければ、全体を読めなかったことにする。
+/// `background.images`（`[[background.images]]` のテーブルの配列）を読む。読めないテーブルは、警告して
+/// そのテーブルだけを飛ばす。テーブルの配列でなければ、全体を読めなかったことにする。
 fn read_background_images(reader: &mut Reader, value: Value) -> Item<Vec<BackgroundImage>> {
     const PATH: &str = "background.images";
     let Value::Array(items) = value else {
@@ -1231,7 +1231,7 @@ fn read_background_images(reader: &mut Reader, value: Value) -> Item<Vec<Backgro
     )
 }
 
-/// `[[background.images]]` の表一つ（キーのパスは `path`）を読む。`path` と、書いてあれば `fit` と
+/// `[[background.images]]` のテーブル一つ（キーのパスは `path`）を読む。`path` と、書いてあれば `fit` と
 /// `image_opacity`。読めなければ警告して `None`。読めない `fit` と `image_opacity` は、警告してその値
 /// だけを全体の値に任せる。
 fn read_background_image(reader: &mut Reader, path: &str, value: Value) -> Option<BackgroundImage> {
@@ -1271,7 +1271,7 @@ fn read_background_image(reader: &mut Reader, path: &str, value: Value) -> Optio
     })
 }
 
-/// `[colors]` の配色と、その中の色の表を読む。
+/// `[colors]` の配色と、その中の色のテーブルを読む。
 fn read_colors(reader: &mut Reader, colors: &mut Table, config: &mut ColorsConfig) {
     const SECTION: Option<&str> = Some("colors");
     reader
@@ -1296,7 +1296,7 @@ fn read_colors(reader: &mut Reader, colors: &mut Table, config: &mut ColorsConfi
     }
 }
 
-/// 表 `values`（キーのパスは `section`）から、`table` の色を `slots` に読む。
+/// テーブル `values`（キーのパスは `section`）から、`table` の色を `slots` に読む。
 fn read_color_values(
     reader: &mut Reader,
     values: &mut Table,
@@ -1317,8 +1317,8 @@ fn read_color_values(
     }
 }
 
-/// `[keys]` の表を、既定の割り当てに上から順に重ねる。組み合わせを読めない行は飛ばす。動作を読めない
-/// 行は、その組み合わせを前の割り当て（`previous`）のままにする。同じ組み合わせを二度書いたら、後の行を
+/// `[keys]` のテーブルを、既定の割り当てに上から順に重ねる。組み合わせを読めない行は飛ばす。動作を
+/// 読めない行は、その組み合わせを前の割り当て（`previous`）のままにする。同じ組み合わせを二度書いたら、後の行を
 /// 飛ばす。
 fn read_keys(reader: &mut Reader, keys: Table, previous: &Keymap) -> Keymap {
     let mut entries: Vec<(String, Value)> = keys.into_iter().collect();
@@ -1383,7 +1383,7 @@ impl Reader {
     }
 
     /// `table` から `key` を取り出して `T` として読む。型が違えば警告する。`section` は `table` の
-    /// 表の名前（最上位なら `None`）。
+    /// テーブルの名前（最上位なら `None`）。
     fn take<T: DeserializeOwned>(
         &mut self,
         table: &mut Table,
@@ -1424,8 +1424,8 @@ fn syntax_warning(text: &str, error: &toml::de::Error) -> Warning {
     }
 }
 
-/// 表のキーのパス（`font.size`、`colors.tab_bar.bar` など。キーは引用符を外した名前）から、そのキーを
-/// 書いた行へ。`[font]` のような表の見出しは、見出しの行になる。
+/// テーブルのキーのパス（`font.size`、`colors.tab_bar.bar` など。キーは引用符を外した名前）から、その
+/// キーを書いた行へ。`[font]` のようなテーブルのヘッダーは、ヘッダーの行になる。
 fn key_lines(text: &str) -> HashMap<String, usize> {
     let mut lines = HashMap::new();
     let Ok(root) = DeTable::parse(text) else {
@@ -1446,7 +1446,7 @@ fn collect_key_lines(
         match value.get_ref() {
             DeValue::Table(inner) => collect_key_lines(text, inner, Some(&path), lines),
             DeValue::Array(items) => {
-                // 配列の要素は `background.images[2]`、その中の表のキーは `background.images[2].fit`。
+                // 配列の要素は `background.images[2]`、その中のテーブルのキーは `background.images[2].fit`。
                 for (index, item) in items.iter().enumerate() {
                     let item_path = format!("{path}[{index}]");
                     if let DeValue::Table(inner) = item.get_ref() {
@@ -1573,7 +1573,7 @@ mod tests {
                 image_opacity: Some(1.0),
             }]
         );
-        // 前の書き方（文字列やインラインの表の配列、文字列一つ）は読み替えてから読む。
+        // 前の書き方（文字列やインラインテーブルの配列、文字列一つ）は読み替えてから読む。
         for (old, warning) in [
             (
                 "[background]\nimages = 'C:\\one.png'\n",
@@ -1649,7 +1649,7 @@ mod tests {
             "[background]\n\n[[background.images]]\npath = 'C:\\ok'\n\n[[background.images]]\npath = 'C:\\a.png'\nfit = 'cover'\nimage_opacity = 2\n\n[[background.images]]\nfit = 'tile'\n\n[[background.images]]\npath = ' '\n\n[[background.images]]\npath = 3\n\n[[background.images]]\npath = 'C:\\b.png'\nblur = 1\n",
             &previous,
         );
-        // 読めない値は全体の値に任せ、パスのない表と、パスを読めない表は飛ばす。
+        // 読めない値は全体の値に任せ、パスのないテーブルと、パスを読めないテーブルは飛ばす。
         assert_eq!(
             parsed.config.background.images,
             [
@@ -1658,7 +1658,7 @@ mod tests {
                 BackgroundImage::new(r"C:\b.png"),
             ]
         );
-        // 表の中のキーはその行、パスのない表は見出しの行。
+        // テーブルの中のキーはその行、パスのないテーブルは見出しの行。
         let warnings: Vec<(Option<usize>, &str)> = parsed
             .warnings
             .iter()
@@ -1693,7 +1693,7 @@ mod tests {
                 ),
             ]
         );
-        // 表の配列でなければ、一覧は前のまま。
+        // テーブルの配列でなければ、一覧は前のまま。
         let parsed = super::parse("[background]\nimages = 3\n", &previous);
         assert_eq!(parsed.config.background.images, previous.background.images);
         assert_eq!(parsed.warnings.len(), 1);
@@ -1724,7 +1724,7 @@ mod tests {
             "[background]\nimage_opacity = 1.5\nfit = 'cover'\nblur = 3\n[[background.images]]\npath = 'C:\\ok'\n[[background.images]]\npath = ' '\n",
             &previous,
         );
-        // 一覧の空のパスは、その表だけを飛ばす。
+        // 一覧の空のパスは、そのテーブルだけを飛ばす。
         assert_eq!(
             parsed.config.background,
             BackgroundConfig {
@@ -1752,7 +1752,7 @@ mod tests {
             "ignoring unknown setting background.blur"
         );
         assert!(parsed.warnings[3].message.contains("must not be empty"));
-        // 表でなければ全体が前のまま。書いていなければ既定値。
+        // テーブルでなければ全体が前のまま。書いていなければ既定値。
         let parsed = super::parse("background = 'C:\\walls'\n", &previous);
         assert_eq!(parsed.config.background, previous.background);
         assert_eq!(parsed.warnings.len(), 1);
@@ -1907,7 +1907,7 @@ mod tests {
                 None
             ]
         );
-        // 点で区切ったキーとインラインの表でも書ける。
+        // 点で区切ったキーとインラインテーブルでも書ける。
         let parsed = parse("colors.scroll_bar.track = '#010203'\n");
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
         assert_eq!(
@@ -2018,7 +2018,7 @@ mod tests {
         assert_eq!(colors.tab_bar[0], previous.colors.tab_bar[0]);
         assert_eq!(colors.tab_bar[5], Some(Rgb { r: 0, g: 255, b: 0 }));
         assert_eq!(colors.scroll_bar, [None; 4]);
-        // 書いていない表は既定の色に戻る。
+        // 書いていないテーブルは既定の色に戻る。
         assert_eq!(parse("[font]\n").config.colors, ColorsConfig::default());
     }
 
@@ -2133,7 +2133,7 @@ mod tests {
         // 起動したときは既定の割り当て。
         let parsed = parse("[keys]\n\"ctrl+tab\" = \"next\"\n");
         assert_eq!(parsed.config.keys, Keymap::default());
-        // 表でなければ全体が前のまま。
+        // テーブルでなければ全体が前のまま。
         let parsed = super::parse("keys = 1\n", &previous);
         assert_eq!(parsed.config.keys, previous.keys);
         assert_eq!(parsed.warnings.len(), 1);

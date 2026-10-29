@@ -4,22 +4,23 @@
 //! 違う項目だけ。
 //!
 //! - 書いてある項目は、値だけを書き換える（行末のコメントは残す）。
-//! - 書いていない項目は、その表の中に `# キー = …` とコメントにした行があれば、その行を置き換えて
+//! - 書いていない項目は、そのテーブルの中に `# キー = …` とコメントにした行があれば、その行を置き換えて
 //!   書く（[`TEMPLATE`](crate::config::TEMPLATE) から作ったファイルで、説明の行の下に入る）。なければ
-//!   表の最後に足す。表がなければ、ファイルの最後に表ごと足す。
+//!   テーブルの最後に足す。テーブルがなければ、ファイルの最後にテーブルごと足す。
 //! - 既定値に戻した項目は、その行を既定値の `# キー = …` のコメントの行にする（`default_profile` は
 //!   既定値を一つに書けないので、それまでの値をコメントにする）。上に書いた説明のコメントは残る。
-//! - プロファイル（`[[profiles]]`）は、名前で照合して（一致しなければコマンドラインが同じ表と）変えた
-//!   値だけを書き換え、なくなった表を消し、新しい表を作って、設定の順に並べる。表がなければ最初の表の
-//!   見出しの前に足す。プロファイルを書いたら、最上位の `shell` の行はコメントにする。既定のプロファイル
-//!   だけに戻したら、表を消す。
+//! - プロファイル（`[[profiles]]`）は、名前で照合して（一致しなければコマンドラインが同じテーブルと）
+//!   変えた値だけを書き換え、なくなったテーブルを消し、新しいテーブルを作って、設定の順に並べる。
+//!   テーブルがなければ最初のテーブルのヘッダーの前に足す。プロファイルを書いたら、最上位の `shell` の
+//!   行はコメントにする。既定のプロファイルだけに戻したら、テーブルを消す。
 //! - `[colors]` と `[colors.…]` の色は既定の色を一つに書けないので、既定に戻した色はそれまでの値を
 //!   コメントにする。
 //! - `[keys]` の組み合わせは、書き方（大文字小文字、修飾キーの順）によらず同じ組み合わせの行を探す。
 //!   既定の割り当てに戻した組み合わせは、既定の割り当ての `# "…" = "…"` のコメントの行にし、既定で
 //!   割り当てていない組み合わせは行を消す。
 //! - 背景画像の一覧（`[[background.images]]`）は、パスで照合して変えた値だけを書き換え、一覧から外した
-//!   表を消し、足した画像の表を最後に足す。表は `[background]` の値の後ろに置く。一覧を空にしたら表を消す。
+//!   テーブルを消し、足した画像のテーブルを最後に足す。テーブルは `[background]` の値の後ろに置く。
+//!   一覧を空にしたらテーブルを消す。
 //!
 //! 書き換える前に、古い書き方を今の書き方に読み替える（[`config::migrate`]）。
 
@@ -99,7 +100,7 @@ impl Setting {
         Setting::BackgroundFit,
     ];
 
-    /// 項目を置く表のキーのパス。最上位なら空。
+    /// 項目を置くテーブルのキーのパス。最上位なら空。
     fn path(self) -> &'static [&'static str] {
         match self {
             Setting::DefaultProfile => &[],
@@ -144,7 +145,7 @@ impl Setting {
     }
 }
 
-/// `[keys]` の表のキーのパス。
+/// `[keys]` のテーブルのキーのパス。
 const KEYS_PATH: &[&str] = &["keys"];
 
 /// 最上位のキーの名前。
@@ -152,7 +153,7 @@ const DEFAULT_PROFILE_KEY: &str = "default_profile";
 const PROFILES_KEY: &str = "profiles";
 const SHELL_KEY: &str = "shell";
 
-/// `[[profiles]]` の表のキー。
+/// `[[profiles]]` のテーブルのキー。
 const PROFILE_NAME: &str = "name";
 const PROFILE_COMMAND: &str = "command";
 const PROFILE_BACKEND: &str = "backend";
@@ -165,18 +166,18 @@ fn families_value(families: &[String]) -> Value {
     }
 }
 
-/// `[background]` の表のキーのパス。
+/// `[background]` のテーブルのキーのパス。
 pub(crate) const BACKGROUND_PATH: &[&str] = &["background"];
 
 /// `[background]` の、背景画像の一覧（`[[background.images]]`）のキー。
 pub(crate) const IMAGES: &str = "images";
 
-/// `[[background.images]]` の表のキー。`image_opacity` は `[background]` のキーと同じ名前。
+/// `[[background.images]]` のテーブルのキー。`image_opacity` は `[background]` のキーと同じ名前。
 pub(crate) const IMAGE_PATH: &str = "path";
 const IMAGE_FIT: &str = "fit";
 pub(crate) const IMAGE_OPACITY: &str = "image_opacity";
 
-/// `[[background.images]]` の表一つ。書かない値（全体の値に従う表示方法と不透明度）は入れない。
+/// `[[background.images]]` のテーブル一つ。書かない値（全体の値に従う表示方法と不透明度）は入れない。
 fn image_table(image: &BackgroundImage) -> Table {
     let mut table = Table::new();
     table.insert(IMAGE_PATH, Item::Value(Value::from(image.path.as_str())));
@@ -189,15 +190,15 @@ fn image_table(image: &BackgroundImage) -> Table {
     table
 }
 
-/// ファイルに書いてある `[[background.images]]` の表一つ `table` のパス。読めない表（パスのない表や、
-/// パスが空のもの）なら `None`。
+/// ファイルに書いてある `[[background.images]]` のテーブル一つ `table` のパス。読めないテーブル（パスの
+/// ないテーブルや、パスが空のもの）なら `None`。
 fn written_image_path(table: &Table) -> Option<&str> {
     let path = table.get(IMAGE_PATH)?.as_str()?;
     (!path.trim().is_empty()).then_some(path)
 }
 
-/// ファイルに書いてある `[[background.images]]` の表一つ `table` の、表示方法と不透明度。読めない値は
-/// 書いていないものとする（設定を読むときと同じ）。
+/// ファイルに書いてある `[[background.images]]` のテーブル一つ `table` の、表示方法と不透明度。読めない
+/// 値は書いていないものとする（設定を読むときと同じ）。
 fn written_image_settings(table: &Table) -> (Option<BackgroundFit>, Option<f32>) {
     let fit = table
         .get(IMAGE_FIT)
@@ -219,9 +220,9 @@ pub(crate) fn number_of(value: &Value) -> Option<f64> {
         .or_else(|| value.as_integer().map(|integer| integer as f64))
 }
 
-/// 背景画像の一覧が `base` と `edited` で違えば、`[[background.images]]` の表を書き換える。表を
-/// 書いていなければ `[background]` の値の後ろに足す。`images` に表の配列でない値が書いてあれば
-/// （`images = 3` など）、その行を消して表を足す。
+/// 背景画像の一覧が `base` と `edited` で違えば、`[[background.images]]` のテーブルを書き換える。
+/// テーブルを書いていなければ `[background]` の値の後ろに足す。`images` にテーブルの配列でない値が
+/// 書いてあれば（`images = 3` など）、その行を消してテーブルを足す。
 fn update_background_images(
     doc: &mut DocumentMut,
     base: &Config,
@@ -250,10 +251,11 @@ fn update_background_images(
     insert_image_tables(doc, tables, String::new())
 }
 
-/// 書いてある `[[background.images]]` の表を、一覧 `images` に合わせる。表はパスで照合し（同じパスが
-/// 二つあれば前から順に）、一覧にない表は消し、一覧にしかない画像は表を最後に足す。読めない表、表の
-/// コメント、並びは残す。表示方法と不透明度を変えた表だけを書き換える。最初の表の前のコメントは、最初の
-/// 表を消しても次の表の前に残し、表がなくなれば続く表の前へ返す。
+/// 書いてある `[[background.images]]` のテーブルを、一覧 `images` に合わせる。テーブルはパスで照合し
+/// （同じパスが二つあれば前から順に）、一覧にないテーブルは消し、一覧にしかない画像はテーブルを最後に
+/// 足す。読めないテーブル、テーブルのコメント、並びは残す。表示方法と不透明度を変えたテーブルだけを
+/// 書き換える。最初のテーブルの前のコメントは、最初のテーブルを消しても次のテーブルの前に残し、
+/// テーブルがなくなれば続くテーブルの前へ返す。
 fn merge_image_tables(doc: &mut DocumentMut, images: &[BackgroundImage]) {
     let Some(background) = table_at_mut(doc, BACKGROUND_PATH) else {
         return;
@@ -273,7 +275,7 @@ fn merge_image_tables(doc: &mut DocumentMut, images: &[BackgroundImage]) {
         .max()
         .or(background_position);
     let mut used = vec![false; images.len()];
-    // 残す表と、書いてあった位置（足す表は `None`）。
+    // 残すテーブルと、書いてあった位置（足すテーブルは `None`）。
     let mut kept: Vec<(Option<usize>, Table)> = Vec::new();
     for (index, mut table) in old.into_iter().enumerate() {
         let Some(path) = written_image_path(&table) else {
@@ -301,7 +303,7 @@ fn merge_image_tables(doc: &mut DocumentMut, images: &[BackgroundImage]) {
         let after = following_prefix(doc, &following);
         let rest = after.strip_prefix('\n').unwrap_or(&after);
         let head = match following {
-            // ファイルの最後なら、表の前に空けた空行を残さない。
+            // ファイルの最後なら、テーブルの前に空けた空行を残さない。
             Following::End => {
                 let comments = head.trim_end_matches('\n');
                 if comments.trim().is_empty() {
@@ -331,10 +333,11 @@ fn merge_image_tables(doc: &mut DocumentMut, images: &[BackgroundImage]) {
     }
 }
 
-/// `[background]` の値の後ろに、`[[background.images]]` の表 `tables` を置く（表はまだ書いていない
-/// ものとする）。`tables` はそれぞれ、表の前に置くコメントの行と表。`[background]` がなければ作る。
-/// 続く表の前のコメントのうち、空行で見出しと離れたところまでを最初の表の前に移す（[`TEMPLATE`] の
-/// 一覧の説明の下に表が入る）。`trailing` は最後の表の後ろに置くコメントの行。
+/// `[background]` の値の後ろに、`[[background.images]]` のテーブル `tables` を置く（テーブルはまだ
+/// 書いていないものとする）。`tables` はそれぞれ、テーブルの前に置くコメントの行とテーブル。
+/// `[background]` がなければ作る。続くテーブルの前のコメントのうち、空行で見出しと離れたところまでを
+/// 最初のテーブルの前に移す（[`TEMPLATE`] の一覧の説明の下にテーブルが入る）。`trailing` は最後の
+/// テーブルの後ろに置くコメントの行。
 ///
 /// [`TEMPLATE`]: crate::config::TEMPLATE
 pub(crate) fn insert_image_tables(
@@ -382,7 +385,7 @@ pub(crate) fn insert_image_tables(
     Ok(())
 }
 
-/// 書いてある `[[background.images]]` の表一つ `table` の表示方法と不透明度を、`image` に合わせる。
+/// 書いてある `[[background.images]]` のテーブル一つ `table` の表示方法と不透明度を、`image` に合わせる。
 /// 同じ値は変えない。パスは書いてあった形（引用符の種類など）のまま、知らないキーとコメントも残す。
 fn update_image_table(table: &mut Table, image: &BackgroundImage) {
     let (fit, opacity) = written_image_settings(table);
@@ -400,8 +403,8 @@ fn update_image_table(table: &mut Table, image: &BackgroundImage) {
     }
 }
 
-/// 表 `table` の値の行 `key` を消す。その行の前に書いたコメントは、次の値の行の前に移す（次の値の行が
-/// なければ消す）。
+/// テーブル `table` の値の行 `key` を消す。その行の前に書いたコメントは、次の値の行の前に移す（次の
+/// 値の行がなければ消す）。
 fn remove_table_value(table: &mut Table, key: &str) {
     let prefixes = value_prefixes(table);
     let Some(index) = prefixes.iter().position(|(name, _)| name == key) else {
@@ -447,11 +450,11 @@ fn same(a: &Option<Value>, b: &Option<Value>) -> bool {
     a.as_ref().map(bare_repr) == b.as_ref().map(bare_repr)
 }
 
-/// 書き換える項目の、表の中のキー。
+/// 書き換える項目の、テーブルの中のキー。
 struct Target<'a> {
     /// 足すときに書くキーの名前。
     name: String,
-    /// 表のキーの名前が、この項目のものか。
+    /// テーブルのキーの名前が、この項目のものか。
     matches: &'a dyn Fn(&str) -> bool,
 }
 
@@ -519,8 +522,8 @@ pub fn update(text: &str, base: &Config, edited: &Config) -> Result<String, Stri
     Ok(document.finish())
 }
 
-/// `[colors]` と `[colors.…]` の表で、`base` と `edited` で違う色を書き換える。既定の色に戻した色は、
-/// 既定の色が配色やシステムの色などで決まり一つに書けないので、それまでの値をコメントにする。
+/// `[colors]` と `[colors.…]` のテーブルで、`base` と `edited` で違う色を書き換える。既定の色に戻した
+/// 色は、既定の色が配色やシステムの色などで決まり一つに書けないので、それまでの値をコメントにする。
 fn update_colors(doc: &mut DocumentMut, base: &Config, edited: &Config) -> Result<(), String> {
     for table in ColorTable::ALL {
         let path = table.path();
@@ -544,7 +547,7 @@ fn update_colors(doc: &mut DocumentMut, base: &Config, edited: &Config) -> Resul
     Ok(())
 }
 
-/// `[keys]` の表で、`base` と `edited` で割り当てが違う組み合わせを書き換える。
+/// `[keys]` のテーブルで、`base` と `edited` で割り当てが違う組み合わせを書き換える。
 fn update_keys(doc: &mut DocumentMut, base: &Config, edited: &Config) -> Result<(), String> {
     let mut combos: Vec<KeyCombo> = keymap::default_combos().collect();
     for (combo, _) in edited.keys.bindings().iter().chain(base.keys.bindings()) {
@@ -577,7 +580,7 @@ fn update_keys(doc: &mut DocumentMut, base: &Config, edited: &Config) -> Result<
 }
 
 /// プロファイルが `base` と `edited` で違えば書き換える。最上位の `shell` の行はコメントにする（書いた
-/// プロファイルが使われ、`shell` は使われないため）。既定のプロファイルだけに戻したら、表を消す。
+/// プロファイルが使われ、`shell` は使われないため）。既定のプロファイルだけに戻したら、テーブルを消す。
 fn update_profiles(doc: &mut DocumentMut, base: &Config, edited: &Config) -> Result<(), String> {
     if base.profiles == edited.profiles {
         return Ok(());
@@ -619,7 +622,7 @@ fn update_profiles(doc: &mut DocumentMut, base: &Config, edited: &Config) -> Res
     }
 }
 
-/// プロファイル一つの、インラインの表。
+/// プロファイル一つの、インラインテーブル。
 fn profile_inline_table(profile: &Profile) -> Value {
     let mut table = InlineTable::new();
     table.insert(PROFILE_NAME, Value::from(profile.name.as_str()));
@@ -631,10 +634,10 @@ fn profile_inline_table(profile: &Profile) -> Value {
     Value::InlineTable(table)
 }
 
-/// `[[profiles]]` の表を、`wanted` に合わせて `wanted` の順に並べ直す。書いてある表とは名前で照合し、
-/// 一致しなかったものはコマンドラインで照合する（名前だけを変えたとき）。一致した表は、変えた値だけを
-/// 書き換えてコメントと知らないキーを残す。一致しなかった表は消し、新しいプロファイルは表を作る。名前の
-/// ない表（読めない表）は最後にそのまま残す。
+/// `[[profiles]]` のテーブルを、`wanted` に合わせて `wanted` の順に並べ直す。書いてあるテーブルとは
+/// 名前で照合し、一致しなかったものはコマンドラインで照合する（名前だけを変えたとき）。一致したテーブルは、
+/// 変えた値だけを書き換えてコメントと知らないキーを残す。一致しなかったテーブルは消し、新しいプロファイルは
+/// テーブルを作る。名前のないテーブル（読めないテーブル）は最後にそのまま残す。
 fn merge_profile_tables(doc: &mut DocumentMut, wanted: &[Profile]) {
     let text_of =
         |table: &Table, key: &str| table.get(key).and_then(Item::as_str).map(str::to_owned);
@@ -650,7 +653,7 @@ fn merge_profile_tables(doc: &mut DocumentMut, wanted: &[Profile]) {
             .collect(),
         _ => Vec::new(),
     };
-    // wanted の位置から、書いてある表の位置へ。
+    // wanted の位置から、書いてあるテーブルの位置へ。
     let mut pairs: Vec<Option<usize>> = vec![None; wanted.len()];
     let mut used = vec![false; written.len()];
     let named = |index: usize| written[index].0.is_some();
@@ -675,7 +678,7 @@ fn merge_profile_tables(doc: &mut DocumentMut, wanted: &[Profile]) {
             *pair = Some(index);
         }
     }
-    // プロファイルの表の後ろに続く表（プロファイルの表がなければ、最初の表）。
+    // プロファイルのテーブルの後ろに続くテーブル（プロファイルのテーブルがなければ、最初のテーブル）。
     let me = Header {
         path: vec![PROFILES_KEY.to_owned()],
         index: None,
@@ -696,7 +699,7 @@ fn merge_profile_tables(doc: &mut DocumentMut, wanted: &[Profile]) {
         Some(Item::ArrayOfTables(array)) => array.into_iter().collect(),
         _ => Vec::new(),
     };
-    // 新しい並び。表と、書いてあった位置（新しい表は `None`）。
+    // 新しい並び。テーブルと、書いてあった位置（新しいテーブルは `None`）。
     let mut tables: Vec<(Option<usize>, Table)> = Vec::new();
     for (want, pair) in wanted.iter().zip(&pairs) {
         let mut table = match pair {
@@ -716,18 +719,20 @@ fn merge_profile_tables(doc: &mut DocumentMut, wanted: &[Profile]) {
             .filter(|(index, _)| !named(*index))
             .map(|(index, table)| (Some(index), table.clone())),
     );
-    // 同じ位置の表は配列の順に並ぶので、どれも書いてあった最初の表の位置（なければ続く表のすぐ前）にする。
+    // 同じ位置のテーブルは配列の順に並ぶので、どれも書いてあった最初のテーブルの位置（なければ続く
+    // テーブルのすぐ前）にする。
     let position = old
         .iter()
         .filter_map(Table::position)
         .min()
         .or(following_position.map(|position| position - 1))
         .unwrap_or(0);
-    // 最初の表の前のコメント（ファイルの先頭のコメントなど）は、並べ直しても最初の表の前に置く。
+    // 最初のテーブルの前のコメント（ファイルの先頭のコメントなど）は、並べ直しても最初のテーブルの前に
+    // 置く。
     match old.first().map(|table| decor_prefix(table.decor())) {
         Some(head) => {
             if tables.is_empty() {
-                // 表がなくなるので、続く表の前へ返す。
+                // テーブルがなくなるので、続くテーブルの前へ返す。
                 let after = following_prefix(doc, &following);
                 let rest = after.strip_prefix('\n').unwrap_or(&after);
                 set_following_prefix(doc, &following, format!("{head}{rest}"));
@@ -749,8 +754,8 @@ fn merge_profile_tables(doc: &mut DocumentMut, wanted: &[Profile]) {
             if tables.is_empty() {
                 return;
             }
-            // 続く表の前のコメントのうち、空行で見出しと離れたところまでを最初の表の前に移す。ファイルの
-            // 最後のコメントは、表の後ろに残す。
+            // 続くテーブルの前のコメントのうち、空行で見出しと離れたところまでを最初のテーブルの前に
+            // 移す。ファイルの最後のコメントは、テーブルの後ろに残す。
             let mut before = String::new();
             if let Following::Table(_) = following {
                 let after = following_prefix(doc, &following);
@@ -781,7 +786,8 @@ fn update_profile_table(table: &mut Table, profile: &Profile) {
     }
 }
 
-/// 表 `table` の `key` の値を文字列 `text` にする。同じなら（引用符の種類も）変えない。行のコメントは残す。
+/// テーブル `table` の `key` の値を文字列 `text` にする。同じなら（引用符の種類も）変えない。行の
+/// コメントは残す。
 fn set_table_text(table: &mut Table, key: &str, text: &str) {
     if table.get(key).and_then(Item::as_str) == Some(text) {
         return;
@@ -789,7 +795,8 @@ fn set_table_text(table: &mut Table, key: &str, text: &str) {
     set_table_value(table, key, Value::from(text));
 }
 
-/// 表 `table` の `key` の値を `value` にする。書いてあれば行のコメントは残し、なければ表の最後に足す。
+/// テーブル `table` の `key` の値を `value` にする。書いてあれば行のコメントは残し、なければテーブルの
+/// 最後に足す。
 fn set_table_value(table: &mut Table, key: &str, mut value: Value) {
     match table.get_mut(key) {
         Some(item) => {
@@ -804,8 +811,9 @@ fn set_table_value(table: &mut Table, key: &str, mut value: Value) {
     }
 }
 
-/// 表のうち、ほかの表の見出しとファイルの最後との位置関係で扱えるもの（`[font]` の形の見出しを
-/// 持つ表と最上位）か。`font.size = 9` のような点で区切ったキーや、インラインの表は違う。
+/// テーブルのうち、ほかのテーブルのヘッダーとファイルの最後との位置関係で扱えるもの（`[font]` の形の
+/// ヘッダーを持つテーブルと最上位）か。`font.size = 9` のような点で区切ったキーや、インラインテーブルは
+/// 違う。
 pub(crate) fn is_standard(table: &Table) -> bool {
     !table.is_dotted()
 }
@@ -814,7 +822,7 @@ fn path_name(path: &[&str]) -> String {
     path.join(".")
 }
 
-/// キーのパス `path` の表。
+/// キーのパス `path` のテーブル。
 pub(crate) fn table_at<'a>(doc: &'a DocumentMut, path: &[&str]) -> Option<&'a Table> {
     let mut table = doc.as_table();
     for name in path {
@@ -831,8 +839,8 @@ pub(crate) fn table_at_mut<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> Optio
     Some(table)
 }
 
-/// キーのパス `path` の表。無ければ、`create` なら最後に作る（途中の表は見出しを書かない表にする）。
-/// 表でないものが書いてあればエラー。
+/// キーのパス `path` のテーブル。無ければ、`create` なら最後に作る（途中のテーブルは見出しを書かない
+/// テーブルにする）。テーブルでないものが書いてあればエラー。
 fn section_mut<'a>(
     doc: &'a mut DocumentMut,
     path: &[&str],
@@ -863,8 +871,8 @@ fn section_mut<'a>(
         };
     }
     if create && table.is_implicit() && !path.is_empty() {
-        // `[[background.images]]` だけを書いたときの `background` のような、見出しのない表に値を書く
-        // ので、見出しを中の表の最初のものの前に書く。
+        // `[[background.images]]` だけを書いたときの `background` のような、見出しのないテーブルに値を
+        // 書くので、見出しを中のテーブルの最初のものの前に書く。
         let first_inner = table
             .iter()
             .flat_map(|(_, item)| match item {
@@ -880,7 +888,8 @@ fn section_mut<'a>(
     Ok(Some(table))
 }
 
-/// 見出しを書いた表一つ。表の配列（`[[profiles]]` など）の表なら、`index` はその中の位置。
+/// 見出しを書いたテーブル一つ。テーブルの配列（`[[profiles]]` など）のテーブルなら、`index` はその中の
+/// 位置。
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Header {
     path: Vec<String>,
@@ -917,8 +926,8 @@ impl Header {
     }
 }
 
-/// 見出しを書いた表と、ファイルの中の位置。見出しを書かない表（`[colors.tab_bar]` の `colors`
-/// など）は含めず、その中の表を含める。表の配列は、その表を一つずつ含める。
+/// 見出しを書いたテーブルと、ファイルの中の位置。見出しを書かないテーブル（`[colors.tab_bar]` の
+/// `colors` など）は含めず、その中のテーブルを含める。テーブルの配列は、そのテーブルを一つずつ含める。
 fn tables(doc: &DocumentMut) -> Vec<(Header, Option<isize>)> {
     let mut found = Vec::new();
     collect_tables(doc.as_table(), &mut Vec::new(), &mut found);
@@ -962,14 +971,14 @@ fn collect_tables(table: &Table, path: &mut Vec<String>, found: &mut Vec<(Header
     }
 }
 
-/// 表の値の行のあとに続く場所。次の表の見出しの前か、ファイルの最後。
+/// テーブルの値の行のあとに続く場所。次のテーブルのヘッダーの前か、ファイルの最後。
 #[derive(Debug)]
 enum Following {
     Table(Header),
     End,
 }
 
-/// `path` の表の最後の値の行のあとに続く場所。
+/// `path` のテーブルの最後の値の行のあとに続く場所。
 fn following(doc: &DocumentMut, path: &[&str]) -> Following {
     let after = if path.is_empty() {
         None
@@ -983,9 +992,9 @@ fn following(doc: &DocumentMut, path: &[&str]) -> Following {
     first_after(doc, &me, after)
 }
 
-/// `me` のほかの、位置が `after` より後ろ（`None` ならどこでも）の、いちばん前の表。`me` の中の表
-/// （`[background]` の中の `[[background.images]]` など）は、位置が `after` と同じでも後ろにあるものと
-/// する（同じ位置の表は、外の表、中の表の順に書き出される）。
+/// `me` のほかの、位置が `after` より後ろ（`None` ならどこでも）の、いちばん前のテーブル。`me` の中の
+/// テーブル（`[background]` の中の `[[background.images]]` など）は、位置が `after` と同じでも後ろに
+/// あるものとする（同じ位置のテーブルは、外のテーブル、中のテーブルの順に書き出される）。
 fn first_after(doc: &DocumentMut, me: &Header, after: Option<isize>) -> Following {
     let inside_me =
         |other: &Header| other.path.len() > me.path.len() && other.path.starts_with(&me.path);
@@ -1038,7 +1047,7 @@ fn decor_suffix(decor: &Decor) -> String {
         .to_owned()
 }
 
-/// 表の値の行のキーと、その行の前に書いたもの（コメントと空行）。行の順。
+/// テーブルの値の行のキーと、その行の前に書いたもの（コメントと空行）。行の順。
 pub(crate) fn value_prefixes(table: &Table) -> Vec<(String, String)> {
     table
         .iter()
@@ -1050,7 +1059,7 @@ pub(crate) fn value_prefixes(table: &Table) -> Vec<(String, String)> {
         .collect()
 }
 
-/// 表の値の行のうち、`target` のもの。行の順。
+/// テーブルの値の行のうち、`target` のもの。行の順。
 fn matching_names(table: &Table, target: &Target) -> Vec<String> {
     table
         .iter()
@@ -1129,15 +1138,15 @@ fn set(doc: &mut DocumentMut, path: &[&str], target: &Target, value: Value) -> R
             set_following_prefix(doc, &following, after);
         }
         None if path.is_empty() && prefixes.is_empty() => {
-            // 最上位の値の行は表の見出しより前に出るので、ファイルの先頭のコメントより上に来ないよう、
-            // 空行で見出しと離れたところまでをこの行の前に移す。
+            // 最上位の値の行はテーブルのヘッダーより前に出るので、ファイルの先頭のコメントより上に
+            // 来ないよう、空行で見出しと離れたところまでをこの行の前に移す。
             let (before, after) = split_after_last_blank_line(&after_values);
             table.insert_formatted(&key_with_prefix(target.key(), before), Item::Value(value));
             set_following_prefix(doc, &following, after);
         }
         None if existed && matches!(following, Following::End) && !path.is_empty() => {
-            // ファイルの最後の表なら、その後ろのコメント（ひな形の説明や既定の割り当ての一覧）は
-            // この表のものなので、足す行はそれより後ろに置く。
+            // ファイルの最後のテーブルなら、その後ろのコメント（ひな形の説明や既定の割り当ての一覧）は
+            // このテーブルのものなので、足す行はそれより後ろに置く。
             table.insert_formatted(
                 &key_with_prefix(target.key(), after_values),
                 Item::Value(value),
@@ -1168,7 +1177,7 @@ fn key_with_prefix(key: Key, prefix: String) -> Key {
     key.with_leaf_decor(Decor::new(prefix, " "))
 }
 
-/// 表の値の行の `index` 番目の前に、`key` の行を入れる。
+/// テーブルの値の行の `index` 番目の前に、`key` の行を入れる。
 pub(crate) fn insert_at(table: &mut Table, index: usize, key: Key, value: Value) {
     let later: Vec<String> = value_prefixes(table)
         .into_iter()
@@ -1197,7 +1206,7 @@ fn reset(
     };
     let names = matching_names(table, target);
     let Some((first, rest)) = names.split_first() else {
-        // 値でないもの（表など）が書いてあれば消す。
+        // 値でないもの（テーブルなど）が書いてあれば消す。
         if table.contains_key(&target.name) {
             table.remove(&target.name);
         }
@@ -1240,8 +1249,8 @@ fn comment_line(key: &str, value: &Value, old: &Value) -> String {
     )
 }
 
-/// 表 `path` の値の行 `name` を消し、その行の前に書いたもの（コメントと空行）と `line` を、次の値の
-/// 行の前（なければ表の後ろ）に置く。
+/// テーブル `path` の値の行 `name` を消し、その行の前に書いたもの（コメントと空行）と `line` を、次の
+/// 値の行の前（なければテーブルの後ろ）に置く。
 pub(crate) fn replace_line(doc: &mut DocumentMut, path: &[&str], name: &str, line: Option<String>) {
     let Some(table) = table_at_mut(doc, path) else {
         return;
@@ -1460,7 +1469,7 @@ mod tests {
         let edited = customized();
         let text = update(TEMPLATE, &Config::default(), &edited).unwrap();
         assert_reads_as(&text, &edited);
-        // 説明の行はそのまま、コメントにした行が値の行になる。足した組み合わせは表の最後。
+        // 説明の行はそのまま、コメントにした行が値の行になる。足した組み合わせはテーブルの最後。
         let expected = TEMPLATE
             .replace(
                 r#"# default_profile = "PowerShell""#,
@@ -1499,7 +1508,7 @@ mod tests {
         let text = update(TEMPLATE, &Config::default(), &edited).unwrap();
         let back = update(&text, &edited, &Config::default()).unwrap();
         // default_profile は既定値がないので、それまでの値をコメントにする（ひな形の例と同じ値）。
-        // プロファイルは表を消す。
+        // プロファイルはテーブルを消す。
         assert_eq!(back, TEMPLATE);
 
         // 一つずつ戻しても同じ。
@@ -1561,7 +1570,7 @@ mod tests {
         edited.scroll_bar.width = 16;
         edited.default_profile = Some("PowerShell".to_owned());
         let updated = update(text, &base, &edited).unwrap();
-        // 見出しのすぐ上のコメントは、その表のものとして見出しの上に残す。
+        // 見出しのすぐ上のコメントは、そのテーブルのものとして見出しの上に残す。
         assert_eq!(
             updated,
             "default_profile = \"PowerShell\"\n# only a comment\n[font]\nsize = 9\nwide_glyph = \"clip\"\n\n[scroll_bar]\nwidth = 16\n"
@@ -1593,7 +1602,7 @@ mod tests {
         );
         assert_reads_as(&updated, &edited);
 
-        // 最後の項目なら、続く表の見出しの前に置く。
+        // 最後の項目なら、続くテーブルのヘッダーの前に置く。
         let text = "[font]\nsize = 9\n\n[paste]\nconfirm = 'never'\n";
         let base = config::parse(text, &Config::default()).config;
         let mut edited = base.clone();
@@ -1684,7 +1693,7 @@ mod tests {
             "[font]\nsize = 9\n\n[background]\nimage_opacity = 1\n\n[[background.images]]\npath = 'C:\\walls'\n"
         );
         assert_reads_as(&updated, &edited);
-        // 一覧を空に戻すと表を消し、不透明度は既定値をコメントにした行にする。
+        // 一覧を空に戻すとテーブルを消し、不透明度は既定値をコメントにした行にする。
         let back = update(&updated, &edited, &base).unwrap();
         assert_eq!(
             back,
@@ -1762,7 +1771,7 @@ mod tests {
         let text = "[background]\n[[background.images]]\npath = 'C:\\a.png'\n\n# b\n[[background.images]]\npath = 'C:\\b.png'\nfit = 'tile'\nnote = 'x'\n\n[[background.images]]\nfit = 'center'\n\n[[background.images]]\npath = 'C:\\c.png'\n\n[keys]\n";
         let base = config::parse(text, &Config::default()).config;
         let mut edited = base.clone();
-        // 先頭を外し、知らないキーのある表を全体の値に従わせ、二つ足す。
+        // 先頭を外し、知らないキーのあるテーブルを全体の値に従わせ、二つ足す。
         edited.background.images.remove(0);
         edited.background.images[0].fit = None;
         edited
@@ -1771,7 +1780,8 @@ mod tests {
             .push(image(r"D:\d.png", Some(BackgroundFit::Fit), None));
         edited.background.images.push(BackgroundImage::new(r"D:\e"));
         let updated = update(text, &base, &edited).unwrap();
-        // 読めない表（パスのない表）と知らないキーはそのまま。足す表は最後の表の後ろ。
+        // 読めないテーブル（パスのないテーブル）と知らないキーはそのまま。足すテーブルは最後のテーブルの
+        // 後ろ。
         assert_eq!(
             updated,
             "[background]\n# b\n[[background.images]]\npath = 'C:\\b.png'\nnote = 'x'\n\n[[background.images]]\nfit = 'center'\n\n[[background.images]]\npath = 'C:\\c.png'\n\n[[background.images]]\npath = 'D:\\d.png'\nfit = \"fit\"\n\n[[background.images]]\npath = 'D:\\e'\n\n[keys]\n"
@@ -1779,7 +1789,7 @@ mod tests {
         let reread = config::parse(&updated, &Config::default());
         assert_eq!(reread.config.background, edited.background);
 
-        // 一覧を空にすると表を消し、最初の表の前のコメントは続く表の前に残す。
+        // 一覧を空にするとテーブルを消し、最初のテーブルの前のコメントは続くテーブルの前に残す。
         let text = "[background]\nfit = 'tile'\n\n# my images\n[[background.images]]\npath = 'a'\n\n[[background.images]]\npath = 'b'\n\n[keys]\n";
         let base = config::parse(text, &Config::default()).config;
         let mut edited = base.clone();
@@ -1801,7 +1811,7 @@ mod tests {
         ];
         let text = update(TEMPLATE, &Config::default(), &edited).unwrap();
         assert_reads_as(&text, &edited);
-        // 一覧の説明の下、続く表の前に置く。
+        // 一覧の説明の下、続くテーブルの前に置く。
         assert_eq!(
             text,
             TEMPLATE.replace(
@@ -1854,8 +1864,8 @@ mod tests {
         edited.profiles.push(profile("d", "wsl.exe"));
         edited.default_profile = Some("c2".to_owned());
         let updated = update(text, &base, &edited).unwrap();
-        // 名前もコマンドラインも違う c の表は、どの表とも一致しないので作り直す。先頭のコメントは最初の
-        // 表の前に残す。
+        // 名前もコマンドラインも違う c のテーブルは、どのテーブルとも一致しないので作り直す。先頭の
+        // コメントは最初のテーブルの前に残す。
         assert_eq!(
             updated,
             "default_profile = \"c2\"\n\n# head\n[[profiles]]\nname = 'b'\ncommand = 'pwsh.exe' # mine\n\n[[profiles]]\nname = \"c2\"\ncommand = \"zsh.exe -l\"\n\n[[profiles]]\nname = \"d\"\ncommand = \"wsl.exe\"\n\n[font]\nsize = 9\n"
@@ -1880,14 +1890,14 @@ mod tests {
         let mut edited = base.clone();
         edited.profiles.push(profile("cmd", "cmd.exe"));
         let updated = update(text, &base, &edited).unwrap();
-        // shell はコメントにし、表は最初の表の見出しの前に置く。
+        // shell はコメントにし、テーブルは最初のテーブルのヘッダーの前に置く。
         assert_eq!(
             updated,
             "# head\n# shell = 'zsh -l' # mine\n\n[[profiles]]\nname = \"zsh\"\ncommand = \"zsh -l\"\n\n[[profiles]]\nname = \"cmd\"\ncommand = \"cmd.exe\"\n\n# about font\n[font]\nsize = 9\n"
         );
         assert_reads_as(&updated, &edited);
 
-        // 何もないファイルと、表のないファイル。
+        // 何もないファイルと、テーブルのないファイル。
         let updated = update("", &Config::default(), &edited).unwrap();
         assert_reads_as(&updated, &edited);
         assert_eq!(

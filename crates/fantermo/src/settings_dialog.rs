@@ -347,7 +347,7 @@ fn color_labels(table: ColorTable) -> &'static [&'static str] {
     }
 }
 
-/// 色のページの色の並び。表と、表の中の位置。
+/// 色のページの色の並び。テーブルと、テーブルの中の位置。
 fn color_items() -> Vec<(ColorTable, usize)> {
     ColorTable::ALL
         .iter()
@@ -366,7 +366,7 @@ fn rgb_of(colorref: COLORREF) -> Rgb {
     Rgb { r, g, b }
 }
 
-/// 色 `colors` のときの、表 `table` の `index` 番目の既定の色（設定に書いていないときに使う色）。
+/// 色 `colors` のときの、テーブル `table` の `index` 番目の既定の色（設定に書いていないときに使う色）。
 /// 端末の色は配色から、スクロールバーの色は端末の背景色と文字の色から、タブバーの色は
 /// `tab_bar_defaults`（システムの色）から決める。
 fn default_color(
@@ -1798,7 +1798,7 @@ impl State<'_> {
         }
     }
 
-    /// 表 `table` の `index` 番目の色の、編集中の色での既定の色。
+    /// テーブル `table` の `index` 番目の色の、編集中の色での既定の色。
     fn default_color(&self, table: ColorTable, index: usize) -> Rgb {
         default_color(&self.colors.borrow(), &self.tab_bar_defaults, table, index)
     }

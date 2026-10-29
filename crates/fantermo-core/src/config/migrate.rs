@@ -51,8 +51,8 @@ pub const STEPS: &[Step] = &[
     },
     Step {
         name: "background.images",
-        description: "background.images = [ … ]（文字列とインラインの表の配列、文字列一つ、\
-                      インラインの表一つ）を [[background.images]] の表の配列にする",
+        description: "background.images = [ … ]（文字列とインラインテーブルの配列、文字列一つ、\
+                      インラインテーブル一つ）を [[background.images]] のテーブルの配列にする",
         apply: background_images,
     },
 ];
@@ -143,13 +143,14 @@ fn background_opacity(doc: &mut DocumentMut) -> Option<Change> {
     )))
 }
 
-/// `background.images = [ … ]` を `[[background.images]]` の表の配列にする。配列の要素の文字列は
-/// `path` だけの表に、インラインの表はそのキー（知らないキーも）を持つ表にする。文字列一つ、
-/// インラインの表一つも同じ。表は `[background]` の値の後ろに置く。要素の前後のコメントは、その
-/// 要素の表の前に移す（要素の行末のコメントも）。`images` のキーの前のコメントと `[` の行のコメントは
-/// 最初の表の前に、最後の要素の後ろと `]` の行のコメントは最後の表の後ろに移す。表にできない要素（数など）は捨て、
-/// 捨てたものを返す。`[background]` を点で区切ったキーで書いたときと、`images` が配列・文字列・
-/// インラインの表のどれでもないときは何もしない（読むときに警告する）。
+/// `background.images = [ … ]` を `[[background.images]]` のテーブルの配列にする。配列の要素の文字列は
+/// `path` だけのテーブルに、インラインテーブルはそのキー（知らないキーも）を持つテーブルにする。
+/// 文字列一つ、インラインテーブル一つも同じ。テーブルは `[background]` の値の後ろに置く。要素の前後の
+/// コメントは、その要素のテーブルの前に移す（要素の行末のコメントも）。`images` のキーの前のコメントと
+/// `[` の行のコメントは最初のテーブルの前に、最後の要素の後ろと `]` の行のコメントは最後のテーブルの
+/// 後ろに移す。テーブルにできない要素（数など）は捨て、捨てたものを返す。`[background]` を点で区切った
+/// キーで書いたときと、`images` が配列・文字列・インラインテーブルのどれでもないときは何もしない
+/// （読むときに警告する）。
 fn background_images(doc: &mut DocumentMut) -> Option<Change> {
     let background = config_edit::table_at(doc, BACKGROUND_PATH)?;
     if !config_edit::is_standard(background) {
@@ -163,7 +164,7 @@ fn background_images(doc: &mut DocumentMut) -> Option<Change> {
     // `[` の行のコメント。
     let mut general = String::new();
     let mut leftover = String::new();
-    // 要素と、その表の前に置くコメント。
+    // 要素と、そのテーブルの前に置くコメント。
     let mut elements: Vec<(Value, String)> = Vec::new();
     match &value {
         Value::Array(array) => {
@@ -206,7 +207,7 @@ fn background_images(doc: &mut DocumentMut) -> Option<Change> {
 
     let mut tables: Vec<(String, Table)> = Vec::new();
     let mut dropped = Vec::new();
-    // 捨てた要素のコメントは、次の表の前（なければ最後の表の後ろ）に移す。
+    // 捨てた要素のコメントは、次のテーブルの前（なければ最後のテーブルの後ろ）に移す。
     let mut pending = String::new();
     for (index, (item, comments)) in elements.into_iter().enumerate() {
         match image_table(&item) {
@@ -227,7 +228,8 @@ fn background_images(doc: &mut DocumentMut) -> Option<Change> {
 
     let count = tables.len();
     if tables.is_empty() {
-        // 表にするものがなければ、行を消してコメントだけを残す（キーの前のコメントは行を消すときに残る）。
+        // テーブルにするものがなければ、行を消してコメントだけを残す（キーの前のコメントは行を消すときに
+        // 残る）。
         config_edit::replace_line(
             doc,
             BACKGROUND_PATH,
@@ -261,8 +263,8 @@ fn background_images(doc: &mut DocumentMut) -> Option<Change> {
     Some(Change { message, dropped })
 }
 
-/// 配列の要素一つ `item` の表。文字列なら `path` だけの表、インラインの表ならそのキーの表。どちらでも
-/// なければ `None`。
+/// 配列の要素一つ `item` のテーブル。文字列なら `path` だけのテーブル、インラインテーブルならそのキーの
+/// テーブル。どちらでもなければ `None`。
 fn image_table(item: &Value) -> Option<Table> {
     match item {
         Value::String(_) => {
@@ -423,7 +425,7 @@ mod tests {
             }
         );
 
-        // 続く表があれば、その前に置く。
+        // 続くテーブルがあれば、その前に置く。
         let (out, _) = run(&format!("{text}\n[keys]\n\"ctrl+tab\" = \"none\"\n"));
         assert_eq!(
             out,
@@ -436,7 +438,8 @@ mod tests {
     fn comments_of_the_items_go_before_their_tables() {
         let text = "[background]\n# mine\nimages = [ # list\n  # walls\n  'C:\\walls',\n  'C:\\a.png', # the cat\n  3, # a number\n  { path = 'C:\\b.png', fit = 'tile', note = 'x' },\n  # 'C:\\c.png',\n] # end\nopacity = 0.8 # dim\n\n[keys]\n";
         let (out, messages) = run(text);
-        // 捨てた要素のコメントは次の表の前に、最後の要素の後ろのコメントは最後の表の後ろに移す。
+        // 捨てた要素のコメントは次のテーブルの前に、最後の要素の後ろのコメントは最後のテーブルの後ろに
+        // 移す。
         // 知らないキーもそのまま残す。
         assert_eq!(
             out,
@@ -525,7 +528,7 @@ mod tests {
         );
         assert_settled(&out);
 
-        // 表にできるものがなければ、行を消す。
+        // テーブルにできるものがなければ、行を消す。
         let (out, messages) = run("[background]\nimages = [3, true]\n");
         assert_eq!(out, "[background]\n");
         assert_eq!(messages.len(), 3, "{messages:?}");
@@ -542,7 +545,7 @@ mod tests {
             migrate("[background\nopacity = 1\n").text,
             "[background\nopacity = 1\n"
         );
-        // 値でない images（[background.images] の表）は読み替えず、読むときに警告する。
+        // 値でない images（[background.images] のテーブル）は読み替えず、読むときに警告する。
         let text = "[background.images]\npath = 'a'\n";
         assert!(!migrate(text).changed());
         assert_eq!(config::parse(text, &Config::default()).warnings.len(), 1);
