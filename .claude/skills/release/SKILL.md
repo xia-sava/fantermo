@@ -78,7 +78,7 @@ gh run list --workflow Release --limit 3
 
 `build` ジョブが `installer/fantermo.wxs` を WiX で組む。WiX は `.config/dotnet-tools.json` で版を固定し
 （7.0.1）、`dotnet tool restore` で入れる。WiX 7 は OSMF の EULA への同意がないと止まるので、
-コマンドに `-acceptEula wix7` を付けている。組んだあと `wix msi validate` で ICE の検証を通す。
+`wix eula accept wix7` で同意し、`wix build` にも `-acceptEula wix7` を付けている。組んだあと `wix msi validate` で ICE の検証を通す。
 **MSI を組むのは GitHub Actions だけで、手元には WiX を入れない。**
 
 - 中身は zip と同じ（`fantermo.exe`・`LICENSE`・`THIRD-PARTY-NOTICES.txt`・`README.md`）。ユーザー単位で

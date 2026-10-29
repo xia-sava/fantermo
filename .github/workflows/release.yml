@@ -102,7 +102,8 @@ jobs:
           Compress-Archive -Path $stage -DestinationPath "artifacts/$name.zip"
 
       # zip に詰めたのと同じフォルダから MSI を組む。WiX は .config/dotnet-tools.json で版を固定して入れる。
-      # WiX 7 は OSMF の EULA への同意がないとどのコマンドも止まるので、コマンドごとに -acceptEula を付ける。
+      # WiX 7 は OSMF の EULA への同意がないとどのコマンドも止まるので、ランナーのユーザーとして一度
+      # 同意しておき、build には -acceptEula も付ける。
       - name: Pack msi
         shell: pwsh
         env:
@@ -114,14 +115,16 @@ jobs:
           $stage = Join-Path $env:RUNNER_TEMP $name
           dotnet tool restore
           if ($LASTEXITCODE -ne 0) { throw "dotnet tool restore が失敗しました（$LASTEXITCODE）" }
+          dotnet tool run wix eula accept wix7
+          if ($LASTEXITCODE -ne 0) { throw "wix eula accept が失敗しました（$LASTEXITCODE）" }
           dotnet tool run wix build -acceptEula wix7 -arch x64 `
             -d "Version=$env:CARGO_VERSION" `
             -d "StageDir=$stage" `
-            -d "IconFile=assets\icon\fantermo.ico" `
+            -d "IconFile=$(Join-Path $env:GITHUB_WORKSPACE 'assets\icon\fantermo.ico')" `
             -o "artifacts/$name.msi" installer/fantermo.wxs
           if ($LASTEXITCODE -ne 0) { throw "wix build が失敗しました（$LASTEXITCODE）" }
           # wix build は ICE の検証をしないので、別に走らせる。誤りがあれば止める。
-          dotnet tool run wix msi validate -acceptEula wix7 "artifacts/$name.msi"
+          dotnet tool run wix msi validate "artifacts/$name.msi"
           if ($LASTEXITCODE -ne 0) { throw "wix msi validate が失敗しました（$LASTEXITCODE）" }
 
       # タグを打ったときの配布物はリリースへ載るため、保持期間は release ジョブへ渡すまででよい。
