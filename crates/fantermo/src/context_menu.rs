@@ -22,17 +22,19 @@ pub enum MenuCommand {
     NewTab,
     CloseTab,
     OpenSettings,
+    OpenNotices,
     Exit,
 }
 
 impl MenuCommand {
-    const ALL: [MenuCommand; 7] = [
+    const ALL: [MenuCommand; 8] = [
         MenuCommand::Copy,
         MenuCommand::Paste,
         MenuCommand::SelectAll,
         MenuCommand::NewTab,
         MenuCommand::CloseTab,
         MenuCommand::OpenSettings,
+        MenuCommand::OpenNotices,
         MenuCommand::Exit,
     ];
 
@@ -46,6 +48,7 @@ impl MenuCommand {
             MenuCommand::CloseTab => 5,
             MenuCommand::OpenSettings => 6,
             MenuCommand::Exit => 7,
+            MenuCommand::OpenNotices => 8,
         }
     }
 
@@ -62,6 +65,7 @@ impl MenuCommand {
             MenuCommand::NewTab => "新しいタブ(&T)\tCtrl+Shift+T",
             MenuCommand::CloseTab => "タブを閉じる(&W)\tCtrl+Shift+W",
             MenuCommand::OpenSettings => "設定ファイルを開く(&S)",
+            MenuCommand::OpenNotices => "ライセンス(&L)",
             MenuCommand::Exit => "終了(&X)",
         }
     }
@@ -99,6 +103,7 @@ impl Menu {
                 Some(SelectAll),
                 None,
                 Some(OpenSettings),
+                Some(OpenNotices),
                 None,
                 Some(Exit),
             ],
@@ -119,6 +124,8 @@ pub struct MenuRequest {
     pub can_copy: bool,
     /// 設定ファイルの場所が分かっている。分からなければ「設定ファイルを開く」を押せなくする。
     pub can_open_settings: bool,
+    /// 第三者のライセンスの表示のファイルが実行ファイルの隣にある。無ければ「ライセンス」を押せなくする。
+    pub can_open_notices: bool,
 }
 
 /// `request` のとおりにメニューを出し、選ばれた操作を返す。
@@ -162,6 +169,7 @@ fn enabled(command: MenuCommand, request: &MenuRequest) -> bool {
     match command {
         MenuCommand::Copy => request.can_copy,
         MenuCommand::OpenSettings => request.can_open_settings,
+        MenuCommand::OpenNotices => request.can_open_notices,
         _ => true,
     }
 }
@@ -217,12 +225,17 @@ mod tests {
         for command in MenuCommand::ALL {
             assert!(Menu::Main.items().contains(&Some(command)), "{command:?}");
         }
-        // コンテキストメニューには、設定と終了を入れない。
+        // コンテキストメニューには、設定、ライセンス、終了を入れない。
         assert!(!Menu::Context.items().contains(&Some(MenuCommand::Exit)));
         assert!(
             !Menu::Context
                 .items()
                 .contains(&Some(MenuCommand::OpenSettings))
+        );
+        assert!(
+            !Menu::Context
+                .items()
+                .contains(&Some(MenuCommand::OpenNotices))
         );
     }
 }

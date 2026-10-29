@@ -1,4 +1,4 @@
-//! 画面のリンクと設定ファイルを開く。
+//! 画面のリンク、設定ファイル、第三者のライセンスの表示を開く。
 //!
 //! `http`・`https`・`mailto` は既定のアプリに渡し、`file` はエクスプローラーで見せる（ファイルそのものは
 //! 開かない。実行ファイルを指していても走らせないため）。開いてよいかは `fantermo_core::link` で決める。
@@ -30,6 +30,9 @@ const EXPLORER: &str = "explorer.exe";
 /// メモ帳の実行ファイル。System32 のフォルダの中にある。
 const NOTEPAD: &str = "notepad.exe";
 
+/// 第三者のライセンスの表示のファイル名。実行ファイルと同じフォルダに置く。
+const NOTICES_FILE: &str = "THIRD-PARTY-NOTICES.txt";
+
 /// `uri` を開く。開いてよいリンクでなければ、警告を残して何もしない。
 ///
 /// 既定のアプリを探して起動するまで時間がかかり、その間にメッセージを回すこともあるので、
@@ -52,10 +55,38 @@ pub fn open(uri: &str) {
 /// 設定ファイル `path` を、既定のアプリで開く。`.toml` に既定のアプリがなければ（開けなければ）
 /// メモ帳で開く。リンクと同じく別のスレッドで開く。
 pub fn open_settings(path: PathBuf) {
-    spawn_with_com("the settings file", move || {
+    open_text_file("the settings file", path);
+}
+
+/// 実行ファイルと同じフォルダにある第三者のライセンスの表示の場所。ファイルが無ければ `None`。
+pub fn notices_path() -> Option<PathBuf> {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => {
+            tracing::warn!("failed to locate the executable: {e}");
+            return None;
+        }
+    };
+    let path = exe.parent()?.join(NOTICES_FILE);
+    path.is_file().then_some(path)
+}
+
+/// 第三者のライセンスの表示を、設定ファイルと同じく既定のアプリ（開けなければメモ帳）で開く。
+/// ファイルが無ければ、警告を残して何もしない。
+pub fn open_notices() {
+    match notices_path() {
+        Some(path) => open_text_file("the license notices", path),
+        None => tracing::warn!("{NOTICES_FILE} is not next to the executable"),
+    }
+}
+
+/// テキストのファイル `path` を既定のアプリで開き、開けなければメモ帳で開く。`what` は開くもので、
+/// ログに添える。
+fn open_text_file(what: &'static str, path: PathBuf) {
+    spawn_with_com(what, move || {
         let path = path.to_string_lossy();
         if let Err(e) = shell_execute(&path, None) {
-            tracing::info!("opening the settings file with Notepad: {e}");
+            tracing::info!("opening {what} with Notepad: {e}");
             // Windows のパスに `"` は入らないので、引用符で囲めば一つの引数になる。
             let notepad = known_folder::path(&FOLDERID_System)
                 .ok_or("the System folder is unknown")?

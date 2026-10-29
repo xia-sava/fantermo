@@ -1081,6 +1081,7 @@ impl App {
             exclude: None,
             can_copy: self.has_selection(),
             can_open_settings: self.config_path.is_some(),
+            can_open_notices: link_opener::notices_path().is_some(),
         })
     }
 
@@ -1101,6 +1102,7 @@ impl App {
             }),
             can_copy: self.has_selection(),
             can_open_settings: self.config_path.is_some(),
+            can_open_notices: link_opener::notices_path().is_some(),
         })
     }
 
@@ -1706,6 +1708,7 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
                     with_app(&mut |app| next = app.run_tab_command(TabCommand::Close))
                 }
                 Some(MenuCommand::OpenSettings) => with_app(&mut |app| app.open_settings()),
+                Some(MenuCommand::OpenNotices) => link_opener::open_notices(),
                 Some(MenuCommand::Exit) => next = Some(Deferred::CloseWindow),
                 None => {}
             },
