@@ -1,0 +1,28 @@
+name: Set up the toolchain
+description: libghostty-vt のビルドに要る Zig と、Rust の stable（clippy と rustfmt を含む）を入れる。
+
+runs:
+  using: composite
+  steps:
+    - name: Install Zig
+      shell: pwsh
+      env:
+        # libghostty-vt の rev が求める Zig の版。tools/dev.bat の ZIG_REQUIRED と揃える。
+        ZIG_VERSION: "0.17.0"
+        # https://ziglang.org/download/index.json の x86_64-windows の shasum。
+        ZIG_SHA256: "b5663f69581dcf391293fbf16c06cb80d81d806545ce618b4d0bab7f0eb8c428"
+      run: |
+        $name = "zig-x86_64-windows-$env:ZIG_VERSION"
+        $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+        Invoke-WebRequest "https://ziglang.org/download/$env:ZIG_VERSION/$name.zip" -OutFile $zip
+        $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -ne $env:ZIG_SHA256) { throw "Zig の zip の sha256 が合いません: $actual" }
+        Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP
+        Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:RUNNER_TEMP $name)
+
+    - name: Install Rust
+      shell: pwsh
+      run: |
+        rustup update stable --no-self-update
+        rustup default stable
+        rustup component add clippy rustfmt

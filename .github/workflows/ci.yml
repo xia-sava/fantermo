@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # 配布物を作るワークフローが、組む前の検証として呼ぶ。
+  workflow_call: {}
+
+# 既定では GITHUB_TOKEN に何の権限も与えない。必要なジョブが必要な分だけ宣言する。
+permissions: {}
+
+# 同じ参照への連続 push では最新のものだけ検証する。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Zig がビルドの途中に作る補助の exe のパスが MAX_PATH を超えないよう、出力先を短くする。
+  CARGO_TARGET_DIR: 'C:\t'
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-toolchain
+
+      # tools/dev.bat が vcvars64 を読み、Zig の版を確かめてから cargo を呼ぶ（手元と同じ手順）。
+      - name: Check formatting
+        shell: cmd
+        run: call tools\dev.bat fmt --all --check
+
+      - name: Clippy
+        shell: cmd
+        run: call tools\dev.bat clippy --locked --all-targets -- -D warnings
+
+      - name: Test
+        shell: cmd
+        run: call tools\dev.bat test --locked
