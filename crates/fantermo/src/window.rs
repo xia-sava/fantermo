@@ -2300,8 +2300,8 @@ mod tests {
 
     #[test]
     fn the_terminal_starts_below_the_tab_bar_and_its_gap() {
-        // 96 DPI ではタブバーの 32 と空きの 4、192 DPI では 64 と 8 の下から。
-        for (dpi, top) in [(96, 36), (192, 72)] {
+        // 96 DPI ではタブバーの 26 と空きの 4、192 DPI では 52 と 8 の下から。
+        for (dpi, top) in [(96, 30), (192, 60)] {
             let terminal = SIZE { cx: 800, cy: 480 };
             let client = client_size_for_terminal(terminal, tab_bar::height(dpi));
             assert_eq!((client.cx, client.cy), (800, 480 + top as i32));
