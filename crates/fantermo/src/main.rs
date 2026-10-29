@@ -20,6 +20,7 @@ mod decoration;
 mod dump;
 mod font;
 mod ime;
+mod key_capture;
 mod keyboard;
 mod known_folder;
 mod license;

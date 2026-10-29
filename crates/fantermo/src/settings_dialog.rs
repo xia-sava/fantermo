@@ -14,7 +14,10 @@ use std::{
     time::Duration,
 };
 
-use fantermo_core::config::{self, Config, PasteConfirm, WideGlyph};
+use fantermo_core::{
+    config::{self, Config, PasteConfirm, WideGlyph},
+    keymap::{Action, KeyCombo, Keymap},
+};
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
@@ -28,28 +31,30 @@ use windows::{
                 UPDOWN_CLASSW, WC_COMBOBOXW, WC_LISTBOXW,
             },
             HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow},
-            Input::KeyboardAndMouse::SetFocus,
+            Input::KeyboardAndMouse::{EnableWindow, SetFocus},
             WindowsAndMessaging::{
                 BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTORADIOBUTTON, BS_DEFPUSHBUTTON,
                 BS_PUSHBUTTON, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CBN_SELCHANGE,
                 CBS_DROPDOWNLIST, CW_USEDEFAULT, CreateWindowExW, DC_HASDEFID, DM_GETDEFID,
                 DefWindowProcW, DestroyWindow, EN_CHANGE, ES_AUTOHSCROLL, GWLP_USERDATA,
                 GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, HMENU,
-                IDC_ARROW, IDCANCEL, IDOK, KillTimer, LB_ADDSTRING, LB_GETCURSEL, LB_SETCURSEL,
-                LBN_SELCHANGE, LBS_NOTIFY, LoadCursorW, MB_ICONWARNING, MB_OK, MessageBoxW,
-                MoveWindow, RegisterClassW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
-                SendMessageW, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
-                ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY,
-                WM_DPICHANGED, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETFONT, WM_TIMER, WNDCLASSW,
-                WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME,
-                WS_GROUP, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+                IDC_ARROW, IDCANCEL, IDOK, IDYES, KillTimer, LB_ADDSTRING, LB_GETCURSEL,
+                LB_RESETCONTENT, LB_SETCURSEL, LB_SETTABSTOPS, LBN_DBLCLK, LBN_SELCHANGE,
+                LBS_NOTIFY, LBS_USETABSTOPS, LoadCursorW, MB_ICONQUESTION, MB_ICONWARNING, MB_OK,
+                MB_YESNO, MessageBoxW, MoveWindow, RegisterClassW, SW_HIDE, SW_SHOW,
+                SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetTimer, SetWindowLongPtrW,
+                SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE,
+                WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETFONT,
+                WM_TIMER, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT,
+                WS_EX_DLGMODALFRAME, WS_GROUP, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+                WS_VSCROLL,
             },
         },
     },
     core::{HSTRING, PCWSTR, w},
 };
 
-use crate::{modal, ui_font};
+use crate::{key_capture, modal, ui_font};
 
 const CLASS: PCWSTR = w!("fantermo-settings-dialog");
 const TITLE: &str = "設定";
@@ -73,6 +78,11 @@ const ID_SCROLL_BAR_WIDTH_SPIN: i32 = 221;
 /// `paste.confirm` のラジオボタン。[`PasteConfirm::ALL`] の順に ID が続く。
 const ID_PASTE_CONFIRM: i32 = 300;
 const ID_SHELL: i32 = 400;
+const ID_KEYS: i32 = 500;
+const ID_KEY_ADD: i32 = 501;
+const ID_KEY_CHANGE: i32 = 502;
+const ID_KEY_REMOVE: i32 = 503;
+const ID_KEY_RESET: i32 = 504;
 /// 見出しや説明の文字。押せないので同じ ID でよい。
 const ID_LABEL: i32 = -1;
 
@@ -97,7 +107,7 @@ const SPIN_RANGE: (i32, i32) = (0, 1000);
 const VISIBLE_FONTS: usize = 16;
 
 /// ページ。一覧の順。
-const PAGES: [&str; 3] = ["外観", "動作", "シェル"];
+const PAGES: [&str; 4] = ["外観", "動作", "シェル", "キー"];
 /// 開いたときに見せるページ。
 const PAGE_APPEARANCE: usize = 0;
 
@@ -111,6 +121,59 @@ const WIDE_GLYPH_LABELS: [&str; 3] = [
 /// `paste.confirm` の選択肢の表示。[`PasteConfirm::ALL`] の順。
 const PASTE_CONFIRM_LABELS: [&str; 3] =
     ["コマンドとして走りうるとき", "改行を含むとき", "確かめない"];
+
+/// キーの割り当ての一覧の、組み合わせの列の位置（ダイアログの単位）。
+const KEY_COLUMN_TAB_STOP: i32 = 110;
+
+/// キーの割り当ての動作の表示。[`Action::ALL`] の順。
+const ACTION_LABELS: [&str; 7] = [
+    "コピー",
+    "貼り付け",
+    "コンテキストメニュー",
+    "新しいタブ",
+    "タブを閉じる",
+    "次のタブ",
+    "前のタブ",
+];
+
+fn action_label(action: Action) -> &'static str {
+    let index = Action::ALL
+        .iter()
+        .position(|&candidate| candidate == action)
+        .expect("every action is listed");
+    ACTION_LABELS[index]
+}
+
+/// キーの割り当ての一覧の一行。動作と組み合わせ。組み合わせを割り当てていない動作は `None` で一行。
+type KeyRow = (Action, Option<KeyCombo>);
+
+/// キーの割り当て `keys` の一覧の行。動作の順に、割り当てた組み合わせを一行ずつ並べる。
+fn key_rows(keys: &Keymap) -> Vec<KeyRow> {
+    let mut rows = Vec::new();
+    for action in Action::ALL {
+        let combos = keys.combos_of(action);
+        if combos.is_empty() {
+            rows.push((action, None));
+        }
+        rows.extend(combos.into_iter().map(|combo| (action, Some(combo))));
+    }
+    rows
+}
+
+/// 一覧の行の文字。動作と組み合わせをタブで区切る。
+fn key_row_text((action, combo): KeyRow) -> String {
+    let combo = combo.map_or_else(|| "（なし）".to_owned(), |combo| combo.label());
+    format!("{}\t{combo}", action_label(action))
+}
+
+/// 動作 `action` の割り当てが、既定の割り当てと同じか。
+fn is_default_binding(keys: &Keymap, action: Action) -> bool {
+    let mut current = keys.combos_of(action);
+    let mut default = Keymap::default().combos_of(action);
+    current.sort_by_key(KeyCombo::to_string);
+    default.sort_by_key(KeyCombo::to_string);
+    current == default
+}
 
 /// ダイアログの外の、端末と設定ファイルを受け持つもの。
 pub trait Host {
@@ -178,6 +241,8 @@ pub fn run(owner: HWND, request: Request, host: &mut dyn Host) {
         base_indices: RefCell::new(family_indices),
         base_font: Cell::new(selected_font),
         previewed: RefCell::new(current.clone()),
+        keys: RefCell::new(current.keys.clone()),
+        key_rows: RefCell::new(Vec::new()),
         font: Cell::new(HFONT::default()),
         dpi: Cell::new(BASE_DPI),
         closed: Cell::new(false),
@@ -247,7 +312,7 @@ type DipRect = [i32; 4];
 struct Controls {
     pages: HWND,
     /// 各ページに置くコントロール。[`PAGES`] の順。
-    page_controls: [Vec<HWND>; 3],
+    page_controls: Vec<Vec<HWND>>,
     font: HWND,
     size: HWND,
     size_spin: HWND,
@@ -256,6 +321,10 @@ struct Controls {
     scroll_bar_width_spin: HWND,
     paste_confirm: [HWND; 3],
     shell: HWND,
+    /// キーの割り当ての一覧。
+    keys_list: HWND,
+    /// 追加・変更・外す・既定に戻すのボタン。
+    key_buttons: [HWND; 4],
     error: HWND,
     /// すべてのコントロールと、96 DPI のときの矩形。上下の矢印のボタンは入れない（相手の入力欄に
     /// 付けて置く）。
@@ -276,6 +345,10 @@ struct State<'a> {
     base_font: Cell<usize>,
     /// 最後に端末に反映した設定。
     previewed: RefCell<Config>,
+    /// 編集中のキーの割り当て。
+    keys: RefCell<Keymap>,
+    /// キーの割り当ての一覧の行。一覧の順。
+    key_rows: RefCell<Vec<KeyRow>>,
     font: Cell<HFONT>,
     dpi: Cell<u32>,
     closed: Cell<bool>,
@@ -583,6 +656,72 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         Some(rect),
     )?);
 
+    // キー
+    let mut keys_page = Vec::new();
+    let (class, text, rect) = label(
+        "キーの割り当て(&K):",
+        [page_left, row(0), page_width, ROW_HEIGHT],
+    );
+    keys_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let key_buttons_top = button_top - MARGIN - BUTTON_HEIGHT;
+    let keys_list = child(
+        WC_LISTBOXW,
+        "",
+        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE((LBS_NOTIFY | LBS_USETABSTOPS) as u32),
+        WS_EX_CLIENTEDGE,
+        ID_KEYS,
+        Some([
+            page_left,
+            row(0) + ROW_HEIGHT,
+            page_width,
+            key_buttons_top - BUTTON_GAP - row(0) - ROW_HEIGHT,
+        ]),
+    )?;
+    keys_page.push(keys_list);
+    let tab_stops = [KEY_COLUMN_TAB_STOP];
+    // SAFETY: keys_list は有効な一覧で、tab_stops はこの呼び出しの間は生きている。
+    unsafe {
+        SendMessageW(
+            keys_list,
+            LB_SETTABSTOPS,
+            Some(WPARAM(tab_stops.len())),
+            Some(LPARAM(tab_stops.as_ptr() as isize)),
+        )
+    };
+    let key_button_width = (page_width - 3 * BUTTON_GAP) / 4;
+    let mut key_buttons = [HWND::default(); 4];
+    for (index, (id, text)) in [
+        (ID_KEY_ADD, "追加(&D)…"),
+        (ID_KEY_CHANGE, "変更(&E)…"),
+        (ID_KEY_REMOVE, "外す(&R)"),
+        (ID_KEY_RESET, "既定に戻す(&U)"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        key_buttons[index] = child(
+            w!("BUTTON"),
+            text,
+            WS_GROUP | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+            none,
+            id,
+            Some([
+                page_left + index as i32 * (key_button_width + BUTTON_GAP),
+                key_buttons_top,
+                key_button_width,
+                BUTTON_HEIGHT,
+            ]),
+        )?;
+        keys_page.push(key_buttons[index]);
+    }
+
     // 下のボタンと、入力の誤り
     let error = child(
         w!("STATIC"),
@@ -627,7 +766,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         hwnd,
         Controls {
             pages,
-            page_controls: [appearance, behavior, shell_page],
+            page_controls: vec![appearance, behavior, shell_page, keys_page],
             font,
             size,
             size_spin,
@@ -636,6 +775,8 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             scroll_bar_width_spin,
             paste_confirm,
             shell,
+            keys_list,
+            key_buttons,
             error,
             placed,
         },
@@ -703,6 +844,154 @@ impl State<'_> {
             .position(|&value| value == config.paste.confirm);
         check_one(&c.paste_confirm, paste_confirm);
         set_text(c.shell, config.shell.as_deref().unwrap_or_default());
+        *self.keys.borrow_mut() = config.keys.clone();
+        self.refresh_keys(None);
+    }
+
+    /// キーの割り当ての一覧を作り直し、`selected` の行（なければ同じ動作の行、それもなければ先頭）を
+    /// 選ぶ。
+    fn refresh_keys(&self, selected: Option<KeyRow>) {
+        let c = &self.controls;
+        let rows = key_rows(&self.keys.borrow());
+        // SAFETY: 一覧は有効な窓。
+        unsafe { SendMessageW(c.keys_list, LB_RESETCONTENT, None, None) };
+        for row in &rows {
+            // SAFETY: 一覧は有効な窓で、文字列はこの呼び出しの間は生きている。
+            unsafe {
+                SendMessageW(
+                    c.keys_list,
+                    LB_ADDSTRING,
+                    None,
+                    Some(LPARAM(HSTRING::from(key_row_text(*row)).as_ptr() as isize)),
+                )
+            };
+        }
+        let index = selected
+            .and_then(|selected| {
+                rows.iter()
+                    .position(|row| *row == selected)
+                    .or_else(|| rows.iter().position(|(action, _)| *action == selected.0))
+            })
+            .unwrap_or(0);
+        // SAFETY: 一覧は有効な窓。
+        unsafe { SendMessageW(c.keys_list, LB_SETCURSEL, Some(WPARAM(index)), None) };
+        *self.key_rows.borrow_mut() = rows;
+        self.update_key_buttons();
+    }
+
+    /// キーの割り当ての一覧で選んでいる行。
+    fn selected_key_row(&self) -> Option<KeyRow> {
+        // SAFETY: 一覧は有効な窓。
+        let index = unsafe { SendMessageW(self.controls.keys_list, LB_GETCURSEL, None, None) }.0;
+        let index = usize::try_from(index).ok()?;
+        self.key_rows.borrow().get(index).copied()
+    }
+
+    /// 選んでいる行で押せるボタンだけを押せるようにする。
+    fn update_key_buttons(&self) {
+        let row = self.selected_key_row();
+        let has_combo = row.is_some_and(|(_, combo)| combo.is_some());
+        let not_default =
+            row.is_some_and(|(action, _)| !is_default_binding(&self.keys.borrow(), action));
+        let [add, change, remove, reset] = self.controls.key_buttons;
+        for (button, enabled) in [
+            (add, row.is_some()),
+            (change, has_combo),
+            (remove, has_combo),
+            (reset, not_default),
+        ] {
+            // SAFETY: button はダイアログの子の有効な窓。
+            unsafe { _ = EnableWindow(button, enabled) };
+        }
+    }
+
+    /// キーのボタン `id` が押された。
+    fn on_key_button(&self, id: i32) {
+        let Some((action, combo)) = self.selected_key_row() else {
+            return;
+        };
+        let selected = match id {
+            ID_KEY_ADD => {
+                let Some(new) = self.capture_key(action) else {
+                    return;
+                };
+                if !self.assign(action, new, None) {
+                    return;
+                }
+                (action, Some(new))
+            }
+            ID_KEY_CHANGE => {
+                let Some(old) = combo else {
+                    return;
+                };
+                let Some(new) = self.capture_key(action) else {
+                    return;
+                };
+                if !self.assign(action, new, Some(old)) {
+                    return;
+                }
+                (action, Some(new))
+            }
+            ID_KEY_REMOVE => {
+                let Some(old) = combo else {
+                    return;
+                };
+                self.keys.borrow_mut().bind(old, None);
+                (action, None)
+            }
+            ID_KEY_RESET => {
+                self.keys.borrow_mut().reset_action(action);
+                (action, combo)
+            }
+            _ => return,
+        };
+        self.refresh_keys(Some(selected));
+        self.preview();
+        // SAFETY: 一覧はダイアログの子の有効な窓。押したボタンが押せなくなることがあるので、一覧へ戻す。
+        unsafe { _ = SetFocus(Some(self.controls.keys_list)) };
+    }
+
+    /// 動作 `action` に割り当てるキーを、押したキーを読み取るダイアログで読む。
+    fn capture_key(&self, action: Action) -> Option<KeyCombo> {
+        let prompt = format!("「{}」に割り当てるキーを押す。", action_label(action));
+        key_capture::capture(self.hwnd, &prompt, self.font.get(), self.dpi.get())
+    }
+
+    /// 組み合わせ `new` を動作 `action` に割り当てる。`replacing` があれば、その組み合わせを外す。`new`
+    /// をほかの動作に割り当てていれば、付け替えるかを尋ね、やめたら `false`。
+    fn assign(&self, action: Action, new: KeyCombo, replacing: Option<KeyCombo>) -> bool {
+        let bound = self.keys.borrow().lookup_combo(new);
+        if bound == Some(action) && replacing.is_none_or(|old| old == new) {
+            return true;
+        }
+        if let Some(other) = bound
+            && other != action
+        {
+            let text = format!(
+                "{} は「{}」に割り当てています。「{}」に付け替えますか？",
+                new.label(),
+                action_label(other),
+                action_label(action)
+            );
+            // SAFETY: hwnd は有効な窓で、文字列はこの呼び出しの間は生きている。借用は持っていない。
+            let answer = unsafe {
+                MessageBoxW(
+                    Some(self.hwnd),
+                    &HSTRING::from(text),
+                    &HSTRING::from(TITLE),
+                    MB_YESNO | MB_ICONQUESTION,
+                )
+            };
+            if answer != IDYES {
+                return false;
+            }
+        }
+        let mut keys = self.keys.borrow_mut();
+        if let Some(old) = replacing {
+            keys.bind(old, None);
+        }
+        keys.bind(new, Some(action));
+        true
     }
 
     /// DPI を `dpi` にし、フォントを作り直してコントロールを並べ直す。
@@ -830,6 +1119,7 @@ impl State<'_> {
             config.paste.confirm = PasteConfirm::ALL[index];
         }
         config.shell = config::shell_from_input(&get_text(c.shell));
+        config.keys = self.keys.borrow().clone();
         Ok(config)
     }
 
@@ -1082,6 +1372,11 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 (ID_FONT, CBN_SELCHANGE) => {
                     state.preview();
                 }
+                (ID_KEYS, LBN_SELCHANGE) => state.update_key_buttons(),
+                (ID_KEYS, LBN_DBLCLK) => state.on_key_button(ID_KEY_CHANGE),
+                (ID_KEY_ADD | ID_KEY_CHANGE | ID_KEY_REMOVE | ID_KEY_RESET, BN_CLICKED) => {
+                    state.on_key_button(id);
+                }
                 (ID_SIZE | ID_SCROLL_BAR_WIDTH | ID_SHELL, EN_CHANGE) => state.schedule_preview(),
                 (id, BN_CLICKED)
                     if (ID_WIDE_GLYPH..ID_WIDE_GLYPH + 3).contains(&id)
@@ -1206,6 +1501,38 @@ mod tests {
         assert_eq!(step_width(12, 1), 13);
         assert_eq!(step_width(4, -1), 4);
         assert_eq!(step_width(64, 1), 64);
+    }
+
+    #[test]
+    fn key_rows_list_every_action_in_order() {
+        let combo = |text: &str| KeyCombo::parse(text).unwrap();
+        let mut keys = Keymap::default();
+        keys.bind(combo("ctrl+shift+t"), None);
+        keys.bind(combo("ctrl+page_down"), Some(Action::NextTab));
+        let rows = key_rows(&keys);
+        let texts: Vec<String> = rows.iter().map(|row| key_row_text(*row)).collect();
+        assert_eq!(
+            texts,
+            [
+                "コピー\tCtrl+C",
+                "コピー\tCtrl+Insert",
+                "貼り付け\tShift+Insert",
+                "コンテキストメニュー\tContextMenu",
+                "コンテキストメニュー\tShift+F10",
+                "新しいタブ\t（なし）",
+                "タブを閉じる\tCtrl+Shift+W",
+                "次のタブ\tCtrl+Tab",
+                "次のタブ\tCtrl+PageDown",
+                "前のタブ\tCtrl+Shift+Tab",
+            ]
+        );
+        assert!(!is_default_binding(&keys, Action::NewTab));
+        assert!(!is_default_binding(&keys, Action::NextTab));
+        assert!(is_default_binding(&keys, Action::Copy));
+        // 外して付け直すと並びは変わるが、既定と同じ。
+        keys.bind(combo("ctrl+c"), None);
+        keys.bind(combo("ctrl+c"), Some(Action::Copy));
+        assert!(is_default_binding(&keys, Action::Copy));
     }
 
     #[test]
