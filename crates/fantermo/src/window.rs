@@ -3,6 +3,7 @@
 use std::{
     cell::RefCell,
     path::PathBuf,
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -77,6 +78,7 @@ use crate::{
     renderer::Renderer,
     session::{Session, SessionId},
     tab_bar::{self, Hit, TabView},
+    ui_font::UiFont,
 };
 
 const WINDOW_CLASS: PCWSTR = w!("fantermo");
@@ -189,6 +191,15 @@ fn load_font(
         }
         Err(e) => Err(e),
     }
+}
+
+fn log_ui_font(font: &UiFont, dpi: u32) {
+    tracing::info!(
+        "UI font {} {}px at {dpi} DPI: line {} px",
+        font.family,
+        font.size_px,
+        font.height_px()
+    );
 }
 
 fn log_font(font: &Font, dpi: u32) {
@@ -413,6 +424,8 @@ struct App {
     hwnd: HWND,
     dwrite: IDWriteFactory,
     font: Font,
+    /// タブバーのタイトルの書体（Windows の UI のフォント）。
+    ui_font: Rc<UiFont>,
     /// いまの窓の DPI。
     dpi: u32,
     /// 設定ファイルの場所。
@@ -479,7 +492,17 @@ impl App {
         let (width, height) = client_size(hwnd);
         let terminal_area = terminal_area_in_client(width, height, tab_bar::height(dpi));
         let size = grid_size(&font, terminal_area);
-        let renderer = Renderer::new(hwnd, width, height, &dwrite, &font, font_config.wide_glyph)?;
+        let ui_font = Rc::new(UiFont::for_dpi(&dwrite, dpi)?);
+        log_ui_font(&ui_font, dpi);
+        let renderer = Renderer::new(
+            hwnd,
+            width,
+            height,
+            &dwrite,
+            &font,
+            ui_font.clone(),
+            font_config.wide_glyph,
+        )?;
         let first_id = SessionId(0);
         let session = Session::spawn(
             first_id,
@@ -508,6 +531,7 @@ impl App {
             hwnd,
             dwrite,
             font,
+            ui_font,
             dpi,
             config_path,
             font_config,
@@ -1043,11 +1067,7 @@ impl App {
     /// タブバーの並べ方。
     fn tab_bar_layout(&self) -> tab_bar::Layout {
         tab_bar::layout(
-            tab_bar::Metrics {
-                dpi: self.dpi,
-                cell_width: self.font.cell_width_px,
-                cell_height: self.font.cell_height_px,
-            },
+            tab_bar::Metrics { dpi: self.dpi },
             self.tab_bar_area().width,
             self.sessions.len(),
             self.active,
@@ -1421,8 +1441,9 @@ impl App {
         self.invalidate();
     }
 
-    /// DPI が `dpi` に変わった。フォントを測り直し、グリフアトラスを作り直す。端末の大きさは、
-    /// このあと届く WM_SIZE（[`App::on_resize`]）で合わせる。失敗したら前のフォントのまま描く。
+    /// DPI が `dpi` に変わった。端末のフォントと UI のフォントを測り直し、グリフアトラスを作り直す。
+    /// 端末の大きさは、このあと届く WM_SIZE（[`App::on_resize`]）で合わせる。失敗したら前のフォントの
+    /// まま描く（UI のフォントだけを作れなければ、UI のフォントだけ前のまま）。
     fn apply_dpi(&mut self, dpi: u32) {
         self.dpi = dpi;
         let font = match load_font(&self.dwrite, &self.font_config, dpi) {
@@ -1432,15 +1453,26 @@ impl App {
                 return;
             }
         };
-        if let Err(e) = self
-            .renderer
-            .set_font(&self.dwrite, &font, self.font_config.wide_glyph)
-        {
+        let ui_font = match UiFont::for_dpi(&self.dwrite, dpi) {
+            Ok(ui_font) => Rc::new(ui_font),
+            Err(e) => {
+                tracing::warn!("failed to create the UI font for {dpi} DPI: {e}");
+                self.ui_font.clone()
+            }
+        };
+        if let Err(e) = self.renderer.set_font(
+            &self.dwrite,
+            &font,
+            ui_font.clone(),
+            self.font_config.wide_glyph,
+        ) {
             tracing::warn!("failed to rebuild the glyph atlas for {dpi} DPI: {e}");
             return;
         }
         log_font(&font, dpi);
+        log_ui_font(&ui_font, dpi);
         self.font = font;
+        self.ui_font = ui_font;
         self.invalidate();
     }
 
@@ -1500,7 +1532,10 @@ impl App {
 
     /// セルより広いグリフの描き方を変え、グリフアトラスを作り直す。失敗したら前の描き方のまま。
     fn set_wide_glyph(&mut self, wide_glyph: WideGlyph) {
-        if let Err(e) = self.renderer.set_font(&self.dwrite, &self.font, wide_glyph) {
+        if let Err(e) =
+            self.renderer
+                .set_font(&self.dwrite, &self.font, self.ui_font.clone(), wide_glyph)
+        {
             tracing::warn!("failed to rebuild the glyph atlas for {wide_glyph:?}: {e}");
             return;
         }
@@ -1592,6 +1627,7 @@ impl App {
                 background,
                 foreground,
             },
+            &*self.ui_font,
         )
     }
 

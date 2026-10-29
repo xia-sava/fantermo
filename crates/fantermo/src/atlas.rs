@@ -4,8 +4,9 @@
 //! 文字は白で、乗算済みのアルファで描く。色はシェーダで付ける。場所は棚に左から詰めていき（棚の
 //! 高さはそこに置いたものの高いほう。文字は 1 セルの高さ）、いっぱいになったら全部を捨てて描き直す。
 //! 斜体のようにインクがセルの左右へはみ出すグリフは、はみ出す分だけ左右に余白を持たせた場所に描く。
+//! タブバーのタイトルは、Windows の UI のフォント（[`UiFont`]）で文字列を一つの絵として描く。
 
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 use fantermo_core::config::WideGlyph;
 use windows::{
@@ -48,6 +49,7 @@ use crate::{
     decoration::{self, Decoration, Placement},
     font::Font,
     paint::Icon,
+    ui_font::UiFont,
 };
 
 /// アトラスの一辺（ピクセル）。
@@ -162,6 +164,10 @@ pub struct GlyphAtlas {
     decoration_slots: HashMap<(Decoration, u8), Slot>,
     /// 形と、それを描いた幅と高さごとの場所。
     icon_slots: HashMap<(Icon, u32, u32), Slot>,
+    /// タブバーのタイトルを描く書体。
+    ui_font: Rc<UiFont>,
+    /// タブバーのタイトルの文字列と、太字かごとの場所。
+    label_slots: HashMap<(String, bool), Slot>,
 }
 
 impl GlyphAtlas {
@@ -169,6 +175,7 @@ impl GlyphAtlas {
         device: &ID3D11Device,
         dwrite: &IDWriteFactory,
         font: &Font,
+        ui_font: Rc<UiFont>,
         wide_glyph: WideGlyph,
     ) -> windows::core::Result<Self> {
         let desc = D3D11_TEXTURE2D_DESC {
@@ -257,6 +264,8 @@ impl GlyphAtlas {
             slots: HashMap::new(),
             decoration_slots: HashMap::new(),
             icon_slots: HashMap::new(),
+            ui_font,
+            label_slots: HashMap::new(),
         };
         atlas.clear()?;
         Ok(atlas)
@@ -275,6 +284,7 @@ impl GlyphAtlas {
         self.slots.clear();
         self.decoration_slots.clear();
         self.icon_slots.clear();
+        self.label_slots.clear();
         self.shelves = Shelves::new(ATLAS_SIZE);
         // SAFETY: context の描画先はアトラスのテクスチャ。BeginDraw と EndDraw を対にする。
         unsafe {
@@ -359,6 +369,42 @@ impl GlyphAtlas {
             tracing::warn!("failed to rasterize {icon:?}: {e}");
         }
         self.icon_slots.insert((icon, width, height), slot);
+        Ok(slot)
+    }
+
+    /// タブバーのタイトル `text` を UI のフォントで 1 行に組んで描いた場所を返す（`bold` なら太字）。
+    /// まだ描いていなければ描く。場所の高さは UI のフォントの 1 行の高さで、インクが送り幅の左右へ
+    /// はみ出せば、その分の余白を足す。
+    pub fn label_slot(&mut self, text: &str, bold: bool) -> Result<Slot, AtlasFull> {
+        let key = (text.to_owned(), bold);
+        if let Some(slot) = self.label_slots.get(&key) {
+            return Ok(*slot);
+        }
+        let height = self.ui_font.height_px();
+        let (layout, extent) = match self.ui_font.layout(text, bold) {
+            Ok(measured) => measured,
+            Err(e) => {
+                tracing::warn!("failed to lay out the title {text:?}: {e}");
+                return self.allocate_area(1, height);
+            }
+        };
+        let margin = |outside: f32| (outside - INK_EPSILON_PX).ceil().max(0.0) as u32;
+        let placement = TextPlacement {
+            cells: 0,
+            scale: 1.0,
+            offset: 0.0,
+            left_margin: margin(-extent.ink_left),
+            right_margin: margin(extent.ink_right - extent.advance),
+        };
+        let width = placement.left_margin + extent.advance.ceil() as u32 + placement.right_margin;
+        let slot = Slot {
+            left: placement.left_margin,
+            ..self.allocate_area(width, height)?
+        };
+        if let Err(e) = self.draw_text(&layout, &placement, slot) {
+            tracing::warn!("failed to rasterize the title {text:?}: {e}");
+        }
+        self.label_slots.insert(key, slot);
         Ok(slot)
     }
 
@@ -660,15 +706,15 @@ fn unit(from: (f32, f32), to: (f32, f32)) -> (f32, f32) {
 /// 1 行に組んだ文字の送り幅と、インクの左右の端（ピクセル）。インクの端は文字の左端からの距離で、
 /// 左へはみ出していれば `ink_left` が負、右へはみ出していれば `ink_right` が `advance` より大きい。
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct TextExtent {
-    advance: f32,
-    ink_left: f32,
-    ink_right: f32,
+pub struct TextExtent {
+    pub advance: f32,
+    pub ink_left: f32,
+    pub ink_right: f32,
 }
 
 /// `text` を `format` で 1 行に組んだものと、その送り幅とインクの範囲。送り幅が 0 の文字
 /// （結合文字だけのものなど）は 1 ピクセルとして扱う。
-fn text_layout(
+pub fn text_layout(
     dwrite: &IDWriteFactory,
     format: &IDWriteTextFormat,
     text: &str,

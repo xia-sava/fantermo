@@ -44,12 +44,11 @@ pub enum Paint {
     Fill { area: Area, color: Rgb },
     /// `area` に `icon` を `color` で描く。形は `area` の大きさで組み立てる。
     Icon { icon: Icon, area: Area, color: Rgb },
-    /// 左上が (`x`, `y`) のセル `cells` 個分に、端末と同じ書体で `text`（書記素クラスタ一つ）を描く。
-    Text {
+    /// 左上が (`x`, `y`) のところに、Windows の UI のフォントで `text` を 1 行に描く。
+    Label {
         x: u32,
         y: u32,
         text: String,
-        cells: u8,
         bold: bool,
         color: Rgb,
     },

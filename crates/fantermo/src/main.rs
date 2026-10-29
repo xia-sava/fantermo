@@ -30,6 +30,7 @@ mod renderer;
 mod session;
 mod shader;
 mod tab_bar;
+mod ui_font;
 mod window;
 
 use std::path::Path;

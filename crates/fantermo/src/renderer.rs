@@ -1,6 +1,6 @@
 //! Direct3D 11 で窓に描く。
 
-use std::path::Path;
+use std::{path::Path, rc::Rc};
 
 use fantermo_core::{
     config::WideGlyph,
@@ -32,6 +32,7 @@ use crate::{
     font::Font,
     paint::{Area, Paint},
     pipeline::{CellPipeline, Instance, InstanceKind},
+    ui_font::UiFont,
 };
 
 /// スワップチェーンのバッファの数。
@@ -63,6 +64,7 @@ impl Renderer {
         height: u32,
         dwrite: &IDWriteFactory,
         font: &Font,
+        ui_font: Rc<UiFont>,
         wide_glyph: WideGlyph,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (device, context) = create_device()?;
@@ -86,7 +88,7 @@ impl Renderer {
         let swap_chain =
             unsafe { factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None)? };
 
-        let atlas = GlyphAtlas::new(&device, dwrite, font, wide_glyph)?;
+        let atlas = GlyphAtlas::new(&device, dwrite, font, ui_font, wide_glyph)?;
         let pipeline = CellPipeline::new(&device)?;
         let mut renderer = Self {
             device,
@@ -104,15 +106,16 @@ impl Renderer {
         Ok(renderer)
     }
 
-    /// `font` で、セルより広いグリフは `wide_glyph` のとおりに描くようにする。DPI やフォントの設定が
-    /// 変わったときに使う。グリフアトラスは作り直す。
+    /// 端末を `font` で、タブバーのタイトルを `ui_font` で描き、セルより広いグリフは `wide_glyph` の
+    /// とおりに描くようにする。DPI やフォントの設定が変わったときに使う。グリフアトラスは作り直す。
     pub fn set_font(
         &mut self,
         dwrite: &IDWriteFactory,
         font: &Font,
+        ui_font: Rc<UiFont>,
         wide_glyph: WideGlyph,
     ) -> windows::core::Result<()> {
-        self.atlas = GlyphAtlas::new(&self.device, dwrite, font, wide_glyph)?;
+        self.atlas = GlyphAtlas::new(&self.device, dwrite, font, ui_font, wide_glyph)?;
         self.cell_width = font.cell_width_px;
         self.cell_height = font.cell_height_px;
         Ok(())
@@ -229,21 +232,20 @@ impl Renderer {
                     *color,
                 )
             }
-            Paint::Text {
+            Paint::Label {
                 x,
                 y,
                 text,
-                cells,
                 bold,
                 color,
             } => {
-                let slot = self.atlas.slot(text, *bold, false, *cells)?;
+                let slot = self.atlas.label_slot(text, *bold)?;
                 glyph(
                     [
                         *x as f32 - slot.left as f32,
                         *y as f32,
                         slot.width as f32,
-                        self.cell_height as f32,
+                        slot.height as f32,
                     ],
                     slot,
                     *color,

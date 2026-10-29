@@ -79,13 +79,18 @@ pub fn height(dpi: u32) -> u32 {
     scale(BAR_HEIGHT, dpi)
 }
 
-/// タブバーの寸法を決めるもの。寸法は窓の DPI に比例させ、タイトルの文字だけを端末のセルの寸法
-/// （ピクセル）で並べる。
+/// タブバーの寸法を決めるもの。寸法は窓の DPI に比例させる。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Metrics {
     pub dpi: u32,
-    pub cell_width: u32,
-    pub cell_height: u32,
+}
+
+/// タイトルの文字列の大きさを測るもの。窓では Windows の UI のフォントで測る。
+pub trait Measure {
+    /// `text` を 1 行に組んだ幅（ピクセル）。`bold` なら太字で組む。
+    fn width(&self, text: &str, bold: bool) -> u32;
+    /// 1 行の高さ（ピクセル）。
+    fn height(&self) -> u32;
 }
 
 impl Metrics {
@@ -319,34 +324,39 @@ fn column(area: Area, metrics: Metrics) -> Area {
     }
 }
 
-/// `title` を幅 `cols`（セル）に収めた書記素クラスタの並び。収まらなければ末尾を [`ELLIPSIS`] にする。
-/// 幅のない書記素クラスタ（制御文字など）は除く。
-pub fn fit_title(title: &str, cols: u16) -> Vec<vt::Grapheme> {
+/// `title` を幅 `width`（ピクセル）に収めた文字列。幅は `measure` で測り、`bold` なら太字で測る。
+/// 収まらなければ、書記素クラスタの切れ目で切って末尾を [`ELLIPSIS`] にする（[`ELLIPSIS`] も入らなければ
+/// 空）。幅のない書記素クラスタ（制御文字など）は除く。
+pub fn fit_title(title: &str, width: u32, bold: bool, measure: &impl Measure) -> String {
     let graphemes: Vec<vt::Grapheme> = vt::split_graphemes(title)
         .into_iter()
         .filter(|grapheme| grapheme.width > 0)
         .collect();
-    let total: u32 = graphemes.iter().map(|g| u32::from(g.width)).sum();
-    if total <= u32::from(cols) {
-        return graphemes;
+    let prefix = |count: usize| -> String {
+        graphemes[..count]
+            .iter()
+            .map(|grapheme| grapheme.text.as_str())
+            .collect()
+    };
+    let whole = prefix(graphemes.len());
+    if measure.width(&whole, bold) <= width {
+        return whole;
     }
-    if cols == 0 {
-        return Vec::new();
+    let shortened = |count: usize| prefix(count) + ELLIPSIS;
+    if measure.width(ELLIPSIS, bold) > width {
+        return String::new();
     }
-    let ellipsis = vt::split_graphemes(ELLIPSIS);
-    let ellipsis_cols: u32 = ellipsis.iter().map(|g| u32::from(g.width)).sum();
-    let room = u32::from(cols).saturating_sub(ellipsis_cols);
-    let mut fitted = Vec::new();
-    let mut used = 0u32;
-    for grapheme in graphemes {
-        if used + u32::from(grapheme.width) > room {
-            break;
+    // 先頭の `fitting` 個に印を付けたものは収まり、`too_many` 個では収まらない。
+    let (mut fitting, mut too_many) = (0, graphemes.len());
+    while too_many - fitting > 1 {
+        let middle = (fitting + too_many) / 2;
+        if measure.width(&shortened(middle), bold) <= width {
+            fitting = middle;
+        } else {
+            too_many = middle;
         }
-        used += u32::from(grapheme.width);
-        fitted.push(grapheme);
     }
-    fitted.extend(ellipsis);
-    fitted
+    shortened(fitting)
 }
 
 /// タブ一つの中の、ベルの印とタイトルの位置。
@@ -356,21 +366,22 @@ struct TabContent {
     mark: Option<Area>,
     /// タイトルの左端。
     title_x: u32,
-    /// タイトルに充てる幅（セル）。
-    title_cols: u16,
+    /// タイトルに充てる幅（ピクセル）。
+    title_width: u32,
     /// タイトルの上端。
     text_y: u32,
 }
 
-/// タブ `slot` の中の、閉じるボタンより左に、ベルの印（`bell` のとき）とタイトルを置く。閉じるボタンを
-/// 出していないときも、その幅は空けておく（マウスを載せてもタイトルの省略が変わらないように）。
-/// 印はタイトルの左に置き、タイトルを省略する前にその幅を取る。タイトルに残る幅がなくても印は消さず、
-/// 余白に収まらなければタブの真ん中に置き、タブより大きければタブの幅に縮める。
-fn tab_content(metrics: Metrics, slot: &TabSlot, bell: bool) -> TabContent {
+/// タブ `slot` の中の、閉じるボタンより左に、ベルの印（`bell` のとき）と、1 行の高さが `text_height`
+/// のタイトルを置く。閉じるボタンを出していないときも、その幅は空けておく（マウスを載せてもタイトルの
+/// 省略が変わらないように）。印はタイトルの左に置き、タイトルを省略する前にその幅を取る。タイトルに
+/// 残る幅がなくても印は消さず、余白に収まらなければタブの真ん中に置き、タブより大きければタブの幅に
+/// 縮める。
+fn tab_content(metrics: Metrics, slot: &TabSlot, bell: bool, text_height: u32) -> TabContent {
     let tab = slot.area;
     let left = tab.x + metrics.padding();
     let right = slot.close.x;
-    let text_y = tab.y + tab.height.saturating_sub(metrics.cell_height) / 2;
+    let text_y = tab.y + tab.height.saturating_sub(text_height) / 2;
     let mut title_x = left;
     let mut mark = None;
     if bell {
@@ -388,11 +399,10 @@ fn tab_content(metrics: Metrics, slot: &TabSlot, bell: bool) -> TabContent {
         });
         title_x = x + size + metrics.mark_gap();
     }
-    let title_cols = right.saturating_sub(title_x) / metrics.cell_width.max(1);
     TabContent {
         mark,
         title_x,
-        title_cols: title_cols.min(u32::from(u16::MAX)) as u16,
+        title_width: right.saturating_sub(title_x),
         text_y,
     }
 }
@@ -501,15 +511,16 @@ fn mix(from: Rgb, to: Rgb, ratio: f32) -> Rgb {
 }
 
 /// `layout` のとおりに並べたタブバーに描くもの。`tabs` は端末の並びの順のタブ、`active` は表示して
-/// いるタブの位置、`highlight` はマウスの下にあるものと押しているもの。色は `palette` から決める。
-/// 表示しているタブのタイトルは太字にする。閉じるボタンは、表示しているタブとマウスの下のタブにだけ
-/// 出す。
+/// いるタブの位置、`highlight` はマウスの下にあるものと押しているもの。色は `palette` から決め、
+/// タイトルの幅は `measure` で測る。表示しているタブのタイトルは太字にする。閉じるボタンは、表示して
+/// いるタブとマウスの下のタブにだけ出す。
 pub fn paints(
     layout: &Layout,
     tabs: &[TabView],
     active: usize,
     highlight: Highlight,
     palette: Palette,
+    measure: &impl Measure,
 ) -> Vec<Paint> {
     let metrics = layout.metrics;
     let colors = Colors::new(palette);
@@ -563,7 +574,7 @@ pub fn paints(
         } else {
             (colors.bar, colors.inactive_title)
         };
-        let content = tab_content(metrics, slot, tab.bell);
+        let content = tab_content(metrics, slot, tab.bell, measure.height());
         if let Some(mark) = content.mark {
             paints.push(Paint::Icon {
                 icon: Icon::Dot,
@@ -571,17 +582,15 @@ pub fn paints(
                 color: BELL_COLOR,
             });
         }
-        let mut x = content.title_x;
-        for grapheme in fit_title(tab.title, content.title_cols) {
-            paints.push(Paint::Text {
-                x,
+        let title = fit_title(tab.title, content.title_width, is_active, measure);
+        if !title.is_empty() {
+            paints.push(Paint::Label {
+                x: content.title_x,
                 y: content.text_y,
-                text: grapheme.text,
-                cells: grapheme.width,
+                text: title,
                 bold: is_active,
                 color: title_color,
             });
-            x += u32::from(grapheme.width) * metrics.cell_width;
         }
         if raised(slot.index) {
             push_button(
@@ -756,19 +765,38 @@ mod tests {
         foreground: WHITE,
     };
 
-    /// 192 DPI で、セルが 16×32 ピクセルのときの寸法。タブバーの高さ 64、上の空き 12、余白 20、
-    /// ボタン 44、閉じるボタン 36、ベルの印 16、すき間 12、タブの幅 144〜480。
-    const METRICS: Metrics = Metrics {
-        dpi: 192,
-        cell_width: 16,
-        cell_height: 32,
-    };
+    /// 192 DPI の寸法。タブバーの高さ 64、上の空き 12、余白 20、ボタン 44、閉じるボタン 36、
+    /// ベルの印 16、すき間 12、タブの幅 144〜480。
+    const METRICS: Metrics = Metrics { dpi: 192 };
 
-    /// 100 桁の窓のタブバーの幅。
+    /// セルの幅が 16 ピクセルの 100 桁の窓のタブバーの幅。
     const WIDTH: u32 = 100 * 16;
 
-    fn text(graphemes: &[vt::Grapheme]) -> String {
-        graphemes.iter().map(|g| g.text.as_str()).collect()
+    /// 幅が ASCII の文字と [`ELLIPSIS`] は 10、ほかの文字は 20 ピクセル（太字なら 1 ずつ広い）、
+    /// 1 行の高さが 32 ピクセルの書体。
+    struct FixedWidth;
+
+    impl Measure for FixedWidth {
+        fn width(&self, text: &str, bold: bool) -> u32 {
+            text.chars()
+                .map(|c| {
+                    let width = if c.is_ascii() || ELLIPSIS.contains(c) {
+                        10
+                    } else {
+                        20
+                    };
+                    width + u32::from(bold)
+                })
+                .sum()
+        }
+
+        fn height(&self) -> u32 {
+            32
+        }
+    }
+
+    fn fit(title: &str, width: u32) -> String {
+        fit_title(title, width, false, &FixedWidth)
     }
 
     fn xs(layout: &Layout) -> Vec<(usize, u32, u32)> {
@@ -786,14 +814,8 @@ mod tests {
         assert_eq!(height(192), 64);
         assert_eq!(height(120), 40);
         assert_eq!(height(1), 1);
-        // 端末のセルの寸法によらない。
-        let small = Metrics {
-            cell_width: 12,
-            cell_height: 24,
-            ..METRICS
-        };
-        assert_eq!(small.bar_height(), METRICS.bar_height());
-        assert_eq!(small.button(), METRICS.button());
+        let base = Metrics { dpi: 96 };
+        assert_eq!((base.button(), METRICS.button()), (22, 44));
     }
 
     fn square(x: u32, y: u32, size: u32) -> Area {
@@ -907,25 +929,37 @@ mod tests {
 
     #[test]
     fn long_titles_end_with_an_ellipsis() {
-        assert_eq!(text(&fit_title("zsh", 10)), "zsh");
-        assert_eq!(text(&fit_title("abcdefghij", 10)), "abcdefghij");
-        assert_eq!(text(&fit_title("abcdefghijk", 10)), "abcdefghi…");
-        assert_eq!(text(&fit_title("abc", 0)), "");
-        assert_eq!(text(&fit_title("abc", 1)), "…");
+        assert_eq!(fit("zsh", 100), "zsh");
+        assert_eq!(fit("abcdefghij", 100), "abcdefghij");
+        assert_eq!(fit("abcdefghijk", 100), "abcdefghi…");
+        assert_eq!(fit("abcdefghijk", 109), "abcdefghi…");
+        assert_eq!(fit("abc", 10), "…");
+        // 省略の印も入らなければ空。
+        assert_eq!(fit("abc", 9), "");
+        assert_eq!(fit("abc", 0), "");
+        assert_eq!(fit("", 0), "");
+    }
+
+    #[test]
+    fn bold_titles_are_measured_in_bold() {
+        // 太字は 1 文字 11 ピクセル。100 ピクセルには 8 文字と省略の印。
+        assert_eq!(fit_title("abcdefghij", 100, true, &FixedWidth), "abcdefgh…");
     }
 
     #[test]
     fn wide_characters_are_not_split() {
-        // 「端末」は 4 セル。3 セルに収めるなら「端」と省略の印。
-        assert_eq!(text(&fit_title("端末", 4)), "端末");
-        assert_eq!(text(&fit_title("端末", 3)), "端…");
-        // 2 セルなら「端」は入らず、省略の印だけ。
-        assert_eq!(text(&fit_title("端末x", 2)), "…");
+        // 「端末」は 40 ピクセル。30 ピクセルに収めるなら「端」と省略の印。
+        assert_eq!(fit("端末", 40), "端末");
+        assert_eq!(fit("端末", 30), "端…");
+        // 20 ピクセルなら「端」は入らず、省略の印だけ。
+        assert_eq!(fit("端末x", 20), "…");
+        // 結合文字は前の文字から離さない。
+        assert_eq!(fit("e\u{301}e\u{301}e", 40), "e\u{301}…");
     }
 
     #[test]
     fn control_characters_are_dropped() {
-        assert_eq!(text(&fit_title("a\u{7}b", 10)), "ab");
+        assert_eq!(fit("a\u{7}b", 100), "ab");
     }
 
     /// 左端が `x`、幅が `width` のタブ。閉じるボタンは [`layout`] と同じく右端から 46 ピクセル。
@@ -945,13 +979,14 @@ mod tests {
 
     #[test]
     fn a_bell_mark_comes_before_the_title() {
-        let plain = tab_content(METRICS, &tab(20, 480), false);
+        let plain = tab_content(METRICS, &tab(20, 480), false, 32);
         assert_eq!(plain.mark, None);
         // タイトルは閉じるボタンの左まで。
-        assert_eq!((plain.title_x, plain.title_cols), (40, 25));
+        assert_eq!((plain.title_x, plain.title_width), (40, 414));
         // タイトルはタブの高さの真ん中に置く。
         assert_eq!(plain.text_y, 22);
-        let marked = tab_content(METRICS, &tab(20, 480), true);
+        assert_eq!(tab_content(METRICS, &tab(20, 480), false, 20).text_y, 28);
+        let marked = tab_content(METRICS, &tab(20, 480), true, 32);
         // 直径 16 の円を左の余白の次に置き、すき間 12 を空けてタイトル。
         assert_eq!(
             marked.mark,
@@ -962,15 +997,15 @@ mod tests {
                 height: 16
             })
         );
-        assert_eq!((marked.title_x, marked.title_cols), (68, 24));
+        assert_eq!((marked.title_x, marked.title_width), (68, 386));
     }
 
     #[test]
     fn a_bell_mark_stays_in_narrow_tabs() {
-        // タブの幅ごとに、印の左端と直径、タイトルに残る幅（セル）。
-        let cases: [(u32, (u32, u32), u16); 5] = [
-            // 幅の下限: 余白、印、すき間、タイトル 3 セル、閉じるボタン。
-            (144, (20, 16), 3),
+        // タブの幅ごとに、印の左端と直径、タイトルに残る幅（ピクセル）。
+        let cases: [(u32, (u32, u32), u32); 5] = [
+            // 幅の下限: 余白、印、すき間、タイトル、閉じるボタン。
+            (144, (20, 16), 50),
             // 余白と閉じるボタンの間に印が収まる。タイトルに残る幅はない。
             (82, (20, 16), 0),
             // 収まらなければ真ん中に置く。
@@ -979,26 +1014,26 @@ mod tests {
             // タブより大きければタブの幅に縮める。
             (10, (0, 10), 0),
         ];
-        for (width, (x, size), cols) in cases {
-            let content = tab_content(METRICS, &tab(0, width), true);
+        for (width, (x, size), title_width) in cases {
+            let content = tab_content(METRICS, &tab(0, width), true, 32);
             let mark = content.mark.expect("a bell mark");
             assert_eq!((mark.x, mark.width), (x, size), "width {width}");
             assert!(mark.right() <= width, "width {width}");
-            assert_eq!(content.title_cols, cols, "width {width}");
+            assert_eq!(content.title_width, title_width, "width {width}");
         }
     }
 
-    fn titles(paints: &[Paint]) -> Vec<(u32, String, bool, Rgb)> {
+    fn titles(paints: &[Paint]) -> Vec<(u32, u32, String, bool, Rgb)> {
         paints
             .iter()
             .filter_map(|paint| match paint {
-                Paint::Text {
+                Paint::Label {
                     x,
+                    y,
                     text,
                     bold,
                     color,
-                    ..
-                } => Some((*x, text.clone(), *bold, *color)),
+                } => Some((*x, *y, text.clone(), *bold, *color)),
                 _ => None,
             })
             .collect()
@@ -1030,24 +1065,35 @@ mod tests {
                 title: powershell,
                 bell: false,
             },
+            TabView {
+                title: "zsh",
+                bell: false,
+            },
         ];
-        let layout = layout(METRICS, WIDTH, 2, 1);
-        let paints = paints(&layout, &tabs, 1, Highlight::default(), PALETTE);
+        let layout = layout(METRICS, WIDTH, 3, 2);
+        let paints = paints(
+            &layout,
+            &tabs,
+            2,
+            Highlight::default(),
+            PALETTE,
+            &FixedWidth,
+        );
         assert_eq!(dots(&paints).len(), 1);
         assert!(dots(&paints)[0].right() <= 548);
-        let first: String = titles(&paints)
-            .iter()
-            .filter(|(x, ..)| *x < 548)
-            .map(|(_, text, ..)| text.as_str())
+        let titles: Vec<String> = titles(&paints)
+            .into_iter()
+            .map(|(_, _, text, ..)| text)
             .collect();
-        assert_eq!(first, r"C:\WINDOWS\System32\Win…");
-        // 印のないタブのタイトルは、印の分だけ長い。
-        let second: String = titles(&paints)
-            .iter()
-            .filter(|(x, ..)| *x >= 548)
-            .map(|(_, text, ..)| text.as_str())
-            .collect();
-        assert_eq!(second, r"C:\WINDOWS\System32\Wind…");
+        // 印のあるタブは 386 ピクセル、ないタブは 414 ピクセルに収める。
+        assert_eq!(
+            titles,
+            vec![
+                r"C:\WINDOWS\System32\WindowsPowerShell…",
+                r"C:\WINDOWS\System32\WindowsPowerShell\v1…",
+                "zsh",
+            ]
+        );
     }
 
     #[test]
@@ -1059,7 +1105,14 @@ mod tests {
             })
             .collect();
         let layout = layout(METRICS, WIDTH, tabs.len(), 3);
-        let paints = paints(&layout, &tabs, 3, Highlight::default(), PALETTE);
+        let paints = paints(
+            &layout,
+            &tabs,
+            3,
+            Highlight::default(),
+            PALETTE,
+            &FixedWidth,
+        );
         // 描く 10 個のうち、偶数番の 5 個に印。
         assert_eq!(dots(&paints).len(), 5);
         for (slot, dot) in layout.tabs().iter().step_by(2).zip(dots(&paints)) {
@@ -1080,7 +1133,14 @@ mod tests {
             },
         ];
         let layout = layout(METRICS, WIDTH, 2, 1);
-        let paints = paints(&layout, &tabs, 1, Highlight::default(), PALETTE);
+        let paints = paints(
+            &layout,
+            &tabs,
+            1,
+            Highlight::default(),
+            PALETTE,
+            &FixedWidth,
+        );
         let colors = Colors::new(PALETTE);
         // 地はタブバーの全体で、コントロールの地の色。
         assert_eq!(colors.bar, PALETTE.system.face);
@@ -1113,16 +1173,14 @@ mod tests {
                 (Icon::Flare(Side::Right), square(1028, 52, 12)),
             ]
         );
-        // 表示しているタブのタイトルは太字で端末の文字の色、ほかはコントロールの文字の色。
+        // タイトルは一つの文字列として、余白の右、タブの高さの真ん中に置く。表示しているタブの
+        // タイトルは太字で端末の文字の色、ほかはコントロールの文字の色。
         let text = PALETTE.system.text;
         assert_eq!(
             titles(&paints),
             vec![
-                (88, "o".to_owned(), false, text),
-                (104, "n".to_owned(), false, text),
-                (120, "e".to_owned(), false, text),
-                (568, "端".to_owned(), true, WHITE),
-                (600, "末".to_owned(), true, WHITE),
+                (88, 22, "one".to_owned(), false, text),
+                (568, 22, "端末".to_owned(), true, WHITE),
             ]
         );
         // メニューのボタンの「≡」は、一辺 20 でボタンの真ん中に、薄い文字の色で。
@@ -1141,7 +1199,7 @@ mod tests {
         let layout = layout(METRICS, WIDTH, 4, 1);
         let colors = Colors::new(PALETTE);
         let separators = |highlight: Highlight| -> Vec<u32> {
-            paints(&layout, &tabs, 1, highlight, PALETTE)
+            paints(&layout, &tabs, 1, highlight, PALETTE, &FixedWidth)
                 .iter()
                 .filter_map(|paint| match paint {
                     Paint::Fill { area, color } if *color == colors.separator => Some(area.x),
@@ -1182,10 +1240,13 @@ mod tests {
         let layout = layout(METRICS, WIDTH, 3, 0);
         let colors = Colors::new(PALETTE);
         let close_marks = |highlight: Highlight| -> Vec<u32> {
-            icons_of(&paints(&layout, &tabs, 0, highlight, PALETTE), Icon::Close)
-                .iter()
-                .map(|(area, _)| area.x)
-                .collect()
+            icons_of(
+                &paints(&layout, &tabs, 0, highlight, PALETTE, &FixedWidth),
+                Icon::Close,
+            )
+            .iter()
+            .map(|(area, _)| area.x)
+            .collect()
         };
         // 「×」は一辺 16 で、ボタンの真ん中に。
         let close = layout.tabs()[0].close;
@@ -1199,7 +1260,7 @@ mod tests {
             vec![close.x + 10, layout.tabs()[2].close.x + 10]
         );
         // マウスの下のタブは、上の角を丸めて地より明るい色で描く。下の左右は反らせない。
-        let paints = paints(&layout, &tabs, 0, hovered, PALETTE);
+        let paints = paints(&layout, &tabs, 0, hovered, PALETTE, &FixedWidth);
         let corners = icons_of(&paints, Icon::Corner(Corner::TopLeft));
         assert!(colors.hovered_tab.r > colors.bar.r && colors.hovered_tab.r < 0xff);
         assert_eq!(
@@ -1226,7 +1287,10 @@ mod tests {
         let layout = layout(METRICS, WIDTH, 2, 0);
         let colors = Colors::new(PALETTE);
         let backgrounds = |highlight: Highlight| -> Vec<(Area, Rgb)> {
-            icons_of(&paints(&layout, &tabs, 0, highlight, PALETTE), Icon::Dot)
+            icons_of(
+                &paints(&layout, &tabs, 0, highlight, PALETTE, &FixedWidth),
+                Icon::Dot,
+            )
         };
         assert_eq!(backgrounds(Highlight::default()), vec![]);
         let close = layout.tabs()[0].close;
@@ -1265,7 +1329,7 @@ mod tests {
             vec![(layout.new_tab, colors.button(colors.bar, text, false))]
         );
         let plus = icons_of(
-            &paints(&layout, &tabs, 0, over_new_tab, PALETTE),
+            &paints(&layout, &tabs, 0, over_new_tab, PALETTE, &FixedWidth),
             Icon::Plus,
         );
         assert_eq!(
