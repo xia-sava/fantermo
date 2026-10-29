@@ -32,10 +32,13 @@ enum Setting {
     PasteConfirm,
     ScrollBarWidth,
     ColorScheme,
+    BackgroundImages,
+    BackgroundOpacity,
+    BackgroundFit,
 }
 
 impl Setting {
-    const ALL: [Setting; 7] = [
+    const ALL: [Setting; 10] = [
         Setting::Shell,
         Setting::FontFamily,
         Setting::FontSize,
@@ -43,6 +46,9 @@ impl Setting {
         Setting::PasteConfirm,
         Setting::ScrollBarWidth,
         Setting::ColorScheme,
+        Setting::BackgroundImages,
+        Setting::BackgroundOpacity,
+        Setting::BackgroundFit,
     ];
 
     /// 項目を置く表の道筋。最上位なら空。
@@ -53,6 +59,9 @@ impl Setting {
             Setting::PasteConfirm => &["paste"],
             Setting::ScrollBarWidth => &["scroll_bar"],
             Setting::ColorScheme => &["colors"],
+            Setting::BackgroundImages | Setting::BackgroundOpacity | Setting::BackgroundFit => {
+                &["background"]
+            }
         }
     }
 
@@ -65,6 +74,9 @@ impl Setting {
             Setting::PasteConfirm => "confirm",
             Setting::ScrollBarWidth => "width",
             Setting::ColorScheme => "scheme",
+            Setting::BackgroundImages => "images",
+            Setting::BackgroundOpacity => "opacity",
+            Setting::BackgroundFit => "fit",
         }
     }
 
@@ -73,11 +85,21 @@ impl Setting {
         match self {
             Setting::Shell => config.shell.as_deref().map(Value::from),
             Setting::FontFamily => Some(families_value(&config.font.families)),
-            Setting::FontSize => Some(size_value(config.font.size_pt)),
+            Setting::FontSize => Some(number_value(config.font.size_pt)),
             Setting::WideGlyph => Some(Value::from(config.font.wide_glyph.name())),
             Setting::PasteConfirm => Some(Value::from(config.paste.confirm.name())),
             Setting::ScrollBarWidth => Some(Value::from(i64::from(config.scroll_bar.width))),
             Setting::ColorScheme => Some(Value::from(config.colors.scheme.name())),
+            Setting::BackgroundImages => Some(Value::Array(
+                config
+                    .background
+                    .images
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Array>(),
+            )),
+            Setting::BackgroundOpacity => Some(number_value(config.background.opacity)),
+            Setting::BackgroundFit => Some(Value::from(config.background.fit.name())),
         }
     }
 }
@@ -93,14 +115,14 @@ fn families_value(families: &[String]) -> Value {
     }
 }
 
-/// フォントの大きさ。整数なら整数で、そうでなければ小数で書く（`f32` を `f64` に広げた端数を出さない
-/// ように、`f32` の短い表記から読み直す）。
-fn size_value(size_pt: f32) -> Value {
-    if size_pt.fract() == 0.0 {
-        return Value::from(size_pt as i64);
+/// フォントの大きさや背景色の濃さの数。整数なら整数で、そうでなければ小数で書く（`f32` を `f64` に
+/// 広げた端数を出さないように、`f32` の短い表記から読み直す）。
+fn number_value(number: f32) -> Value {
+    if number.fract() == 0.0 {
+        return Value::from(number as i64);
     }
-    let size: f64 = size_pt.to_string().parse().unwrap_or(f64::from(size_pt));
-    Value::from(size)
+    let widened: f64 = number.to_string().parse().unwrap_or(f64::from(number));
+    Value::from(widened)
 }
 
 /// 組み合わせに割り当てる値。動作の名前か、外すなら [`keymap::UNBOUND`]。
@@ -644,8 +666,8 @@ mod tests {
     use super::*;
     use crate::{
         config::{
-            self, ColorScheme, ColorsConfig, FontConfig, PasteConfig, PasteConfirm,
-            ScrollBarConfig, TEMPLATE, WideGlyph,
+            self, BackgroundConfig, BackgroundFit, ColorScheme, ColorsConfig, FontConfig,
+            PasteConfig, PasteConfirm, ScrollBarConfig, TEMPLATE, WideGlyph,
         },
         frame::Rgb,
         keymap::Keymap,
@@ -781,6 +803,11 @@ mod tests {
             scroll_bar: ScrollBarConfig { width: 20 },
             // 色は既定に戻すとひな形と違う行になるので、色の書き戻しは別に確かめる。
             colors: ColorsConfig::default(),
+            background: BackgroundConfig {
+                images: vec![r"C:\walls".to_owned(), r"D:\pics\*.png".to_owned()],
+                opacity: 0.65,
+                fit: BackgroundFit::Center,
+            },
             keys: {
                 let mut keys = Keymap::default();
                 keys.bind(combo("ctrl+tab"), None);
@@ -817,6 +844,13 @@ mod tests {
             .replace(r#"# confirm = "unsafe""#, r#"confirm = "never""#)
             .replace("# width = 12", "width = 20")
             .replace(
+                "\n# images = []",
+                r"
+images = ['C:\walls', 'D:\pics\*.png']",
+            )
+            .replace("# opacity = 0.8", "opacity = 0.65")
+            .replace(r#"# fit = "fill""#, r#"fit = "center""#)
+            .replace(
                 "\n# \"ctrl+tab\" = \"next_tab\"",
                 "\n\"ctrl+tab\" = \"none\"",
             )
@@ -836,8 +870,13 @@ mod tests {
         let mut current = edited.clone();
         let mut text = text;
         let defaults = Config::default();
-        let steps: [fn(&mut Config, &Config); 7] = [
+        let steps: [fn(&mut Config, &Config); 9] = [
             |c, d| c.font.size_pt = d.font.size_pt,
+            |c, d| c.background.opacity = d.background.opacity,
+            |c, d| {
+                c.background.images = d.background.images.clone();
+                c.background.fit = d.background.fit;
+            },
             |c, d| c.shell = d.shell.clone(),
             |c, _| c.keys.bind(combo("ctrl+tab"), Some(Action::NextTab)),
             |c, d| c.scroll_bar = d.scroll_bar.clone(),
@@ -984,10 +1023,33 @@ mod tests {
     }
 
     #[test]
-    fn sizes_are_written_without_widening_errors() {
-        assert_eq!(bare_repr(&size_value(12.0)), "12");
-        assert_eq!(bare_repr(&size_value(10.1)), "10.1");
-        assert_eq!(bare_repr(&size_value(10.5)), "10.5");
+    fn numbers_are_written_without_widening_errors() {
+        assert_eq!(bare_repr(&number_value(12.0)), "12");
+        assert_eq!(bare_repr(&number_value(10.1)), "10.1");
+        assert_eq!(bare_repr(&number_value(10.5)), "10.5");
+        assert_eq!(bare_repr(&number_value(0.8)), "0.8");
+        assert_eq!(bare_repr(&number_value(0.35)), "0.35");
+    }
+
+    #[test]
+    fn background_table_is_added_when_missing() {
+        let text = "[font]\nsize = 9\n";
+        let base = config::parse(text, &Config::default()).config;
+        let mut edited = base.clone();
+        edited.background.images = vec![r"C:\walls".to_owned()];
+        edited.background.opacity = 1.0;
+        let updated = update(text, &base, &edited).unwrap();
+        assert_eq!(
+            updated,
+            "[font]\nsize = 9\n\n[background]\nimages = ['C:\\walls']\nopacity = 1\n"
+        );
+        assert_reads_as(&updated, &edited);
+        // 一覧を空に戻すと、既定値をコメントにした行にする。
+        let back = update(&updated, &edited, &base).unwrap();
+        assert_eq!(
+            back,
+            "[font]\nsize = 9\n\n[background]\n# images = []\n# opacity = 0.8\n"
+        );
     }
 
     #[test]

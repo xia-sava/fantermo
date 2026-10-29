@@ -11,8 +11,8 @@ use std::{
 use fantermo_core::{
     backend::{ExitCode, GridSize},
     config::{
-        ColorsConfig, Config, DEFAULT_FONT_FAMILIES, FontConfig, PasteConfig, PasteConfirm,
-        ScrollBarConfig, WideGlyph,
+        BackgroundConfig, ColorsConfig, Config, DEFAULT_FONT_FAMILIES, FontConfig, PasteConfig,
+        PasteConfirm, ScrollBarConfig, WideGlyph,
     },
     frame::Rgb,
     keymap::{self, Keymap},
@@ -590,6 +590,8 @@ struct App {
     keymap: Keymap,
     /// 設定で書いたタブバーとスクロールバーの色。
     colors: ColorsConfig,
+    /// 背景画像の設定。
+    background: BackgroundConfig,
     /// 割り当ての動作に使ったので、離したときにも端末へ送らないキー。タブを切り替えたあとに
     /// 離したことが届くので、端末ごとではなく窓に持つ。
     suppressed_release: Option<Key>,
@@ -704,6 +706,7 @@ impl App {
             pointer_in_window: None,
             keymap: config.keys,
             colors: config.colors,
+            background: config.background,
             suppressed_release: None,
             tab_bar_press: None,
             tab_bar_hover: None,
@@ -1872,6 +1875,7 @@ impl App {
         self.paste_confirm = config.paste.confirm;
         self.shell = config.shell;
         self.keymap = config.keys;
+        self.background = config.background;
         if config.colors != self.colors {
             let terminal_colors = config.colors.terminal_colors();
             if terminal_colors != self.colors.terminal_colors() {
@@ -1921,6 +1925,7 @@ impl App {
                 width: self.scroll_bar_width,
             },
             colors: self.colors.clone(),
+            background: self.background.clone(),
             keys: self.keymap.clone(),
         }
     }

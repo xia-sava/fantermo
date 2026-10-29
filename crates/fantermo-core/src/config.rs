@@ -34,6 +34,12 @@ pub const DEFAULT_SCROLL_BAR_WIDTH: u32 = 12;
 /// スクロールバーの幅として受け付ける範囲（96 DPI でのピクセル）。
 pub const SCROLL_BAR_WIDTH_RANGE: RangeInclusive<u32> = 4..=64;
 
+/// 背景画像の上に重ねる端末の背景色の、既定の濃さ（不透明度）。
+pub const DEFAULT_BACKGROUND_OPACITY: f32 = 0.8;
+
+/// 背景画像の上に重ねる端末の背景色の濃さとして受け付ける範囲。
+pub const BACKGROUND_OPACITY_RANGE: RangeInclusive<f32> = 0.0..=1.0;
+
 /// 設定ファイルが無いときに作る中身。どの項目も既定値のままコメントにして並べ、利用者が `#` を消して
 /// 書き換えられるようにする。`shell` の値だけは既定値ではなく例（既定では書かない）。
 pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
@@ -100,6 +106,23 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # hovered_thumb = "#808080"
 # dragged_thumb = "#a6a6a6"
 
+[background]
+# 端末の背景に敷く画像。画像のファイル、フォルダ（中の画像から選ぶ。下のフォルダは見ない）、ファイルの名前に
+# 「*」「?」を使ったワイルドカードを並べる。新しいタブを開くたびに、この中からランダムに一枚選ぶ。フォルダと
+# ワイルドカードから選ぶのは png、jpg、jpeg、bmp、gif（最初のコマ）、webp（Windows で読めるとき）。読めない
+# 画像は飛ばして別の画像を選ぶ。相対パスはこのファイルのフォルダから。空なら画像を敷かない。
+# 例: images = ['C:\画像\壁紙', 'C:\画像\*.jpg']
+# images = []
+
+# 画像の上に重ねる端末の背景色の濃さ。0 から 1 まで。0 は画像をそのまま見せ、1 は背景色で画像を隠す。
+# アプリが背景色を付けた文字、反転した文字、選んだ範囲は、その色で塗りつぶす。
+# opacity = 0.8
+
+# 画像の収め方。"fill" は縦横比を保って端末を覆い、はみ出しを切る、"fit" は縦横比を保って端末に収め、余りは
+# 背景色にする、"stretch" は端末に合わせて引き伸ばす、"tile" は元の大きさで敷き詰める、"center" は元の大きさで
+# 真ん中に置く。
+# fit = "fill"
+
 [keys]
 # キーの組み合わせと、押したときの動作。書いた組み合わせだけ、下に並べた既定の割り当てを変える。
 # 組み合わせは、修飾キー（ctrl、shift、alt、win）とキーを「+」でつなぐ。キーの名前はキーボードの上の
@@ -132,8 +155,68 @@ pub struct Config {
     pub paste: PasteConfig,
     pub scroll_bar: ScrollBarConfig,
     pub colors: ColorsConfig,
+    pub background: BackgroundConfig,
     /// キーの割り当て。`[keys]` に書いた組み合わせを、既定の割り当てに重ねたもの。
     pub keys: Keymap,
+}
+
+/// `[background]` の設定。
+#[derive(Clone, Debug, PartialEq)]
+pub struct BackgroundConfig {
+    /// 画像のファイル・フォルダ・ワイルドカードの一覧（書いたまま）。空なら画像を敷かない。
+    pub images: Vec<String>,
+    /// 画像の上に重ねる端末の背景色の濃さ（0 で画像をそのまま見せ、1 で隠す）。
+    pub opacity: f32,
+    pub fit: BackgroundFit,
+}
+
+impl Default for BackgroundConfig {
+    fn default() -> Self {
+        Self {
+            images: Vec::new(),
+            opacity: DEFAULT_BACKGROUND_OPACITY,
+            fit: BackgroundFit::default(),
+        }
+    }
+}
+
+/// 背景画像の収め方（`background.fit`）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundFit {
+    /// 縦横比を保って範囲を覆い、はみ出しを切る。
+    #[default]
+    Fill,
+    /// 縦横比を保って範囲に収める。余りは背景色。
+    Fit,
+    /// 範囲に合わせて引き伸ばす。
+    Stretch,
+    /// 元の大きさで、範囲の左上から敷き詰める。
+    Tile,
+    /// 元の大きさで真ん中に置く。はみ出しは切る。
+    Center,
+}
+
+impl BackgroundFit {
+    /// 書ける値のすべて。設定ファイルの説明と同じ順。
+    pub const ALL: [BackgroundFit; 5] = [
+        BackgroundFit::Fill,
+        BackgroundFit::Fit,
+        BackgroundFit::Stretch,
+        BackgroundFit::Tile,
+        BackgroundFit::Center,
+    ];
+
+    /// 設定ファイルに書く名前。
+    pub fn name(self) -> &'static str {
+        match self {
+            BackgroundFit::Fill => "fill",
+            BackgroundFit::Fit => "fit",
+            BackgroundFit::Stretch => "stretch",
+            BackgroundFit::Tile => "tile",
+            BackgroundFit::Center => "center",
+        }
+    }
 }
 
 /// 色を書く表（`[colors]` と `[colors.<名前>]`）。
@@ -471,6 +554,15 @@ pub fn parse_scroll_bar_width(text: &str) -> Option<u32> {
     SCROLL_BAR_WIDTH_RANGE.contains(&width).then_some(width)
 }
 
+/// 入力された文字列を、背景画像の上に重ねる背景色の濃さとして読む。前後の空白は除く。数でないか、
+/// [`BACKGROUND_OPACITY_RANGE`] の外なら `None`。
+pub fn parse_background_opacity(text: &str) -> Option<f32> {
+    let opacity: f32 = text.trim().parse().ok()?;
+    BACKGROUND_OPACITY_RANGE
+        .contains(&opacity)
+        .then_some(opacity)
+}
+
 /// 入力された文字列を、`shell` の値にする。前後の空白は除き、空なら書かない（既定のシェル）。
 pub fn shell_from_input(text: &str) -> Option<String> {
     let shell = text.trim();
@@ -563,12 +655,21 @@ impl<T> Item<T> {
     }
 }
 
-/// `font.family` に書ける形。
+/// `font.family` と `background.images` に書ける形。
 #[derive(Deserialize)]
 #[serde(untagged, expecting = "a string or an array of strings")]
-enum FontFamilies {
+enum Strings {
     One(String),
     Many(Vec<String>),
+}
+
+impl Strings {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            Strings::One(one) => vec![one],
+            Strings::Many(many) => many,
+        }
+    }
 }
 
 /// 設定ファイルの中身 `text` を解釈する。`previous` はいま使っている設定（起動したときは既定値）で、
@@ -649,6 +750,14 @@ pub fn parse(text: &str, previous: &Config) -> Parsed {
             reader.warn_unknown(&colors, Some("colors"));
         }
     }
+    match reader.take::<Table>(&mut root, None, "background") {
+        Item::Absent => config.background = BackgroundConfig::default(),
+        Item::Invalid => {}
+        Item::Valid(mut background) => {
+            read_background(&mut reader, &mut background, &mut config.background);
+            reader.warn_unknown(&background, Some("background"));
+        }
+    }
     match reader.take::<Table>(&mut root, None, "keys") {
         Item::Absent => config.keys = Keymap::default(),
         Item::Invalid => {}
@@ -670,11 +779,8 @@ fn read_font(reader: &mut Reader, table: &mut Table, font: &mut FontConfig) {
     const SECTION: Option<&str> = Some("font");
     let defaults = FontConfig::default();
     reader
-        .take::<FontFamilies>(table, SECTION, "family")
-        .map(|families| match families {
-            FontFamilies::One(family) => vec![family],
-            FontFamilies::Many(families) => families,
-        })
+        .take::<Strings>(table, SECTION, "family")
+        .map(Strings::into_vec)
         .check(reader, "font.family", |families| {
             (families.is_empty() || families.iter().any(|family| family.trim().is_empty()))
                 .then(|| format!("ignoring font.family = {families:?}: names must not be empty"))
@@ -695,6 +801,35 @@ fn read_font(reader: &mut Reader, table: &mut Table, font: &mut FontConfig) {
     reader
         .take::<WideGlyph>(table, SECTION, "wide_glyph")
         .apply(&mut font.wide_glyph, defaults.wide_glyph);
+}
+
+fn read_background(reader: &mut Reader, table: &mut Table, background: &mut BackgroundConfig) {
+    const SECTION: Option<&str> = Some("background");
+    let defaults = BackgroundConfig::default();
+    reader
+        .take::<Strings>(table, SECTION, "images")
+        .map(Strings::into_vec)
+        .check(reader, "background.images", |images| {
+            images.iter().any(|image| image.trim().is_empty()).then(|| {
+                format!("ignoring background.images = {images:?}: names must not be empty")
+            })
+        })
+        .apply(&mut background.images, defaults.images);
+    reader
+        .take::<f32>(table, SECTION, "opacity")
+        .check(reader, "background.opacity", |opacity| {
+            (!BACKGROUND_OPACITY_RANGE.contains(opacity)).then(|| {
+                format!(
+                    "ignoring background.opacity = {opacity}: must be between {} and {}",
+                    BACKGROUND_OPACITY_RANGE.start(),
+                    BACKGROUND_OPACITY_RANGE.end()
+                )
+            })
+        })
+        .apply(&mut background.opacity, defaults.opacity);
+    reader
+        .take::<BackgroundFit>(table, SECTION, "fit")
+        .apply(&mut background.fit, defaults.fit);
 }
 
 /// `[colors]` の配色と、その中の色の表を読む。
@@ -940,6 +1075,11 @@ mod tests {
                 },
                 ..ColorsConfig::default()
             },
+            background: BackgroundConfig {
+                images: vec![r"C:\walls".to_owned()],
+                opacity: 0.5,
+                fit: BackgroundFit::Tile,
+            },
             keys: {
                 let mut keys = Keymap::default();
                 keys.bind(combo("ctrl+tab"), None);
@@ -951,6 +1091,74 @@ mod tests {
 
     fn combo(text: &str) -> KeyCombo {
         KeyCombo::parse(text).unwrap()
+    }
+
+    #[test]
+    fn background_is_read() {
+        let parsed = parse(
+            "[background]\nimages = ['C:\\walls', 'D:\\a\\*.png']\nopacity = 0.65\nfit = \"center\"\n",
+        );
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        assert_eq!(
+            parsed.config.background,
+            BackgroundConfig {
+                images: vec![r"C:\walls".to_owned(), r"D:\a\*.png".to_owned()],
+                opacity: 0.65,
+                fit: BackgroundFit::Center,
+            }
+        );
+        // 一つなら文字列でもよく、濃さは整数でもよい。
+        let parsed = parse("[background]\nimages = 'C:\\one.png'\nopacity = 1\n");
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        assert_eq!(parsed.config.background.images, [r"C:\one.png"]);
+        assert_eq!(parsed.config.background.opacity, 1.0);
+        for fit in BackgroundFit::ALL {
+            let parsed = parse(&format!("[background]\nfit = '{}'\n", fit.name()));
+            assert_eq!(parsed.config.background.fit, fit);
+        }
+    }
+
+    #[test]
+    fn invalid_background_values_keep_the_previous_values_with_their_lines() {
+        let previous = customized();
+        let parsed = super::parse(
+            "[background]\nimages = ['C:\\ok', ' ']\nopacity = 1.5\nfit = 'cover'\nblur = 3\n",
+            &previous,
+        );
+        assert_eq!(parsed.config.background, previous.background);
+        let lines: Vec<Option<usize>> = parsed.warnings.iter().map(|w| w.line).collect();
+        assert_eq!(
+            lines,
+            [Some(2), Some(3), Some(4), Some(5)],
+            "{:?}",
+            parsed.warnings
+        );
+        assert!(parsed.warnings[0].message.contains("must not be empty"));
+        assert!(parsed.warnings[1].message.contains("between 0 and 1"));
+        assert!(
+            ["fill", "fit", "stretch", "tile", "center"]
+                .iter()
+                .all(|name| parsed.warnings[2].message.contains(name)),
+            "{:?}",
+            parsed.warnings
+        );
+        assert_eq!(
+            parsed.warnings[3].message,
+            "ignoring unknown setting background.blur"
+        );
+        // 表でなければ全体が前のまま。書いていなければ既定値。
+        let parsed = super::parse("background = 'C:\\walls'\n", &previous);
+        assert_eq!(parsed.config.background, previous.background);
+        assert_eq!(parsed.warnings.len(), 1);
+        let parsed = super::parse("[font]\n", &previous);
+        assert_eq!(parsed.config.background, BackgroundConfig::default());
+        // 濃さの範囲の外と、数でないもの。
+        let parsed = parse("[background]\nopacity = -0.1\n");
+        assert_eq!(parsed.config.background.opacity, DEFAULT_BACKGROUND_OPACITY);
+        assert_eq!(parsed.warnings.len(), 1);
+        let parsed = parse("[background]\nopacity = nan\nimages = 3\n");
+        assert_eq!(parsed.config.background, BackgroundConfig::default());
+        assert_eq!(parsed.warnings.len(), 2, "{:?}", parsed.warnings);
     }
 
     #[test]
@@ -1013,7 +1221,7 @@ mod tests {
             .lines()
             .filter(|line| !line.starts_with('#') && line.contains(" = "))
             .count();
-        assert_eq!(settings, 7 + 9 + 15, "{text}");
+        assert_eq!(settings, 7 + 9 + 3 + 15, "{text}");
         // 背景色と文字の色の例は、既定の配色の色。
         assert_eq!(
             parsed.config.colors.terminal_colors(),
@@ -1312,12 +1520,12 @@ mod tests {
     fn invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults() {
         let previous = customized();
         let parsed = super::parse(
-            "shell = ' '\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[scroll_bar]\nwidth = 2\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors]\nscheme = 'sepia'\nforeground = 'blue'\n[colors.tab_bar]\nbar = 'red'\n",
+            "shell = ' '\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[scroll_bar]\nwidth = 2\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors]\nscheme = 'sepia'\nforeground = 'blue'\n[colors.tab_bar]\nbar = 'red'\n[background]\nimages = ''\nopacity = 2\nfit = 0\n",
             &previous,
         );
         assert!(!parsed.syntax_error);
         assert_eq!(parsed.config, previous);
-        assert_eq!(parsed.warnings.len(), 11, "{:?}", parsed.warnings);
+        assert_eq!(parsed.warnings.len(), 14, "{:?}", parsed.warnings);
 
         let parsed = super::parse("[font]\nsize = 500\n", &previous);
         assert_eq!(
@@ -1604,6 +1812,12 @@ mod tests {
         assert_eq!(parse_font_size("128"), Some(128.0));
         for text in ["", "0", "0.5", "129", "nan", "inf", "12pt", "-3"] {
             assert_eq!(parse_font_size(text), None, "{text:?}");
+        }
+        assert_eq!(parse_background_opacity(" 0.75 "), Some(0.75));
+        assert_eq!(parse_background_opacity("0"), Some(0.0));
+        assert_eq!(parse_background_opacity("1"), Some(1.0));
+        for text in ["", "-0.01", "1.01", "nan", "80%"] {
+            assert_eq!(parse_background_opacity(text), None, "{text:?}");
         }
         assert_eq!(parse_scroll_bar_width(" 16 "), Some(16));
         assert_eq!(parse_scroll_bar_width("4"), Some(4));
