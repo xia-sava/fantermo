@@ -16,8 +16,8 @@
 #      licenses/ の下の文は tarball に入っていないので、GitHub の同じコミットから取った
 #    - simdutf 9.0.0（Ghostty の pkg/simdutf/vendor/simdutf.h の SIMDUTF_VERSION。pkg/simdutf の
 #      build.zig.zon の版とは違う）。vendor にライセンスの文がないので、GitHub の v9.0.0 の LICENSE-MIT を取った
-#    - Highway 66486a10623fa0d72fe91260f96c892e41aceb06（pkg/highway の build.zig.zon）。README に
-#      Apache-2.0 と BSD-3-Clause の二重ライセンスとある（ソースの各ファイルの見出しは Apache-2.0）
+#    - Highway 66486a10623fa0d72fe91260f96c892e41aceb06（pkg/highway の build.zig.zon）。ソースの各ファイルの
+#      見出しが Apache-2.0 なので、同じコミットの LICENSE（Apache-2.0）の文を載せる
 #    - Wuffs 7411f488fe2e2c205c3d3b3d28638b7356522930（pkg/wuffs の build.zig.zon）。release/c/wuffs-v0.4.c は
 #      Apache-2.0 OR MIT
 #    - X11 の rgb.txt（Ghostty の src/terminal/res/rgb.txt。src/terminal/x11_color.zig が埋め込む）。
