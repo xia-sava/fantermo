@@ -1,7 +1,7 @@
 //! タブバー。窓の上端に、端末ごとのタブを並べる。端末が一つのときも出す。
 //!
-//! 寸法は端末のフォントによらず DPI から決め、セルの格子によらずピクセルの位置で並べる。表示している
-//! タブは端末と同じ色で上の角を丸め、下の辺を端末へつなげて描く。並べ方（どこがどのタブか、タイトルの
+//! 寸法は端末のフォントによらず DPI から決め、セルの格子によらずピクセルの位置で並べる。地は Windows の
+//! コントロールの色で塗り、表示しているタブは端末と同じ色で上の角を丸め、下の辺を端末へつなげて描く。並べ方（どこがどのタブか、タイトルの
 //! 省略、ベルの印の位置）と、描くもの（[`Paint`]）の組み立ては、窓や描画に依存しない関数にしてある。
 
 use fantermo_core::{frame::Rgb, vt};
@@ -60,19 +60,10 @@ const BELL_COLOR: Rgb = Rgb {
     b: 0x30,
 };
 
-/// タブバーの地の色を、端末の背景色から文字の色へ寄せる割合。
-const BAR_TINT: f32 = 0.12;
+/// マウスの下の、表示していないタブの色を、コントロールの地の色から明るい縁の色へ寄せる割合。
+const HOVERED_TAB_LIGHTEN: f32 = 0.6;
 
-/// 表示していないタブのタイトルの色を、端末の文字の色から背景色へ寄せる割合。
-const INACTIVE_TITLE_FADE: f32 = 0.35;
-
-/// タブの間の区切りの線の色を、端末の背景色から文字の色へ寄せる割合。
-const SEPARATOR_TINT: f32 = 0.30;
-
-/// マウスの下の、表示していないタブの色を、端末の背景色から文字の色へ寄せる割合。
-const HOVERED_TAB_TINT: f32 = 0.20;
-
-/// マウスの下のボタン（×、+）の丸い地の色を、ボタンの下の色から文字の色へ寄せる割合。
+/// マウスの下のボタン（×、+、≡）の丸い地の色を、ボタンの下の色から文字の色へ寄せる割合。
 const HOVERED_BUTTON_TINT: f32 = 0.15;
 
 /// 押しているボタンの丸い地の色を、ボタンの下の色から文字の色へ寄せる割合。
@@ -414,7 +405,30 @@ pub struct TabView<'a> {
     pub bell: bool,
 }
 
-/// タブバーの色。端末の背景色と文字の色から決める。
+/// Windows のコントロールの色（`GetSysColor`）。タブバーの地と、表示していないタブ・ボタンに使う。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SystemColors {
+    /// 地（`COLOR_BTNFACE`）。
+    pub face: Rgb,
+    /// 文字（`COLOR_BTNTEXT`）。
+    pub text: Rgb,
+    /// 薄い文字（`COLOR_GRAYTEXT`）。
+    pub gray_text: Rgb,
+    /// 明るい縁（`COLOR_BTNHIGHLIGHT`）。
+    pub highlight: Rgb,
+    /// 暗い縁（`COLOR_BTNSHADOW`）。
+    pub shadow: Rgb,
+}
+
+/// タブバーの色を決めるもの。Windows のコントロールの色と、端末の既定の背景色・文字の色。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Palette {
+    pub system: SystemColors,
+    pub background: Rgb,
+    pub foreground: Rgb,
+}
+
+/// タブバーの色。地と表示していないタブはコントロールの色、表示しているタブは端末の色。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Colors {
     bar: Rgb,
@@ -423,32 +437,34 @@ struct Colors {
     inactive_title: Rgb,
     separator: Rgb,
     hovered_tab: Rgb,
-    foreground: Rgb,
+    /// マウスの下にない、新しいタブのボタンとメニューのボタンの印。
+    idle_mark: Rgb,
 }
 
 impl Colors {
-    fn new(background: Rgb, foreground: Rgb) -> Self {
+    fn new(palette: Palette) -> Self {
+        let system = palette.system;
         Self {
-            bar: mix(background, foreground, BAR_TINT),
+            bar: system.face,
             // 表示しているタブは端末と同じ色にして、端末とつながって見えるようにする。
-            active_tab: background,
-            active_title: foreground,
-            inactive_title: mix(foreground, background, INACTIVE_TITLE_FADE),
-            separator: mix(background, foreground, SEPARATOR_TINT),
-            hovered_tab: mix(background, foreground, HOVERED_TAB_TINT),
-            foreground,
+            active_tab: palette.background,
+            active_title: palette.foreground,
+            inactive_title: system.text,
+            separator: system.shadow,
+            hovered_tab: mix(system.face, system.highlight, HOVERED_TAB_LIGHTEN),
+            idle_mark: system.gray_text,
         }
     }
 
-    /// 色 `base` の上に置いたボタンの丸い地の色。`pressed` なら押しているとき、そうでなければ
-    /// マウスの下にあるとき。
-    fn button(&self, base: Rgb, pressed: bool) -> Rgb {
+    /// 色 `base` の上に、色 `ink` の印で描くボタンの丸い地の色。`pressed` なら押しているとき、
+    /// そうでなければマウスの下にあるとき。
+    fn button(&self, base: Rgb, ink: Rgb, pressed: bool) -> Rgb {
         let tint = if pressed {
             PRESSED_BUTTON_TINT
         } else {
             HOVERED_BUTTON_TINT
         };
-        mix(base, self.foreground, tint)
+        mix(base, ink, tint)
     }
 }
 
@@ -485,19 +501,18 @@ fn mix(from: Rgb, to: Rgb, ratio: f32) -> Rgb {
 }
 
 /// `layout` のとおりに並べたタブバーに描くもの。`tabs` は端末の並びの順のタブ、`active` は表示して
-/// いるタブの位置、`highlight` はマウスの下にあるものと押しているもの。色は端末の背景色 `background`
-/// と文字の色 `foreground` から決める。表示しているタブのタイトルは太字にする。閉じるボタンは、
-/// 表示しているタブとマウスの下のタブにだけ出す。
+/// いるタブの位置、`highlight` はマウスの下にあるものと押しているもの。色は `palette` から決める。
+/// 表示しているタブのタイトルは太字にする。閉じるボタンは、表示しているタブとマウスの下のタブにだけ
+/// 出す。
 pub fn paints(
     layout: &Layout,
     tabs: &[TabView],
     active: usize,
     highlight: Highlight,
-    background: Rgb,
-    foreground: Rgb,
+    palette: Palette,
 ) -> Vec<Paint> {
     let metrics = layout.metrics;
-    let colors = Colors::new(background, foreground);
+    let colors = Colors::new(palette);
     let hovered = highlight.hovered_tab();
     let raised = |index: usize| index == active || Some(index) == hovered;
     let mut paints = vec![Paint::Fill {
@@ -544,7 +559,7 @@ pub fn paints(
         let (tab_color, title_color) = if is_active {
             (colors.active_tab, colors.active_title)
         } else if Some(slot.index) == hovered {
-            (colors.hovered_tab, colors.active_title)
+            (colors.hovered_tab, colors.inactive_title)
         } else {
             (colors.bar, colors.inactive_title)
         };
@@ -577,6 +592,7 @@ pub fn paints(
                     mark: (Icon::Close, metrics.close_mark(), title_color),
                     state: highlight.state(Hit::Close(slot.index)),
                     base: tab_color,
+                    ink: title_color,
                 },
             );
         }
@@ -586,9 +602,9 @@ pub fn paints(
         (Hit::Menu, layout.menu, Icon::Menu),
     ] {
         let mark_color = if highlight.hovered == Some(hit) {
-            colors.active_title
-        } else {
             colors.inactive_title
+        } else {
+            colors.idle_mark
         };
         push_button(
             &mut paints,
@@ -598,6 +614,7 @@ pub fn paints(
                 mark: (icon, metrics.plus_mark(), mark_color),
                 state: highlight.state(hit),
                 base: colors.bar,
+                ink: colors.inactive_title,
             },
         );
     }
@@ -612,8 +629,10 @@ struct Button {
     mark: (Icon, u32, Rgb),
     /// マウスの下にあれば、押しているか。
     state: Option<bool>,
-    /// ボタンの下の色。丸い地の色はここから決める。
+    /// ボタンの下の色。丸い地の色は、ここから `ink` へ寄せて決める。
     base: Rgb,
+    /// ボタンの下の地に置く文字の色。
+    ink: Rgb,
 }
 
 fn push_button(paints: &mut Vec<Paint>, colors: &Colors, button: Button) {
@@ -622,12 +641,13 @@ fn push_button(paints: &mut Vec<Paint>, colors: &Colors, button: Button) {
         mark: (icon, mark_size, mark_color),
         state,
         base,
+        ink,
     } = button;
     if let Some(pressed) = state {
         paints.push(Paint::Icon {
             icon: Icon::Dot,
             area,
-            color: colors.button(base, pressed),
+            color: colors.button(base, ink, pressed),
         });
     }
     let size = mark_size.min(area.width).min(area.height);
@@ -712,6 +732,28 @@ mod tests {
         r: 200,
         g: 200,
         b: 200,
+    };
+
+    const fn gray(level: u8) -> Rgb {
+        Rgb {
+            r: level,
+            g: level,
+            b: level,
+        }
+    }
+
+    /// Windows 11 の既定に近いコントロールの色と、黒地に白の端末。コントロールの文字の色は、端末の
+    /// 背景色と見分けられるよう黒にしない。
+    const PALETTE: Palette = Palette {
+        system: SystemColors {
+            face: gray(0xf0),
+            text: gray(0x20),
+            gray_text: gray(0x6d),
+            highlight: gray(0xff),
+            shadow: gray(0xa0),
+        },
+        background: BLACK,
+        foreground: WHITE,
     };
 
     /// 192 DPI で、セルが 16×32 ピクセルのときの寸法。タブバーの高さ 64、上の空き 12、余白 20、
@@ -990,7 +1032,7 @@ mod tests {
             },
         ];
         let layout = layout(METRICS, WIDTH, 2, 1);
-        let paints = paints(&layout, &tabs, 1, Highlight::default(), BLACK, WHITE);
+        let paints = paints(&layout, &tabs, 1, Highlight::default(), PALETTE);
         assert_eq!(dots(&paints).len(), 1);
         assert!(dots(&paints)[0].right() <= 548);
         let first: String = titles(&paints)
@@ -1017,7 +1059,7 @@ mod tests {
             })
             .collect();
         let layout = layout(METRICS, WIDTH, tabs.len(), 3);
-        let paints = paints(&layout, &tabs, 3, Highlight::default(), BLACK, WHITE);
+        let paints = paints(&layout, &tabs, 3, Highlight::default(), PALETTE);
         // 描く 10 個のうち、偶数番の 5 個に印。
         assert_eq!(dots(&paints).len(), 5);
         for (slot, dot) in layout.tabs().iter().step_by(2).zip(dots(&paints)) {
@@ -1038,9 +1080,10 @@ mod tests {
             },
         ];
         let layout = layout(METRICS, WIDTH, 2, 1);
-        let paints = paints(&layout, &tabs, 1, Highlight::default(), BLACK, WHITE);
-        let colors = Colors::new(BLACK, WHITE);
-        // 地はタブバーの全体。
+        let paints = paints(&layout, &tabs, 1, Highlight::default(), PALETTE);
+        let colors = Colors::new(PALETTE);
+        // 地はタブバーの全体で、コントロールの地の色。
+        assert_eq!(colors.bar, PALETTE.system.face);
         assert_eq!(
             paints[0],
             Paint::Fill {
@@ -1070,21 +1113,22 @@ mod tests {
                 (Icon::Flare(Side::Right), square(1028, 52, 12)),
             ]
         );
-        // 表示しているタブのタイトルは太字で端末の文字の色、ほかは薄い色。
+        // 表示しているタブのタイトルは太字で端末の文字の色、ほかはコントロールの文字の色。
+        let text = PALETTE.system.text;
         assert_eq!(
             titles(&paints),
             vec![
-                (88, "o".to_owned(), false, colors.inactive_title),
-                (104, "n".to_owned(), false, colors.inactive_title),
-                (120, "e".to_owned(), false, colors.inactive_title),
+                (88, "o".to_owned(), false, text),
+                (104, "n".to_owned(), false, text),
+                (120, "e".to_owned(), false, text),
                 (568, "端".to_owned(), true, WHITE),
                 (600, "末".to_owned(), true, WHITE),
             ]
         );
-        // メニューのボタンの「≡」は、一辺 20 でボタンの真ん中に。
+        // メニューのボタンの「≡」は、一辺 20 でボタンの真ん中に、薄い文字の色で。
         assert_eq!(
             icons_of(&paints, Icon::Menu),
-            vec![(square(24, 28, 20), colors.inactive_title)]
+            vec![(square(24, 28, 20), PALETTE.system.gray_text)]
         );
     }
 
@@ -1095,9 +1139,9 @@ mod tests {
             bell: false,
         }; 4];
         let layout = layout(METRICS, WIDTH, 4, 1);
-        let colors = Colors::new(BLACK, WHITE);
+        let colors = Colors::new(PALETTE);
         let separators = |highlight: Highlight| -> Vec<u32> {
-            paints(&layout, &tabs, 1, highlight, BLACK, WHITE)
+            paints(&layout, &tabs, 1, highlight, PALETTE)
                 .iter()
                 .filter_map(|paint| match paint {
                     Paint::Fill { area, color } if *color == colors.separator => Some(area.x),
@@ -1136,15 +1180,12 @@ mod tests {
             bell: false,
         }; 3];
         let layout = layout(METRICS, WIDTH, 3, 0);
-        let colors = Colors::new(BLACK, WHITE);
+        let colors = Colors::new(PALETTE);
         let close_marks = |highlight: Highlight| -> Vec<u32> {
-            icons_of(
-                &paints(&layout, &tabs, 0, highlight, BLACK, WHITE),
-                Icon::Close,
-            )
-            .iter()
-            .map(|(area, _)| area.x)
-            .collect()
+            icons_of(&paints(&layout, &tabs, 0, highlight, PALETTE), Icon::Close)
+                .iter()
+                .map(|(area, _)| area.x)
+                .collect()
         };
         // 「×」は一辺 16 で、ボタンの真ん中に。
         let close = layout.tabs()[0].close;
@@ -1157,9 +1198,10 @@ mod tests {
             close_marks(hovered),
             vec![close.x + 10, layout.tabs()[2].close.x + 10]
         );
-        // マウスの下のタブは、上の角を丸めて少し明るい色で描く。下の左右は反らせない。
-        let paints = paints(&layout, &tabs, 0, hovered, BLACK, WHITE);
+        // マウスの下のタブは、上の角を丸めて地より明るい色で描く。下の左右は反らせない。
+        let paints = paints(&layout, &tabs, 0, hovered, PALETTE);
         let corners = icons_of(&paints, Icon::Corner(Corner::TopLeft));
+        assert!(colors.hovered_tab.r > colors.bar.r && colors.hovered_tab.r < 0xff);
         assert_eq!(
             corners,
             vec![
@@ -1182,12 +1224,9 @@ mod tests {
             bell: false,
         }; 2];
         let layout = layout(METRICS, WIDTH, 2, 0);
-        let colors = Colors::new(BLACK, WHITE);
+        let colors = Colors::new(PALETTE);
         let backgrounds = |highlight: Highlight| -> Vec<(Area, Rgb)> {
-            icons_of(
-                &paints(&layout, &tabs, 0, highlight, BLACK, WHITE),
-                Icon::Dot,
-            )
+            icons_of(&paints(&layout, &tabs, 0, highlight, PALETTE), Icon::Dot)
         };
         assert_eq!(backgrounds(Highlight::default()), vec![]);
         let close = layout.tabs()[0].close;
@@ -1195,9 +1234,10 @@ mod tests {
             hovered: Some(Hit::Close(0)),
             pressed: None,
         };
+        // 表示しているタブの上では、端末の背景色を文字の色へ寄せる。
         assert_eq!(
             backgrounds(over_close),
-            vec![(close, colors.button(BLACK, false))]
+            vec![(close, colors.button(BLACK, WHITE, false))]
         );
         // 押したままボタンの上にあれば押している色、外へ出れば地を描かない。
         let pressed = Highlight {
@@ -1206,33 +1246,38 @@ mod tests {
         };
         assert_eq!(
             backgrounds(pressed),
-            vec![(close, colors.button(BLACK, true))]
+            vec![(close, colors.button(BLACK, WHITE, true))]
         );
         let pressed_elsewhere = Highlight {
             hovered: Some(Hit::Tab(0)),
             pressed: Some(Hit::Close(0)),
         };
         assert_eq!(backgrounds(pressed_elsewhere), vec![]);
-        // 新しいタブのボタン。「+」は一辺 20 で真ん中に、マウスの下なら文字の色。
+        // 新しいタブのボタン。地の上では、地の色をコントロールの文字の色へ寄せる。「+」は一辺 20 で
+        // 真ん中に、マウスの下ならコントロールの文字の色。
         let over_new_tab = Highlight {
             hovered: Some(Hit::NewTab),
             pressed: None,
         };
+        let text = PALETTE.system.text;
         assert_eq!(
             backgrounds(over_new_tab),
-            vec![(layout.new_tab, colors.button(colors.bar, false))]
+            vec![(layout.new_tab, colors.button(colors.bar, text, false))]
         );
         let plus = icons_of(
-            &paints(&layout, &tabs, 0, over_new_tab, BLACK, WHITE),
+            &paints(&layout, &tabs, 0, over_new_tab, PALETTE),
             Icon::Plus,
         );
         assert_eq!(
             plus,
             vec![(
                 square(layout.new_tab.x + 12, layout.new_tab.y + 12, 20),
-                WHITE
+                text
             )]
         );
-        assert_ne!(colors.button(BLACK, false), colors.button(BLACK, true));
+        assert_ne!(
+            colors.button(BLACK, WHITE, false),
+            colors.button(BLACK, WHITE, true)
+        );
     }
 }

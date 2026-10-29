@@ -23,7 +23,11 @@ use windows::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM},
         Graphics::{
             DirectWrite::IDWriteFactory,
-            Gdi::{ClientToScreen, InvalidateRect, ScreenToClient, ValidateRect},
+            Gdi::{
+                COLOR_BTNFACE, COLOR_BTNHIGHLIGHT, COLOR_BTNSHADOW, COLOR_BTNTEXT, COLOR_GRAYTEXT,
+                ClientToScreen, GetSysColor, InvalidateRect, SYS_COLOR_INDEX, ScreenToClient,
+                ValidateRect,
+            },
         },
         System::{
             LibraryLoader::GetModuleHandleW,
@@ -50,8 +54,8 @@ use windows::{
                 WM_DPICHANGED, WM_GETDPISCALEDSIZE, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION,
                 WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
                 WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN,
-                WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN,
-                WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+                WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_SYSCHAR, WM_SYSCOLORCHANGE, WM_SYSDEADCHAR,
+                WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -246,6 +250,27 @@ fn change_dpi_in_place(hwnd: HWND, dpi: u32) {
             Some(LPARAM(&raw const rect as isize)),
         )
     };
+}
+
+/// Windows のコントロールの色。描くたびに問い合わせるので、システムの色が変わればそのまま従う。
+fn system_colors() -> tab_bar::SystemColors {
+    let color = |index: SYS_COLOR_INDEX| {
+        // SAFETY: 決まった番号の色を問い合わせるだけ。
+        let colorref = unsafe { GetSysColor(index) };
+        // COLORREF は下位のバイトから赤・緑・青。
+        Rgb {
+            r: (colorref & 0xff) as u8,
+            g: ((colorref >> 8) & 0xff) as u8,
+            b: ((colorref >> 16) & 0xff) as u8,
+        }
+    };
+    tab_bar::SystemColors {
+        face: color(COLOR_BTNFACE),
+        text: color(COLOR_BTNTEXT),
+        gray_text: color(COLOR_GRAYTEXT),
+        highlight: color(COLOR_BTNHIGHLIGHT),
+        shadow: color(COLOR_BTNSHADOW),
+    }
 }
 
 /// `font` で `cols` × `rows` のセルを並べた大きさ（ピクセル）。
@@ -1539,7 +1564,8 @@ impl App {
         }
     }
 
-    /// タブバーに描くもの。色は端末の背景色 `background` と文字の色 `foreground` から決める。
+    /// タブバーに描くもの。色は Windows のコントロールの色と、端末の背景色 `background`・文字の色
+    /// `foreground` から決める。
     fn tab_bar_paints(&self, background: Rgb, foreground: Rgb) -> Vec<Paint> {
         let tabs: Vec<TabView> = self
             .sessions
@@ -1561,8 +1587,11 @@ impl App {
                 hovered: self.tab_bar_hover,
                 pressed,
             },
-            background,
-            foreground,
+            tab_bar::Palette {
+                system: system_colors(),
+                background,
+                foreground,
+            },
         )
     }
 
@@ -2020,6 +2049,12 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         WM_MOUSELEAVE => {
             with_app(&mut |app| app.on_mouse_leave());
             LRESULT(0)
+        }
+        // タブバーはシステムの色で描くので、描き直す。
+        WM_SYSCOLORCHANGE => {
+            with_app(&mut |app| app.invalidate());
+            // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         // Ctrl を離さないまま窓を離れると、離したことが届かないので、リンクの下線を消しておく。
         WM_KILLFOCUS => {
