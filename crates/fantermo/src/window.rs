@@ -597,7 +597,7 @@ struct App {
     /// 設定ダイアログを開いている間に、設定ファイルが書き換えられた。閉じたら読み直す。
     reload_pending: bool,
     /// 設定ダイアログが最後に設定ファイルに書いた中身。読み直すときに中身がこれと同じなら、使っている
-    /// 設定と同じなので読まない。
+    /// 設定と同じなので読まない。違えば捨てる。
     settings_written: Option<String>,
 }
 
@@ -1796,11 +1796,13 @@ impl App {
             self.reload_pending = true;
             return (None, None);
         }
+        // 一度の書き込みの知らせが、間を置いて二度に分かれて届くこともあるので、中身が変わるまで覚えておく。
         if let Some(written) = self.settings_written.take()
             && let Some(path) = &self.config_path
             && std::fs::read_to_string(path).is_ok_and(|text| text == written)
         {
             tracing::debug!("the settings file is as the settings dialog wrote it");
+            self.settings_written = Some(written);
             return (None, None);
         }
         let Loaded { config, notice } =
