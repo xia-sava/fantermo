@@ -42,6 +42,7 @@ mod shader;
 mod tab_bar;
 mod text_dialog;
 mod ui_font;
+mod version;
 mod window;
 mod window_state;
 
@@ -57,6 +58,7 @@ use windows::Win32::{
 
 fn main() {
     let log_dir = logging::init();
+    tracing::info!("fantermo {}", version::display());
 
     // SAFETY: 起動直後、窓を作る前に一度だけ呼ぶ。
     let dpi_awareness =
