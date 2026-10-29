@@ -39,7 +39,8 @@ impl ScreenDump {
         self.dir.join(FRAME_FILE)
     }
 
-    /// 表示している端末の画面の文字を、大きさ・フォント・タブの情報を先頭に付けて書き出す。`tabs` は
+    /// 表示している端末の画面の文字（スクロールバックを含む全体）を、大きさ・フォント・タブ・表示している
+    /// 範囲の情報を先頭に付けて書き出す。`tabs` は
     /// 窓が持つ端末の数、`active` は表示している端末の位置（0 から）。書き出すタブの番号は 1 から数える。
     pub fn write_screen(&self, vt: &Vt, font: &Font, tabs: usize, active: usize) {
         let text = match vt.plain_text() {
@@ -50,8 +51,16 @@ impl ScreenDump {
             }
         };
         let size = vt.size();
+        // 表示している範囲の先頭の行・全体の行数・表示している行数。
+        let scroll = match vt.scroll_position() {
+            Ok(position) => format!("{}/{}/{}", position.offset, position.total, position.len),
+            Err(e) => {
+                tracing::warn!("failed to read the scroll position: {e}");
+                "?".to_owned()
+            }
+        };
         let contents = format!(
-            "cols={} rows={} cell={}x{} font={} size={}pt tabs={tabs} active={}\n{text}",
+            "cols={} rows={} cell={}x{} font={} size={}pt tabs={tabs} active={} scroll={scroll}\n{text}",
             size.cols,
             size.rows,
             size.cell_width_px,
