@@ -43,10 +43,10 @@ pub const DEFAULT_PADDING: u32 = 4;
 /// 余白として受け付ける範囲（96 DPI でのピクセル）。
 pub const PADDING_RANGE: RangeInclusive<u32> = 0..=64;
 
-/// 背景画像の既定の濃さ（不透明度）。
+/// 背景画像の既定の不透明度。
 pub const DEFAULT_IMAGE_OPACITY: f32 = 0.2;
 
-/// 背景画像の濃さとして受け付ける範囲。
+/// 背景画像の不透明度として受け付ける範囲。
 pub const IMAGE_OPACITY_RANGE: RangeInclusive<f32> = 0.0..=1.0;
 
 /// プロファイルを書いていないときの、既定のプロファイルの名前。
@@ -317,13 +317,13 @@ impl BackendKind {
 pub struct BackgroundConfig {
     /// 画像のファイル・フォルダ・ワイルドカードの一覧（書いた順）。空なら画像を敷かない。
     pub images: Vec<BackgroundImage>,
-    /// 画像の濃さ（1 で画像をそのまま見せ、0 で消す）。
+    /// 画像の不透明度（1 で画像をそのまま見せ、0 で消す）。
     pub image_opacity: f32,
     pub fit: BackgroundFit,
 }
 
 impl BackgroundConfig {
-    /// `images` の `entry` 番目の項目から選んだ画像の収め方と濃さ。項目に書いていなければ（項目が
+    /// `images` の `entry` 番目の項目から選んだ画像の表示方法と不透明度。項目に書いていなければ（項目が
     /// なければ）、全体の値。
     pub fn settings_for(&self, entry: usize) -> (BackgroundFit, f32) {
         let image = self.images.get(entry);
@@ -335,7 +335,7 @@ impl BackgroundConfig {
         )
     }
 
-    /// `other` と、一覧の項目のパスが同じ順に並んでいる（項目ごとの収め方と濃さは比べない）。
+    /// `other` と、一覧の項目のパスが同じ順に並んでいる（項目ごとの表示方法と不透明度は比べない）。
     pub fn same_paths(&self, other: &BackgroundConfig) -> bool {
         self.images
             .iter()
@@ -349,14 +349,14 @@ impl BackgroundConfig {
 pub struct BackgroundImage {
     /// 画像のファイル・フォルダ・ワイルドカード（書いたまま）。
     pub path: String,
-    /// この項目から選んだ画像の収め方。`None` なら `[background]` の `fit`。
+    /// この項目から選んだ画像の表示方法。`None` なら `[background]` の `fit`。
     pub fit: Option<BackgroundFit>,
-    /// この項目から選んだ画像の濃さ。`None` なら `[background]` の `image_opacity`。
+    /// この項目から選んだ画像の不透明度。`None` なら `[background]` の `image_opacity`。
     pub image_opacity: Option<f32>,
 }
 
 impl BackgroundImage {
-    /// 収め方と濃さを全体の値に任せる項目。
+    /// 表示方法と不透明度を全体の値に任せる項目。
     pub fn new(path: impl Into<String>) -> Self {
         Self {
             path: path.into(),
@@ -376,7 +376,7 @@ impl Default for BackgroundConfig {
     }
 }
 
-/// 背景画像の収め方（`background.fit`）。
+/// 背景画像の表示方法（`background.fit`）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackgroundFit {
@@ -785,7 +785,7 @@ pub fn parse_padding(text: &str) -> Option<u32> {
     PADDING_RANGE.contains(&padding).then_some(padding)
 }
 
-/// 入力された文字列を、背景画像の濃さとして読む。前後の空白は除く。数でないか、
+/// 入力された文字列を、背景画像の不透明度として読む。前後の空白は除く。数でないか、
 /// [`IMAGE_OPACITY_RANGE`] の外なら `None`。
 pub fn parse_image_opacity(text: &str) -> Option<f32> {
     let opacity: f32 = text.trim().parse().ok()?;
@@ -1758,7 +1758,7 @@ mod tests {
         assert_eq!(parsed.warnings.len(), 1);
         let parsed = super::parse("[font]\n", &previous);
         assert_eq!(parsed.config.background, BackgroundConfig::default());
-        // 濃さの範囲の外と、数でないもの。
+        // 不透明度の範囲の外と、数でないもの。
         let parsed = parse("[background]\nimage_opacity = -0.1\n");
         assert_eq!(
             parsed.config.background.image_opacity,

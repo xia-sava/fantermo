@@ -34,7 +34,7 @@ pub trait Files {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
     pub path: PathBuf,
-    /// このファイルを出した、一覧の項目の位置。収め方と濃さはその項目から決める
+    /// このファイルを出した、一覧の項目の位置。表示方法と不透明度はその項目から決める
     /// （[`BackgroundConfig::settings_for`](crate::config::BackgroundConfig::settings_for)）。
     pub entry: usize,
 }
@@ -242,7 +242,7 @@ pub fn stored_size(image: (u32, u32), cover: (u32, u32), max_side: u32) -> (u32,
     (shrink(width), shrink(height))
 }
 
-/// 濃さ `image_opacity`（0〜1）の画像を見せるために、画像の上に重ねる端末の背景色の濃さ（不透明度）。
+/// 不透明度 `image_opacity`（0〜1）の画像を見せるために、画像の上に重ねる端末の背景色の不透明度。
 /// 範囲の外は端に寄せる。
 pub fn overlay_opacity(image_opacity: f32) -> f32 {
     (1.0 - image_opacity).clamp(0.0, 1.0)

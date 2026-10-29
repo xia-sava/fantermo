@@ -1,4 +1,4 @@
-//! 背景画像のファイルを WIC で読む。候補の展開と選び方、収め方は `fantermo_core::background`。
+//! 背景画像のファイルを WIC で読む。候補の展開と選び方、表示方法は `fantermo_core::background`。
 
 use std::path::{Path, PathBuf};
 

@@ -82,7 +82,7 @@ pub struct Backdrop<'a> {
     /// 画像を敷く範囲（端末の画面と余白）。
     pub region: Area,
     pub fit: BackgroundFit,
-    /// 画像の濃さ（0〜1。1 で画像をそのまま見せる）。
+    /// 画像の不透明度（0〜1。1 で画像をそのまま見せる）。
     pub image_opacity: f32,
 }
 
@@ -258,7 +258,7 @@ impl Renderer {
     /// ところは最初の画面の背景色で塗る。
     ///
     /// `backdrop` があれば、最初に画像を描き、その範囲に最初の画面の背景色を、画像が `image_opacity` の
-    /// 濃さに見える濃さ（[`background::overlay_opacity`]）で重ねる。
+    /// 不透明度に見える不透明度（[`background::overlay_opacity`]）で重ねる。
     /// 画面の領域は塗らず、背景色を持つセルだけを塗る。
     ///
     /// `capture` を渡すと、表示する前のバックバッファを PNG で書き出す。
@@ -566,7 +566,7 @@ fn solid(rect: [f32; 4], color: Rgb) -> Instance {
     translucent(rect, color, 1.0)
 }
 
-/// `rect` を `color` で、濃さ `alpha`（0〜1）で塗る。
+/// `rect` を `color` で、不透明度 `alpha`（0〜1）で塗る。
 fn translucent(rect: [f32; 4], color: Rgb, alpha: f32) -> Instance {
     let [r, g, b, _] = rgba(color);
     Instance {

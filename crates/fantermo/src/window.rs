@@ -2128,7 +2128,7 @@ impl App {
         self.default_profile = config.default_profile;
         self.keymap = config.keys;
         if config.background != self.background {
-            // 項目ごとの収め方と濃さだけが変わったなら、選んだ画像のまま描き直す（描くときに項目から
+            // 項目ごとの表示方法と不透明度だけが変わったなら、選んだ画像のまま描き直す（描くときに項目から
             // 決める）。
             let paths_changed = !config.background.same_paths(&self.background);
             self.background = config.background;
