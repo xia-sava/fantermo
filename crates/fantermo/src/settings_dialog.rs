@@ -19,8 +19,8 @@ use std::{
 use fantermo_core::{
     background::IMAGE_EXTENSIONS,
     config::{
-        self, BackgroundFit, BackgroundImage, ColorScheme, ColorTable, ColorsConfig, Config,
-        PasteConfirm, WideGlyph, format_color,
+        self, BackendKind, BackgroundFit, BackgroundImage, ColorScheme, ColorTable, ColorsConfig,
+        Config, PasteConfirm, Profile, WideGlyph, format_color,
     },
     frame::Rgb,
     keymap::{Action, KeyCombo, Keymap},
@@ -91,6 +91,12 @@ const ID_PADDING: i32 = 230;
 const ID_PADDING_SPIN: i32 = 231;
 /// `paste.confirm` のラジオボタン。[`PasteConfirm::ALL`] の順に ID が続く。
 const ID_PASTE_CONFIRM: i32 = 300;
+const ID_PROFILES: i32 = 400;
+const ID_PROFILE_ADD: i32 = 401;
+const ID_PROFILE_REMOVE: i32 = 402;
+const ID_PROFILE_DEFAULT: i32 = 403;
+const ID_PROFILE_NAME: i32 = 404;
+const ID_PROFILE_COMMAND: i32 = 405;
 const ID_BACKGROUND_IMAGES: i32 = 450;
 const ID_BACKGROUND_ADD_FILES: i32 = 451;
 const ID_BACKGROUND_ADD_FOLDER: i32 = 452;
@@ -130,7 +136,84 @@ const SPIN_RANGE: (i32, i32) = (0, 1000);
 const VISIBLE_FONTS: usize = 16;
 
 /// ページ。一覧の順。
-const PAGES: [&str; 5] = ["外観", "背景", "動作", "キー", "色"];
+const PAGES: [&str; 6] = ["外観", "背景", "動作", "プロファイル", "キー", "色"];
+
+/// プロファイルの一覧の高さ。
+const PROFILE_LIST_HEIGHT: i32 = 170;
+/// プロファイルの一覧の、コマンドラインの列の位置（ダイアログの単位）。
+const PROFILE_COLUMN_TAB_STOP: i32 = 120;
+/// `EM_SETSEL` と、すべてを選ぶときの範囲。
+const EM_SETSEL: u32 = 0x00B1;
+const SELECT_FROM_START: usize = 0;
+const SELECT_TO_END: isize = -1;
+/// 足したプロファイルの名前。同じ名前があれば後ろに番号を付ける。
+const NEW_PROFILE_NAME: &str = "新しいプロファイル";
+
+/// プロファイルの一覧の行。名前（既定なら印を添える）とコマンドラインをタブで区切る。
+fn profile_row_text(profile: &Profile, is_default: bool) -> String {
+    let mark = if is_default { "（既定）" } else { "" };
+    format!("{}{mark}\t{}", profile.name, profile.command)
+}
+
+/// `profiles` のどれとも違う、足すプロファイルの名前。
+fn new_profile_name(profiles: &[Profile]) -> String {
+    let taken = |name: &str| profiles.iter().any(|profile| profile.name == name);
+    if !taken(NEW_PROFILE_NAME) {
+        return NEW_PROFILE_NAME.to_owned();
+    }
+    (2..)
+        .map(|number| format!("{NEW_PROFILE_NAME} {number}"))
+        .find(|name| !taken(name))
+        .expect("some number is free")
+}
+
+/// プロファイルの入力欄。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProfileField {
+    Name,
+    Command,
+}
+
+/// 編集中のプロファイル `profiles` を設定ファイルと同じ決まりで確かめる。名前とコマンドラインが空で
+/// なく、名前がどれも違えば `Ok`。そうでなければ、最初の誤りの位置と入力欄と文。
+fn check_profiles(profiles: &[Profile]) -> Result<(), (usize, ProfileField, &'static str)> {
+    for (index, profile) in profiles.iter().enumerate() {
+        if profile.name.trim().is_empty() {
+            return Err((
+                index,
+                ProfileField::Name,
+                "プロファイルの名前を書いてください。",
+            ));
+        }
+        if profile.command.trim().is_empty() {
+            return Err((
+                index,
+                ProfileField::Command,
+                "プロファイルのコマンドラインを書いてください。",
+            ));
+        }
+        if profiles[..index]
+            .iter()
+            .any(|other| other.name == profile.name)
+        {
+            return Err((
+                index,
+                ProfileField::Name,
+                "ほかのプロファイルと同じ名前です。",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 既定のプロファイルを `profiles` の `index` 番目にしたときの `default_profile`。先頭で、開いたときも
+/// 書いていなかった（`base` が `None`）なら書かない。
+fn default_profile_name(profiles: &[Profile], index: usize, base: Option<&str>) -> Option<String> {
+    if index == 0 && base.is_none() {
+        return None;
+    }
+    profiles.get(index).map(|profile| profile.name.clone())
+}
 
 /// 背景画像の一覧の高さ。
 const BACKGROUND_LIST_HEIGHT: i32 = 106;
@@ -426,6 +509,9 @@ pub fn run(owner: HWND, request: Request, host: &mut dyn Host) {
         base_font: Cell::new(selected_font),
         previewed: RefCell::new(current.clone()),
         background_images: RefCell::new(current.background.images.clone()),
+        profiles: RefCell::new(current.profiles.clone()),
+        default_profile: Cell::new(current.default_profile_index()),
+        filling_profile: Cell::new(false),
         keys: RefCell::new(current.keys.clone()),
         key_rows: RefCell::new(Vec::new()),
         colors: RefCell::new(current.colors.clone()),
@@ -517,6 +603,14 @@ struct Controls {
     padding: HWND,
     padding_spin: HWND,
     paste_confirm: [HWND; 3],
+    /// プロファイルの一覧。
+    profiles_list: HWND,
+    /// 削除・既定にするのボタン。
+    profile_remove: HWND,
+    profile_default: HWND,
+    /// 一覧で選んでいるプロファイルの名前とコマンドライン。
+    profile_name: HWND,
+    profile_command: HWND,
     /// 背景画像の一覧。
     background_images: HWND,
     /// 背景画像の一覧の「外す」のボタン。
@@ -558,6 +652,13 @@ struct State<'a> {
     previewed: RefCell<Config>,
     /// 編集中の背景画像の一覧。
     background_images: RefCell<Vec<BackgroundImage>>,
+    /// 編集中のプロファイル。
+    profiles: RefCell<Vec<Profile>>,
+    /// 編集中の既定のプロファイルの、`profiles` の中の位置。
+    default_profile: Cell<usize>,
+    /// プロファイルの名前とコマンドラインの入力欄に、選んだプロファイルの値を入れている（その間に届く
+    /// EN_CHANGE を編集とみなさない）。
+    filling_profile: Cell<bool>,
     /// 編集中のキーの割り当て。
     keys: RefCell<Keymap>,
     /// キーの割り当ての一覧の行。一覧の順。
@@ -1115,6 +1216,122 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         Some(rect),
     )?);
 
+    // プロファイル
+    let mut profiles_page = Vec::new();
+    let (class, text, rect) = label(
+        "新しいタブで起動するプロファイル(&R):",
+        [page_left, row(0) + LABEL_OFFSET, page_width, ROW_HEIGHT],
+    );
+    profiles_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let profiles_top = row(0) + ROW_HEIGHT;
+    let profiles_list = child(
+        WC_LISTBOXW,
+        "",
+        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE((LBS_NOTIFY | LBS_USETABSTOPS) as u32),
+        WS_EX_CLIENTEDGE,
+        ID_PROFILES,
+        Some([page_left, profiles_top, page_width, PROFILE_LIST_HEIGHT]),
+    )?;
+    profiles_page.push(profiles_list);
+    let profile_tab_stops = [PROFILE_COLUMN_TAB_STOP];
+    // SAFETY: profiles_list は有効な一覧で、profile_tab_stops はこの呼び出しの間は生きている。
+    unsafe {
+        SendMessageW(
+            profiles_list,
+            LB_SETTABSTOPS,
+            Some(WPARAM(profile_tab_stops.len())),
+            Some(LPARAM(profile_tab_stops.as_ptr() as isize)),
+        )
+    };
+    let profile_buttons_top = profiles_top + PROFILE_LIST_HEIGHT + BUTTON_GAP;
+    let profile_button_width = (page_width - 2 * BUTTON_GAP) / 3;
+    let mut profile_buttons = [HWND::default(); 3];
+    for (index, (id, text)) in [
+        (ID_PROFILE_ADD, "追加(&D)"),
+        (ID_PROFILE_REMOVE, "削除(&L)"),
+        (ID_PROFILE_DEFAULT, "既定にする(&J)"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        profile_buttons[index] = child(
+            w!("BUTTON"),
+            text,
+            WS_GROUP | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+            none,
+            id,
+            Some([
+                page_left + index as i32 * (profile_button_width + BUTTON_GAP),
+                profile_buttons_top,
+                profile_button_width,
+                BUTTON_HEIGHT,
+            ]),
+        )?;
+        profiles_page.push(profile_buttons[index]);
+    }
+    let profile_name_row = profile_buttons_top + BUTTON_HEIGHT + MARGIN;
+    let (class, text, rect) = label("名前(&N):", label_rect(profile_name_row));
+    profiles_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let profile_name = child(
+        w!("EDIT"),
+        "",
+        edit_style,
+        WS_EX_CLIENTEDGE,
+        ID_PROFILE_NAME,
+        Some([control_left, profile_name_row, control_width, ROW_HEIGHT]),
+    )?;
+    profiles_page.push(profile_name);
+    let profile_command_row = profile_name_row + ROW_HEIGHT + MARGIN;
+    let (class, text, rect) = label("コマンドライン(&C):", label_rect(profile_command_row));
+    profiles_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let profile_command = child(
+        w!("EDIT"),
+        "",
+        edit_style,
+        WS_EX_CLIENTEDGE,
+        ID_PROFILE_COMMAND,
+        Some([control_left, profile_command_row, control_width, ROW_HEIGHT]),
+    )?;
+    profiles_page.push(profile_command);
+    let (class, text, rect) = label(
+        "タブバーの「+」は既定のプロファイルを開き、「▾」か「+」の右クリックで一覧から選んで開く。fantermo を引数つきで起動したときは、「+」とキーも引数のコマンドラインを使う。書き換えたら、次に開くタブから使う。",
+        [
+            page_left,
+            profile_command_row + ROW_HEIGHT + MARGIN,
+            page_width,
+            3 * ROW_HEIGHT,
+        ],
+    );
+    profiles_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+
     // キー
     let mut keys_page = Vec::new();
     let (class, text, rect) = label(
@@ -1348,6 +1565,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
                 appearance,
                 background_page,
                 behavior,
+                profiles_page,
                 keys_page,
                 colors_page,
             ],
@@ -1360,6 +1578,11 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             padding,
             padding_spin,
             paste_confirm,
+            profiles_list,
+            profile_remove: profile_buttons[1],
+            profile_default: profile_buttons[2],
+            profile_name,
+            profile_command,
             background_images,
             background_remove: image_buttons[2],
             background_opacity,
@@ -1439,6 +1662,9 @@ impl State<'_> {
             .iter()
             .position(|&value| value == config.paste.confirm);
         check_one(&c.paste_confirm, paste_confirm);
+        *self.profiles.borrow_mut() = config.profiles.clone();
+        self.default_profile.set(config.default_profile_index());
+        self.refresh_profiles(config.default_profile_index());
         *self.background_images.borrow_mut() = config.background.images.clone();
         self.refresh_background_images(None);
         set_text(
@@ -1561,6 +1787,168 @@ impl State<'_> {
             .iter()
             .position(|row| row.swatch == control)?;
         self.swatch_brushes.borrow().get(item).copied()
+    }
+
+    /// プロファイルの一覧を作り直し、`selected` 番目（一覧より後ろなら最後）を選んで、名前と
+    /// コマンドラインの入力欄にその値を入れる。
+    fn refresh_profiles(&self, selected: usize) {
+        let list = self.controls.profiles_list;
+        let profiles = self.profiles.borrow();
+        // SAFETY: 一覧は有効な窓。
+        unsafe { SendMessageW(list, LB_RESETCONTENT, None, None) };
+        for (index, profile) in profiles.iter().enumerate() {
+            let text = profile_row_text(profile, index == self.default_profile.get());
+            // SAFETY: 一覧は有効な窓で、文字列はこの呼び出しの間は生きている。
+            unsafe {
+                SendMessageW(
+                    list,
+                    LB_ADDSTRING,
+                    None,
+                    Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
+                )
+            };
+        }
+        let index = selected.min(profiles.len().saturating_sub(1));
+        drop(profiles);
+        // SAFETY: 一覧は有効な窓。
+        unsafe { SendMessageW(list, LB_SETCURSEL, Some(WPARAM(index)), None) };
+        self.on_profile_selected();
+    }
+
+    /// プロファイルの一覧で選んでいる位置。
+    fn selected_profile(&self) -> Option<usize> {
+        // SAFETY: 一覧は有効な窓。
+        let index =
+            unsafe { SendMessageW(self.controls.profiles_list, LB_GETCURSEL, None, None) }.0;
+        usize::try_from(index)
+            .ok()
+            .filter(|&index| index < self.profiles.borrow().len())
+    }
+
+    /// プロファイルの一覧で選んだものが変わった。名前とコマンドラインの入力欄に値を入れ、ボタンを
+    /// 押せるかを決める。
+    fn on_profile_selected(&self) {
+        let c = &self.controls;
+        let selected = self.selected_profile();
+        let profile = selected.and_then(|index| self.profiles.borrow().get(index).cloned());
+        self.filling_profile.set(true);
+        set_text(
+            c.profile_name,
+            profile.as_ref().map_or("", |profile| &profile.name),
+        );
+        set_text(
+            c.profile_command,
+            profile.as_ref().map_or("", |profile| &profile.command),
+        );
+        self.filling_profile.set(false);
+        let count = self.profiles.borrow().len();
+        for (control, enabled) in [
+            (c.profile_remove, selected.is_some() && count > 1),
+            (
+                c.profile_default,
+                selected.is_some_and(|index| index != self.default_profile.get()),
+            ),
+            (c.profile_name, selected.is_some()),
+            (c.profile_command, selected.is_some()),
+        ] {
+            // SAFETY: control はダイアログの子の有効な窓。
+            unsafe { _ = EnableWindow(control, enabled) };
+        }
+    }
+
+    /// プロファイルの名前かコマンドラインの入力欄が変わった。選んでいるプロファイルに入れ、一覧の行を
+    /// 書き直す。端末への反映は少し待つ（次に開くタブから使うので、反映しても見た目は変わらない）。
+    fn on_profile_edited(&self) {
+        if self.filling_profile.get() {
+            return;
+        }
+        let Some(index) = self.selected_profile() else {
+            return;
+        };
+        let name = get_text(self.controls.profile_name).trim().to_owned();
+        let command = get_text(self.controls.profile_command).trim().to_owned();
+        let text = {
+            let mut profiles = self.profiles.borrow_mut();
+            let profile = &mut profiles[index];
+            profile.name = name;
+            profile.command = command;
+            profile_row_text(profile, index == self.default_profile.get())
+        };
+        let list = self.controls.profiles_list;
+        // SAFETY: 一覧は有効な窓で、文字列はこの呼び出しの間は生きている。
+        unsafe {
+            SendMessageW(list, LB_DELETESTRING, Some(WPARAM(index)), None);
+            SendMessageW(
+                list,
+                LB_INSERTSTRING,
+                Some(WPARAM(index)),
+                Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
+            );
+            SendMessageW(list, LB_SETCURSEL, Some(WPARAM(index)), None);
+        }
+        self.schedule_preview();
+    }
+
+    /// プロファイルのボタン `id` が押された。
+    fn on_profile_button(&self, id: i32) {
+        let selected = match id {
+            ID_PROFILE_ADD => {
+                let mut profiles = self.profiles.borrow_mut();
+                let name = new_profile_name(&profiles);
+                profiles.push(Profile {
+                    name,
+                    command: config::DEFAULT_COMMAND_LINE.to_owned(),
+                    backend: BackendKind::default(),
+                });
+                profiles.len() - 1
+            }
+            ID_PROFILE_REMOVE => {
+                let Some(index) = self.selected_profile() else {
+                    return;
+                };
+                let mut profiles = self.profiles.borrow_mut();
+                if profiles.len() <= 1 {
+                    return;
+                }
+                profiles.remove(index);
+                let default = self.default_profile.get();
+                // 既定のものを消したら先頭を、その前を消したら一つ前へずらす。
+                self.default_profile.set(match default.cmp(&index) {
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => default - 1,
+                    std::cmp::Ordering::Less => default,
+                });
+                index
+            }
+            ID_PROFILE_DEFAULT => {
+                let Some(index) = self.selected_profile() else {
+                    return;
+                };
+                self.default_profile.set(index);
+                index
+            }
+            _ => return,
+        };
+        self.refresh_profiles(selected);
+        self.preview();
+        let focus = if id == ID_PROFILE_ADD {
+            self.controls.profile_name
+        } else {
+            self.controls.profiles_list
+        };
+        // SAFETY: focus はダイアログの子の有効な窓。押したボタンが押せなくなることがあるので移す。
+        unsafe { _ = SetFocus(Some(focus)) };
+        if id == ID_PROFILE_ADD {
+            // SAFETY: 入力欄は有効な窓。名前をすぐ打ち替えられるように全体を選ぶ。
+            unsafe {
+                SendMessageW(
+                    focus,
+                    EM_SETSEL,
+                    Some(WPARAM(SELECT_FROM_START)),
+                    Some(LPARAM(SELECT_TO_END)),
+                )
+            };
+        }
     }
 
     /// 背景画像の一覧を作り直し、`selected` 番目（一覧より後ろなら最後）を選ぶ。`None` なら選ばない。
@@ -2033,6 +2421,26 @@ impl State<'_> {
         if let Some(index) = checked(&c.paste_confirm) {
             config.paste.confirm = PasteConfirm::ALL[index];
         }
+        let profiles = self.profiles.borrow().clone();
+        if let Err((index, field, message)) = check_profiles(&profiles) {
+            // 誤りのあるプロファイルを選び、その入力欄へ移れるようにする。
+            if self.selected_profile() != Some(index) {
+                // SAFETY: 一覧は有効な窓。
+                unsafe { SendMessageW(c.profiles_list, LB_SETCURSEL, Some(WPARAM(index)), None) };
+                self.on_profile_selected();
+            }
+            let control = match field {
+                ProfileField::Name => c.profile_name,
+                ProfileField::Command => c.profile_command,
+            };
+            return Err((message, control));
+        }
+        config.default_profile = default_profile_name(
+            &profiles,
+            self.default_profile.get(),
+            self.base.borrow().default_profile.as_deref(),
+        );
+        config.profiles = profiles;
         if self.selected_background_image().is_some()
             && parse_item_opacity(&get_text(c.background_item_opacity)).is_none()
         {
@@ -2376,6 +2784,11 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 (ID_FONT, CBN_SELCHANGE) => {
                     state.preview();
                 }
+                (ID_PROFILES, LBN_SELCHANGE) => state.on_profile_selected(),
+                (ID_PROFILE_ADD | ID_PROFILE_REMOVE | ID_PROFILE_DEFAULT, BN_CLICKED) => {
+                    state.on_profile_button(id);
+                }
+                (ID_PROFILE_NAME | ID_PROFILE_COMMAND, EN_CHANGE) => state.on_profile_edited(),
                 (ID_BACKGROUND_IMAGES, LBN_SELCHANGE) => state.update_background_buttons(),
                 (
                     ID_BACKGROUND_ADD_FILES | ID_BACKGROUND_ADD_FOLDER | ID_BACKGROUND_REMOVE,
@@ -2567,6 +2980,65 @@ mod tests {
         keys.bind(combo("ctrl+c"), None);
         keys.bind(combo("ctrl+c"), Some(Action::Copy));
         assert!(is_default_binding(&keys, Action::Copy));
+    }
+
+    fn profile(name: &str, command: &str) -> Profile {
+        Profile {
+            name: name.to_owned(),
+            command: command.to_owned(),
+            backend: BackendKind::Conpty,
+        }
+    }
+
+    #[test]
+    fn profile_rows_mark_the_default() {
+        let zsh = profile("zsh", "zsh -l");
+        assert_eq!(profile_row_text(&zsh, false), "zsh\tzsh -l");
+        assert_eq!(profile_row_text(&zsh, true), "zsh（既定）\tzsh -l");
+    }
+
+    #[test]
+    fn added_profiles_get_a_free_name() {
+        let mut profiles = vec![profile("a", "x")];
+        assert_eq!(new_profile_name(&profiles), NEW_PROFILE_NAME);
+        profiles.push(profile(NEW_PROFILE_NAME, "x"));
+        profiles.push(profile(&format!("{NEW_PROFILE_NAME} 2"), "x"));
+        assert_eq!(new_profile_name(&profiles), format!("{NEW_PROFILE_NAME} 3"));
+    }
+
+    #[test]
+    fn profiles_are_checked_like_the_file() {
+        assert_eq!(
+            check_profiles(&[profile("a", "x"), profile("b", "y")]),
+            Ok(())
+        );
+        assert!(matches!(
+            check_profiles(&[profile("a", "x"), profile(" ", "y")]),
+            Err((1, ProfileField::Name, _))
+        ));
+        assert!(matches!(
+            check_profiles(&[profile("a", "")]),
+            Err((0, ProfileField::Command, _))
+        ));
+        assert!(matches!(
+            check_profiles(&[profile("a", "x"), profile("a", "y")]),
+            Err((1, ProfileField::Name, _))
+        ));
+    }
+
+    #[test]
+    fn the_first_profile_stays_unwritten_as_the_default() {
+        let profiles = [profile("a", "x"), profile("b", "y")];
+        assert_eq!(default_profile_name(&profiles, 0, None), None);
+        assert_eq!(
+            default_profile_name(&profiles, 1, None).as_deref(),
+            Some("b")
+        );
+        // 開いたときに書いてあれば、先頭でも名前を書く。
+        assert_eq!(
+            default_profile_name(&profiles, 0, Some("b")).as_deref(),
+            Some("a")
+        );
     }
 
     #[test]
