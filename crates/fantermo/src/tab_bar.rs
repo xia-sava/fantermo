@@ -31,7 +31,7 @@ const PADDING: u32 = 10;
 /// 新しいタブのボタンとメニューのボタン（丸い地）の直径。
 const BUTTON: u32 = 18;
 
-/// 新しいタブのボタンの「+」と、メニューのボタンの「≡」の一辺。
+/// 新しいタブのボタンの「+」、プロファイルの一覧のボタンの「▾」、メニューのボタンの「≡」の一辺。
 const BUTTON_MARK: u32 = 8;
 
 /// タブを閉じるボタン（丸い地）の直径。
@@ -165,7 +165,7 @@ impl Metrics {
         self.scale(BUTTON)
     }
 
-    /// 新しいタブのボタンの「+」と、メニューのボタンの「≡」の一辺。
+    /// 新しいタブのボタンの「+」、プロファイルの一覧のボタンの「▾」、メニューのボタンの「≡」の一辺。
     fn plus_mark(self) -> u32 {
         self.scale(BUTTON_MARK)
     }
@@ -197,6 +197,8 @@ pub struct Layout {
     tabs: Vec<TabSlot>,
     /// 新しいタブのボタン。タブの並びの右に置く。
     new_tab: Area,
+    /// プロファイルの一覧のボタン。新しいタブのボタンのすぐ右に置く。
+    profiles: Area,
     /// メニューのボタン。左端に置く。
     menu: Area,
 }
@@ -210,6 +212,8 @@ pub enum Hit {
     Close(usize),
     /// 新しいタブのボタン。
     NewTab,
+    /// プロファイルの一覧のボタン。
+    Profiles,
     /// メニューのボタン。
     Menu,
 }
@@ -219,13 +223,13 @@ impl Hit {
     pub fn tab(self) -> Option<usize> {
         match self {
             Hit::Tab(index) | Hit::Close(index) => Some(index),
-            Hit::NewTab | Hit::Menu => None,
+            Hit::NewTab | Hit::Profiles | Hit::Menu => None,
         }
     }
 }
 
 /// 幅 `width` のタブバーの左端にメニューのボタンを置き、その右に `tabs` 個のタブを並べ、さらに右に
-/// 新しいタブのボタンを置く。タブは同じ幅で、上限は [`MAX_TAB_WIDTH`]。多ければ [`MIN_TAB_WIDTH`]
+/// 新しいタブのボタンと、そのすぐ右にプロファイルの一覧のボタンを置く。タブは同じ幅で、上限は [`MAX_TAB_WIDTH`]。多ければ [`MIN_TAB_WIDTH`]
 /// まで縮め、それでも入りきらなければ、表示しているタブ `active` を含む続きのタブだけを並べる。
 pub fn layout(metrics: Metrics, width: u32, tabs: usize, active: usize) -> Layout {
     let top = metrics.top_margin();
@@ -247,13 +251,14 @@ pub fn layout(metrics: Metrics, width: u32, tabs: usize, active: usize) -> Layou
         width,
         tabs: Vec::new(),
         new_tab: button_at(start),
+        profiles: button_at(start + button_size),
         menu,
     };
     if tabs == 0 {
         return layout;
     }
-    // 新しいタブのボタンと、タブとの間のすき間の分を右に残す。
-    let end = width.saturating_sub(metrics.padding() + gap + button_size);
+    // 新しいタブとプロファイルの一覧のボタンと、タブとの間のすき間の分を右に残す。
+    let end = width.saturating_sub(metrics.padding() + gap + 2 * button_size);
     let room = end.saturating_sub(start);
     let (min_width, max_width) = metrics.tab_width_range();
     let fitting = usize::try_from(room / min_width)
@@ -295,6 +300,7 @@ pub fn layout(metrics: Metrics, width: u32, tabs: usize, active: usize) -> Layou
         .collect();
     if let Some(last) = layout.tabs.last() {
         layout.new_tab = button_at(last.area.right() + gap);
+        layout.profiles = button_at(layout.new_tab.right());
     }
     layout
 }
@@ -303,6 +309,11 @@ impl Layout {
     /// メニューのボタン。
     pub fn menu(&self) -> Area {
         self.menu
+    }
+
+    /// 新しいタブのボタンと、プロファイルの一覧のボタン。
+    pub fn new_tab_buttons(&self) -> (Area, Area) {
+        (self.new_tab, self.profiles)
     }
 
     /// 描くタブ。
@@ -326,6 +337,9 @@ impl Layout {
         }
         if column(self.new_tab, self.metrics).contains(x, y) {
             return Some(Hit::NewTab);
+        }
+        if column(self.profiles, self.metrics).contains(x, y) {
+            return Some(Hit::Profiles);
         }
         // メニューのボタンは、窓の左端からとみなす。
         let menu = Area {
@@ -467,13 +481,14 @@ pub struct Palette {
     pub active_border: Rgb,
     /// 表示しているタブのタイトルと閉じるボタンの「×」。
     pub active_title: Rgb,
-    /// 表示していないタブのタイトルと閉じるボタンの「×」、マウスの下の「+」と「≡」。
+    /// 表示していないタブのタイトルと閉じるボタンの「×」、マウスの下の「+」「▾」「≡」。
     pub inactive_title: Rgb,
     /// 表示していないタブの間の区切りの線。
     pub separator: Rgb,
     /// マウスの下の、表示していないタブ。
     pub hovered_tab: Rgb,
-    /// マウスの下にない、新しいタブのボタンの「+」とメニューのボタンの「≡」。
+    /// マウスの下にない、新しいタブのボタンの「+」、プロファイルの一覧のボタンの「▾」、メニューの
+    /// ボタンの「≡」。
     pub idle_mark: Rgb,
     /// 表示していない間にベルが鳴ったタブの印。
     pub bell: Rgb,
@@ -662,6 +677,7 @@ pub fn paints(
     }
     for (hit, area, icon) in [
         (Hit::NewTab, layout.new_tab, Icon::Plus),
+        (Hit::Profiles, layout.profiles, Icon::Chevron),
         (Hit::Menu, layout.menu, Icon::Menu),
     ] {
         let mark_color = if highlight.hovered == Some(hit) {
@@ -684,7 +700,7 @@ pub fn paints(
     paints
 }
 
-/// タブバーのボタン（×、+）一つ。
+/// タブバーのボタン（×、+、▾、≡）一つ。
 struct Button {
     /// ボタンの矩形。マウスの下にあれば、ここに丸い地を描く。
     area: Area,
@@ -898,8 +914,11 @@ mod tests {
         assert_eq!((tab.area.y, tab.area.bottom()), (4, 52));
         // 閉じるボタンは右の余白の半分を残してタブの右端に、高さの真ん中に置く。
         assert_eq!(tab.close, square(498, 12, 32));
-        // 新しいタブのボタンは、タブの右に同じすき間を空けて置く。
+        // 新しいタブのボタンは、タブの右に同じすき間を空けて置き、そのすぐ右にプロファイルの一覧の
+        // ボタン。
         assert_eq!(layout.new_tab, square(552, 10, 36));
+        assert_eq!(layout.profiles, square(588, 10, 36));
+        assert_eq!(layout.new_tab_buttons(), (layout.new_tab, layout.profiles));
     }
 
     #[test]
@@ -911,39 +930,39 @@ mod tests {
 
     #[test]
     fn many_tabs_share_the_bar_equally() {
-        // メニューのボタンまでと、右の余白・すき間・新しいタブのボタンを除いた 1472 ピクセルを
-        // 5 等分する。
+        // メニューのボタンまでと、右の余白・すき間・新しいタブとプロファイルの一覧のボタンを除いた
+        // 1436 ピクセルを 5 等分する。
         let layout = layout(METRICS, WIDTH, 5, 0);
         assert_eq!(layout.tabs().len(), 5);
-        assert!(layout.tabs().iter().all(|tab| tab.area.width == 294));
-        assert!(layout.new_tab.right() <= WIDTH - 20);
+        assert!(layout.tabs().iter().all(|tab| tab.area.width == 287));
+        assert!(layout.profiles.right() <= WIDTH - 20);
     }
 
     #[test]
     fn tabs_that_do_not_fit_leave_the_active_one_shown() {
-        // 1472 ピクセルには下限の 144 のタブが 10 個まで入る。
+        // 1436 ピクセルには下限の 144 のタブが 9 個まで入る。
         let first = layout(METRICS, WIDTH, 40, 0);
-        assert_eq!(first.tabs().len(), 10);
+        assert_eq!(first.tabs().len(), 9);
         assert_eq!(first.tabs()[0].index, 0);
-        assert!(first.tabs().iter().all(|tab| tab.area.width == 147));
-        assert!(first.new_tab.right() <= WIDTH - 20);
+        assert!(first.tabs().iter().all(|tab| tab.area.width == 159));
+        assert!(first.profiles.right() <= WIDTH - 20);
         // 入りきらない位置のタブを表示していれば、それが右端に来るまで並びをずらす。
         let middle = layout(METRICS, WIDTH, 40, 20);
         let indexes: Vec<usize> = middle.tabs().iter().map(|tab| tab.index).collect();
-        assert_eq!(indexes, (11..=20).collect::<Vec<_>>());
+        assert_eq!(indexes, (12..=20).collect::<Vec<_>>());
         let last = layout(METRICS, WIDTH, 40, 39);
-        assert_eq!(last.tabs()[9].index, 39);
+        assert_eq!(last.tabs()[8].index, 39);
         // 入りきるうちの位置なら左端から。
-        assert_eq!(layout(METRICS, WIDTH, 40, 9).tabs()[0].index, 0);
+        assert_eq!(layout(METRICS, WIDTH, 40, 8).tabs()[0].index, 0);
     }
 
     #[test]
     fn a_narrow_bar_still_shows_one_tab() {
-        let layout = layout(METRICS, 224, 3, 2);
+        let layout = layout(METRICS, 260, 3, 2);
         assert_eq!(xs(&layout), vec![(2, 60, 96)]);
         assert_eq!(layout.tabs()[0].close, square(114, 12, 32));
         // 閉じるボタンはタブからはみ出さない。
-        let narrower = super::layout(METRICS, 158, 3, 2);
+        let narrower = super::layout(METRICS, 194, 3, 2);
         assert_eq!(xs(&narrower), vec![(2, 60, 30)]);
         assert_eq!(
             narrower.tabs()[0].close,
@@ -954,7 +973,7 @@ mod tests {
                 height: 32
             }
         );
-        assert_eq!(super::layout(METRICS, 128, 3, 0).tabs(), &[]);
+        assert_eq!(super::layout(METRICS, 164, 3, 0).tabs(), &[]);
         assert_eq!(super::layout(METRICS, WIDTH, 0, 0).tabs(), &[]);
     }
 
@@ -974,17 +993,21 @@ mod tests {
         // 新しいタブのボタンは、上から下まで。
         assert_eq!(layout.hit(1032, 0), Some(Hit::NewTab));
         assert_eq!(layout.hit(1067, 51), Some(Hit::NewTab));
+        // プロファイルの一覧のボタンは、そのすぐ右から、上から下まで。
+        assert_eq!(layout.hit(1068, 30), Some(Hit::Profiles));
+        assert_eq!(layout.hit(1103, 0), Some(Hit::Profiles));
         // メニューのボタンは、窓の左端から、上から下まで。
         assert_eq!(layout.hit(0, 0), Some(Hit::Menu));
         assert_eq!(layout.hit(47, 51), Some(Hit::Menu));
         // メニューのボタンとタブの間、タブとボタンの間、右の空き、その下の端末の画面の余白。
         assert_eq!(layout.hit(54, 30), None);
         assert_eq!(layout.hit(1025, 30), None);
-        assert_eq!(layout.hit(1068, 30), None);
+        assert_eq!(layout.hit(1104, 30), None);
         assert_eq!(layout.hit(540, 52), None);
         assert_eq!(layout.hit(0, 59), None);
         assert_eq!(Hit::Close(1).tab(), Some(1));
         assert_eq!(Hit::NewTab.tab(), None);
+        assert_eq!(Hit::Profiles.tab(), None);
         assert_eq!(Hit::Menu.tab(), None);
     }
 
@@ -1389,6 +1412,16 @@ mod tests {
         assert_eq!(
             icons_of(&paints, Icon::Menu),
             vec![(square(22, 20, 16), SYSTEM.gray_text)]
+        );
+        // プロファイルの一覧のボタンの「▾」も、同じ大きさと色で新しいタブのボタンのすぐ右に。
+        let profiles = layout.profiles;
+        assert_eq!(profiles.x, layout.new_tab.right());
+        assert_eq!(
+            icons_of(&paints, Icon::Chevron),
+            vec![(
+                square(profiles.x + 10, profiles.y + 10, 16),
+                SYSTEM.gray_text
+            )]
         );
     }
 

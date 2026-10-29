@@ -1,13 +1,13 @@
 //! 右クリック、メニューキー、Shift+F10 で出すコンテキストメニューと、タブバーのメニューのボタンで出す
-//! メニュー。
+//! メニューと、プロファイルの一覧。
 
 use windows::{
     Win32::{
         Foundation::{HWND, RECT},
         UI::WindowsAndMessaging::{
-            AppendMenuW, CreatePopupMenu, DestroyMenu, HMENU, MENU_ITEM_FLAGS, MF_GRAYED,
-            MF_SEPARATOR, MF_STRING, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_TOPALIGN,
-            TPM_VERTICAL, TPMPARAMS, TrackPopupMenuEx,
+            AppendMenuW, CreatePopupMenu, DestroyMenu, HMENU, MENU_ITEM_FLAGS, MF_CHECKED,
+            MF_GRAYED, MF_SEPARATOR, MF_STRING, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+            TPM_TOPALIGN, TPM_VERTICAL, TPMPARAMS, TrackPopupMenuEx,
         },
     },
     core::HSTRING,
@@ -102,6 +102,40 @@ impl MenuCommand {
     }
 }
 
+/// メニューで選ばれたもの。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chosen {
+    Command(MenuCommand),
+    /// プロファイルの一覧の、`MenuRequest::profiles` の中の位置がこの値のプロファイル。
+    Profile(usize),
+}
+
+/// プロファイルの一覧の項目の ID の始まり。[`MenuCommand`] の ID と重ならないようにする。
+const PROFILE_ID_BASE: usize = 100;
+
+/// プロファイルの一覧の項目のうち、数字のアクセラレータ（1〜9）を付ける数。
+const NUMBERED_PROFILES: usize = 9;
+
+impl Chosen {
+    fn from_id(id: usize) -> Option<Self> {
+        match id.checked_sub(PROFILE_ID_BASE) {
+            Some(index) => Some(Chosen::Profile(index)),
+            None => MenuCommand::from_id(id).map(Chosen::Command),
+        }
+    }
+}
+
+/// プロファイルの一覧の `index` 番目の項目の表示。9 番目までは「&1 」〜「&9 」を前に付けて数字で選べる
+/// ようにする。名前の「&」は、アクセラレータの印にならないように重ねる。
+fn profile_label(index: usize, name: &str) -> String {
+    let name = name.replace('&', "&&");
+    if index < NUMBERED_PROFILES {
+        format!("&{} {name}", index + 1)
+    } else {
+        name
+    }
+}
+
 /// どのメニューか。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Menu {
@@ -109,6 +143,9 @@ pub enum Menu {
     Context,
     /// タブバーのメニューのボタンで出すメニュー。
     Main,
+    /// タブバーのプロファイルの一覧のボタン（または新しいタブのボタンの右クリック）で出す、
+    /// プロファイルの一覧。項目は `MenuRequest::profiles` から作る。
+    Profiles,
 }
 
 impl Menu {
@@ -116,6 +153,7 @@ impl Menu {
     fn items(self) -> &'static [Option<MenuCommand>] {
         use MenuCommand::*;
         match self {
+            Menu::Profiles => &[],
             Menu::Context => &[
                 Some(Copy),
                 Some(Paste),
@@ -159,10 +197,14 @@ pub struct MenuRequest {
     /// 設定ファイルの場所が分かっている。分からなければ「設定…」と「設定ファイルを開く」を押せなく
     /// する。
     pub can_open_settings: bool,
+    /// プロファイルの一覧に並べる名前（[`Menu::Profiles`] のとき）。
+    pub profiles: Vec<String>,
+    /// 既定のプロファイルの、`profiles` の中の位置。一覧で印を付ける。
+    pub default_profile: usize,
 }
 
-/// `request` のとおりにメニューを出し、選ばれた操作を返す。
-pub fn show(owner: HWND, request: &MenuRequest) -> Option<MenuCommand> {
+/// `request` のとおりにメニューを出し、選ばれたものを返す。
+pub fn show(owner: HWND, request: &MenuRequest) -> Option<Chosen> {
     let menu = match build(request) {
         Ok(menu) => menu,
         Err(e) => {
@@ -194,7 +236,7 @@ pub fn show(owner: HWND, request: &MenuRequest) -> Option<MenuCommand> {
     if let Err(e) = unsafe { DestroyMenu(menu) } {
         tracing::warn!("failed to destroy the menu: {e}");
     }
-    MenuCommand::from_id(chosen.0 as usize)
+    Chosen::from_id(chosen.0 as usize)
 }
 
 /// 項目を押せるか。
@@ -209,6 +251,18 @@ fn enabled(command: MenuCommand, request: &MenuRequest) -> bool {
 fn build(request: &MenuRequest) -> windows::core::Result<HMENU> {
     // SAFETY: 空のメニューを作るだけ。
     let menu = unsafe { CreatePopupMenu()? };
+    if request.menu == Menu::Profiles {
+        for (index, name) in request.profiles.iter().enumerate() {
+            let flags = if index == request.default_profile {
+                MF_STRING | MF_CHECKED
+            } else {
+                MF_STRING
+            };
+            let label = HSTRING::from(profile_label(index, name));
+            append(menu, flags, PROFILE_ID_BASE + index, Some(&label))?;
+        }
+        return Ok(menu);
+    }
     for item in request.menu.items() {
         let (flags, id, label) = match item {
             Some(command) => {
@@ -254,6 +308,23 @@ mod tests {
             assert_eq!(MenuCommand::from_id(command.id()), Some(command));
         }
         assert_eq!(MenuCommand::from_id(0), None);
+        assert_eq!(Chosen::from_id(0), None);
+        assert_eq!(
+            Chosen::from_id(MenuCommand::Copy.id()),
+            Some(Chosen::Command(MenuCommand::Copy))
+        );
+        assert_eq!(
+            Chosen::from_id(PROFILE_ID_BASE + 2),
+            Some(Chosen::Profile(2))
+        );
+        assert!(MenuCommand::ALL.iter().all(|c| c.id() < PROFILE_ID_BASE));
+    }
+
+    #[test]
+    fn profile_labels_are_numbered_and_keep_ampersands() {
+        assert_eq!(profile_label(0, "PowerShell"), "&1 PowerShell");
+        assert_eq!(profile_label(8, "R&D"), "&9 R&&D");
+        assert_eq!(profile_label(9, "WSL"), "WSL");
     }
 
     #[test]

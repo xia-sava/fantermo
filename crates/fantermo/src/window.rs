@@ -76,7 +76,7 @@ use crate::{
     background::DiskFiles,
     clipboard,
     config_file::{self, Loaded},
-    context_menu::{self, Menu, MenuCommand, MenuRequest},
+    context_menu::{self, Chosen, Menu, MenuCommand, MenuRequest},
     dump::{DUMP_INTERVAL, ScreenDump},
     font::{self, Font},
     ime::{self, CursorRect},
@@ -146,14 +146,31 @@ const INITIAL_ROWS: u16 = 30;
 /// 作り直しを、モニタを使わずに確かめるために使う。
 const DPI_ENV: &str = "FANTERMO_DPI";
 
-/// 端末を開くときに起動するコマンドライン。fantermo の引数 `arguments` があればそれ、なければ既定の
-/// プロファイル（`profiles` の `default` 番目）のもの。
-fn command_line_for(arguments: Option<&str>, profiles: &[Profile], default: usize) -> String {
-    if let Some(arguments) = arguments {
-        return arguments.to_owned();
-    }
+/// 新しい端末で起動するもの。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Launch {
+    /// fantermo の引数があればそれ、なければ既定のプロファイル。「+」・キー・メニューの「新しいタブ」。
+    Default,
+    /// 一覧から選んだ、プロファイルの並びの中の位置がこの値のプロファイル。
+    Profile(usize),
+}
+
+/// 端末を開くときに起動するコマンドライン。`launch` が [`Launch::Default`] なら、fantermo の引数
+/// `arguments` があればそれ、なければ既定のプロファイル（`profiles` の `default` 番目）のもの。
+/// 一覧から選んだプロファイルなら、引数があってもそのプロファイルのもの。並びの外なら先頭のもの。
+fn command_line_for(
+    arguments: Option<&str>,
+    profiles: &[Profile],
+    default: usize,
+    launch: Launch,
+) -> String {
+    let index = match (launch, arguments) {
+        (Launch::Default, Some(arguments)) => return arguments.to_owned(),
+        (Launch::Default, None) => default,
+        (Launch::Profile(index), _) => index,
+    };
     profiles
-        .get(default)
+        .get(index)
         .or(profiles.first())
         .map_or(config::DEFAULT_COMMAND_LINE, |profile| {
             profile.command.as_str()
@@ -724,6 +741,7 @@ impl App {
                 arguments.as_deref(),
                 &config.profiles,
                 config::default_profile_index(&config.profiles, config.default_profile.as_deref()),
+                Launch::Default,
             ),
             size,
             &config.colors.terminal_colors(),
@@ -947,7 +965,7 @@ impl App {
     fn run_tab_command(&mut self, command: TabCommand) -> Option<Deferred> {
         let count = self.sessions.len();
         match command {
-            TabCommand::New => self.open_session(),
+            TabCommand::New => self.open_session(Launch::Default),
             TabCommand::Close => {
                 if self.close_session(self.active) {
                     return Some(Deferred::CloseWindow);
@@ -959,13 +977,15 @@ impl App {
         None
     }
 
-    /// 新しい端末を開き、タブの並びの最後に足して表示する。起動できなければ警告を残して何もしない。
-    fn open_session(&mut self) {
+    /// `launch` の新しい端末を開き、タブの並びの最後に足して表示する。起動できなければ警告を残して
+    /// 何もしない。
+    fn open_session(&mut self, launch: Launch) {
         let id = SessionId(self.next_session_id);
         let command_line = command_line_for(
             self.arguments.as_deref(),
             &self.profiles,
-            config::default_profile_index(&self.profiles, self.default_profile.as_deref()),
+            self.default_profile_index(),
+            launch,
         );
         let size = grid_size(&self.font, self.terminal_area);
         let mut session = match Session::spawn(
@@ -1539,9 +1559,10 @@ impl App {
 
     /// タブバーの上で押した `button` を (`x`, `y`) で離した。押したときのマウスの下のものは `pressed`。
     /// 左ボタンは押したのと同じボタンの上で離したら、閉じるボタンならそのタブを閉じ、新しいタブのボタン
-    /// なら新しいタブを開く（タブは押したときに切り替えてある）。中ボタンを同じタブの上で離したら
-    /// そのタブを閉じ、右ボタンならコンテキストメニューを出すよう返す。最後のタブを閉じたら、窓を
-    /// 閉じるよう返す。
+    /// なら新しいタブを開き、プロファイルの一覧のボタンなら一覧を出すよう返す（タブは押したときに
+    /// 切り替えてある）。中ボタンを同じタブの上で離したらそのタブを閉じる。右ボタンは、新しいタブと
+    /// プロファイルの一覧のボタンの上で押して離したら一覧を、ほかはコンテキストメニューを出すよう返す。
+    /// 最後のタブを閉じたら、窓を閉じるよう返す。
     fn on_tab_bar_click(
         &mut self,
         button: MouseButton,
@@ -1560,9 +1581,10 @@ impl App {
                 match pressed? {
                     Hit::Close(index) => self.close_session(index).then_some(Deferred::CloseWindow),
                     Hit::NewTab => {
-                        self.open_session();
+                        self.open_session(Launch::Default);
                         None
                     }
+                    Hit::Profiles => Some(self.profile_menu()),
                     Hit::Menu => Some(self.main_menu()),
                     Hit::Tab(_) => None,
                 }
@@ -1574,8 +1596,60 @@ impl App {
                 }
                 self.close_session(index).then_some(Deferred::CloseWindow)
             }
+            // 新しいタブのボタンとプロファイルの一覧のボタンの右クリックは、プロファイルの一覧。
+            MouseButton::Right
+                if matches!(pressed, Some(Hit::NewTab | Hit::Profiles)) && released == pressed =>
+            {
+                Some(self.profile_menu())
+            }
             MouseButton::Right => Some(self.context_menu(x, y)),
             _ => None,
+        }
+    }
+
+    /// 既定のプロファイルの、`profiles` の中の位置。
+    fn default_profile_index(&self) -> usize {
+        config::default_profile_index(&self.profiles, self.default_profile.as_deref())
+    }
+
+    /// タブバーの新しいタブのボタンとプロファイルの一覧のボタンの下に、ボタンを隠さずにプロファイルの
+    /// 一覧を出すよう返す。
+    fn profile_menu(&self) -> Deferred {
+        let (new_tab, profiles) = self.tab_bar_layout().new_tab_buttons();
+        let (left, top) = self.client_to_screen(new_tab.x as i32, new_tab.y as i32);
+        let (right, bottom) =
+            self.client_to_screen(profiles.right() as i32, profiles.bottom() as i32);
+        Deferred::Menu(MenuRequest {
+            profiles: self
+                .profiles
+                .iter()
+                .map(|profile| profile.name.clone())
+                .collect(),
+            default_profile: self.default_profile_index(),
+            exclude: Some(RECT {
+                left,
+                top,
+                right,
+                bottom,
+            }),
+            x: left,
+            y: bottom,
+            ..self.menu_request(Menu::Profiles)
+        })
+    }
+
+    /// `menu` を出す要求。位置は窓の左上で、隠さない矩形はない。
+    fn menu_request(&self, menu: Menu) -> MenuRequest {
+        MenuRequest {
+            keys: self.keymap.clone(),
+            menu,
+            x: 0,
+            y: 0,
+            exclude: None,
+            can_copy: self.has_selection(),
+            can_open_settings: self.config_path.is_some(),
+            profiles: Vec::new(),
+            default_profile: 0,
         }
     }
 
@@ -1583,13 +1657,9 @@ impl App {
     fn context_menu(&self, x: i32, y: i32) -> Deferred {
         let (screen_x, screen_y) = self.client_to_screen(x, y);
         Deferred::Menu(MenuRequest {
-            keys: self.keymap.clone(),
-            menu: Menu::Context,
             x: screen_x,
             y: screen_y,
-            exclude: None,
-            can_copy: self.has_selection(),
-            can_open_settings: self.config_path.is_some(),
+            ..self.menu_request(Menu::Context)
         })
     }
 
@@ -1599,8 +1669,6 @@ impl App {
         let (left, top) = self.client_to_screen(button.x as i32, button.y as i32);
         let (right, bottom) = self.client_to_screen(button.right() as i32, button.bottom() as i32);
         Deferred::Menu(MenuRequest {
-            keys: self.keymap.clone(),
-            menu: Menu::Main,
             x: left,
             y: bottom,
             exclude: Some(RECT {
@@ -1609,8 +1677,7 @@ impl App {
                 right,
                 bottom,
             }),
-            can_copy: self.has_selection(),
-            can_open_settings: self.config_path.is_some(),
+            ..self.menu_request(Menu::Main)
         })
     }
 
@@ -2428,25 +2495,10 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
             }
             Deferred::EditSettings => edit_settings(hwnd, with_app),
             Deferred::Menu(request) => match context_menu::show(hwnd, &request) {
-                Some(MenuCommand::Copy) => with_app(&mut |app| {
-                    app.copy_selection();
-                }),
-                Some(MenuCommand::Paste) => with_app(&mut |app| next = app.paste_clipboard()),
-                Some(MenuCommand::SelectAll) => with_app(&mut |app| app.select_all()),
-                Some(MenuCommand::NewTab) => {
-                    with_app(&mut |app| next = app.run_tab_command(TabCommand::New))
+                Some(Chosen::Command(command)) => next = run_menu_command(command, with_app),
+                Some(Chosen::Profile(index)) => {
+                    with_app(&mut |app| app.open_session(Launch::Profile(index)))
                 }
-                Some(MenuCommand::CloseTab) => {
-                    with_app(&mut |app| next = app.run_tab_command(TabCommand::Close))
-                }
-                Some(MenuCommand::EditSettings) => next = Some(Deferred::EditSettings),
-                Some(MenuCommand::OpenSettings) => with_app(&mut |app| app.open_settings()),
-                Some(MenuCommand::ShowAbout) => with_app(&mut |app| {
-                    next = Some(Deferred::ShowAbout {
-                        font: app.font.clone(),
-                    })
-                }),
-                Some(MenuCommand::Exit) => next = Some(Deferred::CloseWindow),
                 None => {}
             },
             // DestroyWindow はこの場で WM_DESTROY を送るので、借用を手放してから呼ぶ。
@@ -2468,6 +2520,29 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
             },
         }
     }
+}
+
+/// メニューで選ばれた `command` をする。続けてすることがあれば返す。
+fn run_menu_command(command: MenuCommand, with_app: &WithApp) -> Option<Deferred> {
+    let mut next = None;
+    match command {
+        MenuCommand::Copy => with_app(&mut |app| {
+            app.copy_selection();
+        }),
+        MenuCommand::Paste => with_app(&mut |app| next = app.paste_clipboard()),
+        MenuCommand::SelectAll => with_app(&mut |app| app.select_all()),
+        MenuCommand::NewTab => with_app(&mut |app| next = app.run_tab_command(TabCommand::New)),
+        MenuCommand::CloseTab => with_app(&mut |app| next = app.run_tab_command(TabCommand::Close)),
+        MenuCommand::EditSettings => next = Some(Deferred::EditSettings),
+        MenuCommand::OpenSettings => with_app(&mut |app| app.open_settings()),
+        MenuCommand::ShowAbout => with_app(&mut |app| {
+            next = Some(Deferred::ShowAbout {
+                font: app.font.clone(),
+            })
+        }),
+        MenuCommand::Exit => next = Some(Deferred::CloseWindow),
+    }
+    next
 }
 
 /// 設定ファイルを読み直し、フォントやスクロールバーの幅が変わっていれば作り直す。誤りがあれば見せる。
@@ -3105,13 +3180,20 @@ mod tests {
     #[test]
     fn command_line_prefers_arguments_then_the_default_profile() {
         let profiles = [Profile::builtin(), Profile::from_shell("zsh -l")];
-        let line = |arguments, default| command_line_for(arguments, &profiles, default);
-        assert_eq!(line(Some("cmd.exe"), 1), "cmd.exe");
-        assert_eq!(line(None, 1), "zsh -l");
-        assert_eq!(line(None, 0), "powershell.exe -NoLogo");
+        let line =
+            |arguments, default, launch| command_line_for(arguments, &profiles, default, launch);
+        assert_eq!(line(Some("cmd.exe"), 1, Launch::Default), "cmd.exe");
+        assert_eq!(line(None, 1, Launch::Default), "zsh -l");
+        assert_eq!(line(None, 0, Launch::Default), "powershell.exe -NoLogo");
+        // 一覧から選んだプロファイルは、引数があってもそのプロファイル。
+        assert_eq!(line(Some("cmd.exe"), 0, Launch::Profile(1)), "zsh -l");
         // 並びの外なら先頭。
-        assert_eq!(line(None, 5), "powershell.exe -NoLogo");
-        assert_eq!(command_line_for(None, &[], 0), config::DEFAULT_COMMAND_LINE);
+        assert_eq!(line(None, 5, Launch::Default), "powershell.exe -NoLogo");
+        assert_eq!(line(None, 0, Launch::Profile(7)), "powershell.exe -NoLogo");
+        assert_eq!(
+            command_line_for(None, &[], 0, Launch::Default),
+            config::DEFAULT_COMMAND_LINE
+        );
     }
 
     #[test]

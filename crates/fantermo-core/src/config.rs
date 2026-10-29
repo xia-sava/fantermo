@@ -112,8 +112,8 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # タブバーの色。"#rrggbb" の形で書く。書かない色は Windows のシステムの色から決める（下の値は Windows 11
 # の既定の色のときのもの）。bar は地、active_tab は表示しているタブ、active_border はその左・右・上の縁の
 # 線、active_title はその文字と閉じるボタンの「×」、inactive_title は表示していないタブの文字と「×」と
-# マウスの下の「+」「≡」、separator は表示していないタブの間の区切りの線、hovered_tab はマウスの下の
-# 表示していないタブ、idle_mark はマウスの下にない「+」「≡」、bell はベルが鳴ったタブの印。
+# マウスの下の「+」「▾」「≡」、separator は表示していないタブの間の区切りの線、hovered_tab はマウスの下の
+# 表示していないタブ、idle_mark はマウスの下にない「+」「▾」「≡」、bell はベルが鳴ったタブの印。
 # bar = "#cccccc"
 # active_tab = "#ffffff"
 # active_border = "#a0a0a0"

@@ -94,6 +94,8 @@ pub enum Icon {
     Plus,
     /// メニューのボタンの「≡」（横線 3 本）。
     Menu,
+    /// プロファイルの一覧のボタンの「▾」（下向きの三角）。
+    Chevron,
 }
 
 impl Icon {
@@ -136,6 +138,15 @@ impl Icon {
                     .into_iter()
                     .map(|top| rect(0.0, top, width, top + thickness))
                     .collect()
+            }
+            Icon::Chevron => {
+                // 幅いっぱいで、高さの真ん中の半分に収める。
+                let top = (height / 4.0).round();
+                let bottom = height - top;
+                vec![Shape::Polygon {
+                    points: vec![(0.0, top), (width, top), (width / 2.0, bottom)],
+                    alpha: 1.0,
+                }]
             }
             Icon::Dot => {
                 let radius = width.min(height) / 2.0;
@@ -290,6 +301,17 @@ mod tests {
                 rect(0.0, 5.0, 12.0, 7.0),
                 rect(0.0, 10.0, 12.0, 12.0),
             ]
+        );
+    }
+
+    #[test]
+    fn the_chevron_points_down_in_the_middle() {
+        assert_eq!(
+            Icon::Chevron.shapes(8.0, 8.0),
+            vec![Shape::Polygon {
+                points: vec![(0.0, 2.0), (8.0, 2.0), (4.0, 6.0)],
+                alpha: 1.0,
+            }]
         );
     }
 
