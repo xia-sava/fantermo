@@ -15,7 +15,7 @@ use windows::{
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             HiDpi::GetDpiForWindow,
-            Input::KeyboardAndMouse::{EnableWindow, SetFocus},
+            Input::KeyboardAndMouse::{EnableWindow, GetKeyState, SetFocus, VK_CONTROL, VK_MENU},
             WindowsAndMessaging::{
                 BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
                 DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE,
@@ -24,10 +24,10 @@ use windows::{
                 IDOK, IsDialogMessageW, LoadCursorW, MSG, MoveWindow, PostQuitMessage,
                 RegisterClassW, SW_SHOW, SWP_NOZORDER, SendMessageW, SetForegroundWindow,
                 SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
-                WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_SETFONT,
-                WM_SIZE, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT,
-                WS_EX_DLGMODALFRAME, WS_HSCROLL, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME,
-                WS_VISIBLE, WS_VSCROLL,
+                WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_KEYDOWN,
+                WM_SETFONT, WM_SIZE, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE,
+                WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_HSCROLL, WS_POPUP, WS_SYSMENU,
+                WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
             },
         },
     },
@@ -44,6 +44,12 @@ const EDIT_ID: i32 = 100;
 /// `EM_SETLIMITTEXT` と、その上限を外す値。
 const EM_SETLIMITTEXT: u32 = 0x00C5;
 const NO_TEXT_LIMIT: usize = 0;
+/// `EM_SETSEL` と、すべてを選ぶときの範囲。
+const EM_SETSEL: u32 = 0x00B1;
+const SELECT_FROM_START: usize = 0;
+const SELECT_TO_END: isize = -1;
+/// Ctrl+A の A の仮想キー。
+const VK_A: usize = b'A' as usize;
 
 /// 96 DPI のときの寸法（ピクセル）。窓の DPI に合わせて拡大する。
 const BASE_DPI: f32 = 96.0;
@@ -278,6 +284,18 @@ fn run_modal(owner: HWND, dialog: HWND, state: &DialogState) {
             }
             break;
         }
+        if is_select_all(&msg, state.edit.get()) {
+            // SAFETY: テキストボックスは有効な窓。
+            unsafe {
+                SendMessageW(
+                    state.edit.get(),
+                    EM_SETSEL,
+                    Some(WPARAM(SELECT_FROM_START)),
+                    Some(LPARAM(SELECT_TO_END)),
+                )
+            };
+            continue;
+        }
         // Tab での移動、Enter で既定のボタン、Esc でキャンセルを、ダイアログの決まりどおりに扱う。
         // SAFETY: dialog はこのスレッドの窓で、msg は GetMessageW が埋めたもの。
         if unsafe { IsDialogMessageW(dialog, &msg) }.as_bool() {
@@ -294,6 +312,17 @@ fn run_modal(owner: HWND, dialog: HWND, state: &DialogState) {
         _ = EnableWindow(owner, true);
         _ = SetForegroundWindow(owner);
     }
+}
+
+/// `msg` がテキストボックス `edit` での Ctrl+A（Alt なし）か。複数行のテキストボックスは Ctrl+A で
+/// すべてを選ばないので、ループで受け持つ。
+fn is_select_all(msg: &MSG, edit: HWND) -> bool {
+    if msg.hwnd != edit || msg.message != WM_KEYDOWN || msg.wParam.0 != VK_A {
+        return false;
+    }
+    // SAFETY: このスレッドのキーの状態を読むだけ。
+    let pressed = |key| unsafe { GetKeyState(i32::from(key)) } < 0;
+    pressed(VK_CONTROL.0) && !pressed(VK_MENU.0)
 }
 
 /// テキストボックスを広く取り、ボタンを右下に並べる。
