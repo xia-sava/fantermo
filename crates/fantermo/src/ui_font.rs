@@ -8,8 +8,8 @@ use windows::{
     Win32::{
         Graphics::DirectWrite::{
             DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
-            DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_METRICS,
-            DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
+            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP,
+            IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
         },
         UI::{
             HiDpi::SystemParametersInfoForDpi, WindowsAndMessaging::NONCLIENTMETRICSW,
@@ -51,12 +51,12 @@ pub struct UiFont {
     pub family: String,
     /// フォントの大きさ（ピクセル）。
     pub size_px: f32,
-    /// 太字でない書式と、太字の書式。
-    formats: [IDWriteTextFormat; 2],
+    /// メッセージのフォントの太さの書式。
+    format: IDWriteTextFormat,
     /// 1 行の高さ（ピクセル）。
     height_px: u32,
     /// 測った文字列の幅。
-    widths: RefCell<HashMap<(String, bool), u32>>,
+    widths: RefCell<HashMap<String, u32>>,
 }
 
 impl UiFont {
@@ -75,17 +75,13 @@ impl UiFont {
             }
         };
         let size_px = message_size_px * TITLE_SIZE_RATIO;
-        let bold = DWRITE_FONT_WEIGHT(weight.0.max(DWRITE_FONT_WEIGHT_BOLD.0));
-        let formats = [
-            text_format(dwrite, &family, size_px, weight)?,
-            text_format(dwrite, &family, size_px, bold)?,
-        ];
-        let height_px = line_height(dwrite, &formats[0])?;
+        let format = text_format(dwrite, &family, size_px, weight)?;
+        let height_px = line_height(dwrite, &format)?;
         Ok(Self {
             dwrite: dwrite.clone(),
             family,
             size_px,
-            formats,
+            format,
             height_px,
             widths: RefCell::new(HashMap::new()),
         })
@@ -96,28 +92,18 @@ impl UiFont {
         self.height_px
     }
 
-    /// `text` を 1 行に組んだものと、その送り幅とインクの範囲。`bold` なら太字で組む。
-    pub fn layout(
-        &self,
-        text: &str,
-        bold: bool,
-    ) -> windows::core::Result<(IDWriteTextLayout, TextExtent)> {
-        atlas::text_layout(
-            &self.dwrite,
-            &self.formats[usize::from(bold)],
-            text,
-            self.height_px as f32,
-        )
+    /// `text` を 1 行に組んだものと、その送り幅とインクの範囲。
+    pub fn layout(&self, text: &str) -> windows::core::Result<(IDWriteTextLayout, TextExtent)> {
+        atlas::text_layout(&self.dwrite, &self.format, text, self.height_px as f32)
     }
 }
 
 impl tab_bar::Measure for UiFont {
-    fn width(&self, text: &str, bold: bool) -> u32 {
-        let key = (text.to_owned(), bold);
-        if let Some(width) = self.widths.borrow().get(&key) {
+    fn width(&self, text: &str) -> u32 {
+        if let Some(width) = self.widths.borrow().get(text) {
             return *width;
         }
-        let width = match self.layout(text, bold) {
+        let width = match self.layout(text) {
             Ok((_, extent)) => extent.advance.ceil() as u32,
             Err(e) => {
                 tracing::warn!("failed to measure {text:?}: {e}");
@@ -128,7 +114,7 @@ impl tab_bar::Measure for UiFont {
         if widths.len() >= MAX_CACHED_WIDTHS {
             widths.clear();
         }
-        widths.insert(key, width);
+        widths.insert(text.to_owned(), width);
         width
     }
 
@@ -225,12 +211,11 @@ mod tests {
         assert_eq!(base.family, doubled.family);
         assert!((doubled.size_px - base.size_px * 2.0).abs() <= 1.0);
         assert!(doubled.height() >= base.height() * 2 - 1);
-        // 等幅でなくてよい。太字は太字でないものより狭くはない。
-        let narrow = base.width("iiii", false);
-        let wide = base.width("MMMM", false);
+        // 等幅でなくてよい。
+        let narrow = base.width("iiii");
+        let wide = base.width("MMMM");
         assert!(0 < narrow && narrow < wide);
-        assert!(base.width("MMMM", true) >= wide);
         // 覚えた幅を返す。
-        assert_eq!(base.width("MMMM", false), wide);
+        assert_eq!(base.width("MMMM"), wide);
     }
 }

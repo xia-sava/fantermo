@@ -166,8 +166,8 @@ pub struct GlyphAtlas {
     icon_slots: HashMap<(Icon, u32, u32), Slot>,
     /// タブバーのタイトルを描く書体。
     ui_font: Rc<UiFont>,
-    /// タブバーのタイトルの文字列と、太字かごとの場所。
-    label_slots: HashMap<(String, bool), Slot>,
+    /// タブバーのタイトルの文字列ごとの場所。
+    label_slots: HashMap<String, Slot>,
 }
 
 impl GlyphAtlas {
@@ -372,16 +372,15 @@ impl GlyphAtlas {
         Ok(slot)
     }
 
-    /// タブバーのタイトル `text` を UI のフォントで 1 行に組んで描いた場所を返す（`bold` なら太字）。
-    /// まだ描いていなければ描く。場所の高さは UI のフォントの 1 行の高さで、インクが送り幅の左右へ
-    /// はみ出せば、その分の余白を足す。
-    pub fn label_slot(&mut self, text: &str, bold: bool) -> Result<Slot, AtlasFull> {
-        let key = (text.to_owned(), bold);
-        if let Some(slot) = self.label_slots.get(&key) {
+    /// タブバーのタイトル `text` を UI のフォントで 1 行に組んで描いた場所を返す。まだ描いていなければ
+    /// 描く。場所の高さは UI のフォントの 1 行の高さで、インクが送り幅の左右へはみ出せば、その分の
+    /// 余白を足す。
+    pub fn label_slot(&mut self, text: &str) -> Result<Slot, AtlasFull> {
+        if let Some(slot) = self.label_slots.get(text) {
             return Ok(*slot);
         }
         let height = self.ui_font.height_px();
-        let (layout, extent) = match self.ui_font.layout(text, bold) {
+        let (layout, extent) = match self.ui_font.layout(text) {
             Ok(measured) => measured,
             Err(e) => {
                 tracing::warn!("failed to lay out the title {text:?}: {e}");
@@ -404,7 +403,7 @@ impl GlyphAtlas {
         if let Err(e) = self.draw_text(&layout, &placement, slot) {
             tracing::warn!("failed to rasterize the title {text:?}: {e}");
         }
-        self.label_slots.insert(key, slot);
+        self.label_slots.insert(text.to_owned(), slot);
         Ok(slot)
     }
 

@@ -49,7 +49,6 @@ pub enum Paint {
         x: u32,
         y: u32,
         text: String,
-        bold: bool,
         color: Rgb,
     },
 }

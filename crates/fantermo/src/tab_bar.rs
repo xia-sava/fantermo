@@ -100,8 +100,8 @@ pub struct Metrics {
 
 /// タイトルの文字列の大きさを測るもの。窓では Windows の UI のフォントで測る。
 pub trait Measure {
-    /// `text` を 1 行に組んだ幅（ピクセル）。`bold` なら太字で組む。
-    fn width(&self, text: &str, bold: bool) -> u32;
+    /// `text` を 1 行に組んだ幅（ピクセル）。
+    fn width(&self, text: &str) -> u32;
     /// 1 行の高さ（ピクセル）。
     fn height(&self) -> u32;
 }
@@ -349,10 +349,10 @@ fn column(area: Area, metrics: Metrics) -> Area {
     }
 }
 
-/// `title` を幅 `width`（ピクセル）に収めた文字列。幅は `measure` で測り、`bold` なら太字で測る。
-/// 収まらなければ、書記素クラスタの切れ目で切って末尾を [`ELLIPSIS`] にする（[`ELLIPSIS`] も入らなければ
-/// 空）。幅のない書記素クラスタ（制御文字など）は除く。
-pub fn fit_title(title: &str, width: u32, bold: bool, measure: &impl Measure) -> String {
+/// `title` を幅 `width`（ピクセル）に収めた文字列。幅は `measure` で測る。収まらなければ、書記素
+/// クラスタの切れ目で切って末尾を [`ELLIPSIS`] にする（[`ELLIPSIS`] も入らなければ空）。幅のない書記素
+/// クラスタ（制御文字など）は除く。
+pub fn fit_title(title: &str, width: u32, measure: &impl Measure) -> String {
     let graphemes: Vec<vt::Grapheme> = vt::split_graphemes(title)
         .into_iter()
         .filter(|grapheme| grapheme.width > 0)
@@ -364,18 +364,18 @@ pub fn fit_title(title: &str, width: u32, bold: bool, measure: &impl Measure) ->
             .collect()
     };
     let whole = prefix(graphemes.len());
-    if measure.width(&whole, bold) <= width {
+    if measure.width(&whole) <= width {
         return whole;
     }
     let shortened = |count: usize| prefix(count) + ELLIPSIS;
-    if measure.width(ELLIPSIS, bold) > width {
+    if measure.width(ELLIPSIS) > width {
         return String::new();
     }
     // 先頭の `fitting` 個に印を付けたものは収まり、`too_many` 個では収まらない。
     let (mut fitting, mut too_many) = (0, graphemes.len());
     while too_many - fitting > 1 {
         let middle = (fitting + too_many) / 2;
-        if measure.width(&shortened(middle), bold) <= width {
+        if measure.width(&shortened(middle)) <= width {
             fitting = middle;
         } else {
             too_many = middle;
@@ -540,7 +540,7 @@ fn mix(from: Rgb, to: Rgb, ratio: f32) -> Rgb {
 
 /// `layout` のとおりに並べたタブバーに描くもの。`tabs` は端末の並びの順のタブ、`active` は表示して
 /// いるタブの位置、`highlight` はマウスの下にあるものと押しているもの。色は `colors`、タイトルの幅は
-/// `measure` で測る。表示しているタブのタイトルは太字にする。閉じるボタンは、表示しているタブと
+/// `measure` で測る。閉じるボタンは、表示しているタブと
 /// マウスの下のタブにだけ出す。描くのはタブバーの高さまでで、端末の画面との間の空きには描かない。
 pub fn paints(
     layout: &Layout,
@@ -609,13 +609,12 @@ pub fn paints(
                 color: colors.bell,
             });
         }
-        let title = fit_title(tab.title, content.title_width, is_active, measure);
+        let title = fit_title(tab.title, content.title_width, measure);
         if !title.is_empty() {
             paints.push(Paint::Label {
                 x: content.title_x,
                 y: content.text_y,
                 text: title,
-                bold: is_active,
                 color: title_color,
             });
         }
@@ -780,20 +779,18 @@ mod tests {
     /// セルの幅が 16 ピクセルの 100 桁の窓のタブバーの幅。
     const WIDTH: u32 = 100 * 16;
 
-    /// 幅が ASCII の文字と [`ELLIPSIS`] は 10、ほかの文字は 20 ピクセル（太字なら 1 ずつ広い）、
-    /// 1 行の高さが 32 ピクセルの書体。
+    /// 幅が ASCII の文字と [`ELLIPSIS`] は 10、ほかの文字は 20 ピクセル、1 行の高さが 32 ピクセルの書体。
     struct FixedWidth;
 
     impl Measure for FixedWidth {
-        fn width(&self, text: &str, bold: bool) -> u32 {
+        fn width(&self, text: &str) -> u32 {
             text.chars()
                 .map(|c| {
-                    let width = if c.is_ascii() || ELLIPSIS.contains(c) {
+                    if c.is_ascii() || ELLIPSIS.contains(c) {
                         10
                     } else {
                         20
-                    };
-                    width + u32::from(bold)
+                    }
                 })
                 .sum()
         }
@@ -804,7 +801,7 @@ mod tests {
     }
 
     fn fit(title: &str, width: u32) -> String {
-        fit_title(title, width, false, &FixedWidth)
+        fit_title(title, width, &FixedWidth)
     }
 
     fn xs(layout: &Layout) -> Vec<(usize, u32, u32)> {
@@ -954,12 +951,6 @@ mod tests {
     }
 
     #[test]
-    fn bold_titles_are_measured_in_bold() {
-        // 太字は 1 文字 11 ピクセル。100 ピクセルには 8 文字と省略の印。
-        assert_eq!(fit_title("abcdefghij", 100, true, &FixedWidth), "abcdefgh…");
-    }
-
-    #[test]
     fn wide_characters_are_not_split() {
         // 「端末」は 40 ピクセル。30 ピクセルに収めるなら「端」と省略の印。
         assert_eq!(fit("端末", 40), "端末");
@@ -1036,17 +1027,11 @@ mod tests {
         }
     }
 
-    fn titles(paints: &[Paint]) -> Vec<(u32, u32, String, bool, Rgb)> {
+    fn titles(paints: &[Paint]) -> Vec<(u32, u32, String, Rgb)> {
         paints
             .iter()
             .filter_map(|paint| match paint {
-                Paint::Label {
-                    x,
-                    y,
-                    text,
-                    bold,
-                    color,
-                } => Some((*x, *y, text.clone(), *bold, *color)),
+                Paint::Label { x, y, text, color } => Some((*x, *y, text.clone(), *color)),
                 _ => None,
             })
             .collect()
@@ -1229,12 +1214,12 @@ mod tests {
             Paint::Label { y, .. } => y + FixedWidth.height() <= 64,
         }));
         // タイトルは一つの文字列として、余白の右、タブの高さの真ん中に置く。表示しているタブの
-        // タイトルは太字で窓の文字の色、ほかはコントロールの文字の色。
+        // タイトルは窓の文字の色、ほかはコントロールの文字の色。
         assert_eq!(
             titles(&paints),
             vec![
-                (88, 18, "one".to_owned(), false, SYSTEM.text),
-                (568, 18, "端末".to_owned(), true, WINDOW_TEXT),
+                (88, 18, "one".to_owned(), SYSTEM.text),
+                (568, 18, "端末".to_owned(), WINDOW_TEXT),
             ]
         );
         // メニューのボタンの「≡」は、一辺 20 でボタンの真ん中に、薄い文字の色で。

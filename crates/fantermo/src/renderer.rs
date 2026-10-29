@@ -232,14 +232,8 @@ impl Renderer {
                     *color,
                 )
             }
-            Paint::Label {
-                x,
-                y,
-                text,
-                bold,
-                color,
-            } => {
-                let slot = self.atlas.label_slot(text, *bold)?;
+            Paint::Label { x, y, text, color } => {
+                let slot = self.atlas.label_slot(text)?;
                 glyph(
                     [
                         *x as f32 - slot.left as f32,
