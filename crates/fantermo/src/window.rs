@@ -10,7 +10,10 @@ use std::{
 
 use fantermo_core::{
     backend::{ExitCode, GridSize},
-    config::{Config, DEFAULT_FONT_FAMILIES, FontConfig, PasteConfig, PasteConfirm, WideGlyph},
+    config::{
+        Config, DEFAULT_FONT_FAMILIES, FontConfig, PasteConfig, PasteConfirm, ScrollBarConfig,
+        WideGlyph,
+    },
     frame::Rgb,
     keymap::{self, Keymap},
     link::Link,
@@ -166,7 +169,7 @@ pub fn run(
     let font = load_font(&dwrite, &config.font, system_dpi)?;
     log_font(&font, system_dpi);
 
-    let hwnd = create_window(&font, system_dpi)?;
+    let hwnd = create_window(&font, system_dpi, config.scroll_bar.width)?;
     // 端末の桁数と行数を、戻した大きさから決めさせるため、App を作る前に戻す。
     let restored = state.window;
     if let Some(window) = &restored {
@@ -336,16 +339,20 @@ fn grid_pixels(font: &Font, cols: u16, rows: u16) -> SIZE {
 struct Insets {
     /// 上端のタブバーの高さ（端末との間の空きを含む。[`tab_bar::height`]）。
     tab_bar_height: u32,
-    /// 右端のスクロールバーの幅（[`scroll_bar::width`]）。
+    /// 右端のスクロールバーの幅（[`scroll_bar::Metrics::width`]）。
     scroll_bar_width: u32,
 }
 
 impl Insets {
-    /// DPI が `dpi` の窓での寸法。
-    fn for_dpi(dpi: u32) -> Self {
+    /// DPI が `dpi` の窓での寸法。`scroll_bar_width` は設定のスクロールバーの幅（96 DPI でのピクセル）。
+    fn new(dpi: u32, scroll_bar_width: u32) -> Self {
         Self {
             tab_bar_height: tab_bar::height(dpi),
-            scroll_bar_width: scroll_bar::width(dpi),
+            scroll_bar_width: scroll_bar::Metrics {
+                dpi,
+                base_width: scroll_bar_width,
+            }
+            .width(),
         }
     }
 }
@@ -410,7 +417,9 @@ fn window_size(client: SIZE, dpi: u32) -> windows::core::Result<SIZE> {
     })
 }
 
-fn create_window(font: &Font, dpi: u32) -> windows::core::Result<HWND> {
+/// 窓を作る。大きさは、`font` のセルを [`INITIAL_COLS`] × [`INITIAL_ROWS`] 並べた端末の画面に、
+/// タブバーと幅 `scroll_bar_width`（設定の値）のスクロールバーを足したもの。
+fn create_window(font: &Font, dpi: u32, scroll_bar_width: u32) -> windows::core::Result<HWND> {
     // SAFETY: 自分のモジュールのハンドルを問い合わせるだけ。
     let instance = unsafe { GetModuleHandleW(None)? };
     let class = WNDCLASSW {
@@ -430,7 +439,7 @@ fn create_window(font: &Font, dpi: u32) -> windows::core::Result<HWND> {
     let size = window_size(
         client_size_for_terminal(
             grid_pixels(font, INITIAL_COLS, INITIAL_ROWS),
-            Insets::for_dpi(dpi),
+            Insets::new(dpi, scroll_bar_width),
         ),
         dpi,
     )?;
@@ -568,6 +577,8 @@ struct App {
     blink_visible: bool,
     /// 点滅のタイマーを動かしている。
     blink_timer_running: bool,
+    /// 設定のスクロールバーの幅（96 DPI でのピクセル）。
+    scroll_bar_width: u32,
     /// 窓のクライアント領域のうち、スクロールバーを描く領域。
     scroll_bar_area: Area,
     /// スクロールバーの上で押したマウスのボタンと、左ボタンならその操作。離すまで、マウスの操作を
@@ -591,7 +602,9 @@ impl App {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let font_config = config.font;
         let (width, height) = client_size(hwnd);
-        let terminal_area = terminal_area_in_client(width, height, Insets::for_dpi(dpi));
+        let scroll_bar_width = config.scroll_bar.width;
+        let terminal_area =
+            terminal_area_in_client(width, height, Insets::new(dpi, scroll_bar_width));
         let scroll_bar_area = scroll_bar_area_in_client(width, terminal_area);
         let size = grid_size(&font, terminal_area);
         let ui_font = Rc::new(UiFont::for_dpi(&dwrite, dpi)?);
@@ -660,6 +673,7 @@ impl App {
             window_active: false,
             blink_visible: true,
             blink_timer_running: false,
+            scroll_bar_width,
             scroll_bar_area,
             scroll_bar_press: None,
             scroll_bar_hover: false,
@@ -1698,7 +1712,7 @@ impl App {
 
     /// クライアント領域の大きさが `width` × `height` のときの、端末を描く領域に合わせる。
     fn layout(&mut self, width: u32, height: u32) {
-        self.terminal_area = terminal_area_in_client(width, height, Insets::for_dpi(self.dpi));
+        self.terminal_area = terminal_area_in_client(width, height, self.insets(self.dpi));
         self.scroll_bar_area = scroll_bar_area_in_client(width, self.terminal_area);
         self.resize_sessions();
         self.update_tab_bar_hover();
@@ -1756,6 +1770,7 @@ impl App {
 
     /// 設定ファイルを読み直す。フォントの設定が変わっていて、そのフォントを測れたら設定を入れ替え、
     /// 作り直しに使う DPI を返す。作り直しは借用を手放してから [`change_dpi_in_place`] で行う。
+    /// スクロールバーの幅が変わったときも、端末の桁数と行数を保って窓の大きさを変えるので、同じく返す。
     /// グリフの描き方だけが変わったときは、セルの寸法は変わらないので、この場でアトラスだけを作り直す。
     /// 貼り付けの設定はすぐに入れ替える。`shell` は次に開く端末から使う。
     /// 誤りがあれば、それを見せることを返す（借用を手放してから [`run_deferred`] で見せる）。誤りが
@@ -1780,21 +1795,29 @@ impl App {
     fn apply_config(&mut self, config: Config) -> Option<u32> {
         self.paste_confirm = config.paste.confirm;
         self.shell = config.shell;
-        if config.font == self.font_config {
-            return None;
+        let scroll_bar_resized = config.scroll_bar.width != self.scroll_bar_width;
+        self.scroll_bar_width = config.scroll_bar.width;
+        let font_changed = self.apply_font_config(config.font);
+        (font_changed || scroll_bar_resized).then_some(self.dpi)
+    }
+
+    /// 読み直したフォントの設定を入れ替える。フォントを測り直す作り直しが要れば `true`。
+    fn apply_font_config(&mut self, font: FontConfig) -> bool {
+        if font == self.font_config {
+            return false;
         }
-        let same_face = config.font.families == self.font_config.families
-            && config.font.size_pt == self.font_config.size_pt;
+        let same_face =
+            font.families == self.font_config.families && font.size_pt == self.font_config.size_pt;
         if same_face {
-            self.set_wide_glyph(config.font.wide_glyph);
-            return None;
+            self.set_wide_glyph(font.wide_glyph);
+            return false;
         }
-        if let Err(e) = load_font(&self.dwrite, &config.font, self.dpi) {
+        if let Err(e) = load_font(&self.dwrite, &font, self.dpi) {
             tracing::warn!("keeping the current font: {e}");
-            return None;
+            return false;
         }
-        self.font_config = config.font;
-        Some(self.dpi)
+        self.font_config = font;
+        true
     }
 
     /// いま使っている設定。フォントは、いまのフォントを探したときの設定。
@@ -1804,6 +1827,9 @@ impl App {
             shell: self.shell.clone(),
             paste: PasteConfig {
                 confirm: self.paste_confirm,
+            },
+            scroll_bar: ScrollBarConfig {
+                width: self.scroll_bar_width,
             },
         }
     }
@@ -1827,7 +1853,7 @@ impl App {
         let size = self.session().vt.size();
         Ok(client_size_for_terminal(
             grid_pixels(&font, size.cols, size.rows),
-            Insets::for_dpi(dpi),
+            self.insets(dpi),
         ))
     }
 
@@ -1933,7 +1959,15 @@ impl App {
 
     /// スクロールバーの寸法。
     fn scroll_bar_metrics(&self) -> scroll_bar::Metrics {
-        scroll_bar::Metrics { dpi: self.dpi }
+        scroll_bar::Metrics {
+            dpi: self.dpi,
+            base_width: self.scroll_bar_width,
+        }
+    }
+
+    /// DPI が `dpi` のときの、端末の画面の上と右に取る場所の寸法。
+    fn insets(&self, dpi: u32) -> Insets {
+        Insets::new(dpi, self.scroll_bar_width)
     }
 
     /// タブバーを描く領域。端末を描く領域とスクロールバーの上の、窓の幅いっぱい。端末との間の空きも
@@ -2667,9 +2701,9 @@ mod tests {
     #[test]
     fn the_terminal_starts_below_the_tab_bar_and_its_gap() {
         // 96 DPI ではタブバーの 26 と空きの 4、192 DPI では 52 と 8 の下から。右端のスクロールバーは
-        // 96 DPI で 12、192 DPI で 24。
+        // 既定の幅で、96 DPI で 12、192 DPI で 24。
         for (dpi, top, bar) in [(96, 30, 12), (192, 60, 24)] {
-            let insets = Insets::for_dpi(dpi);
+            let insets = Insets::new(dpi, fantermo_core::config::DEFAULT_SCROLL_BAR_WIDTH);
             let terminal = SIZE { cx: 800, cy: 480 };
             let client = client_size_for_terminal(terminal, insets);
             assert_eq!((client.cx, client.cy), (800 + bar as i32, 480 + top as i32));
@@ -2708,6 +2742,8 @@ mod tests {
         let narrow = terminal_area_in_client(8, 100, insets);
         assert_eq!(narrow.width, 0);
         assert_eq!(scroll_bar_area_in_client(8, narrow).width, 8);
+        // 設定の幅は DPI に比例させる。
+        assert_eq!(Insets::new(144, 20).scroll_bar_width, 30);
     }
 
     #[test]

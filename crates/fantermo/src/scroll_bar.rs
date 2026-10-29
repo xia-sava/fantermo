@@ -1,5 +1,5 @@
-//! 端末の右の縦のスクロールバー。タブバーの下、端末の画面の右に、決まった幅の場所を常に取っておく
-//! （スクロールバックの有無で端末の桁数が変わらないように）。
+//! 端末の右の縦のスクロールバー。タブバーの下、端末の画面の右に、設定の幅（`scroll_bar.width`）の
+//! 場所を常に取っておく（スクロールバックの有無で端末の桁数が変わらないように）。
 //!
 //! つまみの位置と長さで、スクロールバックを含む全体の中の、表示している範囲を示す。つまみは両端の
 //! 丸い細い形で、マウスを載せている間とドラッグしている間は太く描き、溝も薄く塗る。スクロールバックが
@@ -9,9 +9,6 @@
 use fantermo_core::{frame::Rgb, vt::ScrollPosition};
 
 use crate::paint::{Area, Icon, Paint, mix, scale};
-
-/// スクロールバーの幅（96 DPI でのピクセル）。
-const WIDTH: u32 = 12;
 
 /// 溝の上下の端とつまみの間の空き（96 DPI でのピクセル）。
 const TRACK_MARGIN: u32 = 2;
@@ -44,12 +41,14 @@ const TRACK_TINT: f32 = 0.06;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Metrics {
     pub dpi: u32,
+    /// 幅（96 DPI でのピクセル。設定の `scroll_bar.width`）。
+    pub base_width: u32,
 }
 
 impl Metrics {
     /// スクロールバーの幅（ピクセル）。
     pub fn width(self) -> u32 {
-        scale(WIDTH, self.dpi)
+        scale(self.base_width, self.dpi)
     }
 
     fn track_margin(self) -> u32 {
@@ -72,11 +71,6 @@ impl Metrics {
     fn min_thumb_length(self) -> u32 {
         scale(MIN_THUMB_LENGTH, self.dpi).max(self.thickness(true))
     }
-}
-
-/// DPI が `dpi` の窓での、スクロールバーの幅（ピクセル）。
-pub fn width(dpi: u32) -> u32 {
-    Metrics { dpi }.width()
 }
 
 /// つまみが動く溝。窓のクライアント領域の中の縦の範囲（ピクセル）。
@@ -308,15 +302,35 @@ mod tests {
         length: 480,
     };
 
+    /// 既定の幅（96 DPI で 12）のスクロールバーの、DPI が `dpi` の窓での寸法。
+    fn metrics(dpi: u32) -> Metrics {
+        Metrics {
+            dpi,
+            base_width: 12,
+        }
+    }
+
     #[test]
-    fn the_width_follows_the_dpi() {
-        assert_eq!(width(96), 12);
-        assert_eq!(width(144), 18);
-        assert_eq!(width(192), 24);
-        let metrics = Metrics { dpi: 96 };
-        assert_eq!(metrics.thickness(false), 3);
-        assert_eq!(metrics.thickness(true), 6);
-        assert_eq!(Metrics { dpi: 192 }.thickness(true), 12);
+    fn the_width_follows_the_dpi_and_the_setting() {
+        assert_eq!(metrics(96).width(), 12);
+        assert_eq!(metrics(144).width(), 18);
+        assert_eq!(metrics(192).width(), 24);
+        assert_eq!(metrics(96).thickness(false), 3);
+        assert_eq!(metrics(96).thickness(true), 6);
+        assert_eq!(metrics(192).thickness(true), 12);
+        // 細い設定でも、つまみは 2 ピクセルより細くしない。
+        let narrow = Metrics {
+            dpi: 96,
+            base_width: 4,
+        };
+        assert_eq!(narrow.width(), 4);
+        assert_eq!((narrow.thickness(false), narrow.thickness(true)), (2, 2));
+        let wide = Metrics {
+            dpi: 192,
+            base_width: 20,
+        };
+        assert_eq!(wide.width(), 40);
+        assert_eq!((wide.thickness(false), wide.thickness(true)), (10, 20));
     }
 
     #[test]
@@ -328,7 +342,7 @@ mod tests {
             height: 484,
         };
         assert_eq!(
-            track(bar, Metrics { dpi: 96 }),
+            track(bar, metrics(96)),
             Track {
                 top: 32,
                 length: 480
@@ -336,7 +350,7 @@ mod tests {
         );
         // 空きより低い領域でも、溝の長さは負にならない。
         let low = Area { height: 3, ..bar };
-        assert_eq!(track(low, Metrics { dpi: 96 }).length, 1);
+        assert_eq!(track(low, metrics(96)).length, 1);
     }
 
     #[test]
@@ -461,7 +475,7 @@ mod tests {
     fn an_idle_thumb_is_thin_and_rounded() {
         let paints = paints(
             BAR,
-            Metrics { dpi: 96 },
+            metrics(96),
             position(100, 70, 30),
             Highlight::default(),
             &COLORS,
@@ -498,7 +512,7 @@ mod tests {
     fn a_hovered_bar_shows_its_track_and_a_thick_thumb() {
         let hovered = paints(
             BAR,
-            Metrics { dpi: 96 },
+            metrics(96),
             position(100, 0, 30),
             Highlight {
                 hovered: true,
@@ -522,7 +536,7 @@ mod tests {
         );
         let dragged = paints(
             BAR,
-            Metrics { dpi: 96 },
+            metrics(96),
             position(100, 0, 30),
             Highlight {
                 hovered: false,
@@ -540,7 +554,7 @@ mod tests {
 
     #[test]
     fn without_scrollback_only_the_hovered_track_is_drawn() {
-        let metrics = Metrics { dpi: 96 };
+        let metrics = metrics(96);
         let full = position(30, 0, 30);
         assert!(paints(BAR, metrics, full, Highlight::default(), &COLORS).is_empty());
         let hovered = Highlight {

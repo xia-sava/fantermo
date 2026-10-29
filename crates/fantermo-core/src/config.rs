@@ -23,6 +23,12 @@ pub const DEFAULT_FONT_SIZE_PT: f32 = 12.0;
 /// フォントの大きさとして受け付ける範囲（ポイント）。
 pub const FONT_SIZE_RANGE_PT: RangeInclusive<f32> = 1.0..=128.0;
 
+/// 既定のスクロールバーの幅（96 DPI でのピクセル）。
+pub const DEFAULT_SCROLL_BAR_WIDTH: u32 = 12;
+
+/// スクロールバーの幅として受け付ける範囲（96 DPI でのピクセル）。
+pub const SCROLL_BAR_WIDTH_RANGE: RangeInclusive<u32> = 4..=64;
+
 /// 設定ファイルが無いときに作る中身。どの項目も既定値のままコメントにして並べ、利用者が `#` を消して
 /// 書き換えられるようにする。`shell` の値だけは既定値ではなく例（既定では書かない）。
 pub const TEMPLATE: &str = r#"# fantermo の設定ファイル。
@@ -49,6 +55,11 @@ pub const TEMPLATE: &str = r#"# fantermo の設定ファイル。
 # "unsafe" は改行を含む文字列がコマンドとして走りうるとき（アプリが bracketed paste を有効にしていない
 # ときなど）、"multiline" は bracketed paste に関わらず改行を含むとき、"never" は確かめずに改行ごと送る。
 # confirm = "unsafe"
+
+[scroll_bar]
+# 端末の右のスクロールバーの幅（96 DPI でのピクセル。画面の拡大率に合わせて広げる）。4 から 64 まで。
+# 書き換えたら、端末の桁数と行数を保ったまま窓の幅を変える。
+# width = 12
 "#;
 
 /// 設定の全体。
@@ -58,6 +69,22 @@ pub struct Config {
     /// 起動するコマンドライン。`None` なら fantermo の既定。
     pub shell: Option<String>,
     pub paste: PasteConfig,
+    pub scroll_bar: ScrollBarConfig,
+}
+
+/// `[scroll_bar]` の設定。
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrollBarConfig {
+    /// 幅（96 DPI でのピクセル）。
+    pub width: u32,
+}
+
+impl Default for ScrollBarConfig {
+    fn default() -> Self {
+        Self {
+            width: DEFAULT_SCROLL_BAR_WIDTH,
+        }
+    }
 }
 
 /// `[paste]` の設定。
@@ -239,6 +266,26 @@ pub fn parse(text: &str, previous: &Config) -> Parsed {
             reader.warn_unknown(&paste, SECTION);
         }
     }
+    match reader.take::<Table>(&mut root, None, "scroll_bar") {
+        Item::Absent => config.scroll_bar = ScrollBarConfig::default(),
+        Item::Invalid => {}
+        Item::Valid(mut scroll_bar) => {
+            const SECTION: Option<&str> = Some("scroll_bar");
+            reader
+                .take::<u32>(&mut scroll_bar, SECTION, "width")
+                .check(&mut reader, "scroll_bar.width", |width| {
+                    (!SCROLL_BAR_WIDTH_RANGE.contains(width)).then(|| {
+                        format!(
+                            "ignoring scroll_bar.width = {width}: must be between {} and {}",
+                            SCROLL_BAR_WIDTH_RANGE.start(),
+                            SCROLL_BAR_WIDTH_RANGE.end()
+                        )
+                    })
+                })
+                .apply(&mut config.scroll_bar.width, DEFAULT_SCROLL_BAR_WIDTH);
+            reader.warn_unknown(&scroll_bar, SECTION);
+        }
+    }
     reader.warn_unknown(&root, None);
     // ファイルの上から順に読めるように、行の順に並べる。
     reader
@@ -414,6 +461,7 @@ mod tests {
             paste: PasteConfig {
                 confirm: PasteConfirm::Never,
             },
+            scroll_bar: ScrollBarConfig { width: 20 },
         }
     }
 
@@ -458,7 +506,7 @@ mod tests {
             .lines()
             .filter(|line| !line.starts_with('#') && line.contains(" = "))
             .count();
-        assert_eq!(settings, 5, "{text}");
+        assert_eq!(settings, 6, "{text}");
     }
 
     #[test]
@@ -483,12 +531,12 @@ mod tests {
     fn invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults() {
         let previous = customized();
         let parsed = super::parse(
-            "shell = ' '\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n",
+            "shell = ' '\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[scroll_bar]\nwidth = 2\n",
             &previous,
         );
         assert!(!parsed.syntax_error);
         assert_eq!(parsed.config, previous);
-        assert_eq!(parsed.warnings.len(), 5, "{:?}", parsed.warnings);
+        assert_eq!(parsed.warnings.len(), 6, "{:?}", parsed.warnings);
 
         let parsed = super::parse("[font]\nsize = 500\n", &previous);
         assert_eq!(
@@ -502,10 +550,43 @@ mod tests {
             }
         );
 
-        let parsed = super::parse("font = 1\npaste = 2\n", &previous);
+        let parsed = super::parse("font = 1\npaste = 2\nscroll_bar = 3\n", &previous);
         assert_eq!(parsed.config.font, previous.font);
         assert_eq!(parsed.config.paste, previous.paste);
+        assert_eq!(parsed.config.scroll_bar, previous.scroll_bar);
         assert_eq!(parsed.config.shell, None);
+    }
+
+    #[test]
+    fn scroll_bar_width_takes_integers_in_range() {
+        let parsed = parse("[scroll_bar]\nwidth = 16\n");
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        assert_eq!(parsed.config.scroll_bar.width, 16);
+        for (text, message) in [
+            (
+                "width = 3",
+                "ignoring scroll_bar.width = 3: must be between 4 and 64",
+            ),
+            (
+                "width = 65",
+                "ignoring scroll_bar.width = 65: must be between 4 and 64",
+            ),
+        ] {
+            let parsed = parse(&format!("[scroll_bar]\n{text}\n"));
+            assert_eq!(parsed.config.scroll_bar.width, DEFAULT_SCROLL_BAR_WIDTH);
+            assert_eq!(parsed.warnings, vec![message.to_owned()]);
+        }
+        for text in ["width = 12.5", "width = -1", "width = 'wide'"] {
+            let parsed = parse(&format!("[scroll_bar]\n{text}\n"));
+            assert_eq!(parsed.config.scroll_bar.width, DEFAULT_SCROLL_BAR_WIDTH);
+            assert_eq!(parsed.warnings.len(), 1, "{text}: {:?}", parsed.warnings);
+        }
+        let parsed = parse("[scroll_bar]\nwidth = 16\nside = 'left'\n");
+        assert_eq!(parsed.config.scroll_bar.width, 16);
+        assert_eq!(
+            parsed.warnings,
+            vec!["ignoring unknown setting scroll_bar.side".to_owned()]
+        );
     }
 
     #[test]
@@ -554,6 +635,8 @@ mod tests {
             wide_glyph = "overflow"
             [paste]
             confirm = "never"
+            [scroll_bar]
+            width = 8
             "#,
         );
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
@@ -569,6 +652,7 @@ mod tests {
                 paste: PasteConfig {
                     confirm: PasteConfirm::Never,
                 },
+                scroll_bar: ScrollBarConfig { width: 8 },
             }
         );
     }
