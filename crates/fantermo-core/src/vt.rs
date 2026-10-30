@@ -40,6 +40,8 @@ use crate::{
         Rgb, Underline,
     },
     link::{self, LineCell, Link, LinkSpan},
+    output_scan::{OutputEvent, OutputScanner},
+    sixel::SixelImage,
 };
 
 pub use libghostty_vt::{
@@ -167,6 +169,9 @@ const URI_BUFFER_LEN: usize = 256;
 /// `image-storage-limit` と同じ。
 const IMAGE_STORAGE_LIMIT: u64 = 320 * 1000 * 1000;
 
+/// カーソルを同じ桁のまま一行下へ動かす（IND）。下端ではスクロールする。
+const INDEX: &[u8] = b"\x1bD";
+
 /// kitty graphics protocol の Unicode placeholder の文字。画像は描画の状態が一覧に載せるので、文字としては描かない。
 const KITTY_PLACEHOLDER: char = '\u{10EEEE}';
 
@@ -183,6 +188,8 @@ fn install_png_decoder() -> Result<(), VtError> {
 /// 端末の状態。シェルの出力を `feed` で流し込み、シェルへの応答を `take_replies` で取り出す。
 pub struct Vt {
     terminal: Terminal<'static, 'static>,
+    /// 端末に流す前に出力を見て、libghostty-vt が扱わないものを取り出す。
+    output_scanner: OutputScanner,
     /// 端末がシェルへ返す応答（カーソル位置の報告など）。コールバックの中で溜める。
     replies: Rc<RefCell<Vec<u8>>>,
     /// 大きさの問い合わせに答えるための、現在の大きさ。
@@ -258,6 +265,7 @@ impl Vt {
 
         Ok(Self {
             terminal,
+            output_scanner: OutputScanner::new(),
             replies,
             size: size_cell,
             last_title: Vec::new(),
@@ -560,7 +568,14 @@ impl Vt {
 
     /// シェルの出力を流し込む。
     pub fn feed(&mut self, data: &[u8]) {
-        self.terminal.vt_write(data);
+        let terminal = &mut self.terminal;
+        let size = self.size.get();
+        self.output_scanner.scan(data, &mut |event| match event {
+            OutputEvent::Bytes(bytes) => terminal.vt_write(bytes),
+            OutputEvent::Sixel { image, scrolling } => {
+                place_sixel(terminal, size, &image, scrolling);
+            }
+        });
     }
 
     /// 前に呼んだときからタイトル（OSC 0 / OSC 2 で設定されたもの）が変わっていれば、新しいタイトルを
@@ -801,6 +816,52 @@ impl Vt {
             .with_trim(true);
         let text = Formatter::new(&self.terminal, options)?.format_alloc(None)?;
         Ok(String::from_utf8_lossy(&text).into_owned())
+    }
+}
+
+/// sixel の画像を kitty graphics protocol の転送にして端末に置く。位置の追跡、スクロール、消去、代替画面は
+/// kitty graphics protocol の画像と同じになる。
+///
+/// 画像は文字より下に置き、あとから書いた文字が画像の上に見えるようにする。不透明な画像なら、覆うセルの
+/// 文字を消して画像を見せる。
+///
+/// `scrolling` なら、カーソルの位置に置き、カーソルを画像の最後の行の同じ桁へ進める（xterm と同じ）。下端で
+/// は画面がスクロールする。そうでなければ（DECSDM）、画面の左上に置いてカーソルを動かさない。
+fn place_sixel(
+    terminal: &mut Terminal<'static, 'static>,
+    size: GridSize,
+    image: &SixelImage,
+    scrolling: bool,
+) {
+    let rows = image.height.div_ceil(size.cell_height_px.max(1));
+    let cols = image.width.div_ceil(size.cell_width_px.max(1));
+    let erase = image
+        .is_opaque()
+        .then(|| format!("\x1b[{cols}X").into_bytes());
+    let erase = erase.as_deref().unwrap_or_default();
+
+    if scrolling {
+        image.write_kitty_transmission(&mut |apc| terminal.vt_write(apc));
+        terminal.vt_write(erase);
+        for _ in 1..rows {
+            terminal.vt_write(INDEX);
+            terminal.vt_write(erase);
+        }
+        return;
+    }
+
+    let cursor = terminal
+        .cursor_x()
+        .and_then(|col| Ok((col, terminal.cursor_y()?)));
+    terminal.vt_write(b"\x1b[H");
+    image.write_kitty_transmission(&mut |apc| terminal.vt_write(apc));
+    for row in 0..rows.min(u32::from(size.rows)) {
+        terminal.vt_write(format!("\x1b[{};1H", row + 1).as_bytes());
+        terminal.vt_write(erase);
+    }
+    match cursor {
+        Ok((col, row)) => terminal.vt_write(format!("\x1b[{};{}H", row + 1, col + 1).as_bytes()),
+        Err(e) => tracing::warn!("failed to read the cursor before placing a sixel: {e}"),
     }
 }
 
@@ -2132,5 +2193,164 @@ mod tests {
         assert_ne!(first.generation, second.generation);
         let pixels = vt.image_pixels(&second).unwrap().unwrap();
         assert_eq!(pixels.rgba.as_ref(), [0, 0, 255, 255]);
+    }
+
+    /// 大きさ `width` × `height` の、黒で埋めた sixel。
+    fn black_sixel(width: u32, height: u32) -> Vec<u8> {
+        format!("\x1bPq\"1;1;{width};{height}\x1b\\").into_bytes()
+    }
+
+    #[test]
+    fn a_sixel_becomes_an_image_at_the_cursor_below_the_text() {
+        let mut vt = new_vt();
+        vt.feed(b"abc");
+        vt.feed(b"\x1bP0;1q#1;2;100;0;0#1!2@\x1b\\");
+        assert!(vt.take_replies().is_empty());
+        let frame = vt.frame().unwrap();
+        let [view] = frame.images.as_slice() else {
+            panic!("{:?}", frame.images);
+        };
+        assert_eq!((view.col, view.row), (3, 0));
+        assert_eq!((view.width, view.height), (2, 1));
+        assert_eq!(view.layer, ImageLayer::BelowText);
+        let pixels = vt.image_pixels(&view.key).unwrap().unwrap();
+        assert_eq!((pixels.width, pixels.height), (2, 1));
+        assert_eq!(pixels.rgba.as_ref(), [255, 0, 0, 255, 255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn large_sixels_arrive_whole() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1bPq#1;2;0;100;0#1!300~-!300~\x1b\\");
+        let frame = vt.frame().unwrap();
+        let pixels = vt.image_pixels(&frame.images[0].key).unwrap().unwrap();
+        assert_eq!((pixels.width, pixels.height), (300, 12));
+        let (rgba, _) = pixels.rgba.as_chunks::<4>();
+        assert!(rgba.iter().all(|pixel| *pixel == [0, 255, 0, 255]));
+    }
+
+    #[test]
+    fn the_cursor_stops_on_the_last_row_of_the_sixel_in_the_same_column() {
+        let mut vt = new_vt();
+        vt.feed(b"abc");
+        // セルは 8×16。32 ピクセルは 2 行、33 ピクセルは 3 行。
+        vt.feed(&black_sixel(16, 32));
+        assert_eq!(vt.cursor_cell().unwrap(), (3, 1));
+        vt.feed(b"\x1b[H");
+        vt.feed(&black_sixel(16, 33));
+        assert_eq!(vt.cursor_cell().unwrap(), (0, 2));
+        vt.feed(b"\x1b[H");
+        vt.feed(&black_sixel(1, 1));
+        assert_eq!(vt.cursor_cell().unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn the_text_after_a_sixel_is_written_at_the_cursor() {
+        let mut vt = new_vt();
+        let mut data = black_sixel(16, 32);
+        data.extend_from_slice(b"\r\nx");
+        vt.feed(&data);
+        assert_eq!(vt.cursor_cell().unwrap(), (1, 2));
+        assert_eq!(vt.plain_text().unwrap().trim_start_matches('\n'), "x");
+    }
+
+    #[test]
+    fn a_sixel_at_the_bottom_scrolls_the_screen() {
+        let mut vt = new_vt();
+        vt.feed(b"top\x1b[5;1H");
+        vt.feed(&black_sixel(16, 48));
+        assert_eq!(vt.cursor_cell().unwrap(), (0, 4));
+        let frame = vt.frame().unwrap();
+        assert_eq!(frame.images[0].row, 2);
+        assert_eq!(vt.scroll_position().unwrap().total, 7);
+        // 続けて流れると、スクロールバックに入って上へはみ出す。
+        vt.feed(b"\r\n\r\n\r\n");
+        assert_eq!(vt.frame().unwrap().images[0].row, -1);
+        vt.scroll(-1);
+        assert_eq!(vt.frame().unwrap().images[0].row, 0);
+    }
+
+    #[test]
+    fn a_sixel_taller_than_the_screen_keeps_its_top_in_the_scrollback() {
+        let mut vt = new_vt();
+        vt.feed(&black_sixel(16, 16 * 8));
+        assert_eq!(vt.cursor_cell().unwrap(), (0, 4));
+        assert_eq!(vt.frame().unwrap().images[0].row, -3);
+    }
+
+    #[test]
+    fn an_opaque_sixel_erases_the_text_it_covers_and_later_text_shows() {
+        let mut vt = new_vt();
+        vt.feed(b"abcdef\r\nghijkl\r\nmnopqr\x1b[H");
+        vt.feed(&black_sixel(16, 32));
+        assert_eq!(vt.plain_text().unwrap(), "  cdef\n  ijkl\nmnopqr");
+        vt.feed(b"z");
+        assert_eq!(vt.plain_text().unwrap(), "  cdef\nz ijkl\nmnopqr");
+    }
+
+    #[test]
+    fn a_transparent_sixel_keeps_the_text_it_covers() {
+        let mut vt = new_vt();
+        vt.feed(b"abcdef\x1b[H");
+        vt.feed(b"\x1bP0;1q\"1;1;16;16\x1b\\");
+        assert_eq!(vt.plain_text().unwrap(), "abcdef");
+    }
+
+    #[test]
+    fn clearing_the_screen_removes_a_sixel() {
+        let mut vt = new_vt();
+        vt.feed(&black_sixel(16, 16));
+        let key = vt.frame().unwrap().images[0].key;
+        vt.feed(b"\x1b[2J");
+        assert!(vt.frame().unwrap().images.is_empty());
+        assert!(!vt.image_is_stored(&key).unwrap());
+    }
+
+    #[test]
+    fn each_screen_has_its_own_sixels() {
+        let mut vt = new_vt();
+        vt.feed(&black_sixel(16, 16));
+        vt.feed(b"\x1b[?1049h");
+        assert!(vt.frame().unwrap().images.is_empty());
+        vt.feed(&black_sixel(8, 8));
+        assert_eq!(vt.frame().unwrap().images[0].width, 8);
+        vt.feed(b"\x1b[?1049l");
+        assert_eq!(vt.frame().unwrap().images[0].width, 16);
+    }
+
+    #[test]
+    fn with_the_sixel_display_mode_a_sixel_goes_to_the_top_left_and_the_cursor_stays() {
+        let mut vt = new_vt();
+        vt.feed(b"abcdef\x1b[3;4H\x1b[?80h");
+        vt.feed(&black_sixel(16, 16 * 8));
+        assert_eq!(vt.cursor_cell().unwrap(), (3, 2));
+        let frame = vt.frame().unwrap();
+        assert_eq!((frame.images[0].col, frame.images[0].row), (0, 0));
+        assert_eq!(vt.scroll_position().unwrap().total, 5);
+        assert_eq!(vt.plain_text().unwrap(), "  cdef");
+    }
+
+    #[test]
+    fn sixels_can_arrive_in_pieces_across_feeds() {
+        let mut vt = new_vt();
+        for byte in black_sixel(16, 16) {
+            vt.feed(&[byte]);
+        }
+        assert_eq!(vt.frame().unwrap().images.len(), 1);
+    }
+
+    #[test]
+    fn sixels_do_not_take_the_numbers_of_kitty_images() {
+        let mut vt = new_vt();
+        graphics(&mut vt, "a=T,f=32,i=1,s=1,v=1,C=1,q=2", "/wAA/w==");
+        vt.feed(&black_sixel(16, 16));
+        graphics(&mut vt, "a=T,f=32,i=2,s=1,v=1,C=1,q=2", "/wAA/w==");
+        vt.feed(&black_sixel(8, 8));
+        let frame = vt.frame().unwrap();
+        assert_eq!(frame.images.len(), 4);
+        let mut ids: Vec<u32> = frame.images.iter().map(|view| view.key.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 4);
     }
 }

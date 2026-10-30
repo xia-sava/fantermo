@@ -38,6 +38,16 @@ const BYTES_PER_PIXEL: usize = 4;
 /// 不透明のアルファ。
 const OPAQUE: u8 = u8::MAX;
 
+/// base64 の文字の並び。
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+/// base64 の 4 文字にまとめるバイト数。
+const BASE64_GROUP_BYTES: usize = 3;
+/// kitty graphics protocol の転送一つに載せる元のバイト数（base64 で 4096 文字、仕様の上限）。
+const KITTY_CHUNK_PIXEL_BYTES: usize = 3072;
+/// kitty graphics protocol の APC 一つの大きさの見込み。
+const KITTY_APC_CAPACITY: usize = 4096 + 64;
+
 /// 色レジスタの初期値（VT340 の 16 色、百分率）。残りのレジスタは黒。
 const VT340_PALETTE: [[u32; 3]; 16] = [
     [0, 0, 0],
@@ -64,6 +74,56 @@ pub struct SixelImage {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+}
+
+impl SixelImage {
+    /// どの画素も不透明。
+    pub fn is_opaque(&self) -> bool {
+        let (pixels, _) = self.rgba.as_chunks::<BYTES_PER_PIXEL>();
+        pixels
+            .iter()
+            .all(|pixel| pixel[BYTES_PER_PIXEL - 1] == OPAQUE)
+    }
+
+    /// この画像をカーソルの位置に置き、カーソルを動かさない kitty graphics protocol の転送を、APC の
+    /// 一つずつに分けて順に `write` へ渡す。番号は書かず端末に任せるので、アプリの画像の番号と
+    /// ぶつからず、答えも返らない。文字より下（`z=-1`）に置く。
+    pub fn write_kitty_transmission(&self, write: &mut dyn FnMut(&[u8])) {
+        let mut chunks = self.rgba.chunks(KITTY_CHUNK_PIXEL_BYTES).peekable();
+        let mut apc = Vec::with_capacity(KITTY_APC_CAPACITY);
+        let mut first = true;
+        while let Some(chunk) = chunks.next() {
+            apc.clear();
+            apc.extend_from_slice(b"\x1b_G");
+            if first {
+                let control = format!("a=T,f=32,s={},v={},C=1,z=-1,", self.width, self.height);
+                apc.extend_from_slice(control.as_bytes());
+                first = false;
+            }
+            apc.extend_from_slice(b"q=2,m=");
+            apc.push(if chunks.peek().is_some() { b'1' } else { b'0' });
+            apc.push(b';');
+            push_base64(&mut apc, chunk);
+            apc.extend_from_slice(b"\x1b\\");
+            write(&apc);
+        }
+    }
+}
+
+/// `data` を base64 にして `out` に足す。
+fn push_base64(out: &mut Vec<u8>, data: &[u8]) {
+    for group in data.chunks(BASE64_GROUP_BYTES) {
+        let byte = |index: usize| u32::from(group.get(index).copied().unwrap_or(0));
+        let bits = byte(0) << 16 | byte(1) << 8 | byte(2);
+        for position in 0..=BASE64_GROUP_BYTES {
+            if position <= group.len() {
+                let shift = 18 - 6 * position;
+                out.push(BASE64_ALPHABET[(bits >> shift) as usize & 0x3f]);
+            } else {
+                out.push(b'=');
+            }
+        }
+    }
 }
 
 /// 読んでいる途中のコマンド。
@@ -564,6 +624,48 @@ mod tests {
             assert_eq!(pixel(&image, 1, y), HOLE, "{y}");
         }
         assert_eq!(pixel(&image, 99, 120), RED);
+    }
+
+    #[test]
+    fn base64_follows_the_padding_rules() {
+        let encode = |data: &[u8]| {
+            let mut out = Vec::new();
+            push_base64(&mut out, data);
+            String::from_utf8(out).unwrap()
+        };
+        assert_eq!(encode(b""), "");
+        assert_eq!(encode(b"f"), "Zg==");
+        assert_eq!(encode(b"fo"), "Zm8=");
+        assert_eq!(encode(b"foo"), "Zm9v");
+        assert_eq!(encode(b"foob"), "Zm9vYg==");
+        assert_eq!(encode(&[0xfb, 0xff]), "+/8=");
+    }
+
+    #[test]
+    fn a_kitty_transmission_is_split_and_only_the_first_part_has_the_size() {
+        let image = SixelImage {
+            width: 1000,
+            height: 1,
+            rgba: vec![7; 4000],
+        };
+        let mut apcs = Vec::new();
+        image.write_kitty_transmission(&mut |apc| {
+            apcs.push(String::from_utf8(apc.to_vec()).unwrap());
+        });
+        assert_eq!(apcs.len(), 2);
+        assert!(
+            apcs[0].starts_with("\x1b_Ga=T,f=32,s=1000,v=1,C=1,z=-1,q=2,m=1;"),
+            "{}",
+            &apcs[0][..50]
+        );
+        assert!(apcs[1].starts_with("\x1b_Gq=2,m=0;"));
+        assert!(apcs.iter().all(|apc| apc.ends_with("\x1b\\")));
+    }
+
+    #[test]
+    fn opaque_images_are_told_apart() {
+        assert!(decode(0, b"@A").unwrap().is_opaque());
+        assert!(!decode(1, b"@A").unwrap().is_opaque());
     }
 
     #[test]
