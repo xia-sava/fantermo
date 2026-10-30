@@ -46,7 +46,7 @@
     <StandardDirectory Id="TARGETDIR">
       <Directory Id="USERPROFILEFOLDER" Name="UserProfile" />
     </StandardDirectory>
-    <SetDirectory Id="USERPROFILEFOLDER" Value="[%USERPROFILE%]" />
+    <SetDirectory Id="USERPROFILEFOLDER" Value="[%USERPROFILE]" />
 
     <Feature Id="Main" Title="fantermo">
       <ComponentGroupRef Id="ProgramFiles" />
