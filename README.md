@@ -6,11 +6,14 @@ Windows 用の端末アプリです．エスケープシーケンスの解釈と
 
 ## 構成
 
-Rust の workspace（edition 2024）で，3 つのクレートに分かれています．
+Rust の workspace（edition 2024）で，4 つのクレートに分かれています．
 
 - **`fantermo-core`** … UI に依存しない層．libghostty-vt の上に載せた端末の状態，バックエンドの trait，設定の読み書き，キーの割り当て，ウィンドウの状態，背景画像の選び方．
-- **`fantermo`** … 実行ファイル．ウィンドウ（Win32），描画（Direct3D 11 + DirectWrite），キー入力，IME，ConPTY，設定ダイアログ，更新の確認．
+- **`fantermo`** … 実行ファイル．ウィンドウ（Win32），描画（Direct3D 11 + DirectWrite），キー入力，IME，ConPTY とブリッジのバックエンド，設定ダイアログ，更新の確認．
+- **`fantermo-bridge-protocol`** … fantermo とブリッジの間でやり取りする単位の形．
 - **`run-hidden`** … 開発用の道具．画面に出ないデスクトップでプログラムを起動し，決めた時間が過ぎたら終わらせる．
+
+ブリッジ（**`fantermo-bridge`**）は，Cygwin と WSL の側で pty とシェルを持ち，fantermo との間を中継する補助プログラムです．Cygwin 向け（`fantermo-bridge.exe`）と Linux 向け（`fantermo-bridge`）にビルドするので workspace の外に置き，`./tools/bridge.sh` でビルドします．
 
 libghostty-vt は [libghostty-rs](https://github.com/uzaaft/libghostty-rs) のバインディングを，git の依存としてコミットで固定して使います．
 
@@ -20,6 +23,8 @@ libghostty-vt は [libghostty-rs](https://github.com/uzaaft/libghostty-rs) の�
 
 - インストーラ: 開いて「インストール」を押すと，使っているユーザーだけのために `%LOCALAPPDATA%\Programs\fantermo\` に入れます．管理者権限は要りません．完了の画面で「fantermo を起動する」を選んだままにすると，「完了」で起動します．次からはスタートメニューの「fantermo」から起動してください．新しいバージョンのインストーラを開くと，前のバージョンを置き換えます．アンインストールは「設定」の「アプリ」（「プログラムと機能」）からできます．
 - zip: 好きな場所に展開して，中の `fantermo.exe` を起動してください．
+
+どちらにも，`fantermo.exe` と同じフォルダにブリッジ（`fantermo-bridge.exe` と `fantermo-bridge`）が入っています．プロファイルで Cygwin や WSL にブリッジでつなぐときに使うので，`fantermo.exe` と離さないでください．Cygwin 向けのブリッジは，入れてある Cygwin の `cygwin1.dll` などを使います．
 
 設定ファイルとウィンドウの状態は `%APPDATA%\fantermo\` に，ログは `%LOCALAPPDATA%\fantermo\logs\` に置きます．どちらもアンインストールしても消さないので，要らなければ手で消してください．
 

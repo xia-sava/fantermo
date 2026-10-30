@@ -74,6 +74,19 @@ gh run list --workflow Release --limit 3
 アプリの「更新を確認」は `latest.json` を読み、`latest/fantermo.msi` をダウンロードして `msi.sha256` で
 確かめてから入れる。
 
+## ブリッジ
+
+`build-bridge` ジョブが、ブリッジ（`crates/fantermo-bridge`）を `./tools/bridge.sh build all --release` で
+Cygwin 向けの `fantermo-bridge.exe` と Linux（musl）向けの `fantermo-bridge` に組み、`build` ジョブが zip と
+MSI の `fantermo.exe` の隣に置く（fantermo はブリッジを exe と同じフォルダから探す）。道具は
+`.github/actions/setup-bridge-toolchain` が入れる: Rust の stable と `x86_64-unknown-linux-musl`、nightly
+（`rust-src` と `clippy`。日付は `tools/bridge.sh` の既定の `BRIDGE_NIGHTLY` から読む）、リンカの gcc を持つ
+Cygwin（`cygwin/cygwin-install-action` の `gcc-core`。PATH には足さず、`CYGWIN_ROOT` で渡す）。
+
+- nightly の日付を変えるときは `tools/bridge.sh` の既定を書き換える（ワークフローはそれに従う）
+- `cygwin1.dll` は同梱しない。Cygwin 向けのブリッジは利用者の Cygwin の `cygwin1.dll` と `cyggcc_s-seh-1.dll` を使う
+- ブリッジの依存を変えたら `./tools/licenses.sh` で `THIRD-PARTY-NOTICES.txt` を作り直す
+
 ## MSI
 
 `build` ジョブが `installer/fantermo.wxs` を WiX で組む。WiX は `.config/dotnet-tools.json` でバージョンを固定し
@@ -87,7 +100,8 @@ gh run list --workflow Release --limit 3
 バージョンから組み立てるので、WiX と別に上げることはない。画面の文は拡張の ja-JP のローカライズ（`-culture ja-JP`）と
 `installer/fantermo.ja-JP.wxl`（`-loc`）で、MSI のコードページは 932。
 
-- 中身は zip と同じ（`fantermo.exe`・`LICENSE`・`THIRD-PARTY-NOTICES.txt`・`README.md`）。ユーザー単位で
+- 中身は zip と同じ（`fantermo.exe`・`fantermo-bridge.exe`・`fantermo-bridge`・`LICENSE`・`THIRD-PARTY-NOTICES.txt`・
+  `README.md`）。ユーザー単位で
   `%LOCALAPPDATA%\Programs\fantermo\` に入れ、スタートメニューに「fantermo」を置く
 - 製品のバージョンは Cargo のバージョン。バージョンを上げた MSI は `MajorUpgrade` で古いバージョンを
   外してから入る。製品コードはビルドのたびに変わる
