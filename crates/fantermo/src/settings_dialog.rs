@@ -98,6 +98,9 @@ const ID_PROFILE_REMOVE: i32 = 402;
 const ID_PROFILE_DEFAULT: i32 = 403;
 const ID_PROFILE_NAME: i32 = 404;
 const ID_PROFILE_COMMAND: i32 = 405;
+const ID_PROFILE_BACKEND: i32 = 406;
+/// `cygwin_root` か `distribution` の入力欄。どちらかはつなぎ方で決まる。
+const ID_PROFILE_LOCATION: i32 = 407;
 const ID_BACKGROUND_IMAGES: i32 = 450;
 const ID_BACKGROUND_ADD_FILES: i32 = 451;
 const ID_BACKGROUND_ADD_FOLDER: i32 = 452;
@@ -143,7 +146,17 @@ const VISIBLE_FONTS: usize = 16;
 const PAGES: [&str; 6] = ["外観", "背景", "動作", "プロファイル", "キー", "色"];
 
 /// プロファイルの一覧の高さ。
-const PROFILE_LIST_HEIGHT: i32 = 170;
+const PROFILE_LIST_HEIGHT: i32 = 110;
+/// プロファイルのつなぎ方の選択肢。[`BackendKind::ALL`] の順。
+const PROFILE_BACKEND_LABELS: [&str; 3] = [
+    "ConPTY（Windows の疑似コンソール）",
+    "Cygwin（ブリッジ）",
+    "WSL（ブリッジ）",
+];
+/// `EM_SETCUEBANNER`（入力欄が空のときに薄く見せる文字）。
+const EM_SETCUEBANNER: u32 = 0x1501;
+/// `EM_SETCUEBANNER` の wParam。入力欄にフォーカスがあっても見せる。
+const CUE_BANNER_ALWAYS: usize = 1;
 /// プロファイルの一覧の、コマンドラインの列の位置（ダイアログの単位）。
 const PROFILE_COLUMN_TAB_STOP: i32 = 120;
 /// `EM_SETSEL` と、すべてを選ぶときの範囲。
@@ -153,10 +166,47 @@ const SELECT_TO_END: isize = -1;
 /// 足したプロファイルの名前。同じ名前があれば後ろに番号を付ける。
 const NEW_PROFILE_NAME: &str = "新しいプロファイル";
 
-/// プロファイルの一覧の行。名前（既定なら印を添える）とコマンドラインをタブで区切る。
+/// プロファイルの一覧の行。名前（既定なら印を添える）とコマンドラインをタブで区切る。ブリッジなら
+/// コマンドラインの前につなぎ方を添え、空のコマンドラインは「（ログインシェル）」と見せる。
 fn profile_row_text(profile: &Profile, is_default: bool) -> String {
     let mark = if is_default { "（既定）" } else { "" };
-    format!("{}{mark}\t{}", profile.name, profile.command)
+    let via = match profile.backend {
+        BackendKind::Conpty => "",
+        BackendKind::Cygwin => "Cygwin: ",
+        BackendKind::Wsl => "WSL: ",
+    };
+    let command = if profile.command.is_empty() && profile.backend.is_bridge() {
+        "（ログインシェル）"
+    } else {
+        &profile.command
+    };
+    format!("{}{mark}\t{via}{command}", profile.name)
+}
+
+/// つなぎ方が `backend` のプロファイルの、場所の入力欄の見出しと、空のときに薄く見せる文字。
+/// ConPTY では使わない。
+fn profile_location_texts(backend: BackendKind) -> (&'static str, &'static str) {
+    match backend {
+        BackendKind::Conpty => ("場所(&O):", ""),
+        BackendKind::Cygwin => (
+            "Cygwin のフォルダ(&O):",
+            r"空なら C:\cygwin64、C:\cygwin の順に探す",
+        ),
+        BackendKind::Wsl => (
+            "ディストリビューション(&O):",
+            "空なら既定のディストリビューション",
+        ),
+    }
+}
+
+/// 場所の入力欄の値 `location`（前後の空白を除いたもの）を、つなぎ方に合わせて `profile` に入れる。
+fn set_profile_location(profile: &mut Profile, location: String) {
+    let location = (!location.is_empty()).then_some(location);
+    (profile.cygwin_root, profile.distribution) = match profile.backend {
+        BackendKind::Conpty => (None, None),
+        BackendKind::Cygwin => (location, None),
+        BackendKind::Wsl => (None, location),
+    };
 }
 
 /// `profiles` のどれとも違う、足すプロファイルの名前。
@@ -633,6 +683,11 @@ struct Controls {
     /// 一覧で選んでいるプロファイルの名前とコマンドライン。
     profile_name: HWND,
     profile_command: HWND,
+    /// 一覧で選んでいるプロファイルのつなぎ方（[`BackendKind::ALL`] の順）と、Cygwin のフォルダか
+    /// ディストリビューションの入力欄とその見出し。
+    profile_backend: HWND,
+    profile_location_label: HWND,
+    profile_location: HWND,
     /// 背景画像の一覧。
     background_images: HWND,
     /// 背景画像の一覧の「削除」のボタン。
@@ -1414,13 +1469,64 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         Some([control_left, profile_command_row, control_width, ROW_HEIGHT]),
     )?;
     profiles_page.push(profile_command);
+    let profile_backend_row = profile_command_row + ROW_HEIGHT + MARGIN;
+    let (class, text, rect) = label("つなぎ方(&B):", label_rect(profile_backend_row));
+    profiles_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let profile_backend = child(
+        WC_COMBOBOXW,
+        "",
+        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
+        none,
+        ID_PROFILE_BACKEND,
+        Some([control_left, profile_backend_row, control_width, ROW_HEIGHT]),
+    )?;
+    profiles_page.push(profile_backend);
+    for text in PROFILE_BACKEND_LABELS {
+        // SAFETY: profile_backend は有効なコンボボックスで、文字列はこの呼び出しの間は生きている。
+        unsafe {
+            SendMessageW(
+                profile_backend,
+                CB_ADDSTRING,
+                None,
+                Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
+            )
+        };
+    }
+    let profile_location_row = profile_backend_row + ROW_HEIGHT + MARGIN;
     let (class, text, rect) = label(
-        "タブバーの「+」は既定のプロファイルを開き、「▾」か「+」の右クリックで一覧から選んで開く。fantermo を引数つきで起動したときは、「+」とキーも引数のコマンドラインを使う。書き換えたら、次に開くタブから使う。",
+        profile_location_texts(BackendKind::Conpty).0,
+        label_rect(profile_location_row),
+    );
+    let profile_location_label = child(class, &text, WINDOW_STYLE(0), none, ID_LABEL, Some(rect))?;
+    profiles_page.push(profile_location_label);
+    let profile_location = child(
+        w!("EDIT"),
+        "",
+        edit_style,
+        WS_EX_CLIENTEDGE,
+        ID_PROFILE_LOCATION,
+        Some([
+            control_left,
+            profile_location_row,
+            control_width,
+            ROW_HEIGHT,
+        ]),
+    )?;
+    profiles_page.push(profile_location);
+    let (class, text, rect) = label(
+        "タブバーの「+」は既定のプロファイルを開き、「▾」か「+」の右クリックで一覧から選んで開く。fantermo を引数つきで起動したときは、「+」とキーも引数のコマンドラインを使う。Cygwin と WSL のコマンドラインは相手の側のもの（空ならログインシェル）。書き換えたら、次に開くタブから使う。",
         [
             page_left,
-            profile_command_row + ROW_HEIGHT + MARGIN,
+            profile_location_row + ROW_HEIGHT + MARGIN,
             page_width,
-            3 * ROW_HEIGHT,
+            4 * ROW_HEIGHT,
         ],
     );
     profiles_page.push(child(
@@ -1683,6 +1789,9 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             profile_default: profile_buttons[2],
             profile_name,
             profile_command,
+            profile_backend,
+            profile_location_label,
+            profile_location,
             background_images,
             background_remove: image_buttons[2],
             background_opacity,
@@ -1943,7 +2052,31 @@ impl State<'_> {
             c.profile_command,
             profile.as_ref().map_or("", |profile| &profile.command),
         );
+        let backend = profile
+            .as_ref()
+            .map_or_else(BackendKind::default, |p| p.backend);
+        let backend_index = BackendKind::ALL
+            .iter()
+            .position(|&kind| kind == backend)
+            .unwrap_or(0);
+        // SAFETY: コンボボックスは有効なウィンドウ。
+        unsafe {
+            SendMessageW(
+                c.profile_backend,
+                CB_SETCURSEL,
+                Some(WPARAM(backend_index)),
+                None,
+            )
+        };
+        let location = profile.as_ref().and_then(|profile| {
+            profile
+                .cygwin_root
+                .as_deref()
+                .or(profile.distribution.as_deref())
+        });
+        set_text(c.profile_location, location.unwrap_or(""));
         self.filling_profile.set(false);
+        self.show_profile_backend(backend);
         let count = self.profiles.borrow().len();
         for (control, enabled) in [
             (c.profile_remove, selected.is_some() && count > 1),
@@ -1953,10 +2086,65 @@ impl State<'_> {
             ),
             (c.profile_name, selected.is_some()),
             (c.profile_command, selected.is_some()),
+            (c.profile_backend, selected.is_some()),
+            (
+                c.profile_location,
+                selected.is_some() && backend.is_bridge(),
+            ),
         ] {
             // SAFETY: control はダイアログの子の有効なウィンドウ。
             unsafe { _ = EnableWindow(control, enabled) };
         }
+    }
+
+    /// 場所の入力欄の見出しと、コマンドラインと場所の入力欄が空のときに薄く見せる文字を、つなぎ方
+    /// `backend` に合わせる。
+    fn show_profile_backend(&self, backend: BackendKind) {
+        let c = &self.controls;
+        let (label, cue) = profile_location_texts(backend);
+        set_text(c.profile_location_label, label);
+        let command_cue = if backend.is_bridge() {
+            "空ならログインシェル"
+        } else {
+            ""
+        };
+        for (control, text) in [(c.profile_location, cue), (c.profile_command, command_cue)] {
+            let text = HSTRING::from(text);
+            // SAFETY: control は有効な入力欄で、文字列はこの呼び出しの間は生きている。
+            unsafe {
+                SendMessageW(
+                    control,
+                    EM_SETCUEBANNER,
+                    Some(WPARAM(CUE_BANNER_ALWAYS)),
+                    Some(LPARAM(text.as_ptr() as isize)),
+                )
+            };
+        }
+    }
+
+    /// 選んでいるプロファイルのつなぎ方が変わった。場所の入力欄を空にして見出しを替え、プロファイルに
+    /// 入れる。
+    fn on_profile_backend_changed(&self) {
+        let c = &self.controls;
+        let Some(index) = self.selected_profile() else {
+            return;
+        };
+        // SAFETY: コンボボックスは有効なウィンドウ。
+        let selected = unsafe { SendMessageW(c.profile_backend, CB_GETCURSEL, None, None) }.0;
+        let Some(&backend) = usize::try_from(selected)
+            .ok()
+            .and_then(|selected| BackendKind::ALL.get(selected))
+        else {
+            return;
+        };
+        self.profiles.borrow_mut()[index].backend = backend;
+        self.filling_profile.set(true);
+        set_text(c.profile_location, "");
+        self.filling_profile.set(false);
+        self.show_profile_backend(backend);
+        // SAFETY: 入力欄は有効なウィンドウ。
+        unsafe { _ = EnableWindow(c.profile_location, backend.is_bridge()) };
+        self.on_profile_edited();
     }
 
     /// プロファイルの名前かコマンドラインの入力欄が変わった。選んでいるプロファイルに入れ、一覧の行を
@@ -1970,11 +2158,13 @@ impl State<'_> {
         };
         let name = get_text(self.controls.profile_name).trim().to_owned();
         let command = get_text(self.controls.profile_command).trim().to_owned();
+        let location = get_text(self.controls.profile_location).trim().to_owned();
         let text = {
             let mut profiles = self.profiles.borrow_mut();
             let profile = &mut profiles[index];
             profile.name = name;
             profile.command = command;
+            set_profile_location(profile, location);
             profile_row_text(profile, index == self.default_profile.get())
         };
         let list = self.controls.profiles_list;
@@ -2998,7 +3188,10 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 (ID_PROFILE_ADD | ID_PROFILE_REMOVE | ID_PROFILE_DEFAULT, BN_CLICKED) => {
                     state.on_profile_button(id);
                 }
-                (ID_PROFILE_NAME | ID_PROFILE_COMMAND, EN_CHANGE) => state.on_profile_edited(),
+                (ID_PROFILE_NAME | ID_PROFILE_COMMAND | ID_PROFILE_LOCATION, EN_CHANGE) => {
+                    state.on_profile_edited();
+                }
+                (ID_PROFILE_BACKEND, CBN_SELCHANGE) => state.on_profile_backend_changed(),
                 (ID_BACKGROUND_IMAGES, LBN_SELCHANGE) => state.update_background_buttons(),
                 (
                     ID_BACKGROUND_ADD_FILES | ID_BACKGROUND_ADD_FOLDER | ID_BACKGROUND_REMOVE,
@@ -3209,6 +3402,32 @@ mod tests {
         let zsh = profile("zsh", "zsh -l");
         assert_eq!(profile_row_text(&zsh, false), "zsh\tzsh -l");
         assert_eq!(profile_row_text(&zsh, true), "zsh（既定）\tzsh -l");
+        let cygwin = Profile::new("c", "", BackendKind::Cygwin);
+        assert_eq!(
+            profile_row_text(&cygwin, false),
+            "c\tCygwin: （ログインシェル）"
+        );
+        let wsl = Profile::new("u", "zsh -l", BackendKind::Wsl);
+        assert_eq!(profile_row_text(&wsl, false), "u\tWSL: zsh -l");
+    }
+
+    #[test]
+    fn profile_location_follows_the_backend() {
+        let mut cygwin = Profile::new("c", "", BackendKind::Cygwin);
+        set_profile_location(&mut cygwin, r"C:\app\cygwin".to_owned());
+        assert_eq!(cygwin.cygwin_root.as_deref(), Some(r"C:\app\cygwin"));
+        assert_eq!(cygwin.distribution, None);
+        set_profile_location(&mut cygwin, String::new());
+        assert_eq!(cygwin.cygwin_root, None);
+        let mut wsl = Profile::new("u", "", BackendKind::Wsl);
+        set_profile_location(&mut wsl, "Ubuntu".to_owned());
+        assert_eq!(wsl.distribution.as_deref(), Some("Ubuntu"));
+        assert_eq!(wsl.cygwin_root, None);
+        let mut conpty = profile("p", "cmd.exe");
+        set_profile_location(&mut conpty, "x".to_owned());
+        assert_eq!((conpty.cygwin_root, conpty.distribution), (None, None));
+        // ブリッジのコマンドラインは空でよい。
+        assert_eq!(check_profiles(&[cygwin, wsl]), Ok(()));
     }
 
     #[test]
