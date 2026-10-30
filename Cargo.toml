@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/fantermo", "crates/fantermo-core", "crates/run-hidden"]
+members = [
+    "crates/fantermo",
+    "crates/fantermo-bridge-protocol",
+    "crates/fantermo-core",
+    "crates/run-hidden",
+]
 
 [workspace.package]
 version = "0.0.2"
