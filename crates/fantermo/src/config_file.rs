@@ -406,8 +406,10 @@ fn changed_names(bytes: &[u8]) -> impl Iterator<Item = String> + '_ {
         let name_start = at + NOTIFY_HEADER_BYTES;
         let name = bytes.get(name_start..name_start + name_bytes)?;
         let units: Vec<u16> = name
-            .chunks_exact(size_of::<u16>())
-            .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+            .as_chunks::<{ size_of::<u16>() }>()
+            .0
+            .iter()
+            .map(|unit| u16::from_le_bytes(*unit))
             .collect();
         offset = (next != 0).then_some(at + next);
         Some(String::from_utf16_lossy(&units))

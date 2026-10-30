@@ -516,7 +516,7 @@ impl Renderer {
                     width * 4,
                 )
             };
-            for bgra in row.chunks_exact(4) {
+            for bgra in row.as_chunks::<4>().0 {
                 rgba.extend_from_slice(&[bgra[2], bgra[1], bgra[0], u8::MAX]);
             }
         }

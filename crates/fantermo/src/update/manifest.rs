@@ -119,7 +119,7 @@ fn parse_digest(text: &str) -> Option<[u8; SHA256_LEN]> {
         return None;
     }
     let mut digest = [0; SHA256_LEN];
-    for (byte, pair) in digest.iter_mut().zip(text.chunks_exact(2)) {
+    for (byte, pair) in digest.iter_mut().zip(text.as_chunks::<2>().0) {
         let pair = std::str::from_utf8(pair).ok()?;
         if !pair.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
