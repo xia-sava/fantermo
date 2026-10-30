@@ -4,7 +4,7 @@
 //! （`$SHELL`、なければ passwd のシェル、それもなければ `/bin/sh`）をログインシェルとして起動する。標準入出力は fantermo との間の
 //! プロトコル（`fantermo-bridge-protocol`）、標準エラー出力はログ。
 //!
-//! 名乗りを交換し、最初のリサイズを受け取ってから、その大きさの pty で子プロセスを起動する。
+//! 開始の通知を交換し、最初のリサイズを受け取ってから、その大きさの pty で子プロセスを起動する。
 //! そのあとは標準入力と pty を `poll` で見て中継し、子プロセスが終わったら終了の単位を送って終わる。
 //! 環境変数（`TERM` など）は fantermo が渡したものをそのまま子プロセスに引き継ぐ。
 
@@ -260,7 +260,7 @@ fn change_directory(cwd: &OsString) {
     }
 }
 
-/// pty につないだ子プロセス。
+/// pty に接続した子プロセス。
 struct Child {
     pid: pid_t,
     /// pty の master。`O_NONBLOCK` を付けて開いておく。
@@ -277,7 +277,7 @@ impl Child {
 
         let winsize = to_winsize(size);
         let mut master: c_int = -1;
-        // SAFETY: `master` と `winsize` は有効な書き込み先と読み出し元。名前と termios は null で、
+        // SAFETY: `master` と `winsize` は有効な書き込み先と読み取り元。名前と termios は null で、
         // 既定のものを使う。
         let pid = unsafe { libc::forkpty(&mut master, ptr::null_mut(), ptr::null(), &winsize) };
         if pid < 0 {
@@ -312,7 +312,7 @@ impl Child {
 
     fn resize(&self, size: WindowSize) {
         let winsize = to_winsize(size);
-        // SAFETY: `master` は pty の master、`winsize` は有効な読み出し元。
+        // SAFETY: `master` は pty の master、`winsize` は有効な読み取り元。
         if unsafe { libc::ioctl(self.master, libc::TIOCSWINSZ, &winsize) } < 0 {
             log!("大きさを変えられません: {}", io::Error::last_os_error());
         }
@@ -527,7 +527,7 @@ impl InputPacer {
 /// pty の master へすべて書く。`O_NONBLOCK` で書けなければ、書けるようになるまで待つ。
 fn write_all_pty(master: c_int, mut bytes: &[u8]) -> io::Result<()> {
     while !bytes.is_empty() {
-        // SAFETY: `bytes` は有効な読み出し元、`master` は開いている fd。
+        // SAFETY: `bytes` は有効な読み取り元、`master` は開いている fd。
         let n = unsafe { libc::write(master, bytes.as_ptr().cast(), bytes.len()) };
         if n > 0 {
             bytes = &bytes[n as usize..];
@@ -824,7 +824,7 @@ fn read_fd(fd: c_int, buf: &mut [u8]) -> io::Result<usize> {
 
 fn write_all_fd(fd: c_int, mut bytes: &[u8]) -> io::Result<()> {
     while !bytes.is_empty() {
-        // SAFETY: `bytes` は有効な読み出し元。
+        // SAFETY: `bytes` は有効な読み取り元。
         let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
         if n > 0 {
             bytes = &bytes[n as usize..];

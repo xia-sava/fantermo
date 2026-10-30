@@ -78,7 +78,7 @@ pub enum PasteOutcome {
     Pasted,
     /// 貼り付けるものがなかった。
     Empty,
-    /// コマンドとして実行されうるので送らなかった。
+    /// コマンドとして実行される可能性があるので送らなかった。
     Unsafe,
 }
 
@@ -254,7 +254,7 @@ pub struct Vt {
     bell_rang: Rc<Cell<bool>>,
     /// アプリからのクリップボードへの書き込み。コールバックの中で溜める。
     clipboard_writes: Rc<RefCell<Vec<WriteRequest>>>,
-    /// アプリからのクリップボードの読み出しの依頼。
+    /// アプリからのクリップボードの読み取りの依頼。
     clipboard_reads: Vec<ReadRequest>,
     /// 画面を取り出すときに使い回す、描画用の状態と行・セルの反復子。
     render_state: RenderState<'static>,
@@ -578,7 +578,7 @@ impl Vt {
 
     /// `text` を貼り付ける。シェルへ送るバイト列は `take_replies` で取り出す。
     ///
-    /// 改行を含む文字列は、アプリが bracketed paste に対応していなければコマンドとして実行されうる
+    /// 改行を含む文字列は、アプリが bracketed paste に対応していなければコマンドとして実行される可能性がある
     /// ので、`allow_unsafe` でなければ送らずに [`PasteOutcome::Unsafe`] を返す。
     pub fn paste(&mut self, text: &str, allow_unsafe: bool) -> Result<PasteOutcome, VtError> {
         let mimes = [ClipboardMime::new(PLAIN_TEXT_MIME)];
@@ -659,7 +659,7 @@ impl Vt {
         std::mem::take(&mut *self.clipboard_writes.borrow_mut())
     }
 
-    /// アプリからのクリップボードの読み出しの依頼（OSC 52）を、来た順に取り出す。
+    /// アプリからのクリップボードの読み取りの依頼（OSC 52）を、来た順に取り出す。
     pub fn take_clipboard_reads(&mut self) -> Vec<ReadRequest> {
         std::mem::take(&mut self.clipboard_reads)
     }

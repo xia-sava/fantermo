@@ -1,6 +1,6 @@
 //! ConPTY のバックエンド。
 //!
-//! 疑似コンソールとは 2 本の匿名パイプでつながる。入力はウィンドウのスレッドから書き込み、出力は読むための
+//! 疑似コンソールとは 2 本の匿名パイプで接続する。入力はウィンドウのスレッドから書き込み、出力は読むための
 //! スレッドで待ってチャネルで渡す。疑似コンソールは子プロセスが終了しても出力のパイプを閉じないので、
 //! 終了は子プロセスのハンドルを待つスレッドで知る。
 
@@ -57,7 +57,7 @@ pub struct ConPty {
 }
 
 impl ConPty {
-    /// `options` のコマンドラインを疑似コンソールにつないで起動する。コマンドラインは
+    /// `options` のコマンドラインを疑似コンソールに接続して起動する。コマンドラインは
     /// `CreateProcessW` にそのまま渡す。
     pub fn spawn(options: &SpawnOptions, wake: Wake) -> io::Result<Self> {
         let (console_input, input) = create_pipe()?;
@@ -205,7 +205,7 @@ fn create_pipe() -> io::Result<(OwnedHandle, OwnedHandle)> {
     })
 }
 
-/// `console` につないだ子プロセスを起動し、そのプロセスのハンドルを返す。
+/// `console` に接続した子プロセスを起動し、そのプロセスのハンドルを返す。
 fn spawn_process(console: HPCON, options: &SpawnOptions) -> io::Result<OwnedHandle> {
     // 一度目の呼び出しは属性リストに要る大きさを返すだけで、失敗として戻る。
     let mut size = 0usize;

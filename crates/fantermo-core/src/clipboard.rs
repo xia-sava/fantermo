@@ -1,7 +1,7 @@
 //! アプリからのクリップボードの読み書き（OSC 52 など）の決まり。Windows のクリップボードそのものは
 //! 触らない。
 //!
-//! 書き込みは常に受ける。読み出しは `clipboard.read` とタブごとの許可で決め、確かめが要る依頼は
+//! 書き込みは常に受ける。読み取りは `clipboard.read` とタブごとの許可で決め、確かめが要る依頼は
 //! [`ReadPrompts`] で待たせて、一つずつ確かめる。
 
 use crate::{base64, config::ClipboardRead};
@@ -28,7 +28,7 @@ pub fn write_request(data: &[u8]) -> Option<WriteRequest> {
         .then(|| WriteRequest::Set(String::from_utf8_lossy(data).into_owned()))
 }
 
-/// 読み出しの依頼の終端。答えも同じ終端で返す。
+/// 読み取りの依頼の終端。答えも同じ終端で返す。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Terminator {
     /// `BEL`
@@ -46,7 +46,7 @@ impl Terminator {
     }
 }
 
-/// アプリからの読み出しの依頼一つ（`OSC 52 ; Pc ; ? ST`）。
+/// アプリからの読み取りの依頼一つ（`OSC 52 ; Pc ; ? ST`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadRequest {
     /// `Pc`。書いていなければ `None`。
@@ -76,7 +76,7 @@ impl ReadRequest {
     }
 }
 
-/// 読み出しの依頼をどうするか。
+/// 読み取りの依頼をどうするか。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadDecision {
     /// 確かめずに答える。
@@ -87,7 +87,7 @@ pub enum ReadDecision {
     Ask,
 }
 
-/// 設定 `policy` と、そのタブで今後も許可すると決めたか `allowed_for_tab` から、読み出しの依頼を
+/// 設定 `policy` と、そのタブで今後も許可すると決めたか `allowed_for_tab` から、読み取りの依頼を
 /// どうするかを決める。`deny` はタブの許可より強い。
 pub fn read_decision(policy: ClipboardRead, allowed_for_tab: bool) -> ReadDecision {
     match policy {
@@ -106,7 +106,7 @@ struct Showing<K> {
     request: Option<ReadRequest>,
 }
 
-/// 確かめを待っている読み出しの依頼。確かめるのは一度に一つで、`K` はタブを見分けるもの。
+/// 確かめを待っている読み取りの依頼。確かめるのは一度に一つで、`K` はタブを見分けるもの。
 ///
 /// タブごとに待たせるのは一つだけにする（読み続けるアプリがいても増えない。答えは待っていた数によらず
 /// 一度で足りる）。

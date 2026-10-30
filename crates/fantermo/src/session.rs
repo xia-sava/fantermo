@@ -31,12 +31,12 @@ const CHILD_ENV: [(&str, &str); 3] = [
 ];
 
 /// 端末で起動するもの。バックエンドの種類と、子プロセスのコマンドライン（ブリッジなら相手の側の
-/// コマンドラインで、空なら相手のログインシェル）、ブリッジのつなぐ先。
+/// コマンドラインで、空なら相手のログインシェル）、ブリッジの接続先。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Startup {
     pub backend: BackendKind,
     pub command_line: String,
-    /// `cygwin` の Cygwin のフォルダ。`None` なら環境変数 `PATH` とよくある場所から探す。
+    /// `cygwin` の Cygwin のフォルダ。`None` なら環境変数 `PATH` と標準のインストール先から探す。
     pub cygwin_root: Option<String>,
     /// `wsl` のディストリビューション。`None` なら既定。
     pub distribution: Option<String>,
@@ -123,7 +123,7 @@ pub struct Session {
     pub tab_icon: TabIcon,
     /// 開いたときのプロファイルの名前。プロファイルなしで開いたなら `None`。
     pub profile_name: Option<String>,
-    /// このタブのアプリには、クリップボードの読み出しを確かめずに許可する。利用者がダイアログで決める。
+    /// このタブのアプリには、クリップボードの読み取りを確かめずに許可する。利用者がダイアログで決める。
     pub clipboard_read_allowed: bool,
 }
 
@@ -165,7 +165,7 @@ impl Session {
         Ok(session)
     }
 
-    /// 起動済みの `backend` を `vt` の端末につなぐ。
+    /// 起動済みの `backend` を `vt` の端末に接続する。
     fn with_backend(id: SessionId, vt: Vt, backend: Box<dyn Backend>) -> Self {
         Self {
             id,

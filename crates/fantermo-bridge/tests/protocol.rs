@@ -70,7 +70,7 @@ impl Bridge {
         }
     }
 
-    /// 起動して名乗りを交わし、大きさを伝えたブリッジ。
+    /// 起動して開始の通知を交わし、大きさを伝えたブリッジ。
     fn start_with_size(args: &[&str]) -> Self {
         let mut bridge = Self::start(args);
         bridge.expect_hello();

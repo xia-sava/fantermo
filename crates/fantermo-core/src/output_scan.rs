@@ -1,8 +1,8 @@
 //! 子プロセスの出力を端末エミュレーションへ流す前に見て、libghostty-vt が扱わないもの（sixel の DCS と
-//! 関係するモード）と、あとで答えるもの（OSC 52 の読み出しの依頼）を取り出す。それ以外のバイトは順番を
+//! 関係するモード）と、あとで答えるもの（OSC 52 の読み取りの依頼）を取り出す。それ以外のバイトは順番を
 //! 変えずに渡す。チャンクの切れ目はどこにあってもよい。
 //!
-//! OSC 52 の読み出しの依頼を libghostty-vt に渡さないのは、そのコールバックの中で答えなければ空の答えを
+//! OSC 52 の読み取りの依頼を libghostty-vt に渡さないのは、そのコールバックの中で答えなければ空の答えを
 //! 書き込むので、ダイアログで確かめてから答えることも、拒否して何も返さないこともできないため。
 
 use crate::{
@@ -70,7 +70,7 @@ pub enum OutputEvent<'a> {
         /// カーソルを動かさない。
         scrolling: bool,
     },
-    /// アプリからのクリップボードの読み出しの依頼。
+    /// アプリからのクリップボードの読み取りの依頼。
     ClipboardRead(ReadRequest),
 }
 
@@ -437,7 +437,7 @@ impl OutputScanner {
         self.state = State::Ground;
     }
 
-    /// 読み終えた読み出しの依頼を渡し、Ground に戻る。
+    /// 読み終えた読み取りの依頼を渡し、Ground に戻る。
     fn finish_clipboard_read(
         &mut self,
         selector: Option<u8>,
@@ -804,7 +804,7 @@ mod tests {
     fn an_escape_after_the_question_mark_starts_the_next_sequence() {
         let data = b"\x1b]52;c;?\x1b[0m";
         assert_eq!(scan_checked(data), [bytes(data)]);
-        // 手元に置いていたものを流したあとの `ESC` から、読み出しの依頼を読み直す。
+        // 手元に置いていたものを流したあとの `ESC` から、読み取りの依頼を読み直す。
         assert_eq!(
             scan_checked(b"\x1b]52;c;\x1b]52;c;?\x07"),
             [

@@ -24,7 +24,7 @@ CYGWIN_ROOT='C:\app\cygwin' ./tools/bridge.sh build all
 FANTERMO_E2E_CYGWIN_ROOT='C:\app\cygwin' FANTERMO_E2E_WSL=Ubuntu ./tools/dev.sh test --features e2e --test e2e
 ```
 
-ブリッジ単体（パイプでつないでプロトコルで話す）は `CYGWIN_ROOT='C:\app\cygwin' ./tools/bridge.sh test all`。Linux 向けは WSL の中で実行する。
+ブリッジ単体（パイプで接続してプロトコルで話す）は `CYGWIN_ROOT='C:\app\cygwin' ./tools/bridge.sh test all`。Linux 向けは WSL の中で実行する。
 
 ## 要求の一覧
 

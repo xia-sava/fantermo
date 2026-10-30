@@ -119,7 +119,7 @@ const WM_APP_CONFIG_CHANGED: u32 = WM_APP + 2;
 /// 更新の確認かダウンロードをするスレッドが、結果を `App::update_events` に送ったと知らせるメッセージ。
 const WM_APP_UPDATE: u32 = WM_APP + 3;
 
-/// クリップボードの読み出しの依頼が確かめを待っているかもしれないことを、ウィンドウに知らせる。
+/// クリップボードの読み取りの依頼が確かめを待っているかもしれないことを、ウィンドウに知らせる。
 const WM_APP_CLIPBOARD_PROMPT: u32 = WM_APP + 4;
 
 /// e2e テストの制御の口に要求が届いたと知らせるメッセージ。
@@ -613,7 +613,7 @@ enum Deferred {
     Warn { topic: Topic, text: String },
     /// 更新のスレッドの結果を見せ、次にすることを決める。
     Update(update::Event),
-    /// クリップボードの読み出しの依頼を、本文 `text` のダイアログで確かめる。
+    /// クリップボードの読み取りの依頼を、本文 `text` のダイアログで確かめる。
     AskClipboardRead { text: String },
 }
 
@@ -660,9 +660,9 @@ struct App {
     font_config: FontConfig,
     /// 貼り付ける前に、編集のダイアログで確かめるとき。
     paste_confirm: PasteConfirm,
-    /// アプリがクリップボードの内容を読み出そうとしたときにどうするか。
+    /// アプリがクリップボードの内容を読み取ろうとしたときにどうするか。
     clipboard_read: ClipboardRead,
-    /// 確かめを待っているクリップボードの読み出しの依頼。
+    /// 確かめを待っているクリップボードの読み取りの依頼。
     clipboard_prompts: ReadPrompts<SessionId>,
     /// fantermo の引数（子プロセスのコマンドライン）。
     arguments: Option<String>,
@@ -1173,7 +1173,7 @@ impl App {
         })
     }
 
-    /// `text` を貼り付ける。`allow_unsafe` でなければ、コマンドとして実行されうる文字列は送らない。
+    /// `text` を貼り付ける。`allow_unsafe` でなければ、コマンドとして実行される可能性がある文字列は送らない。
     fn paste(&mut self, text: &str, allow_unsafe: bool) -> Option<PasteOutcome> {
         let outcome = match self.session_mut().vt.paste(text, allow_unsafe) {
             Ok(outcome) => outcome,
@@ -1211,7 +1211,7 @@ impl App {
         self.invalidate();
     }
 
-    /// `sessions` の `index` の端末のアプリからの、クリップボードの書き込みと読み出しの依頼を処理する。
+    /// `sessions` の `index` の端末のアプリからの、クリップボードの書き込みと読み取りの依頼を処理する。
     fn on_clipboard_requests(&mut self, index: usize) {
         for write in self.sessions[index].vt.take_clipboard_writes() {
             let result = match write {
@@ -3033,7 +3033,7 @@ fn message_button(msg: u32) -> MouseButton {
 enum PasteAction {
     /// 送らずに、編集のダイアログで確かめる。
     Confirm,
-    /// 端末に渡す。`allow_unsafe` でなければ、コマンドとして実行されうる文字列は端末が送らずに返す。
+    /// 端末に渡す。`allow_unsafe` でなければ、コマンドとして実行される可能性がある文字列は端末が送らずに返す。
     Paste { allow_unsafe: bool },
 }
 
@@ -3580,7 +3580,7 @@ mod tests {
             startup_for(None, &[], 0, Launch::Default, None),
             Startup::conpty(config::DEFAULT_COMMAND_LINE)
         );
-        // ブリッジのプロファイルは、つなぐ先も渡す。
+        // ブリッジのプロファイルは、接続先も渡す。
         let wsl = Profile {
             distribution: Some("Ubuntu".to_owned()),
             ..Profile::new("u", "", BackendKind::Wsl)

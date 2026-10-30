@@ -18,12 +18,12 @@ use crate::version;
 const HTTPS_PORT: u16 = 443;
 /// 成功の応答のステータスコード。リダイレクトは WinHTTP が追う。
 const HTTP_OK: u32 = 200;
-/// 名前の解決・接続・送信・受信のそれぞれを待つ上限（ミリ秒）。受信は 1 回の読み出しごと。
+/// 名前の解決・接続・送信・受信のそれぞれを待つ上限（ミリ秒）。受信は 1 回の読み取りごと。
 const RESOLVE_TIMEOUT_MS: i32 = 10_000;
 const CONNECT_TIMEOUT_MS: i32 = 10_000;
 const SEND_TIMEOUT_MS: i32 = 30_000;
 const RECEIVE_TIMEOUT_MS: i32 = 30_000;
-/// 1 回に読み出す大きさ。
+/// 1 回に読み取る大きさ。
 const READ_CHUNK: usize = 64 * 1024;
 
 /// 取得できなかったわけ。

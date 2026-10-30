@@ -163,7 +163,7 @@ jobs:
           FANTERMO_E2E_CYGWIN_ROOT: ${{ steps.toolchain.outputs.cygwin-root }}
         run: call tools\dev.bat test --locked --features e2e --test e2e cygwin
 
-  # Linux 向けのブリッジの単体のテスト。パイプでつないで名乗り・リサイズ・データ・終了をやり取りする。
+  # Linux 向けのブリッジの単体のテスト。パイプで接続して開始の通知・リサイズ・データ・終了をやり取りする。
   bridge-linux:
     runs-on: ubuntu-latest
     continue-on-error: true

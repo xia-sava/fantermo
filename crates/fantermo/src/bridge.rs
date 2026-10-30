@@ -61,15 +61,15 @@ const WSL_EXE: &str = "wsl.exe";
 const QUIT_TIMEOUT: Duration = Duration::from_secs(5);
 /// 出力のパイプから一度に読む大きさ。
 const READ_BUFFER_SIZE: usize = 64 * 1024;
-/// ブリッジが名乗る前に届いたバイト列を、エラーの文に添えるために覚えておく上限。
+/// ブリッジの開始の通知より前に届いたバイト列を、エラーの文に添えるために覚えておく上限。
 const RAW_OUTPUT_LIMIT: usize = 4096;
 /// シグナルで終わった子プロセスの終了コードの基準（シェルと同じく 128 + シグナルの番号）。
 const SIGNAL_EXIT_BASE: u32 = 128;
 
-/// ブリッジでつなぐ先。
+/// ブリッジの接続先。
 #[derive(Clone, Copy, Debug)]
 pub enum Target<'a> {
-    /// Cygwin。`root` は Cygwin のフォルダ（`None` なら環境変数 `PATH` とよくある場所から探す）。
+    /// Cygwin。`root` は Cygwin のフォルダ（`None` なら環境変数 `PATH` と標準のインストール先から探す）。
     Cygwin { root: Option<&'a str> },
     /// WSL。`distribution` はディストリビューションの名前（`None` なら既定）。
     Wsl { distribution: Option<&'a str> },
@@ -97,7 +97,7 @@ pub struct Bridge {
 }
 
 impl Bridge {
-    /// `target` のブリッジを起動し、名乗りと大きさを送る。`options` のコマンドラインは相手の側の
+    /// `target` のブリッジを起動し、開始の通知と大きさを送る。`options` のコマンドラインは相手の側の
     /// コマンドラインで、空なら相手のログインシェル。ブリッジが見つからないなど起動できないときも
     /// エラーにはせず、その理由を端末に出すバックエンドを返す。
     pub fn spawn(target: Target, options: &SpawnOptions, wake: Wake) -> io::Result<Self> {
@@ -604,9 +604,9 @@ fn send_all(sender: &mpsc::Sender<Event>, events: Vec<Event>) -> bool {
 #[derive(Default)]
 struct OutputReader {
     decoder: Decoder,
-    /// ブリッジが名乗った。
+    /// ブリッジの開始の通知を受け取った。
     greeted: bool,
-    /// 名乗る前に届いたバイト列（[`RAW_OUTPUT_LIMIT`] まで）。ブリッジでないものが書いた文かもしれない。
+    /// 開始の通知より前に届いたバイト列（[`RAW_OUTPUT_LIMIT`] まで）。ブリッジでないものが書いた文かもしれない。
     raw: Vec<u8>,
     /// 終わりの単位か、エラーを受け取った。このあとは読まない。
     done: bool,
@@ -704,7 +704,7 @@ fn exit_code_text(code: u32) -> String {
     }
 }
 
-/// 名乗る前に届いたバイト列を、読める文にする。`wsl.exe` は自分のエラーを UTF-16LE で標準出力に書く
+/// 開始の通知より前に届いたバイト列を、読める文にする。`wsl.exe` は自分のエラーを UTF-16LE で標準出力に書く
 /// ので、NUL を含めば UTF-16LE として読む。制御文字は改行とタブのほかは除く。
 fn readable_text(bytes: &[u8]) -> String {
     // UTF-8 の文には NUL がないが、UTF-16LE の ASCII の文字は NUL を含む。

@@ -294,7 +294,7 @@ pub struct Profile {
 }
 
 impl Profile {
-    /// 名前が `name`、コマンドラインが `command` の、`backend` でつなぐプロファイル。
+    /// 名前が `name`、コマンドラインが `command` の、`backend` で接続するプロファイル。
     pub fn new(name: &str, command: &str, backend: BackendKind) -> Self {
         Self {
             name: name.to_owned(),
@@ -599,7 +599,7 @@ impl BackendKind {
         }
     }
 
-    /// ブリッジでつなぐ。`command` を相手の側のコマンドラインとして渡し、空なら相手のログインシェル。
+    /// ブリッジで接続する。`command` を相手の側のコマンドラインとして渡し、空なら相手のログインシェル。
     pub fn is_bridge(self) -> bool {
         self != BackendKind::Conpty
     }
@@ -977,7 +977,7 @@ pub struct PasteConfig {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PasteConfirm {
-    /// コマンドとして実行されうるとき。改行を含む文字列でアプリが bracketed paste を有効にしていない
+    /// コマンドとして実行される可能性があるとき。改行を含む文字列でアプリが bracketed paste を有効にしていない
     /// ときと、bracketed paste の終わりの印を含むとき。
     #[default]
     Unsafe,
@@ -1008,11 +1008,11 @@ impl PasteConfirm {
 /// `[clipboard]` の設定。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ClipboardConfig {
-    /// アプリがクリップボードの内容を読み出そうとしたとき。
+    /// アプリがクリップボードの内容を読み取ろうとしたとき。
     pub read: ClipboardRead,
 }
 
-/// アプリがクリップボードの内容を読み出そうとしたときにどうするか（`clipboard.read`）。
+/// アプリがクリップボードの内容を読み取ろうとしたときにどうするか（`clipboard.read`）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClipboardRead {
@@ -3400,7 +3400,7 @@ size = 10
             find_cygwin(Some(r"C:\Windows"), &both[..1]),
             Some(PathBuf::from(r"C:\cygwin"))
         );
-        // PATH の項目と違い、よくある場所は sh.exe がなくてもよい。PATH で見つかればそちらが先。
+        // PATH の項目と違い、標準のインストール先は sh.exe がなくてもよい。PATH で見つかればそちらが先。
         let files = [
             r"C:\cygwin64\bin\cygwin1.dll",
             r"C:\real\bin\cygwin1.dll",
