@@ -9,7 +9,7 @@
 
 pub mod migrate;
 
-use std::{collections::HashMap, ops::RangeInclusive};
+use std::{collections::HashMap, ops::RangeInclusive, path::Path};
 
 use serde::{Deserialize, de::DeserializeOwned};
 use toml::{
@@ -287,31 +287,159 @@ impl Profile {
     }
 
     /// 最上位の `shell` に書いたコマンドライン `command` のプロファイル。名前は実行ファイルの名前。
+    /// つなぎ方は [`Profile::from_shell_with`] で決め、Cygwin のフォルダかどうかは `bin` に
+    /// `cygwin1.dll` があるかで見る。
     pub fn from_shell(command: &str) -> Self {
-        Self::new(&program_name(command), command, BackendKind::default())
+        Self::from_shell_with(command, |root| root.join("bin").join(CYGWIN_DLL).is_file())
+    }
+
+    /// 最上位の `shell` に書いたコマンドライン `command` のプロファイル。`is_cygwin_root` はフォルダが
+    /// Cygwin のフォルダか。
+    ///
+    /// - 実行ファイルが絶対パスで、そのフォルダの一つ上が Cygwin のフォルダなら（`<Cygwin>\bin\zsh.exe`
+    ///   など）、`backend = "cygwin"`。`cygwin_root` はそのフォルダ、`command` は実行ファイルを Cygwin の
+    ///   パス（`/bin/zsh`）にして引数を続けたもの。
+    /// - 実行ファイルが `wsl.exe` で、引数が `-d`（`--distribution`）とその名前、`-e`（`--exec`）か `--`
+    ///   に続くコマンド、オプションでない最初の語から始まるコマンドだけなら、`backend = "wsl"`。
+    ///   `distribution` は `-d` の名前、`command` はコマンドの部分（なければ空でログインシェル）。
+    /// - どちらでもなければ ConPTY で、コマンドラインをそのまま使う。
+    pub fn from_shell_with(command: &str, is_cygwin_root: impl Fn(&Path) -> bool) -> Self {
+        let name = program_name(command);
+        let (program, rest) = split_program(command);
+        if let Some((root, cygwin_command)) = cygwin_shell(program, rest, is_cygwin_root) {
+            return Self {
+                cygwin_root: Some(root),
+                ..Self::new(&name, &cygwin_command, BackendKind::Cygwin)
+            };
+        }
+        if file_stem(program).eq_ignore_ascii_case(WSL_PROGRAM)
+            && let Some((distribution, wsl_command)) = wsl_arguments(rest)
+        {
+            return Self {
+                distribution,
+                ..Self::new(&name, &wsl_command, BackendKind::Wsl)
+            };
+        }
+        Self::new(&name, command, BackendKind::default())
     }
 }
 
+/// Cygwin のフォルダの `bin` にある DLL。
+const CYGWIN_DLL: &str = "cygwin1.dll";
+
+/// WSL を起動する実行ファイルの名前（フォルダと `.exe` を除く）。
+const WSL_PROGRAM: &str = "wsl";
+
 /// コマンドライン `command` の実行ファイルの名前（フォルダと `.exe` を除く）。読めなければ `shell`。
 fn program_name(command: &str) -> String {
-    const EXE: &str = ".exe";
-    let command = command.trim_start();
-    let program = match command.strip_prefix('"') {
-        Some(quoted) => quoted.split('"').next().unwrap_or_default(),
-        None => command.split_whitespace().next().unwrap_or_default(),
-    };
-    let file = program.rsplit(['\\', '/']).next().unwrap_or(program);
-    let stem = match file.len().checked_sub(EXE.len()) {
-        Some(end) if file.is_char_boundary(end) && file[end..].eq_ignore_ascii_case(EXE) => {
-            &file[..end]
-        }
-        _ => file,
-    };
+    let stem = file_stem(split_program(command).0);
     if stem.is_empty() {
         "shell".to_owned()
     } else {
         stem.to_owned()
     }
+}
+
+/// コマンドライン `command` を、実行ファイル（`"` で囲んでいれば中身）と、そのあとの引数（前後の空白を
+/// 除いたもの）に分ける。
+fn split_program(command: &str) -> (&str, &str) {
+    let command = command.trim();
+    match command.strip_prefix('"') {
+        Some(quoted) => match quoted.split_once('"') {
+            Some((program, rest)) => (program, rest.trim()),
+            None => (quoted, ""),
+        },
+        None => match command.split_once(char::is_whitespace) {
+            Some((program, rest)) => (program, rest.trim()),
+            None => (command, ""),
+        },
+    }
+}
+
+/// パス `program` のファイルの名前から `.exe` を除いたもの。
+fn file_stem(program: &str) -> &str {
+    const EXE: &str = ".exe";
+    let file = program.rsplit(['\\', '/']).next().unwrap_or(program);
+    match file.len().checked_sub(EXE.len()) {
+        Some(end) if file.is_char_boundary(end) && file[end..].eq_ignore_ascii_case(EXE) => {
+            &file[..end]
+        }
+        _ => file,
+    }
+}
+
+/// 実行ファイル `program` が Cygwin のフォルダの下のものなら、そのフォルダと、Cygwin の側のコマンド
+/// ライン（実行ファイルを Cygwin のパスにして引数 `arguments` を続けたもの）。
+fn cygwin_shell(
+    program: &str,
+    arguments: &str,
+    is_cygwin_root: impl Fn(&Path) -> bool,
+) -> Option<(String, String)> {
+    let path = Path::new(program);
+    if !path.is_absolute() {
+        return None;
+    }
+    let folder = path.parent()?;
+    let root = folder.parent()?;
+    let folder_name = folder.file_name()?.to_str()?;
+    let stem = file_stem(program);
+    if stem.is_empty() || !is_cygwin_root(root) {
+        return None;
+    }
+    let mut command = format!("/{folder_name}/{stem}");
+    if !arguments.is_empty() {
+        command.push(' ');
+        command.push_str(arguments);
+    }
+    Some((root.to_str()?.to_owned(), command))
+}
+
+/// `wsl.exe` の引数 `arguments` を、ディストリビューションの名前と WSL の側のコマンドラインに読む。
+/// 読めない引数（ほかのオプション）があれば `None`。
+fn wsl_arguments(arguments: &str) -> Option<(Option<String>, String)> {
+    let mut distribution = None;
+    let mut words = command_words(arguments).into_iter();
+    while let Some((start, end)) = words.next() {
+        let word = &arguments[start..end];
+        match word {
+            "-d" | "--distribution" => {
+                let (start, end) = words.next()?;
+                distribution = Some(arguments[start..end].replace('"', ""));
+            }
+            "-e" | "--exec" => {
+                let command = arguments[end..].trim();
+                return (!command.is_empty()).then(|| (distribution, command.to_owned()));
+            }
+            "--" => return Some((distribution, arguments[end..].trim().to_owned())),
+            _ if word.starts_with('-') => return None,
+            _ => return Some((distribution, arguments[start..].trim().to_owned())),
+        }
+    }
+    Some((distribution, String::new()))
+}
+
+/// コマンドライン `text` の語の、始まりと終わりの位置。語は空白で区切り、`"` で囲んだところの空白は
+/// 区切りにしない。
+fn command_words(text: &str) -> Vec<(usize, usize)> {
+    let mut words = Vec::new();
+    let mut start = None;
+    let mut quoted = false;
+    for (index, c) in text.char_indices() {
+        if c.is_whitespace() && !quoted {
+            if let Some(start) = start.take() {
+                words.push((start, index));
+            }
+            continue;
+        }
+        if c == '"' {
+            quoted = !quoted;
+        }
+        start.get_or_insert(index);
+    }
+    if let Some(start) = start {
+        words.push((start, text.len()));
+    }
+    words
 }
 
 /// プロファイルのシェルとのつなぎ方（`profiles[].backend`）。
@@ -2785,6 +2913,101 @@ size = 10
         let parsed = parse("[[profiles]]\nname = 'a'\n");
         assert_eq!(parsed.config.profiles, [Profile::builtin()]);
         assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
+    }
+
+    #[test]
+    fn shell_of_cygwin_uses_the_cygwin_bridge() {
+        let cygwin = |root: &Path| root == Path::new(r"C:\app\cygwin");
+        let profile = |command: &str| Profile::from_shell_with(command, cygwin);
+        let bridge = |name: &str, command: &str| Profile {
+            cygwin_root: Some(r"C:\app\cygwin".to_owned()),
+            ..Profile::new(name, command, BackendKind::Cygwin)
+        };
+        assert_eq!(
+            profile(r"C:\app\cygwin\bin\zsh.exe -l"),
+            bridge("zsh", "/bin/zsh -l")
+        );
+        assert_eq!(
+            profile(r#""C:\app\cygwin\bin\bash.EXE"  --login -i "#),
+            bridge("bash", "/bin/bash --login -i")
+        );
+        // Cygwin のフォルダは書いたままの区切りで。
+        assert_eq!(
+            profile(r"C:/app/cygwin/bin/zsh"),
+            Profile {
+                cygwin_root: Some(r"C:/app/cygwin".to_owned()),
+                ..bridge("zsh", "/bin/zsh")
+            }
+        );
+        // bin の隣のフォルダでも、一つ上が Cygwin のフォルダならよい。
+        assert_eq!(
+            profile(r"C:\app\cygwin\sbin\tool.exe x"),
+            bridge("tool", "/sbin/tool x")
+        );
+        // Cygwin のフォルダの下でないもの、フォルダのないもの、相対パスは ConPTY のまま。
+        for command in [
+            r"C:\cygwin64\bin\zsh.exe -l",
+            r"C:\app\cygwin\bin\x\zsh.exe",
+            "zsh -l",
+            r"cygwin\bin\zsh.exe",
+            r"C:\zsh.exe",
+        ] {
+            assert_eq!(
+                profile(command),
+                Profile::new(&program_name(command), command, BackendKind::Conpty),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_of_wsl_uses_the_wsl_bridge() {
+        let profile = |command: &str| Profile::from_shell_with(command, |_| false);
+        let bridge = |distribution: Option<&str>, command: &str| Profile {
+            distribution: distribution.map(str::to_owned),
+            ..Profile::new("wsl", command, BackendKind::Wsl)
+        };
+        assert_eq!(profile("wsl.exe"), bridge(None, ""));
+        assert_eq!(profile("wsl.exe -d Ubuntu"), bridge(Some("Ubuntu"), ""));
+        assert_eq!(
+            profile(r"C:\Windows\System32\WSL.EXE --distribution Ubuntu"),
+            Profile {
+                name: "WSL".to_owned(),
+                ..bridge(Some("Ubuntu"), "")
+            }
+        );
+        assert_eq!(
+            profile(r#"wsl -d "Ubuntu 24.04" --exec zsh -l"#),
+            bridge(Some("Ubuntu 24.04"), "zsh -l")
+        );
+        assert_eq!(
+            profile("wsl.exe -d Ubuntu -- ls -l 'a b' | less"),
+            bridge(Some("Ubuntu"), "ls -l 'a b' | less")
+        );
+        assert_eq!(profile("wsl.exe -e  htop "), bridge(None, "htop"));
+        assert_eq!(profile("wsl.exe top -d 1"), bridge(None, "top -d 1"));
+        // 読めない引数があれば ConPTY のまま。
+        for command in [
+            "wsl.exe -u root",
+            "wsl.exe -d Ubuntu --cd ~",
+            "wsl.exe -d",
+            "wsl.exe --exec",
+            "wslconfig.exe",
+        ] {
+            assert_eq!(
+                profile(command),
+                Profile::new(&program_name(command), command, BackendKind::Conpty),
+                "{command}"
+            );
+        }
+        // shell からプロファイルを作るときだけで、profiles に書いたものはそのまま。
+        let parsed = parse("[[profiles]]\nname = 'u'\ncommand = 'wsl.exe -d Ubuntu'\n");
+        assert_eq!(
+            parsed.config.profiles,
+            [Profile::new("u", "wsl.exe -d Ubuntu", BackendKind::Conpty)]
+        );
+        let parsed = parse("shell = 'wsl.exe -d Ubuntu'\n");
+        assert_eq!(parsed.config.profiles, [bridge(Some("Ubuntu"), "")]);
     }
 
     #[test]
