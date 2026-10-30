@@ -107,6 +107,10 @@ jobs:
         shell: cmd
         run: call tools\dev.bat build --locked --features e2e
 
+      - name: Clippy
+        shell: cmd
+        run: call tools\dev.bat clippy --locked --features e2e --all-targets -- -D warnings
+
       - name: Smoke
         shell: cmd
         run: call tools\dev.bat test --locked --features e2e --test e2e smoke -- --nocapture
@@ -114,10 +118,6 @@ jobs:
       - name: E2E
         shell: cmd
         run: call tools\dev.bat test --locked --features e2e --test e2e
-
-      - name: Clippy
-        shell: cmd
-        run: call tools\dev.bat clippy --locked --features e2e --all-targets -- -D warnings
 
   # Cygwin のブリッジの単体のテストと e2e。
   e2e-cygwin:

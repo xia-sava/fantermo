@@ -140,7 +140,7 @@ fn real_window_title(hwnd: HWND) -> String {
 }
 
 impl App {
-    /// 借用の中で済む操作をする。あとで借用の外ですることがあれば、一緒に返す。
+    /// 借用の中で済む操作をする。続けて借用の外ですることがあれば、一緒に返す。
     fn run_e2e_request(&mut self, request: Request) -> (Response, Option<Deferred>) {
         let done = || Response::json(&json!({}));
         match request {
