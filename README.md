@@ -24,7 +24,7 @@ libghostty-vt は [libghostty-rs](https://github.com/uzaaft/libghostty-rs) の�
 - インストーラ: 開いて「インストール」を押すと，使っているユーザーだけのために `%LOCALAPPDATA%\Programs\fantermo\` に入れます．管理者権限は要りません．完了の画面で「fantermo を起動する」を選んだままにすると，「完了」で起動します．次からはスタートメニューの「fantermo」から起動してください．新しいバージョンのインストーラを開くと，前のバージョンを置き換えます．アンインストールは「設定」の「アプリ」（「プログラムと機能」）からできます．
 - zip: 好きな場所に展開して，中の `fantermo.exe` を起動してください．
 
-どちらにも，`fantermo.exe` と同じフォルダにブリッジ（`fantermo-bridge.exe` と `fantermo-bridge`）が入っています．プロファイルで Cygwin や WSL にブリッジでつなぐときに使うので，`fantermo.exe` と離さないでください．Cygwin 向けのブリッジは，入れてある Cygwin の `cygwin1.dll` などを使います．Cygwin のフォルダは，プロファイルの `cygwin_root` に書かなければ，環境変数 `PATH` とよくある場所（`C:\cygwin64`，`C:\cygwin`）から探します．Cygwin と WSL は，ConPTY よりブリッジでつなぐことを勧めます（設定ファイルの `[[profiles]]` に `backend = "cygwin"` か `backend = "wsl"` を書きます．ConPTY を通すと，アプリの出力の一部が書き換えられ，端末への問い合わせの一部が届かず，kitty graphics protocol の画像も届かず，ウィンドウの大きさを変えるとスクロールバックの行が欠けることがあります）．
+どちらにも，`fantermo.exe` と同じフォルダにブリッジ（`fantermo-bridge.exe` と `fantermo-bridge`）が入っています．プロファイルで Cygwin や WSL にブリッジでつなぐときに使うので，`fantermo.exe` と離さないでください．Cygwin 向けのブリッジは，入れてある Cygwin の `cygwin1.dll` などを使います．Cygwin のフォルダは，プロファイルの `cygwin_root` に書かなければ，環境変数 `PATH` とよくある場所（`C:\cygwin64`，`C:\cygwin`）から探します．Cygwin と WSL は，ConPTY よりブリッジでつなぐことを勧めます（設定ファイルの `[[profiles]]` に `backend = "cygwin"` か `backend = "wsl"` を書きます．ConPTY を通すと，アプリの出力の一部が書き換えられ，端末への問い合わせの一部が届かず，kitty graphics protocol と sixel の画像も届かず，ウィンドウの大きさを変えるとスクロールバックの行が欠けることがあります）．
 
 設定ファイルとウィンドウの状態は `%APPDATA%\fantermo\` に，ログは `%LOCALAPPDATA%\fantermo\logs\` に置きます．どちらもアンインストールしても消さないので，要らなければ手で消してください．
 
