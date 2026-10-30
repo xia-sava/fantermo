@@ -28,7 +28,7 @@ nightly="${BRIDGE_NIGHTLY:-nightly-2026-10-30}"
 export CARGO_TARGET_DIR="$root/target/bridge"
 
 usage() {
-  sed -n '3,6p' "${BASH_SOURCE[0]}" | sed 's/^#  //' >&2
+  sed -n '5,7p' "${BASH_SOURCE[0]}" | sed 's/^#  //' >&2
   exit 2
 }
 
