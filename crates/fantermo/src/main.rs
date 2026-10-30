@@ -24,6 +24,7 @@ mod decoration;
 mod dump;
 mod file_dialog;
 mod font;
+mod image_cache;
 mod ime;
 mod key_capture;
 mod keyboard;

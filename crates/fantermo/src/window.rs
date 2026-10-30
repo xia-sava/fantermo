@@ -129,6 +129,12 @@ const BLINK_INTERVAL: Duration = Duration::from_millis(500);
 /// スクロールバーのつまみの外を押し続けたときに、ページを送り続けるタイマー。
 const SCROLL_BAR_TIMER_ID: usize = 4;
 
+/// 端末の中の画像のアニメーションの次のコマで描き直すタイマー。
+const IMAGE_ANIMATION_TIMER_ID: usize = 5;
+
+/// 画像のアニメーションで描き直す間隔の下限。
+const MIN_IMAGE_ANIMATION_INTERVAL: Duration = Duration::from_millis(8);
+
 /// スクロールバーのつまみの外を押してから、押し続けたとしてページを送り始めるまで。
 const SCROLL_BAR_REPEAT_DELAY: Duration = Duration::from_millis(250);
 
@@ -652,8 +658,10 @@ struct App {
     text_input: Utf16Assembler,
     /// ホイール 1 ノッチで動かす行数（Windows の設定）。
     wheel_lines_per_notch: u32,
-    /// ダブルクリックの判定に使う時計。
+    /// ダブルクリックの判定と画像のアニメーションに使う時計。
     clock: Instant,
+    /// 画像のアニメーションの次のコマで描き直すタイマーが動いている。
+    image_animation_timer_running: bool,
     /// マウスの、ウィンドウのクライアント領域の中の位置。ウィンドウの外へ出たら `None`。
     pointer_in_window: Option<(i32, i32)>,
     /// fantermo が受け持つキーの割り当て。
@@ -794,6 +802,7 @@ impl App {
             text_input: Utf16Assembler::default(),
             wheel_lines_per_notch: wheel_lines_per_notch(),
             clock: Instant::now(),
+            image_animation_timer_running: false,
             pointer_in_window: None,
             keymap: config.keys,
             colors: config.colors,
@@ -1026,7 +1035,9 @@ impl App {
         if was_active {
             self.leave_active();
         }
-        drop(self.sessions.remove(index));
+        let closed = self.sessions.remove(index);
+        self.renderer.drop_terminal_images(closed.id().0);
+        drop(closed);
         self.drop_unused_background_images();
         self.active = active_after_close(self.active, index, self.sessions.len());
         if was_active {
@@ -2279,6 +2290,7 @@ impl App {
     /// `capture` を渡すと、表示する前の画面を PNG で書き出す。
     fn render_to(&mut self, capture: Option<&std::path::Path>) {
         self.update_scroll_position();
+        self.tick_image_animations();
         let mut frame = match self.session_mut().vt.frame() {
             Ok(frame) => frame,
             Err(e) => {
@@ -2307,6 +2319,9 @@ impl App {
                     image_opacity,
                 }
             });
+        let session = &self.sessions[self.active];
+        self.renderer
+            .prepare_terminal_images(session.id().0, &frame.images, &session.vt);
         if let Err(e) = self.renderer.render(
             &[(&frame, self.terminal_area)],
             backdrop.as_ref(),
@@ -2390,6 +2405,51 @@ impl App {
                 .tab_bar_height
                 .min(self.terminal_area.y),
         }
+    }
+
+    /// 表示している端末の画像のアニメーションを進め、次のコマで描き直すタイマーを動かす。再生中の
+    /// ものがなければ止める。
+    fn tick_image_animations(&mut self) {
+        let now = self.clock.elapsed();
+        let next = match self.session_mut().vt.tick_image_animations(now) {
+            Ok(next) => next,
+            Err(e) => {
+                tracing::warn!("failed to advance the image animations: {e}");
+                None
+            }
+        };
+        let Some(delay) = next else {
+            if self.image_animation_timer_running {
+                self.stop_image_animation_timer();
+            }
+            return;
+        };
+        let delay = delay.max(MIN_IMAGE_ANIMATION_INTERVAL);
+        let millis = u32::try_from(delay.as_millis()).unwrap_or(u32::MAX);
+        // SAFETY: self.hwnd は有効なウィンドウ。同じ番号のタイマーは置き換わる。
+        let started =
+            unsafe { SetTimer(Some(self.hwnd), IMAGE_ANIMATION_TIMER_ID, millis, None) } != 0;
+        if !started {
+            tracing::warn!(
+                "failed to start the image animation timer: {}",
+                windows::core::Error::from_thread()
+            );
+        }
+        self.image_animation_timer_running = started;
+    }
+
+    fn stop_image_animation_timer(&mut self) {
+        // SAFETY: self.hwnd は有効なウィンドウ。
+        if let Err(e) = unsafe { KillTimer(Some(self.hwnd), IMAGE_ANIMATION_TIMER_ID) } {
+            tracing::warn!("failed to stop the image animation timer: {e}");
+        }
+        self.image_animation_timer_running = false;
+    }
+
+    /// 画像のアニメーションの次のコマの時刻になった。一度だけのタイマーとして止めて描き直す。
+    fn on_image_animation_timer(&mut self) {
+        self.stop_image_animation_timer();
+        self.invalidate();
     }
 
     /// 点滅のタイマーを動かす・止める。止めたら点滅の文字を見せた状態に戻す。動かし始めも見せた状態から。
@@ -2966,6 +3026,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             with_app(&mut |app| app.on_scroll_bar_timer());
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == IMAGE_ANIMATION_TIMER_ID => {
+            with_app(&mut |app| app.on_image_animation_timer());
+            LRESULT(0)
+        }
         // ほかのウィンドウにマウスのキャプチャが移ったら（Alt+Tab など）、離したことが届かないので、
         // スクロールバーの操作を終える。lparam はマウスをキャプチャするウィンドウ。
         WM_CAPTURECHANGED if lparam.0 != hwnd.0 as isize => {
@@ -3171,6 +3235,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 _ = KillTimer(Some(hwnd), CONFIG_TIMER_ID);
                 _ = KillTimer(Some(hwnd), BLINK_TIMER_ID);
                 _ = KillTimer(Some(hwnd), SCROLL_BAR_TIMER_ID);
+                _ = KillTimer(Some(hwnd), IMAGE_ANIMATION_TIMER_ID);
             };
             let mut code = 0;
             with_app(&mut |app| code = app.exit.map_or(0, |code| code.0));

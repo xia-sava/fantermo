@@ -9,7 +9,8 @@ use std::{
 use fantermo_core::{
     background::{self, Placement},
     config::{BackgroundFit, WideGlyph},
-    frame::{Frame, Rgb, Underline},
+    frame::{Frame, ImageKey, ImageLayer, ImageView, Rgb, Underline},
+    vt::Vt,
 };
 use windows::Win32::{
     Foundation::{HMODULE, HWND},
@@ -37,8 +38,9 @@ use crate::{
     background::{Decoded, Decoder},
     decoration::Decoration,
     font::Font,
+    image_cache::ImageCache,
     paint::{Area, Paint},
-    pipeline::{CellPipeline, Instance, InstanceKind},
+    pipeline::{CellPipeline, DrawList, Instance, InstanceKind},
     ui_font::UiFont,
 };
 
@@ -47,6 +49,13 @@ const SWAP_CHAIN_BUFFERS: u32 = 2;
 
 /// 垂直同期を待って表示する。
 const PRESENT_SYNC_INTERVAL: u32 = 1;
+
+/// 端末の中の画像のテクスチャに使うバイト数の上限。これを超えると、描いていないものから捨てる。
+const TERMINAL_IMAGE_TEXTURE_LIMIT: u64 = 512 * 1024 * 1024;
+
+/// 1 ピクセルのバイト数に、ミップマップの分（全体で約 4/3 倍）を足した見積もり。
+const TEXTURE_BYTES_PER_PIXEL_NUMERATOR: u64 = 16;
+const TEXTURE_BYTES_PER_PIXEL_DENOMINATOR: u64 = 3;
 
 /// 0.0〜1.0 の RGBA。
 pub type Rgba = [f32; 4];
@@ -66,9 +75,11 @@ pub struct Renderer {
     decoder: Option<Decoder>,
     /// 読んだ背景画像。ファイルの場所ごと。
     images: HashMap<PathBuf, ImageTexture>,
+    /// 端末の中の画像。テクスチャを作れなかったものは `None` で覚え、作り直さない。
+    terminal_images: ImageCache<Option<ImageTexture>>,
 }
 
-/// 背景画像のテクスチャ（ミップマップつき）。
+/// 背景画像と端末の中の画像のテクスチャ（ミップマップつき）。
 struct ImageTexture {
     view: ID3D11ShaderResourceView,
     width: u32,
@@ -132,6 +143,7 @@ impl Renderer {
             cell_height: font.cell_height_px,
             decoder: None,
             images: HashMap::new(),
+            terminal_images: ImageCache::new(TERMINAL_IMAGE_TEXTURE_LIMIT),
         };
         renderer.create_target()?;
         Ok(renderer)
@@ -161,6 +173,80 @@ impl Renderer {
     /// 読んだ背景画像のうち、`keep` が偽のものを捨てる。
     pub fn retain_images(&mut self, keep: impl Fn(&Path) -> bool) {
         self.images.retain(|path, _| keep(path));
+    }
+
+    /// 端末 `owner` の `vt` の画面に出す `images` のテクスチャを揃える。`vt` の保管から消えたものや
+    /// ピクセルが変わったものは捨てる。[`Renderer::render`] の前に呼ぶ。
+    pub fn prepare_terminal_images(&mut self, owner: usize, images: &[ImageView], vt: &Vt) {
+        let removed =
+            self.terminal_images
+                .retain_owner(owner, |key| match vt.image_is_stored(key) {
+                    Ok(stored) => stored,
+                    Err(e) => {
+                        tracing::warn!("failed to look up the terminal image {}: {e}", key.id);
+                        false
+                    }
+                });
+        if removed > 0 {
+            tracing::debug!("dropped {removed} terminal image textures no longer stored");
+        }
+        for view in images {
+            if self.terminal_images.touch(&view.key) {
+                continue;
+            }
+            match vt.image_pixels(&view.key) {
+                Ok(Some(pixels)) => {
+                    let decoded = Decoded {
+                        width: pixels.width,
+                        height: pixels.height,
+                        pixels: pixels.to_premultiplied_bgra(),
+                    };
+                    self.add_terminal_image(owner, view.key, &decoded);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!("failed to read the terminal image {}: {e}", view.key.id);
+                }
+            }
+        }
+        let evicted = self.terminal_images.finish_frame();
+        if evicted > 0 {
+            tracing::debug!("dropped {evicted} terminal image textures over the limit");
+        }
+    }
+
+    /// 端末 `owner` の画像のテクスチャをすべて捨てる。端末を閉じたときに使う。
+    pub fn drop_terminal_images(&mut self, owner: usize) {
+        let removed = self.terminal_images.remove_owner(owner);
+        tracing::debug!("dropped {removed} terminal image textures of a closed terminal");
+    }
+
+    fn add_terminal_image(&mut self, owner: usize, key: ImageKey, decoded: &Decoded) {
+        let texture = match self.create_image(decoded) {
+            Ok(texture) => {
+                tracing::debug!(
+                    "created the terminal image texture {} ({}x{})",
+                    key.id,
+                    decoded.width,
+                    decoded.height
+                );
+                Some(texture)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "failed to create the terminal image texture {} ({}x{}): {e}",
+                    key.id,
+                    decoded.width,
+                    decoded.height
+                );
+                None
+            }
+        };
+        let pixels = u64::from(decoded.width) * u64::from(decoded.height);
+        let bytes = texture.as_ref().map_or(0, |_| {
+            pixels * TEXTURE_BYTES_PER_PIXEL_NUMERATOR / TEXTURE_BYTES_PER_PIXEL_DENOMINATOR
+        });
+        self.terminal_images.insert(owner, key, texture, bytes);
     }
 
     fn create_image(&self, decoded: &Decoded) -> windows::core::Result<ImageTexture> {
@@ -261,6 +347,8 @@ impl Renderer {
     /// 不透明度に見える不透明度（[`background::overlay_opacity`]）で重ねる。
     /// 画面の領域は塗らず、背景色を持つセルだけを塗る。
     ///
+    /// 画面の中の画像は [`Renderer::prepare_terminal_images`] で揃えたものを描く。
+    ///
     /// `capture` を渡すと、表示する前のバックバッファを PNG で書き出す。
     pub fn render(
         &mut self,
@@ -286,30 +374,29 @@ impl Renderer {
             )?;
             Some((texture.view.clone(), placement, backdrop))
         });
-        let mut instances = Vec::new();
-        if let Some((_, placement, backdrop)) = &placed {
-            instances.push(image_instance(placement));
-            instances.push(translucent(
-                area_rect(backdrop.region),
-                first.background,
-                background::overlay_opacity(backdrop.image_opacity),
-            ));
-        }
-        let fill_areas = placed.is_none();
-        let layer_instances = match self.instances(layers, paints, fill_areas) {
-            Ok(instances) => instances,
-            Err(AtlasFull) => {
-                // 描きかけのフレームの場所は捨てたアトラスを指すので、空にしてから組み直す。
-                self.atlas.clear()?;
-                self.instances(layers, paints, fill_areas)
-                    .unwrap_or_else(|AtlasFull| {
-                        tracing::warn!("the glyph atlas cannot hold one frame");
-                        Vec::new()
-                    })
+        let backdrop_list = || {
+            let mut list = DrawList::default();
+            if let Some((view, placement, backdrop)) = &placed {
+                list.push_image(image_instance(placement), view);
+                list.push(translucent(
+                    area_rect(backdrop.region),
+                    first.background,
+                    background::overlay_opacity(backdrop.image_opacity),
+                ));
             }
+            list
         };
-        instances.extend(layer_instances);
-        let image = placed.as_ref().map(|(view, _, _)| view);
+        let fill_areas = placed.is_none();
+        let mut list = backdrop_list();
+        if let Err(AtlasFull) = self.push_layers(&mut list, layers, paints, fill_areas) {
+            // 描きかけのフレームの場所は捨てたアトラスを指すので、空にしてから組み直す。
+            self.atlas.clear()?;
+            list = backdrop_list();
+            if let Err(AtlasFull) = self.push_layers(&mut list, layers, paints, fill_areas) {
+                tracing::warn!("the glyph atlas cannot hold one frame");
+                list = backdrop_list();
+            }
+        }
         if let Some(target) = &self.target {
             // SAFETY: target は現在のバックバッファのビュー。
             unsafe {
@@ -323,8 +410,7 @@ impl Renderer {
                 (self.width, self.height),
                 self.atlas.view(),
                 self.atlas.size(),
-                image,
-                &instances,
+                &list,
             )?;
         }
         if let Some(path) = capture
@@ -340,25 +426,52 @@ impl Renderer {
         }
     }
 
-    /// 画面ごとに、領域の背景（`fill_areas` のときだけ）、セルの背景、カーソル、グリフ、装飾の順に
-    /// 四角形を並べ、続けて `paints` を並べる。
-    fn instances(
+    /// 画面ごとに、領域の背景（`fill_areas` のときだけ）と画面の中身を `list` に並べ、続けて `paints` を
+    /// 並べる。
+    fn push_layers(
         &mut self,
+        list: &mut DrawList,
         layers: &[(&Frame, Area)],
         paints: &[Paint],
         fill_areas: bool,
-    ) -> Result<Vec<Instance>, AtlasFull> {
-        let mut instances = Vec::new();
+    ) -> Result<(), AtlasFull> {
         for &(frame, area) in layers {
             if fill_areas {
-                instances.push(solid(area_rect(area), frame.background));
+                list.push(solid(area_rect(area), frame.background));
             }
-            instances.append(&mut self.frame_instances(frame, area)?);
+            self.push_frame(list, frame, area)?;
         }
         for paint in paints {
-            instances.push(self.paint_instance(paint)?);
+            list.push(self.paint_instance(paint)?);
         }
-        Ok(instances)
+        Ok(())
+    }
+
+    /// `frame` の画像のうち `layer` の層のものを、下から順に `list` に並べる。画面の外へはみ出す分は
+    /// 切り抜く。
+    fn push_terminal_images(
+        &self,
+        list: &mut DrawList,
+        frame: &Frame,
+        area: Area,
+        layer: ImageLayer,
+    ) {
+        let grid = background::Rect {
+            x: area.x as f32,
+            y: area.y as f32,
+            width: area.width.min(u32::from(frame.cols) * self.cell_width) as f32,
+            height: area.height.min(u32::from(frame.rows) * self.cell_height) as f32,
+        };
+        let cell = (self.cell_width, self.cell_height);
+        for view in frame.images.iter().filter(|view| view.layer == layer) {
+            let Some(Some(texture)) = self.terminal_images.get(&view.key) else {
+                continue;
+            };
+            let image = (texture.width, texture.height);
+            if let Some(placement) = view.placement(grid, cell, image) {
+                list.push_image(image_instance(&placement), &texture.view);
+            }
+        }
     }
 
     /// `paint` を描く四角形。
@@ -394,9 +507,15 @@ impl Renderer {
         })
     }
 
-    /// 背景、カーソル、グリフ、装飾の順に四角形を並べる。カーソルの上の文字は背景色で描く。
+    /// 背景より下の画像、背景、文字より下の画像、カーソル、グリフ、装飾、文字より上の画像の順に
+    /// 四角形を並べる。カーソルの上の文字は背景色で描く。
     /// 取り消し線と上線は文字と同じ色、下線は指定された色（なければ文字と同じ色）で描く。
-    fn frame_instances(&mut self, frame: &Frame, area: Area) -> Result<Vec<Instance>, AtlasFull> {
+    fn push_frame(
+        &mut self,
+        list: &mut DrawList,
+        frame: &Frame,
+        area: Area,
+    ) -> Result<(), AtlasFull> {
         let mut backgrounds = Vec::new();
         let mut glyphs = Vec::new();
         let mut decorations = Vec::new();
@@ -444,15 +563,19 @@ impl Renderer {
                 decorations.push(glyph(rect, slot, color));
             }
         }
+        self.push_terminal_images(list, frame, area, ImageLayer::BelowBackground);
+        backgrounds.into_iter().for_each(|cell| list.push(cell));
+        self.push_terminal_images(list, frame, area, ImageLayer::BelowText);
         if let Some(cursor) = cursor {
-            backgrounds.push(solid(
+            list.push(solid(
                 self.cell_rect(area, cursor.col, cursor.row, cursor.width),
                 cursor.color,
             ));
         }
-        backgrounds.append(&mut glyphs);
-        backgrounds.append(&mut decorations);
-        Ok(backgrounds)
+        glyphs.into_iter().for_each(|cell| list.push(cell));
+        decorations.into_iter().for_each(|cell| list.push(cell));
+        self.push_terminal_images(list, frame, area, ImageLayer::AboveText);
+        Ok(())
     }
 
     /// `area` に描く端末の、(`col`, `row`) から `width` セル分の矩形。

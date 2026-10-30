@@ -53,6 +53,42 @@ pub struct Instance {
     pub _padding: [u32; 3],
 }
 
+/// 同じ画像で続けて描くインスタンスの並び。
+struct DrawRun {
+    count: u32,
+    image: Option<ID3D11ShaderResourceView>,
+}
+
+/// 描く順に並べたインスタンス。画像のインスタンスごとに描画命令を分ける。
+#[derive(Default)]
+pub struct DrawList {
+    instances: Vec<Instance>,
+    runs: Vec<DrawRun>,
+}
+
+impl DrawList {
+    /// 画像を使わないインスタンスを足す。
+    pub fn push(&mut self, instance: Instance) {
+        self.instances.push(instance);
+        match self.runs.last_mut() {
+            Some(run) => run.count += 1,
+            None => self.runs.push(DrawRun {
+                count: 1,
+                image: None,
+            }),
+        }
+    }
+
+    /// `image` を描くインスタンスを足す。
+    pub fn push_image(&mut self, instance: Instance, image: &ID3D11ShaderResourceView) {
+        self.instances.push(instance);
+        self.runs.push(DrawRun {
+            count: 1,
+            image: Some(image.clone()),
+        });
+    }
+}
+
 /// `cells.hlsl` の Viewport と並びを揃える。
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -206,7 +242,7 @@ impl CellPipeline {
         })
     }
 
-    /// `instances` を `target` に並べた順に描く。背景画像のインスタンスは `image` を描く。
+    /// `list` を `target` に並べた順に描く。
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -216,9 +252,9 @@ impl CellPipeline {
         viewport_size: (u32, u32),
         atlas: &ID3D11ShaderResourceView,
         atlas_size: (u32, u32),
-        image: Option<&ID3D11ShaderResourceView>,
-        instances: &[Instance],
+        list: &DrawList,
     ) -> windows::core::Result<()> {
+        let instances = list.instances.as_slice();
         if instances.is_empty() {
             return Ok(());
         }
@@ -263,7 +299,7 @@ impl CellPipeline {
             context.VSSetShader(&self.vertex_shader, None);
             context.VSSetConstantBuffers(0, Some(&[Some(self.constants.clone())]));
             context.PSSetShader(&self.pixel_shader, None);
-            context.PSSetShaderResources(0, Some(&[Some(atlas.clone()), image.cloned()]));
+            context.PSSetShaderResources(0, Some(&[Some(atlas.clone())]));
             let [image_clamp, image_wrap] = &self.image_samplers;
             context.PSSetSamplers(
                 0,
@@ -273,7 +309,12 @@ impl CellPipeline {
                     Some(image_wrap.clone()),
                 ]),
             );
-            context.DrawInstanced(QUAD_VERTICES, instances.len() as u32, 0, 0);
+            let mut first = 0;
+            for run in &list.runs {
+                context.PSSetShaderResources(1, Some(std::slice::from_ref(&run.image)));
+                context.DrawInstanced(QUAD_VERTICES, run.count, 0, first);
+                first += run.count;
+            }
         }
         Ok(())
     }
