@@ -1,7 +1,7 @@
 //! 子プロセスの出力を端末エミュレーションへ流す前に見て、libghostty-vt が扱わないもの（sixel の DCS と
 //! 関係するモード）を取り出す。それ以外のバイトは順番を変えずに渡す。チャンクの切れ目はどこにあってもよい。
 
-use crate::sixel::{SixelDecoder, SixelImage};
+use crate::sixel::{COLOR_REGISTERS, MAX_IMAGE_HEIGHT, MAX_IMAGE_WIDTH, SixelDecoder, SixelImage};
 
 const ESC: u8 = 0x1b;
 /// 8 ビットの DCS の始まり。
@@ -18,12 +18,38 @@ const MAX_HELD_BYTES: usize = 64;
 const MODE_SIXEL_DISPLAY: &str = "80";
 /// 色を置かなかった画素の扱いを決める、DCS のパラメータの位置。
 const BACKGROUND_PARAM_INDEX: usize = 1;
+/// DECRQM の答えの、モードが有効。
+const DECRQM_SET: u32 = 1;
+/// DECRQM の答えの、モードが無効。
+const DECRQM_RESET: u32 = 2;
+/// XTSMGRAPHICS の項目: 色レジスタの数。
+const GRAPHICS_ITEM_COLORS: u32 = 1;
+/// XTSMGRAPHICS の項目: sixel の大きさ。
+const GRAPHICS_ITEM_SIXEL_SIZE: u32 = 2;
+/// XTSMGRAPHICS の操作: 読む。
+const GRAPHICS_READ: u32 = 1;
+/// XTSMGRAPHICS の操作: 既定に戻す。
+const GRAPHICS_RESET: u32 = 2;
+/// XTSMGRAPHICS の操作: 変える。
+const GRAPHICS_SET: u32 = 3;
+/// XTSMGRAPHICS の操作: 上限を読む。
+const GRAPHICS_READ_MAX: u32 = 4;
+/// XTSMGRAPHICS の答え: 成功。
+const GRAPHICS_SUCCESS: u32 = 0;
+/// XTSMGRAPHICS の答え: 項目が正しくない。
+const GRAPHICS_ERROR_ITEM: u32 = 1;
+/// XTSMGRAPHICS の答え: 操作が正しくない。
+const GRAPHICS_ERROR_ACTION: u32 = 2;
+/// XTSMGRAPHICS の答え: 失敗。
+const GRAPHICS_FAILURE: u32 = 3;
 
 /// 出力を見た結果。来た順に渡す。
 #[derive(Debug, PartialEq, Eq)]
 pub enum OutputEvent<'a> {
     /// 端末エミュレーションへそのまま流すバイト列。
     Bytes(&'a [u8]),
+    /// 子プロセスへ返す応答。
+    Reply(Vec<u8>),
     /// 読み終えた sixel の画像。
     Sixel {
         image: SixelImage,
@@ -44,6 +70,8 @@ enum State {
     Csi,
     /// `ESC [ ?` とそのパラメータを読んでいる。
     CsiPrivate,
+    /// `ESC [ ?` とそのパラメータの後ろで `$` を読んだ（`$` は手元に置かない）。
+    CsiPrivateDollar,
     /// sixel の中身を読んでいる。
     Sixel(Box<SixelDecoder>),
     /// sixel の中身の後ろで `ESC` を読んだ。
@@ -164,7 +192,37 @@ impl OutputScanner {
                             }
                             self.release_held(sink);
                         }
+                        b'S' => {
+                            sink(OutputEvent::Reply(graphics_attribute_reply(
+                                private_params(&self.held),
+                            )));
+                            self.held.clear();
+                            self.state = State::Ground;
+                            index += 1;
+                        }
+                        b'$' => {
+                            self.state = State::CsiPrivateDollar;
+                            index += 1;
+                        }
                         _ => self.release_held(sink),
+                    }
+                    span_start = index;
+                }
+                State::CsiPrivateDollar => {
+                    if byte == b'p' && private_params(&self.held) == MODE_SIXEL_DISPLAY {
+                        let value = if self.sixel_display_mode {
+                            DECRQM_SET
+                        } else {
+                            DECRQM_RESET
+                        };
+                        let reply = format!("\x1b[?{MODE_SIXEL_DISPLAY};{value}$y");
+                        sink(OutputEvent::Reply(reply.into_bytes()));
+                        self.held.clear();
+                        self.state = State::Ground;
+                        index += 1;
+                    } else {
+                        self.held.push(b'$');
+                        self.release_held(sink);
                     }
                     span_start = index;
                 }
@@ -268,6 +326,30 @@ impl OutputScanner {
     }
 }
 
+/// XTSMGRAPHICS（`CSI ? Pi ; Pa ; Pv S`）への答え。色レジスタの数と sixel の大きさは決まった値で、変える
+/// 依頼には失敗と答える。
+fn graphics_attribute_reply(params: &str) -> Vec<u8> {
+    let mut params = params.split(';').map(|value| value.parse::<u32>().ok());
+    let item = params.next().flatten();
+    let action = params.next().flatten();
+    let values = match item {
+        Some(GRAPHICS_ITEM_COLORS) => COLOR_REGISTERS.to_string(),
+        Some(GRAPHICS_ITEM_SIXEL_SIZE) => format!("{MAX_IMAGE_WIDTH};{MAX_IMAGE_HEIGHT}"),
+        _ => {
+            let item = item.unwrap_or(0);
+            return format!("\x1b[?{item};{GRAPHICS_ERROR_ITEM};0S").into_bytes();
+        }
+    };
+    let item = item.unwrap_or(0);
+    match action {
+        Some(GRAPHICS_READ | GRAPHICS_RESET | GRAPHICS_READ_MAX) => {
+            format!("\x1b[?{item};{GRAPHICS_SUCCESS};{values}S").into_bytes()
+        }
+        Some(GRAPHICS_SET) => format!("\x1b[?{item};{GRAPHICS_FAILURE};{values}S").into_bytes(),
+        _ => format!("\x1b[?{item};{GRAPHICS_ERROR_ACTION};{values}S").into_bytes(),
+    }
+}
+
 /// `ESC P` か 8 ビットの DCS で始まる `held` の、P2 の値。
 fn background_mode(held: &[u8]) -> u32 {
     let start = if held.first() == Some(&C1_DCS) { 1 } else { 2 };
@@ -292,6 +374,7 @@ mod tests {
     #[derive(Debug, PartialEq, Eq)]
     enum Owned {
         Bytes(Vec<u8>),
+        Reply(Vec<u8>),
         Sixel(u32, u32, bool),
     }
 
@@ -307,6 +390,7 @@ mod tests {
                         events.push(Owned::Bytes(bytes.to_vec()));
                     }
                 }
+                OutputEvent::Reply(reply) => events.push(Owned::Reply(reply)),
                 OutputEvent::Sixel { image, scrolling } => {
                     events.push(Owned::Sixel(image.width, image.height, scrolling));
                 }
@@ -468,6 +552,49 @@ mod tests {
         let mut scanner = OutputScanner::new();
         scan_chunks(&mut scanner, &[b"\x1b[?180h\x1b[?801h"]);
         assert!(!scanner.sixel_display_mode);
+    }
+
+    #[test]
+    fn graphics_attributes_are_answered_in_order() {
+        let reply = |text: &str| Owned::Reply(text.as_bytes().to_vec());
+        assert_eq!(
+            scan_checked(b"a\x1b[?1;1;0Sb\x1b[?2;1;0Sc"),
+            [
+                bytes(b"a"),
+                reply("\x1b[?1;0;1024S"),
+                bytes(b"b"),
+                reply("\x1b[?2;0;4096;4096S"),
+                bytes(b"c"),
+            ]
+        );
+        assert_eq!(scan(b"\x1b[?1;4S"), [reply("\x1b[?1;0;1024S")]);
+        assert_eq!(scan(b"\x1b[?2;2S"), [reply("\x1b[?2;0;4096;4096S")]);
+        assert_eq!(scan(b"\x1b[?1;3;16S"), [reply("\x1b[?1;3;1024S")]);
+        assert_eq!(scan(b"\x1b[?1;9S"), [reply("\x1b[?1;2;1024S")]);
+        // ReGIS は持たない。
+        assert_eq!(scan(b"\x1b[?3;1;0S"), [reply("\x1b[?3;1;0S")]);
+        assert_eq!(scan(b"\x1b[?S"), [reply("\x1b[?0;1;0S")]);
+    }
+
+    #[test]
+    fn scroll_up_without_the_question_mark_passes() {
+        assert_eq!(scan_checked(b"\x1b[3S"), [bytes(b"\x1b[3S")]);
+    }
+
+    #[test]
+    fn the_sixel_display_mode_is_reported() {
+        let reply = |text: &str| Owned::Reply(text.as_bytes().to_vec());
+        assert_eq!(
+            scan_checked(b"\x1b[?80$p\x1b[?80h\x1b[?80$p"),
+            [
+                reply("\x1b[?80;2$y"),
+                bytes(b"\x1b[?80h"),
+                reply("\x1b[?80;1$y"),
+            ]
+        );
+        // ほかのモードの問い合わせは端末エミュレーションが答える。
+        assert_eq!(scan_checked(b"\x1b[?25$p"), [bytes(b"\x1b[?25$p")]);
+        assert_eq!(scan_checked(b"\x1b[?80$x"), [bytes(b"\x1b[?80$x")]);
     }
 
     #[test]

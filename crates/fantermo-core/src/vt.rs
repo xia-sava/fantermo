@@ -569,9 +569,11 @@ impl Vt {
     /// シェルの出力を流し込む。
     pub fn feed(&mut self, data: &[u8]) {
         let terminal = &mut self.terminal;
+        let replies = &self.replies;
         let size = self.size.get();
         self.output_scanner.scan(data, &mut |event| match event {
             OutputEvent::Bytes(bytes) => terminal.vt_write(bytes),
+            OutputEvent::Reply(reply) => replies.borrow_mut().extend_from_slice(&reply),
             OutputEvent::Sixel { image, scrolling } => {
                 place_sixel(terminal, size, &image, scrolling);
             }
@@ -1034,6 +1036,7 @@ fn device_attributes() -> DeviceAttributes {
             ConformanceLevel::VT220,
             &[
                 DeviceAttributeFeature::COLUMNS_132,
+                DeviceAttributeFeature::SIXEL,
                 DeviceAttributeFeature::SELECTIVE_ERASE,
                 DeviceAttributeFeature::ANSI_COLOR,
             ],
@@ -2328,6 +2331,24 @@ mod tests {
         assert_eq!((frame.images[0].col, frame.images[0].row), (0, 0));
         assert_eq!(vt.scroll_position().unwrap().total, 5);
         assert_eq!(vt.plain_text().unwrap(), "  cdef");
+    }
+
+    #[test]
+    fn device_attributes_announce_sixel() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b[c");
+        assert_eq!(vt.take_replies(), b"\x1b[?62;1;4;6;22c");
+    }
+
+    #[test]
+    fn graphics_attributes_and_pixel_sizes_are_answered_in_the_order_of_the_stream() {
+        let mut vt = new_vt();
+        // 窓のピクセルの大きさ、色レジスタの数、セルのピクセルの大きさ。
+        vt.feed(b"\x1b[14t\x1b[?1;1;0S\x1b[16t\x1b[?2;1;0S");
+        assert_eq!(
+            String::from_utf8(vt.take_replies()).unwrap(),
+            "\x1b[4;80;160t\x1b[?1;0;1024S\x1b[6;16;8t\x1b[?2;0;4096;4096S"
+        );
     }
 
     #[test]
