@@ -139,10 +139,11 @@ impl Bridge {
         ] {
             _ = input.send(encode(&message));
         }
-        thread::Builder::new()
-            .name("bridge-writer".into())
-            .spawn(move || write_input(stdin, &queued))?;
         let closing = Arc::new(AtomicBool::new(false));
+        thread::Builder::new().name("bridge-writer".into()).spawn({
+            let closing = Arc::clone(&closing);
+            move || write_input(stdin, &queued, &closing)
+        })?;
         thread::Builder::new().name("bridge-reader".into()).spawn({
             let process = Arc::clone(&process);
             let closing = Arc::clone(&closing);
@@ -232,8 +233,8 @@ impl Drop for Bridge {
         if let Err(e) = self.send(&ToBridge::Quit) {
             tracing::debug!("the bridge has already stopped reading: {e}");
         }
-        // 書くためのスレッドは、残りを書いてから標準入力を閉じて抜ける。ブリッジはそれで子プロセスを
-        // 終わらせて終わる。終わらなければ止める。
+        // 書くためのスレッドは、書いている途中の単位を書き終えたら、残りを捨てて標準入力を閉じて抜ける。
+        // ブリッジはそれで子プロセスを終わらせて終わる。終わらなければ止める。
         self.input = None;
         let Some(process) = self.process.take() else {
             return;
@@ -525,9 +526,13 @@ fn encode(message: &ToBridge) -> Vec<u8> {
     protocol::encode(message).expect("データは MAX_PAYLOAD_LEN までに分けて送る")
 }
 
-/// `queued` の単位を標準入力に書く。チャネルが閉じたら（破棄したら）標準入力を閉じて抜ける。
-fn write_input(mut stdin: ChildStdin, queued: &mpsc::Receiver<Vec<u8>>) {
+/// `queued` の単位を標準入力に書く。チャネルが閉じるか `closing` が立ったら（破棄したら）標準入力を
+/// 閉じて抜ける。入力が遅い相手へ大きな貼り付けを流している途中でも、残りを待たずに閉じる。
+fn write_input(mut stdin: ChildStdin, queued: &mpsc::Receiver<Vec<u8>>, closing: &AtomicBool) {
     for bytes in queued {
+        if closing.load(Ordering::Relaxed) {
+            return;
+        }
         match stdin.write_all(&bytes).and_then(|()| stdin.flush()) {
             Ok(()) => {}
             // ブリッジが終わったあと（終了の依頼を送るときなど）。

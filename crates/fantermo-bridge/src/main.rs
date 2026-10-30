@@ -30,8 +30,9 @@ const READ_BUF_LEN: usize = 64 * 1024;
 /// pty の slave の名前を受け取る長さ。
 #[cfg(target_os = "cygwin")]
 const PTY_NAME_LEN: usize = 64;
-/// pty へまだ書き終えていない入力がこれを超えたら、標準入力を読むのを止める。
-const MAX_PENDING_INPUT: usize = 1 << 20;
+/// pty へまだ書き終えていない入力がこれを超えたら、標準入力を読むのを止める。読むのを止めると
+/// その後ろの終了の依頼やリサイズも届かないので、ふつうの貼り付けでは届かない大きさにする。
+const MAX_PENDING_INPUT: usize = 64 << 20;
 /// 子プロセスが終わったかを確かめる間隔。
 const POLL_INTERVAL_MS: c_int = 200;
 /// 標準入力が閉じて子プロセスに SIGHUP を送ったあと、終わるのを待つ上限。
