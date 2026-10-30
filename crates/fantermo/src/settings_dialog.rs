@@ -190,7 +190,7 @@ fn profile_location_texts(backend: BackendKind) -> (&'static str, &'static str) 
         BackendKind::Conpty => ("場所(&O):", ""),
         BackendKind::Cygwin => (
             "Cygwin のフォルダ(&O):",
-            r"空なら C:\cygwin64、C:\cygwin の順に探す",
+            "空なら PATH とよくある場所から探す",
         ),
         BackendKind::Wsl => (
             "ディストリビューション(&O):",

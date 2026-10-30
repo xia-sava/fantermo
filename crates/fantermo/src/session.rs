@@ -26,7 +26,7 @@ const TERM: &str = "xterm-256color";
 pub struct Startup {
     pub backend: BackendKind,
     pub command_line: String,
-    /// `cygwin` の Cygwin のフォルダ。`None` ならよくある場所を探す。
+    /// `cygwin` の Cygwin のフォルダ。`None` なら環境変数 `PATH` とよくある場所から探す。
     pub cygwin_root: Option<String>,
     /// `wsl` のディストリビューション。`None` なら既定。
     pub distribution: Option<String>,

@@ -29,7 +29,7 @@ use fantermo_bridge_protocol::{
 };
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize, SpawnOptions, Wake},
-    config::{cygwin_dll_path, is_cygwin_root},
+    config::{COMMON_CYGWIN_ROOTS, cygwin_dll_path, find_cygwin_root, is_cygwin_root},
 };
 use windows::Win32::{
     Foundation::{HANDLE, WAIT_OBJECT_0},
@@ -42,9 +42,6 @@ use windows::Win32::{
 const CYGWIN_BRIDGE: (&str, &str) = ("fantermo-bridge.exe", "x86_64-pc-cygwin");
 /// Linux（WSL）向けのブリッジの実行ファイルの名前と、開発中にビルドしたものを探すときのターゲット。
 const LINUX_BRIDGE: (&str, &str) = ("fantermo-bridge", "x86_64-unknown-linux-musl");
-
-/// `cygwin_root` を書いていないときに、この順に探す Cygwin のフォルダ。
-const CYGWIN_ROOTS: [&str; 2] = [r"C:\cygwin64", r"C:\cygwin"];
 
 /// Cygwin のブリッジに、相手の側のコマンドラインを渡す環境変数。Cygwin のプログラムはコマンドラインを
 /// 独自の決まりで引数に分ける（`\` の扱いが引数の形で変わる）ので、利用者の書いた文字列は引数に入れない。
@@ -72,7 +69,7 @@ const SIGNAL_EXIT_BASE: u32 = 128;
 /// ブリッジでつなぐ先。
 #[derive(Clone, Copy, Debug)]
 pub enum Target<'a> {
-    /// Cygwin。`root` は Cygwin のフォルダ（`None` ならよくある場所を探す）。
+    /// Cygwin。`root` は Cygwin のフォルダ（`None` なら環境変数 `PATH` とよくある場所から探す）。
     Cygwin { root: Option<&'a str> },
     /// WSL。`distribution` はディストリビューションの名前（`None` なら既定）。
     Wsl { distribution: Option<&'a str> },
@@ -410,8 +407,8 @@ fn wslenv_with_term(current: Option<&str>) -> String {
     }
 }
 
-/// Cygwin のフォルダ。`configured` を書いていればそれ、なければ [`CYGWIN_ROOTS`] の順に、`bin` に
-/// `cygwin1.dll` があるもの。見つからなければその理由の文。
+/// Cygwin のフォルダ。`configured` を書いていればそれ、なければ [`find_cygwin_root`] で探したもの。
+/// 見つからなければその理由の文。
 fn cygwin_root(configured: Option<&str>) -> Result<PathBuf, String> {
     if let Some(root) = configured {
         let root = PathBuf::from(root);
@@ -423,16 +420,12 @@ fn cygwin_root(configured: Option<&str>) -> Result<PathBuf, String> {
             cygwin_dll_path(&root).display()
         ));
     }
-    CYGWIN_ROOTS
-        .iter()
-        .map(PathBuf::from)
-        .find(|root| is_cygwin_root(root))
-        .ok_or_else(|| {
-            format!(
-                "Cygwin が見つかりません（{} を探しました）。cygwin_root に Cygwin のフォルダを書いてください。",
-                CYGWIN_ROOTS.join("、")
-            )
-        })
+    find_cygwin_root().ok_or_else(|| {
+        format!(
+            "Cygwin が見つかりません（環境変数 PATH と {} を探しました）。cygwin_root に Cygwin のフォルダを書くか、Cygwin の bin を PATH に入れてください。",
+            COMMON_CYGWIN_ROOTS.join("、")
+        )
+    })
 }
 
 /// ブリッジの実行ファイル。fantermo の実行ファイルと同じフォルダ、なければ開発中にビルドしたもの

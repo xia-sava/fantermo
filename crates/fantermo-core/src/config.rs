@@ -11,6 +11,8 @@ pub mod migrate;
 
 use std::{
     collections::HashMap,
+    env,
+    ffi::OsStr,
     ops::RangeInclusive,
     path::{Path, PathBuf},
 };
@@ -68,8 +70,8 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # 書く。backend はシェルとのつなぎ方で、"conpty"（Windows の疑似コンソール）、"cygwin"（Cygwin のブリッジ）、
 # "wsl"（WSL のブリッジ）を書ける。書かなければ "conpty"。"cygwin" と "wsl" の command は Cygwin・WSL の側の
 # コマンドラインで、書かなければログインシェルを起動する。"cygwin" では cygwin_root に Cygwin のフォルダを書ける
-# （書かなければ C:\cygwin64、C:\cygwin の順に探す）。"wsl" では distribution にディストリビューションの名前を
-# 書ける（書かなければ既定のディストリビューション）。
+# （書かなければ環境変数 PATH と、よくある場所（C:\cygwin64、C:\cygwin）から探す）。"wsl" では distribution に
+# ディストリビューションの名前を書ける（書かなければ既定のディストリビューション）。
 # Cygwin と WSL はブリッジでつなぐことを勧める。ConPTY を通すと、アプリの出力の一部が書き換えられたり順番が
 # 変わったりし、端末への問い合わせの一部に ConPTY が代わりに答えるか届かず、ウィンドウの大きさを変えると
 # スクロールバックの行が欠けることがある。
@@ -88,7 +90,6 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # 例: [[profiles]]
 # 例: name = "zsh"
 # 例: backend = "cygwin"
-# 例: cygwin_root = 'C:\cygwin64'
 # 例: command = "zsh -l"
 #
 # 例: [[profiles]]
@@ -267,7 +268,8 @@ pub struct Profile {
     /// 側のコマンドラインで、空なら相手のログインシェル。
     pub command: String,
     pub backend: BackendKind,
-    /// `backend = "cygwin"` の Cygwin のフォルダ。`None` ならよくある場所を探す。ほかの種類では `None`。
+    /// `backend = "cygwin"` の Cygwin のフォルダ。`None` なら [`find_cygwin_root`] で探す。ほかの種類では
+    /// `None`。
     pub cygwin_root: Option<String>,
     /// `backend = "wsl"` のディストリビューションの名前。`None` なら既定のディストリビューション。
     /// ほかの種類では `None`。
@@ -335,6 +337,13 @@ impl Profile {
 
 /// Cygwin のフォルダの `bin` にある DLL。
 const CYGWIN_DLL: &str = "cygwin1.dll";
+/// Cygwin のフォルダの `bin` にあるシェル。`cygwin1.dll` を同梱しているだけのアプリのフォルダと見分ける。
+const CYGWIN_SHELL: &str = "sh.exe";
+/// Cygwin のフォルダの下の、実行ファイルを置くフォルダの名前。
+const CYGWIN_BIN: &str = "bin";
+
+/// 環境変数 `PATH` になければ、この順に探す Cygwin のフォルダ。
+pub const COMMON_CYGWIN_ROOTS: [&str; 2] = [r"C:\cygwin64", r"C:\cygwin"];
 
 /// フォルダ `root` が Cygwin のフォルダだとしたときの、`cygwin1.dll` のパス。
 pub fn cygwin_dll_path(root: &Path) -> PathBuf {
@@ -344,6 +353,48 @@ pub fn cygwin_dll_path(root: &Path) -> PathBuf {
 /// フォルダ `root` が Cygwin のフォルダか（`bin` に `cygwin1.dll` があるか）。
 pub fn is_cygwin_root(root: &Path) -> bool {
     cygwin_dll_path(root).is_file()
+}
+
+/// `cygwin_root` を書いていないときに使う Cygwin のフォルダ。[`find_cygwin_root_with`] で、この
+/// プロセスの環境変数 `PATH` と実際のファイルを見て探す。
+pub fn find_cygwin_root() -> Option<PathBuf> {
+    find_cygwin_root_with(env::var_os("PATH").as_deref(), Path::is_file)
+}
+
+/// 環境変数 `PATH` の値が `path_variable` のときの Cygwin のフォルダ。`is_file` はそのパスのファイルが
+/// あるか。
+///
+/// `PATH` の絶対パスの項目を順に見て、フォルダの名前が `bin` で `cygwin1.dll` と `sh.exe` があるものの
+/// 一つ上を返す。なければ [`COMMON_CYGWIN_ROOTS`] の順に、`bin` に `cygwin1.dll` があるもの。
+pub fn find_cygwin_root_with(
+    path_variable: Option<&OsStr>,
+    is_file: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    path_variable
+        .into_iter()
+        .flat_map(env::split_paths)
+        .find_map(|folder| cygwin_root_of_bin(&folder, &is_file))
+        .or_else(|| {
+            COMMON_CYGWIN_ROOTS
+                .iter()
+                .map(PathBuf::from)
+                .find(|root| is_file(&cygwin_dll_path(root)))
+        })
+}
+
+/// フォルダ `folder` が Cygwin の `bin` なら、Cygwin のフォルダ。
+fn cygwin_root_of_bin(folder: &Path, is_file: &impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    let is_bin = folder
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case(CYGWIN_BIN));
+    if !folder.is_absolute()
+        || !is_bin
+        || !is_file(&folder.join(CYGWIN_DLL))
+        || !is_file(&folder.join(CYGWIN_SHELL))
+    {
+        return None;
+    }
+    folder.parent().map(Path::to_path_buf)
 }
 
 /// WSL を起動する実行ファイルの名前（フォルダと `.exe` を除く）。
@@ -2118,10 +2169,7 @@ mod tests {
             parsed.config.profiles,
             [
                 Profile::builtin(),
-                Profile {
-                    cygwin_root: Some(r"C:\cygwin64".to_owned()),
-                    ..Profile::new("zsh", "zsh -l", BackendKind::Cygwin)
-                },
+                Profile::new("zsh", "zsh -l", BackendKind::Cygwin),
                 Profile {
                     distribution: Some("Ubuntu".to_owned()),
                     ..Profile::new("Ubuntu", "", BackendKind::Wsl)
@@ -2990,6 +3038,108 @@ size = 10
                 "{command}"
             );
         }
+    }
+
+    /// `path_variable` を `PATH` の値、`files` をあるファイルの全部として Cygwin のフォルダを探す。
+    fn find_cygwin(path_variable: Option<&str>, files: &[&str]) -> Option<PathBuf> {
+        find_cygwin_root_with(path_variable.map(OsStr::new), |path| {
+            files.iter().any(|file| Path::new(file) == path)
+        })
+    }
+
+    #[test]
+    fn cygwin_root_is_found_from_path_in_order() {
+        let files = [
+            r"C:\first\bin\cygwin1.dll",
+            r"C:\first\bin\sh.exe",
+            r"C:\second\bin\cygwin1.dll",
+            r"C:\second\bin\sh.exe",
+            r"C:\cygwin64\bin\cygwin1.dll",
+        ];
+        assert_eq!(
+            find_cygwin(Some(r"C:\Windows;C:\second\bin;C:\first\bin"), &files),
+            Some(PathBuf::from(r"C:\second"))
+        );
+        assert_eq!(
+            find_cygwin(Some(r"C:\first\bin;C:\second\bin"), &files),
+            Some(PathBuf::from(r"C:\first"))
+        );
+        // 区切りと大文字小文字は問わない。末尾の区切りがあっても一つ上を返す。
+        let files = [r"C:\first\BIN\cygwin1.dll", r"C:\first\BIN\sh.exe"];
+        assert_eq!(
+            find_cygwin(Some(r"C:\first\BIN\"), &files),
+            Some(PathBuf::from(r"C:\first"))
+        );
+        let files = [r"C:/first/bin/cygwin1.dll", r"C:/first/bin/sh.exe"];
+        assert_eq!(
+            find_cygwin(Some("C:/first/bin"), &files),
+            Some(PathBuf::from(r"C:\first"))
+        );
+    }
+
+    #[test]
+    fn cygwin_root_skips_folders_that_are_not_cygwin_bin() {
+        let files = [
+            // sh.exe がない。
+            r"C:\no_shell\bin\cygwin1.dll",
+            // フォルダの名前が bin でない。
+            r"C:\app\cygwin1.dll",
+            r"C:\app\sh.exe",
+            // cygwin1.dll がない。
+            r"C:\msys\bin\sh.exe",
+            // 相対パス。
+            r"rel\bin\cygwin1.dll",
+            r"rel\bin\sh.exe",
+            // ここまでを飛ばして見つかるもの。
+            r"C:\real\bin\cygwin1.dll",
+            r"C:\real\bin\sh.exe",
+        ];
+        assert_eq!(
+            find_cygwin(
+                Some(r"C:\no_shell\bin;C:\app;C:\msys\bin;rel\bin;C:\real\bin"),
+                &files
+            ),
+            Some(PathBuf::from(r"C:\real"))
+        );
+    }
+
+    #[test]
+    fn cygwin_root_reads_quoted_and_empty_path_entries() {
+        let files = [
+            r"C:\Program Files\cyg;win\bin\cygwin1.dll",
+            r"C:\Program Files\cyg;win\bin\sh.exe",
+        ];
+        assert_eq!(
+            find_cygwin(Some(r#";;"C:\Program Files\cyg;win\bin";"#), &files),
+            Some(PathBuf::from(r"C:\Program Files\cyg;win"))
+        );
+        // 空の項目は Cygwin のフォルダにしない。
+        assert_eq!(find_cygwin(Some(";;"), &["cygwin1.dll", "sh.exe"]), None);
+    }
+
+    #[test]
+    fn cygwin_root_falls_back_to_common_roots() {
+        let both = [r"C:\cygwin\bin\cygwin1.dll", r"C:\cygwin64\bin\cygwin1.dll"];
+        assert_eq!(
+            find_cygwin(None, &both),
+            Some(PathBuf::from(r"C:\cygwin64"))
+        );
+        assert_eq!(
+            find_cygwin(Some(r"C:\Windows"), &both[..1]),
+            Some(PathBuf::from(r"C:\cygwin"))
+        );
+        // PATH の項目と違い、よくある場所は sh.exe がなくてもよい。PATH で見つかればそちらが先。
+        let files = [
+            r"C:\cygwin64\bin\cygwin1.dll",
+            r"C:\real\bin\cygwin1.dll",
+            r"C:\real\bin\sh.exe",
+        ];
+        assert_eq!(
+            find_cygwin(Some(r"C:\real\bin"), &files),
+            Some(PathBuf::from(r"C:\real"))
+        );
+        assert_eq!(find_cygwin(None, &[]), None);
+        assert_eq!(find_cygwin(Some(r"C:\Windows"), &[]), None);
     }
 
     #[test]
