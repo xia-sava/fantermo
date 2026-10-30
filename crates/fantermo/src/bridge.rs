@@ -266,9 +266,7 @@ fn bridge_command(target: Target, options: &SpawnOptions) -> Result<Command, Str
     };
     let mut command = match target {
         Target::Cygwin { root } => cygwin_command(root, options.command_line, cwd.as_deref())?,
-        Target::Wsl { distribution } => {
-            wsl_command(distribution, options.command_line, cwd.as_deref())?
-        }
+        Target::Wsl { distribution } => wsl_command(distribution, options, cwd.as_deref())?,
     };
     for (name, value) in options.env {
         command.env(name, value);
@@ -313,12 +311,13 @@ fn cygwin_command(
 }
 
 /// WSL のブリッジを起動するコマンド。`wsl.exe` に作業フォルダを Windows のパスのまま渡して直させ、
-/// ブリッジを `/mnt/<ドライブ>/…` のパスで起動させる。`TERM` を届けるため `WSLENV` に足す。
+/// ブリッジを `/mnt/<ドライブ>/…` のパスで起動させる。`options` の環境変数を届けるため `WSLENV` に足す。
 fn wsl_command(
     distribution: Option<&str>,
-    command_line: &str,
+    options: &SpawnOptions,
     cwd: Option<&Path>,
 ) -> Result<Command, String> {
+    let command_line = options.command_line;
     let exe = find_bridge(LINUX_BRIDGE)?;
     let linux_exe = wsl_path(&exe).ok_or_else(|| {
         format!(
@@ -339,7 +338,10 @@ fn wsl_command(
     }
     command.env(
         "WSLENV",
-        wslenv_with_term(env::var("WSLENV").ok().as_deref()),
+        wslenv_with(
+            env::var("WSLENV").ok().as_deref(),
+            options.env.iter().map(|(name, _)| *name),
+        ),
     );
     Ok(command)
 }
@@ -393,18 +395,22 @@ fn is_single_command(command: &str) -> bool {
     quote.is_none() && !escaped
 }
 
-/// `WSLENV` の値 `current` に `TERM` を足したもの。すでにあればそのまま。
-fn wslenv_with_term(current: Option<&str>) -> String {
-    const TERM: &str = "TERM";
-    let current = current.unwrap_or("");
-    let has_term = current
-        .split(':')
-        .any(|entry| entry.split('/').next() == Some(TERM));
-    match (current.is_empty(), has_term) {
-        (true, _) => TERM.to_owned(),
-        (false, true) => current.to_owned(),
-        (false, false) => format!("{current}:{TERM}"),
+/// `WSLENV` の値 `current` に環境変数の名前 `names` を足したもの。すでにある名前は足さない。
+fn wslenv_with<'a>(current: Option<&str>, names: impl IntoIterator<Item = &'a str>) -> String {
+    let mut wslenv = current.unwrap_or("").to_owned();
+    for name in names {
+        let present = wslenv
+            .split(':')
+            .any(|entry| entry.split('/').next() == Some(name));
+        if present {
+            continue;
+        }
+        if !wslenv.is_empty() {
+            wslenv.push(':');
+        }
+        wslenv.push_str(name);
     }
+    wslenv
 }
 
 /// Cygwin のフォルダ。`configured` を書いていればそれ、なければ [`find_cygwin_root`] で探したもの。
@@ -931,14 +937,23 @@ mod tests {
     }
 
     #[test]
-    fn wslenv_gets_term_once() {
-        assert_eq!(wslenv_with_term(None), "TERM");
-        assert_eq!(wslenv_with_term(Some("")), "TERM");
+    fn wslenv_gets_each_name_once() {
+        const NAMES: [&str; 3] = ["TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION"];
+        const ALL: &str = "TERM:TERM_PROGRAM:TERM_PROGRAM_VERSION";
+        assert_eq!(wslenv_with(None, NAMES), ALL);
+        assert_eq!(wslenv_with(Some(""), NAMES), ALL);
         assert_eq!(
-            wslenv_with_term(Some("USERPROFILE/p")),
-            "USERPROFILE/p:TERM"
+            wslenv_with(Some("USERPROFILE/p"), NAMES),
+            format!("USERPROFILE/p:{ALL}")
         );
-        assert_eq!(wslenv_with_term(Some("TERM/u:X")), "TERM/u:X");
+        assert_eq!(
+            wslenv_with(Some("TERM/u:X"), NAMES),
+            "TERM/u:X:TERM_PROGRAM:TERM_PROGRAM_VERSION"
+        );
+        assert_eq!(
+            wslenv_with(Some("TERM_PROGRAM:TERM:TERM_PROGRAM_VERSION/u"), NAMES),
+            "TERM_PROGRAM:TERM:TERM_PROGRAM_VERSION/u"
+        );
     }
 
     #[test]

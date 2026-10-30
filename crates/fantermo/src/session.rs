@@ -15,10 +15,19 @@ use fantermo_core::{
 use crate::{
     bridge::{self, Bridge},
     conpty::ConPty,
+    version,
 };
 
 /// 子プロセスの `TERM` と、端末が名乗る terminfo の名前。
 const TERM: &str = "xterm-256color";
+/// 子プロセスの `TERM_PROGRAM`。
+const TERM_PROGRAM: &str = "fantermo";
+/// 子プロセスへ渡す環境変数。
+const CHILD_ENV: [(&str, &str); 3] = [
+    ("TERM", TERM),
+    ("TERM_PROGRAM", TERM_PROGRAM),
+    ("TERM_PROGRAM_VERSION", version::PACKAGE),
+];
 
 /// 端末で起動するもの。バックエンドの種類と、子プロセスのコマンドライン（ブリッジなら相手の側の
 /// コマンドラインで、空なら相手のログインシェル）、ブリッジのつなぐ先。
@@ -130,7 +139,7 @@ impl Session {
             startup,
             &SpawnOptions {
                 command_line: &startup.command_line,
-                env: &[("TERM", TERM)],
+                env: &CHILD_ENV,
                 size,
             },
             wake,
@@ -256,6 +265,18 @@ mod tests {
         cell_width_px: 8,
         cell_height_px: 16,
     };
+
+    #[test]
+    fn children_get_the_terminal_name_and_the_package_version() {
+        assert_eq!(
+            CHILD_ENV,
+            [
+                ("TERM", "xterm-256color"),
+                ("TERM_PROGRAM", "fantermo"),
+                ("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION")),
+            ]
+        );
+    }
 
     /// 偽のバックエンドとテストが共に見る中身。
     #[derive(Default)]
