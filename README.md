@@ -26,7 +26,7 @@ libghostty-vt は [libghostty-rs](https://github.com/uzaaft/libghostty-rs) の�
 
 どちらにも，`fantermo.exe` と同じフォルダにブリッジ（`fantermo-bridge.exe` と `fantermo-bridge`）が入っています．プロファイルで Cygwin や WSL にブリッジでつなぐときに使うので，`fantermo.exe` と離さないでください．Cygwin 向けのブリッジは，入れてある Cygwin の `cygwin1.dll` などを使います．Cygwin のフォルダは，プロファイルの `cygwin_root` に書かなければ，環境変数 `PATH` とよくある場所（`C:\cygwin64`，`C:\cygwin`）から探します．Cygwin と WSL は，ConPTY よりブリッジでつなぐことを勧めます（設定ファイルの `[[profiles]]` に `backend = "cygwin"` か `backend = "wsl"` を書きます．ConPTY を通すと，アプリの出力の一部が書き換えられ，端末への問い合わせの一部が届かず，kitty graphics protocol と sixel の画像も届かず，ウィンドウの大きさを変えるとスクロールバックの行が欠けることがあります）．
 
-タブのタイトルの左には，プロファイルのアイコンを出します．設定ファイルの `[[profiles]]` の `icon` に画像ファイル（PNG，ICO など）のパスを書くとその画像を，書かなければ，つなぎ方の絵（Cygwin の C，WSL のペンギン，ConPTY の `>_`）とプロファイル名の頭文字のアイコンを作って出します．
+タブのタイトルの左には，プロファイルのアイコンを出します．設定ファイルの `[[profiles]]` の `icon` に画像ファイル（PNG，ICO など）のパスを書くとその画像を，書かなければ，プロファイル名から決まる淡い色の正方形に絵を載せたアイコンを作って出します．絵は，お使いの環境にあるアイコンを読みます（Cygwin は Cygwin のフォルダの `Cygwin.ico`，WSL は `wsl.exe`，ConPTY は `command` の実行ファイル）．読めなければ，fantermo が描いた絵（Cygwin の C，WSL のペンギン，ConPTY の `>_`）を出します．同じ絵になるプロファイルが複数あるときは，プロファイル名の頭文字を添えます．
 
 アプリは OSC 52 でクリップボードへ書き込めます（vim や tmux からのコピー）．読み出しは，設定ファイルの `[clipboard]` の `read` で決めます．既定の `"ask"` は確認のダイアログを出し（「許可」「拒否」「このタブでは今後も許可」），`"allow"` は確かめずに渡し，`"deny"` は何も返しません．ConPTY を通ると読み出しの依頼が fantermo に届かないので，読み出しを使うならブリッジでつなぎます．
 

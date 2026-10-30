@@ -120,7 +120,7 @@ const fn rgb(r: u8, g: u8, b: u8) -> Rgb {
 pub struct TabIcon {
     /// 画像のファイル。読めなければ下の値で作る。
     pub image: Option<PathBuf>,
-    /// 背景の正方形に載せる本物のアイコン。なければ、読めなければ `backend` の絵を描く。
+    /// 背景の正方形に載せる本物のアイコン。ないときと読めないときは `backend` の絵を描く。
     pub real: Option<RealIcon>,
     pub backend: BackendKind,
     /// 絵に添える頭文字。同じ絵になるプロファイルが複数あるときだけ。
