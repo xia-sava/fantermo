@@ -1,5 +1,9 @@
 //! 描画のために取り出した画面の内容。libghostty-vt の型に依存しない。
 
+use std::borrow::Cow;
+
+use crate::background::{Placement, Rect};
+
 /// 8 ビットの RGB。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb {
@@ -69,6 +73,116 @@ pub struct CursorView {
     pub color: Rgb,
 }
 
+/// 端末の中の画像がどの仕組みで届いたか。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ImageSource {
+    /// kitty graphics protocol。
+    Kitty,
+}
+
+/// 端末の中の画像のピクセルを指すもの。ピクセルが変わると `generation` が変わるので、テクスチャを
+/// 覚える鍵に使える。`generation` は端末や画面をまたいでも使い回されない。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ImageKey {
+    pub source: ImageSource,
+    pub id: u32,
+    pub generation: u64,
+}
+
+/// 端末の中の画像を、文字に対してどの高さに描くか。下から順に描く。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ImageLayer {
+    /// セルの背景色の下。
+    BelowBackground,
+    /// セルの背景色の上で、文字の下。
+    BelowText,
+    /// 文字の上。
+    AboveText,
+}
+
+/// 端末の中に描く画像の矩形一つ。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageView {
+    pub key: ImageKey,
+    pub layer: ImageLayer,
+    /// 同じ層の中で、小さいものから順に描く。
+    pub z: i32,
+    /// 左上のセルの桁と行。表示している範囲の左上を 0 とし、上や左へはみ出すと負になる。
+    pub col: i32,
+    pub row: i32,
+    /// 左上のセルの中での位置（ピクセル）。
+    pub offset_x: u32,
+    pub offset_y: u32,
+    /// 描く大きさ（ピクセル）。
+    pub width: u32,
+    pub height: u32,
+    /// 描く画像の範囲（画像のピクセル）。
+    pub source_x: u32,
+    pub source_y: u32,
+    pub source_width: u32,
+    pub source_height: u32,
+}
+
+impl ImageView {
+    /// 大きさ `image` の画像のこの矩形を、左上のセルが `grid` の左上に来る端末に描く位置。`grid` の外は
+    /// 切り抜き、残りの画像の範囲を返す。何も見えなければ `None`。`cell` はセルの幅と高さ（ピクセル）。
+    pub fn placement(&self, grid: Rect, cell: (u32, u32), image: (u32, u32)) -> Option<Placement> {
+        if self.width == 0 || self.height == 0 || image.0 == 0 || image.1 == 0 {
+            return None;
+        }
+        let left = grid.x + self.col as f32 * cell.0 as f32 + self.offset_x as f32;
+        let top = grid.y + self.row as f32 * cell.1 as f32 + self.offset_y as f32;
+        let (width, height) = (self.width as f32, self.height as f32);
+        let visible_left = left.max(grid.x);
+        let visible_top = top.max(grid.y);
+        let visible_width = (left + width).min(grid.x + grid.width) - visible_left;
+        let visible_height = (top + height).min(grid.y + grid.height) - visible_top;
+        if visible_width <= 0.0 || visible_height <= 0.0 {
+            return None;
+        }
+        let u_per_pixel = self.source_width as f32 / width / image.0 as f32;
+        let v_per_pixel = self.source_height as f32 / height / image.1 as f32;
+        Some(Placement {
+            rect: Rect {
+                x: visible_left,
+                y: visible_top,
+                width: visible_width,
+                height: visible_height,
+            },
+            uv: Rect {
+                x: self.source_x as f32 / image.0 as f32 + (visible_left - left) * u_per_pixel,
+                y: self.source_y as f32 / image.1 as f32 + (visible_top - top) * v_per_pixel,
+                width: visible_width * u_per_pixel,
+                height: visible_height * v_per_pixel,
+            },
+            repeat: false,
+        })
+    }
+}
+
+/// 端末の中の画像のピクセル。8 ビットの RGBA（アルファは乗算していない）で、行の間は詰めてある。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImagePixels<'a> {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Cow<'a, [u8]>,
+}
+
+impl ImagePixels<'_> {
+    /// 乗算済みアルファの BGRA に並べ直す。
+    pub fn to_premultiplied_bgra(&self) -> Vec<u8> {
+        let premultiply = |channel: u8, alpha: u8| -> u8 {
+            ((u32::from(channel) * u32::from(alpha) + u32::from(u8::MAX) / 2) / u32::from(u8::MAX))
+                as u8
+        };
+        let mut bgra = Vec::with_capacity(self.rgba.len());
+        for &[r, g, b, a] in self.rgba.as_chunks::<4>().0 {
+            bgra.extend_from_slice(&[premultiply(b, a), premultiply(g, a), premultiply(r, a), a]);
+        }
+        bgra
+    }
+}
+
 /// 1 フレーム分の画面。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frame {
@@ -80,6 +194,8 @@ pub struct Frame {
     pub cells: Vec<CellView>,
     /// 表示中で、画面の中にあるときだけ持つ。
     pub cursor: Option<CursorView>,
+    /// 表示している範囲に少しでも入る画像。層ごとに下から描く順に並ぶ。
+    pub images: Vec<ImageView>,
 }
 
 impl Frame {
@@ -135,7 +251,133 @@ mod tests {
             foreground: WHITE,
             cells,
             cursor: None,
+            images: Vec::new(),
         }
+    }
+
+    /// 8×16 のセルで (1, 1) のセルから 40×32 ピクセルに描く、80×64 の画像の全体。
+    fn image_view() -> ImageView {
+        ImageView {
+            key: ImageKey {
+                source: ImageSource::Kitty,
+                id: 1,
+                generation: 1,
+            },
+            layer: ImageLayer::AboveText,
+            z: 0,
+            col: 1,
+            row: 1,
+            offset_x: 0,
+            offset_y: 0,
+            width: 40,
+            height: 32,
+            source_x: 0,
+            source_y: 0,
+            source_width: 80,
+            source_height: 64,
+        }
+    }
+
+    const GRID: Rect = Rect {
+        x: 100.0,
+        y: 200.0,
+        width: 80.0,
+        height: 80.0,
+    };
+
+    fn rect(x: f32, y: f32, width: f32, height: f32) -> Rect {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn an_image_inside_the_grid_is_placed_from_its_cell() {
+        let placement = image_view().placement(GRID, (8, 16), (80, 64)).unwrap();
+        assert_eq!(placement.rect, rect(108.0, 216.0, 40.0, 32.0));
+        assert_eq!(placement.uv, rect(0.0, 0.0, 1.0, 1.0));
+        assert!(!placement.repeat);
+    }
+
+    #[test]
+    fn the_offset_in_the_cell_moves_the_image() {
+        let view = ImageView {
+            offset_x: 3,
+            offset_y: 5,
+            ..image_view()
+        };
+        let placement = view.placement(GRID, (8, 16), (80, 64)).unwrap();
+        assert_eq!(placement.rect, rect(111.0, 221.0, 40.0, 32.0));
+    }
+
+    #[test]
+    fn the_parts_outside_the_grid_are_cut_with_their_source() {
+        // 上へ 1 行（16 ピクセル）はみ出す。
+        let above = ImageView {
+            row: -1,
+            ..image_view()
+        };
+        let placement = above.placement(GRID, (8, 16), (80, 64)).unwrap();
+        assert_eq!(placement.rect, rect(108.0, 200.0, 40.0, 16.0));
+        assert_eq!(placement.uv, rect(0.0, 0.5, 1.0, 0.5));
+
+        // 右へ 8 ピクセルはみ出す。
+        let right = ImageView {
+            col: 6,
+            ..image_view()
+        };
+        let placement = right.placement(GRID, (8, 16), (80, 64)).unwrap();
+        assert_eq!(placement.rect, rect(148.0, 216.0, 32.0, 32.0));
+        assert_eq!(placement.uv, rect(0.0, 0.0, 0.8, 1.0));
+    }
+
+    #[test]
+    fn a_cropped_image_keeps_its_source() {
+        let view = ImageView {
+            source_x: 20,
+            source_y: 16,
+            source_width: 40,
+            source_height: 32,
+            ..image_view()
+        };
+        let placement = view.placement(GRID, (8, 16), (80, 64)).unwrap();
+        assert_eq!(placement.uv, rect(0.25, 0.25, 0.5, 0.5));
+    }
+
+    #[test]
+    fn images_outside_the_grid_or_without_size_are_not_placed() {
+        let above = ImageView {
+            row: -2,
+            ..image_view()
+        };
+        assert_eq!(above.placement(GRID, (8, 16), (80, 64)), None);
+        let below = ImageView {
+            row: 5,
+            ..image_view()
+        };
+        assert_eq!(below.placement(GRID, (8, 16), (80, 64)), None);
+        let empty = ImageView {
+            width: 0,
+            ..image_view()
+        };
+        assert_eq!(empty.placement(GRID, (8, 16), (80, 64)), None);
+        assert_eq!(image_view().placement(GRID, (8, 16), (0, 64)), None);
+    }
+
+    #[test]
+    fn pixels_are_premultiplied_and_reordered_to_bgra() {
+        let pixels = ImagePixels {
+            width: 2,
+            height: 1,
+            rgba: Cow::Borrowed(&[255, 128, 0, 255, 200, 100, 50, 128]),
+        };
+        assert_eq!(
+            pixels.to_premultiplied_bgra(),
+            [0, 128, 255, 255, 25, 50, 100, 128]
+        );
     }
 
     #[test]

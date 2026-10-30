@@ -1,16 +1,23 @@
 //! libghostty-vt の端末を包む。fantermo の中で libghostty-vt を直接使うのはこのモジュールだけにする。
 
 use std::{
+    borrow::Cow,
     cell::{Cell, RefCell},
     rc::Rc,
+    sync::OnceLock,
 };
 
 use libghostty_vt::{
     Terminal,
     fmt::{Format, Formatter, FormatterOptions},
-    key, mouse,
+    key,
+    kitty::graphics::{self, ImageFormat, RustPngDecoder},
+    mouse,
     paste::Options as PasteOptions,
-    render::{CellIterator, RenderState, RowIterator},
+    render::{
+        CellIterator, ImageIterator, ImageLayer as VtImageLayer, ImageProtocol, RenderState,
+        RowIterator, Snapshot,
+    },
     screen::{CellWide, GridRef},
     selection::{
         FormatOptions as SelectionFormatOptions,
@@ -28,7 +35,10 @@ use std::time::Duration;
 use crate::{
     backend::GridSize,
     config::TerminalColors,
-    frame::{CellView, CursorView, Frame, Rgb, Underline},
+    frame::{
+        CellView, CursorView, Frame, ImageKey, ImageLayer, ImagePixels, ImageSource, ImageView,
+        Rgb, Underline,
+    },
     link::{self, LineCell, Link, LinkSpan},
 };
 
@@ -153,6 +163,23 @@ const GRAPHEME_BUFFER_LEN: usize = 16;
 /// OSC 8 の URI を読むときの、バイト数の初めの見込み。
 const URI_BUFFER_LEN: usize = 256;
 
+/// kitty graphics protocol の画像を保管するバイト数の上限（画面ごと）。Ghostty の既定の
+/// `image-storage-limit` と同じ。
+const IMAGE_STORAGE_LIMIT: u64 = 320 * 1000 * 1000;
+
+/// kitty graphics protocol の Unicode placeholder の文字。画像は描画の状態が一覧に載せるので、文字としては描かない。
+const KITTY_PLACEHOLDER: char = '\u{10EEEE}';
+
+/// PNG のデコーダをプロセスに一度だけ入れる。
+fn install_png_decoder() -> Result<(), VtError> {
+    static INSTALLED: OnceLock<Result<(), VtError>> = OnceLock::new();
+    *INSTALLED.get_or_init(|| {
+        // SAFETY: 端末はどれも `Vt::new` で作り、最初の端末を作る前にここを通る。ここを通っている間、
+        // ほかのスレッドの `Vt::new` は `get_or_init` で待つので、端末を使うスレッドはまだない。
+        unsafe { graphics::set_png_decoder(Some(Box::new(RustPngDecoder::new()))) }
+    })
+}
+
 /// 端末の状態。シェルの出力を `feed` で流し込み、シェルへの応答を `take_replies` で取り出す。
 pub struct Vt {
     terminal: Terminal<'static, 'static>,
@@ -168,6 +195,7 @@ pub struct Vt {
     render_state: RenderState<'static>,
     row_iter: RowIterator<'static>,
     cell_iter: CellIterator<'static>,
+    image_iter: ImageIterator<'static>,
     /// キーを変換するときに使い回す、変換器とキーの情報。
     key_encoder: key::Encoder<'static>,
     key_event: key::Event<'static>,
@@ -190,10 +218,12 @@ impl Vt {
         let size_cell = Rc::new(Cell::new(size));
         let bell_rang = Rc::new(Cell::new(false));
 
+        install_png_decoder()?;
         let mut terminal = Terminal::new(size.cols, size.rows)?;
         terminal
             .set_scrollback_max_lines(Some(SCROLLBACK_LINES))?
-            .set_terminfo_name(terminfo_name)?;
+            .set_terminfo_name(terminfo_name)?
+            .set_kitty_image_storage_limit(IMAGE_STORAGE_LIMIT)?;
         // 生成時の指定にはセルのピクセル寸法がないので、大きさを指定し直して渡す。
         terminal.resize(
             size.cols,
@@ -235,6 +265,7 @@ impl Vt {
             render_state: RenderState::new()?,
             row_iter: RowIterator::new()?,
             cell_iter: CellIterator::new()?,
+            image_iter: ImageIterator::new()?,
             key_encoder: key::Encoder::new()?,
             key_event: key::Event::new()?,
             mouse_encoder: mouse::Encoder::new()?,
@@ -634,6 +665,9 @@ impl Vt {
                     CellWide::Narrow => 1,
                 };
                 cell.graphemes_utf8(&mut text)?;
+                if text.starts_with(KITTY_PLACEHOLDER) {
+                    text.clear();
+                }
                 let mut fg = cell.fg_color()?.unwrap_or(colors.foreground);
                 let mut bg = cell.bg_color()?;
                 let style = if cell.has_styling()? {
@@ -709,6 +743,7 @@ impl Vt {
             }
             _ => None,
         };
+        let images = image_views(&mut self.image_iter, &snapshot)?;
 
         Ok(Frame {
             cols: snapshot.cols()?,
@@ -717,7 +752,46 @@ impl Vt {
             foreground: rgb(colors.foreground),
             cells,
             cursor,
+            images,
         })
+    }
+
+    /// `key` の画像のピクセル。保管にその画像がないか、`key` のあとでピクセルが変わった、または
+    /// まだ届いていなければ `None`。
+    pub fn image_pixels(&self, key: &ImageKey) -> Result<Option<ImagePixels<'_>>, VtError> {
+        let graphics = self.terminal.kitty_graphics()?;
+        let Some(image) = graphics.image(key.id) else {
+            return Ok(None);
+        };
+        if image.generation()? != key.generation {
+            return Ok(None);
+        }
+        let Some(data) = image.data()? else {
+            return Ok(None);
+        };
+        Ok(rgba_pixels(
+            image.format()?,
+            data,
+            image.width()?,
+            image.height()?,
+        ))
+    }
+
+    /// `key` の画像が、同じピクセルのまま表示している画面の保管にある。
+    pub fn image_is_stored(&self, key: &ImageKey) -> Result<bool, VtError> {
+        let graphics = self.terminal.kitty_graphics()?;
+        let Some(image) = graphics.image(key.id) else {
+            return Ok(false);
+        };
+        Ok(image.generation()? == key.generation)
+    }
+
+    /// 再生中の画像のアニメーションを進める。描き直す前に呼ぶ。`now` は同じ時計で測った時刻。次のコマ
+    /// までの時間を返す。再生中のものがなければ `None`。
+    pub fn tick_image_animations(&mut self, now: Duration) -> Result<Option<Duration>, VtError> {
+        let now_ms = u64::try_from(now.as_millis()).unwrap_or(u64::MAX);
+        let next_ms = self.terminal.kitty_graphics_animation_tick(now_ms)?;
+        Ok(next_ms.map(|next_ms| Duration::from_millis(next_ms.saturating_sub(now_ms))))
     }
 
     /// 画面の内容をプレーンテキストで返す。行末の空白は除く。
@@ -728,6 +802,84 @@ impl Vt {
         let text = Formatter::new(&self.terminal, options)?.format_alloc(None)?;
         Ok(String::from_utf8_lossy(&text).into_owned())
     }
+}
+
+/// `snapshot` の表示している範囲の画像を、層ごとに下から描く順に並べる。同じ高さなら画像の番号の順
+/// （Ghostty と同じ）。
+fn image_views(
+    images: &mut ImageIterator<'static>,
+    snapshot: &Snapshot<'static, '_>,
+) -> Result<Vec<ImageView>, VtError> {
+    let mut views = Vec::new();
+    let mut placements = images.update(snapshot)?;
+    while let Some(placement) = placements.next() {
+        // 新しいバージョンで増えた種類は、エラーとして返ることもある。読めるものだけを描く。
+        let Ok(ImageProtocol::Kitty) = placement.protocol() else {
+            continue;
+        };
+        views.push(ImageView {
+            key: ImageKey {
+                source: ImageSource::Kitty,
+                id: placement.image_id()?,
+                generation: placement.image_generation()?,
+            },
+            layer: match placement.layer()? {
+                VtImageLayer::BelowBackground => ImageLayer::BelowBackground,
+                VtImageLayer::BelowText => ImageLayer::BelowText,
+                VtImageLayer::AboveText => ImageLayer::AboveText,
+            },
+            z: placement.z()?,
+            col: placement.viewport_col()?,
+            row: placement.viewport_row()?,
+            offset_x: placement.cell_offset_x()?,
+            offset_y: placement.cell_offset_y()?,
+            width: placement.pixel_width()?,
+            height: placement.pixel_height()?,
+            source_x: placement.source_x()?,
+            source_y: placement.source_y()?,
+            source_width: placement.source_width()?,
+            source_height: placement.source_height()?,
+        });
+    }
+    views.sort_by_key(|view| (view.layer, view.z, view.key.id));
+    Ok(views)
+}
+
+/// 大きさ `width` × `height` の `format` のピクセルを RGBA にする。バイト数が足りない、または
+/// RGBA にできない形式なら `None`。
+fn rgba_pixels(
+    format: ImageFormat,
+    data: &[u8],
+    width: u32,
+    height: u32,
+) -> Option<ImagePixels<'_>> {
+    let pixels = (width as usize).checked_mul(height as usize)?;
+    let channels = match format {
+        ImageFormat::Gray => 1,
+        ImageFormat::GrayAlpha => 2,
+        ImageFormat::Rgb => 3,
+        ImageFormat::Rgba => 4,
+        _ => return None,
+    };
+    let data = data.get(..pixels.checked_mul(channels)?)?;
+    let rgba = match format {
+        ImageFormat::Rgba => Cow::Borrowed(data),
+        _ => Cow::Owned(
+            data.chunks_exact(channels)
+                .flat_map(|pixel| match *pixel {
+                    [gray] => [gray, gray, gray, u8::MAX],
+                    [gray, alpha] => [gray, gray, gray, alpha],
+                    [r, g, b] => [r, g, b, u8::MAX],
+                    _ => unreachable!("channels is 1, 2 or 3 here"),
+                })
+                .collect(),
+        ),
+    };
+    Some(ImagePixels {
+        width,
+        height,
+        rgba,
+    })
 }
 
 /// `grid_ref` のセルの文字（書記素クラスタ）。空のセルは空の文字列。
@@ -1741,5 +1893,244 @@ mod tests {
         // CSI 18 t: テキスト領域の大きさを文字数で問い合わせる。
         vt.feed(b"\x1b[18t");
         assert_eq!(vt.take_replies(), b"\x1b[8;10;40t");
+    }
+
+    /// 赤い 1×1 の PNG の base64。
+    const RED_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA\
+                           DUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+
+    /// 3 バイトごとに 4 文字にする base64。テストの入力に使う。
+    fn base64(data: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut encoded = String::new();
+        for chunk in data.chunks(3) {
+            let mut bytes = [0u8; 3];
+            bytes[..chunk.len()].copy_from_slice(chunk);
+            let digits = [
+                bytes[0] >> 2,
+                (bytes[0] & 0x03) << 4 | bytes[1] >> 4,
+                (bytes[1] & 0x0f) << 2 | bytes[2] >> 6,
+                bytes[2] & 0x3f,
+            ];
+            for (index, digit) in digits.into_iter().enumerate() {
+                encoded.push(if index <= chunk.len() {
+                    char::from(ALPHABET[usize::from(digit)])
+                } else {
+                    '='
+                });
+            }
+        }
+        encoded
+    }
+
+    fn graphics(vt: &mut Vt, control: &str, payload: &str) {
+        vt.feed(format!("\x1b_G{control};{payload}\x1b\\").as_bytes());
+    }
+
+    #[test]
+    fn a_png_image_is_placed_at_the_cursor_above_the_text() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b[2;3H");
+        graphics(&mut vt, "a=T,f=100,i=7,q=2", RED_PNG);
+        let frame = vt.frame().unwrap();
+        let [view] = frame.images.as_slice() else {
+            panic!("{:?}", frame.images);
+        };
+        assert_eq!(view.key.id, 7);
+        assert_eq!(view.layer, ImageLayer::AboveText);
+        assert_eq!((view.col, view.row), (2, 1));
+        assert_eq!((view.width, view.height), (1, 1));
+        let pixels = vt.image_pixels(&view.key).unwrap().unwrap();
+        assert_eq!((pixels.width, pixels.height), (1, 1));
+        assert_eq!(pixels.rgba.as_ref(), [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn raw_rgb_is_converted_to_rgba_and_spans_rows() {
+        let mut vt = new_vt();
+        // 8×16 のセルで 10×20 ピクセルは 2 桁・2 行にまたがる。
+        let (width, height) = (10u32, 20u32);
+        let rgb: Vec<u8> = (0..width * height)
+            .flat_map(|pixel| [(pixel % 256) as u8, 1, 2])
+            .collect();
+        let control = format!("a=T,f=24,s={width},v={height},i=2,q=2");
+        graphics(&mut vt, &control, &base64(&rgb));
+        let frame = vt.frame().unwrap();
+        let view = frame.images[0];
+        assert_eq!((view.width, view.height), (width, height));
+        assert_eq!((view.source_width, view.source_height), (width, height));
+        // 画像の下の行へカーソルが進む。
+        assert_eq!(vt.cursor_cell().unwrap().1, 1);
+        let pixels = vt.image_pixels(&view.key).unwrap().unwrap();
+        assert_eq!(&pixels.rgba[..8], [0, 1, 2, 255, 1, 1, 2, 255]);
+        assert_eq!(pixels.rgba.len(), (width * height * 4) as usize);
+    }
+
+    #[test]
+    fn gray_pixels_are_converted_to_rgba() {
+        assert_eq!(
+            rgba_pixels(ImageFormat::Gray, &[9], 1, 1).unwrap().rgba,
+            [9, 9, 9, 255].as_slice()
+        );
+        assert_eq!(
+            rgba_pixels(ImageFormat::GrayAlpha, &[9, 3], 1, 1)
+                .unwrap()
+                .rgba,
+            [9, 9, 9, 3].as_slice()
+        );
+        // バイト数が足りなければ読まない。
+        assert_eq!(rgba_pixels(ImageFormat::Rgb, &[1, 2], 1, 1), None);
+    }
+
+    #[test]
+    fn chunks_become_one_image() {
+        let mut vt = new_vt();
+        let rgba = base64(&[10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255]);
+        let (first, rest) = rgba.split_at(4);
+        graphics(&mut vt, "a=T,f=32,s=3,v=1,i=3,q=2,m=1", first);
+        assert!(vt.frame().unwrap().images.is_empty());
+        graphics(&mut vt, "m=0", rest);
+        let frame = vt.frame().unwrap();
+        let pixels = vt.image_pixels(&frame.images[0].key).unwrap().unwrap();
+        assert_eq!(
+            pixels.rgba.as_ref(),
+            [10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255]
+        );
+    }
+
+    #[test]
+    fn deleting_removes_the_image_from_the_frame_and_the_storage() {
+        let mut vt = new_vt();
+        graphics(&mut vt, "a=T,f=100,i=4,q=2", RED_PNG);
+        let key = vt.frame().unwrap().images[0].key;
+        assert!(vt.image_is_stored(&key).unwrap());
+        vt.feed(b"\x1b_Ga=d,d=I,i=4,q=2\x1b\\");
+        assert!(vt.frame().unwrap().images.is_empty());
+        assert!(!vt.image_is_stored(&key).unwrap());
+        assert_eq!(vt.image_pixels(&key).unwrap(), None);
+    }
+
+    #[test]
+    fn sending_again_changes_the_generation() {
+        let mut vt = new_vt();
+        graphics(&mut vt, "a=T,f=100,i=5,q=2", RED_PNG);
+        let old = vt.frame().unwrap().images[0].key;
+        graphics(&mut vt, "a=T,f=100,i=5,q=2", RED_PNG);
+        let new = vt.frame().unwrap().images[0].key;
+        assert_ne!(old.generation, new.generation);
+        assert!(!vt.image_is_stored(&old).unwrap());
+        assert!(vt.image_is_stored(&new).unwrap());
+    }
+
+    #[test]
+    fn queries_are_answered() {
+        let mut vt = new_vt();
+        graphics(&mut vt, "i=31,s=1,v=1,a=q,t=d,f=24", "AAAA");
+        assert_eq!(vt.take_replies(), b"\x1b_Gi=31;OK\x1b\\");
+        // 確かめるだけで、保管も画面も変わらない。
+        assert!(vt.frame().unwrap().images.is_empty());
+    }
+
+    #[test]
+    fn files_cannot_be_read_as_images() {
+        let mut vt = new_vt();
+        let path = base64(br"C:\Windows\win.ini");
+        graphics(&mut vt, "i=32,s=1,v=1,a=q,t=f,f=24", &path);
+        let replies = vt.take_replies();
+        let reply = String::from_utf8_lossy(&replies);
+        assert!(reply.starts_with("\x1b_Gi=32;"), "{reply:?}");
+        assert!(!reply.contains(";OK"), "{reply:?}");
+    }
+
+    #[test]
+    fn images_scroll_with_the_text_and_into_the_scrollback() {
+        let mut vt = new_vt();
+        graphics(&mut vt, "a=T,f=100,i=6,q=2", RED_PNG);
+        assert_eq!(vt.frame().unwrap().images[0].row, 0);
+        vt.feed(b"\r\n\r\n\r\n\r\n\r\n");
+        // 上へ流れて、表示している範囲から出た。
+        let scrolled = vt.frame().unwrap().images;
+        assert!(scrolled.is_empty(), "{scrolled:?}");
+        vt.scroll_to_top();
+        assert_eq!(vt.frame().unwrap().images[0].row, 0);
+    }
+
+    #[test]
+    fn each_screen_has_its_own_images() {
+        let mut vt = new_vt();
+        graphics(&mut vt, "a=T,f=100,i=8,q=2", RED_PNG);
+        let key = vt.frame().unwrap().images[0].key;
+        vt.feed(b"\x1b[?1049h");
+        assert!(vt.frame().unwrap().images.is_empty());
+        assert!(!vt.image_is_stored(&key).unwrap());
+        vt.feed(b"\x1b[?1049l");
+        assert_eq!(vt.frame().unwrap().images[0].key, key);
+        assert!(vt.image_is_stored(&key).unwrap());
+    }
+
+    #[test]
+    fn layers_and_z_decide_the_order() {
+        let mut vt = new_vt();
+        let z_below_background = i32::MIN;
+        for (id, z) in [(1, 5), (2, -1), (3, z_below_background), (4, 0), (5, 0)] {
+            graphics(&mut vt, &format!("a=T,f=100,i={id},z={z},q=2"), RED_PNG);
+        }
+        let frame = vt.frame().unwrap();
+        let order: Vec<(u32, ImageLayer)> = frame
+            .images
+            .iter()
+            .map(|view| (view.key.id, view.layer))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (3, ImageLayer::BelowBackground),
+                (2, ImageLayer::BelowText),
+                (4, ImageLayer::AboveText),
+                (5, ImageLayer::AboveText),
+                (1, ImageLayer::AboveText),
+            ]
+        );
+    }
+
+    #[test]
+    fn placeholder_cells_show_the_image_instead_of_the_character() {
+        let mut vt = new_vt();
+        // 画像 3 の仮想の配置（2 桁・1 行）と、それを見せる 2 つのセル。
+        graphics(&mut vt, "a=T,U=1,f=32,i=3,s=1,v=1,c=2,r=1,q=2", "AP8A/w==");
+        vt.feed(
+            "\x1b[38;5;3m\u{10EEEE}\u{0305}\u{0305}\u{10EEEE}\u{0305}\u{030D}\x1b[39m".as_bytes(),
+        );
+        let frame = vt.frame().unwrap();
+        let [view] = frame.images.as_slice() else {
+            panic!("{:?}", frame.images);
+        };
+        assert_eq!(view.key.id, 3);
+        assert_eq!(view.layer, ImageLayer::BelowText);
+        assert_eq!((view.width, view.height), (16, 16));
+        assert!(frame.cells.iter().all(|cell| cell.text.is_empty()));
+    }
+
+    #[test]
+    fn animations_report_the_next_frame() {
+        let mut vt = new_vt();
+        graphics(&mut vt, "a=T,f=32,i=2,s=1,v=1,q=2", "/wAA/w==");
+        assert_eq!(vt.tick_image_animations(Duration::ZERO).unwrap(), None);
+        let first = vt.frame().unwrap().images[0].key;
+        graphics(&mut vt, "a=f,f=32,i=2,s=1,v=1,z=40,q=2", "AAD//w==");
+        vt.feed(b"\x1b_Ga=a,i=2,r=1,z=30,q=2\x1b\\\x1b_Ga=a,i=2,s=3,q=2\x1b\\");
+        assert_eq!(
+            vt.tick_image_animations(Duration::ZERO).unwrap(),
+            Some(Duration::from_millis(30))
+        );
+        assert_eq!(
+            vt.tick_image_animations(Duration::from_millis(30)).unwrap(),
+            Some(Duration::from_millis(40))
+        );
+        let second = vt.frame().unwrap().images[0].key;
+        assert_ne!(first.generation, second.generation);
+        let pixels = vt.image_pixels(&second).unwrap().unwrap();
+        assert_eq!(pixels.rgba.as_ref(), [0, 0, 255, 255]);
     }
 }
