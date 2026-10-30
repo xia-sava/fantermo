@@ -89,12 +89,16 @@ jobs:
         shell: bash
         env:
           CYGWIN_ROOT: ${{ steps.toolchain.outputs.cygwin-root }}
+        run: ./tools/bridge.sh build all --release
+
+      # git bash の cp は、拡張子のない名前への書き込みを同じ名前の .exe へ向けることがあるので使わない。
+      - name: Collect
+        shell: pwsh
         run: |
-          set -euo pipefail
-          ./tools/bridge.sh build all --release
-          mkdir -p artifacts/bridge
-          cp target/bridge/x86_64-pc-cygwin/release/fantermo-bridge.exe artifacts/bridge/
-          cp target/bridge/x86_64-unknown-linux-musl/release/fantermo-bridge artifacts/bridge/
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path artifacts/bridge | Out-Null
+          Copy-Item target/bridge/x86_64-pc-cygwin/release/fantermo-bridge.exe artifacts/bridge/
+          Copy-Item target/bridge/x86_64-unknown-linux-musl/release/fantermo-bridge artifacts/bridge/
 
       # build ジョブが zip と MSI に詰めるまで残ればよい。
       - uses: actions/upload-artifact@v7
