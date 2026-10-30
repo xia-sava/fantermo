@@ -4,11 +4,26 @@
 #  依存を変えたら作り直してコミットする。cargo-about（`cargo about`）が要る。
 #  例: ./tools/licenses.sh
 #
-#  中身は 3 つをつなげたもの:
+#  中身は 5 つをつなげたもの:
 #    1. 前書き（このスクリプトの中）
 #    2. tools/licenses/zig-notices.txt … libghostty-vt（Zig）に静的にリンクされるもの。手で確かめて書いた
 #    3. cargo-about の出力 … 実行ファイル fantermo に入る Rust の crate
 #       （設定は tools/licenses/about.toml、テンプレートは tools/licenses/about.hbs）
+#    4. tools/licenses/bridge-notices.txt … ブリッジに静的にリンクされる Rust の crate 以外のもの。手で確かめて書いた
+#    5. cargo-about の出力 … ブリッジ（crates/fantermo-bridge）に入る Rust の crate
+#       （設定は tools/licenses/about-bridge.toml、テンプレートは 3 と同じ）
+#
+#  bridge-notices.txt を確かめたもの（Rust 1.99.1、Cygwin の gcc-core 14.4.0）:
+#    - Linux 向け（x86_64-unknown-linux-musl）は、Rust の self-contained の libc.a（musl 1.2.5。Rust の
+#      src/ci/docker/scripts/musl-toolchain.sh の版）・libunwind.a・crt の .o を静的にリンクする。
+#      musl の文は https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT?h=v1.2.5 。libunwind と crtbeginS.o・
+#      crtendS.o は LLVM（Apache-2.0 WITH LLVM-exception。バイナリに表示を求めない）なので載せない
+#    - Cygwin 向け（x86_64-pc-cygwin）は、crt0.o と libcygwin.a（Cygwin の Linking Exception）、libgcc.a・
+#      crtbegin.o・crtend.o（GCC Runtime Library Exception）、w32api の取り込みライブラリ、default-manifest.o
+#      （windows-default-manifest。表示を残す条件の許諾）を静的にリンクする。表示を求めるのは
+#      default-manifest.o だけ。cygwin1.dll と cyggcc_s-seh-1.dll は動的にリンクし、同梱しない
+#    - リンクされるものは、リンカに --trace を渡して確かめた（Cygwin は -C link-arg=-Wl,--trace、
+#      Linux は -C link-arg=--trace）。Rust のツールチェインや Cygwin の gcc を上げたら確かめ直す
 #
 #  zig-notices.txt を確かめたバージョン（libghostty-rs 9ede35b8ea94a55ed3608408d67e102883129f1e、Zig 0.17.0）:
 #    - Ghostty 521cf2c5d30bd48028ca61546c64e7913764073d（libghostty-vt-sys の build.rs の GHOSTTY_COMMIT）
@@ -50,7 +65,8 @@ cd "$root"
 
 out="THIRD-PARTY-NOTICES.txt"
 rust="$(mktemp)"
-trap 'rm -f "$rust"' EXIT
+bridge_rust="$(mktemp)"
+trap 'rm -f "$rust" "$bridge_rust"' EXIT
 
 cargo about generate --fail --locked \
     --manifest-path crates/fantermo/Cargo.toml \
@@ -58,20 +74,38 @@ cargo about generate --fail --locked \
     --output-file "$rust" \
     tools/licenses/about.hbs
 
+cargo about generate --fail --locked \
+    --manifest-path crates/fantermo-bridge/Cargo.toml \
+    --config tools/licenses/about-bridge.toml \
+    --output-file "$bridge_rust" \
+    tools/licenses/about.hbs
+
 # crate の中のライセンスの文には CRLF のものや行末の空白を持つものがあるので、LF にそろえて行末を詰める。
 normalize() { tr -d '\r' | sed -e 's/[[:space:]]*$//'; }
+
+heading() {
+    printf '%s\n%s\n%s\n' "$(printf '=%.0s' {1..80})" "$1" "$(printf '=%.0s' {1..80})"
+}
 
 {
     cat <<'EOF'
 fantermo が使っている第三者のソフトウェアと、そのライセンス
 
-fantermo の実行ファイルには、fantermo 自身（MIT）のほかに、次のソフトウェアが含まれます。
+fantermo の実行ファイルとブリッジ（fantermo-bridge.exe、fantermo-bridge）には、fantermo 自身（MIT）の
+ほかに、次のソフトウェアが含まれます。
 二つ以上のライセンスから選べるものは、選んだほうの文を載せています。
 
 EOF
     normalize < tools/licenses/zig-notices.txt
     printf '\n\n'
+    heading "Rust の crate"
     normalize < "$rust"
+    # cargo-about の出力は空行で終わる。
+    printf '\n'
+    normalize < tools/licenses/bridge-notices.txt
+    printf '\n\n'
+    heading "ブリッジの Rust の crate"
+    normalize < "$bridge_rust"
 } > "$out"
 
 echo "wrote $out"

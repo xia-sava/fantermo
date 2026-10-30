@@ -1,0 +1,13 @@
+# cargo-about の設定（ブリッジ crates/fantermo-bridge）。tools/licenses.sh から使う。
+#
+# 受け入れるライセンスの並びは tools/licenses/about.toml と同じ。
+accepted = ["MIT", "Apache-2.0", "BSD-3-Clause", "Zlib", "Unicode-3.0"]
+
+# ブリッジを配布する対象。
+targets = ["x86_64-pc-cygwin", "x86_64-unknown-linux-musl"]
+
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# fantermo-bridge と fantermo-bridge-protocol は publish = false なので外す。
+private = { ignore = true }
