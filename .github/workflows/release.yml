@@ -27,7 +27,7 @@ jobs:
       name: ${{ steps.compute.outputs.name }}
       cargo: ${{ steps.compute.outputs.cargo }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
@@ -76,7 +76,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
@@ -157,7 +157,7 @@ jobs:
       contents: read
     steps:
       # tools/manifest.sh と、アプリに埋め込む公開鍵 assets/manifest-public-key.der を使う。
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
