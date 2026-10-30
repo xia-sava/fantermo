@@ -379,7 +379,7 @@ fn draw_parts(
         y: 0.0,
         side: size,
     };
-    fill_rounded(target, brush, tile, icon.color, 1.0);
+    fill_rounded(target, brush, tile, icon.color);
     let picture = picture_square(size, icon.initial.is_some());
     // SAFETY: 描画中の target に変換を設定するだけ。
     unsafe { target.SetTransform(&Matrix3x2::translation(picture.x, picture.y)) };
@@ -402,13 +402,11 @@ fn fill_rounded(
     brush: &ID2D1SolidColorBrush,
     area: Square,
     color: Rgb,
-    opacity: f32,
 ) {
     let radius = area.side * CORNER_RATIO;
     // SAFETY: 描画中の target と、同じ target が作ったブラシ。値は呼び出しの間は生きている。
     unsafe {
         brush.SetColor(&d2d_color(color));
-        brush.SetOpacity(opacity);
         target.FillRoundedRectangle(
             &D2D1_ROUNDED_RECT {
                 rect: area.rect(),
@@ -417,11 +415,10 @@ fn fill_rounded(
             },
             brush,
         );
-        brush.SetOpacity(1.0);
     }
 }
 
-/// `text` を太字で組んだもののインクの範囲（左・上・右・下）。組む範囲の左上が原点。
+/// 太字で組んだもののインクの範囲（左・上・右・下）。組む範囲の左上が原点。
 fn ink_bounds(layout: &IDWriteTextLayout) -> windows::core::Result<[f32; 4]> {
     // SAFETY: layout は有効。
     let (overhang, width, height) = unsafe {
