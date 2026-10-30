@@ -57,7 +57,7 @@ pub fn request_text(tab_number: usize, profile: Option<&str>, shown: bool) -> St
         None => format!("タブ {tab_number}（{shown}）"),
     };
     format!(
-        "{place} のアプリが、クリップボードの内容を読み出そうとしています。\n\n許可すると、いまクリップボードにある文字列がそのアプリへ渡ります。"
+        "{place}のアプリが、クリップボードの内容を読み出そうとしています。\n\n許可すると、いまクリップボードにある文字列がそのアプリへ渡ります。"
     )
 }
 
@@ -151,13 +151,13 @@ mod tests {
     fn the_text_names_the_tab_and_the_profile_and_says_it_is_a_read() {
         let text = request_text(2, Some("Cygwin"), false);
         assert!(
-            text.starts_with("タブ 2（プロファイル「Cygwin」、表示していないタブ） のアプリが、"),
+            text.starts_with("タブ 2（プロファイル「Cygwin」、表示していないタブ）のアプリが、"),
             "{text}"
         );
         assert!(text.contains("読み出そうとしています"), "{text}");
         let text = request_text(1, None, true);
         assert!(
-            text.starts_with("タブ 1（表示しているタブ） のアプリが、"),
+            text.starts_with("タブ 1（表示しているタブ）のアプリが、"),
             "{text}"
         );
     }

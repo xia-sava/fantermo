@@ -1192,6 +1192,7 @@ impl App {
                 ReadDecision::Answer => self.answer_clipboard_read(id, request),
                 ReadDecision::Refuse => tracing::debug!("refused a clipboard read from {id:?}"),
                 ReadDecision::Ask => {
+                    tracing::debug!("a clipboard read from {id:?} waits to be asked about");
                     self.clipboard_prompts.push(id, request);
                     self.post_clipboard_prompt();
                 }
@@ -1235,6 +1236,7 @@ impl App {
                 ReadDecision::Refuse => tracing::debug!("refused a clipboard read from {id:?}"),
                 ReadDecision::Ask => {
                     if let Some(index) = index {
+                        tracing::debug!("asking about a clipboard read from {id:?}");
                         let session = &self.sessions[index];
                         return Some(Deferred::AskClipboardRead {
                             text: clipboard_prompt::request_text(
