@@ -27,6 +27,9 @@ const STDERR: c_int = 2;
 
 /// 標準入力と pty から一度に読む上限。
 const READ_BUF_LEN: usize = 64 * 1024;
+/// pty の slave の名前を受け取る長さ。
+#[cfg(target_os = "cygwin")]
+const PTY_NAME_LEN: usize = 64;
 /// pty へまだ書き終えていない入力がこれを超えたら、標準入力を読むのを止める。
 const MAX_PENDING_INPUT: usize = 1 << 20;
 /// 子プロセスが終わったかを確かめる間隔。
@@ -374,9 +377,8 @@ fn to_winsize(size: WindowSize) -> libc::winsize {
 
 /// pty へ書くスレッド。
 ///
-/// Cygwin の pty の master は `O_NONBLOCK` でも書き込みでブロックすることがあり、一度に数百 KB を
-/// 書くと受け取らなくなったまま止まる（Cygwin の `script` でも同じ）。書き込みは別のスレッドに任せ、
-/// 中継のスレッドは pty の出力と標準入力を読み続ける。止まっても、終了の依頼や標準入力が閉じたことで
+/// 子プロセスが読まないと、書き込みはいつまでも終わらない。書き込みは別のスレッドに任せ、中継の
+/// スレッドは pty の出力と標準入力を読み続ける。止まっても、終了の依頼や標準入力が閉じたことで
 /// 子プロセスを終わらせられる。
 struct PtyWriter {
     sender: mpsc::Sender<Vec<u8>>,
@@ -389,12 +391,13 @@ impl PtyWriter {
         let (sender, receiver) = mpsc::channel::<Vec<u8>>();
         let queued = Arc::new(AtomicUsize::new(0));
         let written = Arc::clone(&queued);
+        let pacer = InputPacer::new(master);
         std::thread::Builder::new()
             .name("pty-writer".into())
             .spawn(move || {
                 let mut failed = false;
                 for bytes in receiver {
-                    if !failed && let Err(error) = write_all_pty(master, &bytes) {
+                    if !failed && let Err(error) = pacer.write_all(master, &bytes) {
                         // 子プロセスが終わって pty が閉じたときなど。終わりは読む側で拾う。
                         log!("pty へ書けません: {error}");
                         failed = true;
@@ -417,6 +420,104 @@ impl PtyWriter {
 
     fn queued(&self) -> usize {
         self.queued.load(Ordering::Relaxed)
+    }
+}
+
+/// pty の入力を、子プロセスが読むのに合わせて渡す。
+///
+/// Cygwin の pty は master から子プロセスへの入力を 128 KiB の pipe で渡す。`PIPE_NOWAIT` なので、
+/// pipe が一杯だと受け取れない分を master の側に溜め、書き込みはそれも渡せたものとして返す。溜まった
+/// 分は canonical モードでは次の改行が書かれるまで渡らず、raw では順序が崩れることがあり、echo が
+/// 有効なら echo の pipe が詰まって書き込みが返らなくなる。また、書き込みの間は子プロセスの読み取りが
+/// 待たされる。
+///
+/// そこで、[`PIECE_LEN`](Self::PIECE_LEN) ずつに分け、pipe が空になってから次を書く。pipe の中身は、
+/// slave の `FIONREAD` で分かる（値は先頭のメッセージの残りで、溜まった総量ではない）。
+#[cfg(target_os = "cygwin")]
+struct InputPacer {
+    /// pty の slave。開けなければ `None` で、[`NO_SLAVE_WAIT`](Self::NO_SLAVE_WAIT) だけ間を空ける。
+    slave: Option<c_int>,
+}
+
+#[cfg(target_os = "cygwin")]
+impl InputPacer {
+    /// 一度に書く大きさ。大きいほど子プロセスの読み取りを長く待たせる。これより小さいと遅くなり
+    /// （1 KiB で 33 KB/s、4 KiB で 50 KB/s）、16 KiB では echo が有効なときに止まることがあった。
+    const PIECE_LEN: usize = 4 * 1024;
+    /// pipe が空になるのを待つ間隔。
+    const DRAIN_POLL: std::time::Duration = std::time::Duration::from_millis(1);
+    /// slave を見られないときに書き込みの間に空ける時間。
+    const NO_SLAVE_WAIT: std::time::Duration = std::time::Duration::from_millis(1);
+
+    fn new(master: c_int) -> Self {
+        let slave = open_slave(master);
+        if let Err(error) = &slave {
+            log!("pty の slave を開けないので、入力の間を空けるだけにします: {error}");
+        }
+        Self { slave: slave.ok() }
+    }
+
+    fn write_all(&self, master: c_int, bytes: &[u8]) -> io::Result<()> {
+        for piece in bytes.chunks(Self::PIECE_LEN) {
+            self.wait_for_drain();
+            write_all_pty(master, piece)?;
+        }
+        Ok(())
+    }
+
+    /// 子プロセスが pipe を読み終えるまで待つ。読まない子プロセスにはいつまでも待つ。
+    fn wait_for_drain(&self) {
+        let Some(slave) = self.slave else {
+            std::thread::sleep(Self::NO_SLAVE_WAIT);
+            return;
+        };
+        loop {
+            let mut pending: c_int = 0;
+            // SAFETY: `slave` は自分が開いた fd、`pending` は有効な書き込み先。
+            if unsafe { libc::ioctl(slave, libc::FIONREAD, &mut pending) } < 0 {
+                log!(
+                    "pty の入力の残りを調べられません: {}",
+                    io::Error::last_os_error()
+                );
+                return;
+            }
+            if pending == 0 {
+                return;
+            }
+            std::thread::sleep(Self::DRAIN_POLL);
+        }
+    }
+}
+
+/// pty の slave を、入力の残りを調べるために開く。端末としては使わないので、制御端末にはしない。
+#[cfg(target_os = "cygwin")]
+fn open_slave(master: c_int) -> io::Result<c_int> {
+    let mut name = [0 as c_char; PTY_NAME_LEN];
+    // SAFETY: `name` は渡した長さの有効な書き込み先。
+    let error = unsafe { libc::ptsname_r(master, name.as_mut_ptr(), name.len()) };
+    if error != 0 {
+        return Err(io::Error::from_raw_os_error(error));
+    }
+    // SAFETY: `name` は ptsname_r が書いた NUL で終わる文字列。
+    let slave = unsafe { libc::open(name.as_ptr(), libc::O_RDONLY | libc::O_NOCTTY) };
+    if slave < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(slave)
+}
+
+/// pty の入力をそのまま書く。
+#[cfg(not(target_os = "cygwin"))]
+struct InputPacer;
+
+#[cfg(not(target_os = "cygwin"))]
+impl InputPacer {
+    fn new(_master: c_int) -> Self {
+        Self
+    }
+
+    fn write_all(&self, master: c_int, bytes: &[u8]) -> io::Result<()> {
+        write_all_pty(master, bytes)
     }
 }
 
