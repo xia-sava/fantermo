@@ -17,8 +17,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Zig がビルドの途中に作る補助の exe のパスが MAX_PATH を超えないよう、出力先を短くする。
-  CARGO_TARGET_DIR: 'C:\t'
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -32,6 +30,9 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/setup-toolchain
+
+      # 取ってきた crate と target/ を残しておき、依存が変わらなければ libghostty-vt を組み直さない。
+      - uses: Swatinem/rust-cache@v2
 
       # tools/dev.bat が vcvars64 を読み、Zig のバージョンを確かめてから cargo を呼ぶ（手元と同じ手順）。
       - name: Check formatting

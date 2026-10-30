@@ -14,8 +14,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Zig がビルドの途中に作る補助の exe のパスが MAX_PATH を超えないよう、出力先を短くする。
-  CARGO_TARGET_DIR: 'C:\t'
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -82,6 +80,9 @@ jobs:
 
       - uses: ./.github/actions/setup-toolchain
 
+      # 取ってきた crate と target/ を残しておき、依存が変わらなければ libghostty-vt を組み直さない。
+      - uses: Swatinem/rust-cache@v2
+
       # タグを打ったときだけリリースのビルドとしてバージョンを見せる（手動実行は 0.0.1 (dev-<短い SHA>)）。
       - name: Build
         shell: cmd
@@ -97,7 +98,7 @@ jobs:
           $name = "fantermo-$env:VERSION_NAME-x64"
           $stage = Join-Path $env:RUNNER_TEMP $name
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item (Join-Path $env:CARGO_TARGET_DIR "release\fantermo.exe") $stage
+          Copy-Item target\release\fantermo.exe $stage
           Copy-Item LICENSE, THIRD-PARTY-NOTICES.txt, README.md $stage
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           Compress-Archive -Path $stage -DestinationPath "artifacts/$name.zip"
