@@ -92,7 +92,7 @@ use crate::{
     tab_bar::{self, Hit, TabView},
     text_dialog,
     ui_font::UiFont,
-    update, window_state,
+    update, version, window_state,
 };
 
 const WINDOW_CLASS: PCWSTR = w!("fantermo");
@@ -549,7 +549,7 @@ fn create_window(
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
             WINDOW_CLASS,
-            &HSTRING::from(WINDOW_TITLE),
+            &HSTRING::from(window_title("", &version::display())),
             MAIN_WINDOW_STYLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -800,7 +800,7 @@ impl App {
             terminal_area,
             renderer,
             dump,
-            window_title: WINDOW_TITLE.to_owned(),
+            window_title: window_title("", &version::display()),
             exit: None,
             text_input: Utf16Assembler::default(),
             wheel_lines_per_notch: wheel_lines_per_notch(),
@@ -1970,14 +1970,13 @@ impl App {
         true
     }
 
-    /// ウィンドウのタイトルを、表示している端末のタイトルにする。アプリが付けていなければ既定のタイトル。
+    /// ウィンドウのタイトルを、表示している端末のタイトルとバージョンから決める（`window_title`）。
     /// 変わったときだけウィンドウに設定する。
     fn update_window_title(&mut self) {
-        let title = tab_title(self.session());
+        let title = window_title(self.session().title(), &version::display());
         if title == self.window_title {
             return;
         }
-        let title = title.to_owned();
         // SAFETY: self.hwnd は有効なウィンドウ。文字列はこの呼び出しの間は生きている。
         if let Err(e) = unsafe { SetWindowTextW(self.hwnd, &HSTRING::from(&title)) } {
             tracing::warn!("failed to set the window title: {e}");
@@ -2461,12 +2460,21 @@ impl App {
     }
 }
 
-/// 端末のタブと、表示しているときのウィンドウに出すタイトル。アプリが付けたタイトル、付けていなければ既定の
-/// タイトル。
+/// 端末のタブに出すタイトル。アプリが付けたタイトル、付けていなければ既定のタイトル。
 fn tab_title(session: &Session) -> &str {
     match session.title() {
         "" => WINDOW_TITLE,
         title => title,
+    }
+}
+
+/// ウィンドウに出すタイトル。アプリが付けたタイトル `tab_title` があれば
+/// `<tab_title> - fantermo <version>`、なければ（空なら）`fantermo <version>`。
+fn window_title(tab_title: &str, version: &str) -> String {
+    if tab_title.is_empty() {
+        format!("{WINDOW_TITLE} {version}")
+    } else {
+        format!("{tab_title} - {WINDOW_TITLE} {version}")
     }
 }
 
@@ -3146,6 +3154,24 @@ mod tests {
     use super::*;
 
     const NOTCH: i32 = WHEEL_DELTA as i32;
+
+    #[test]
+    fn window_titles_end_with_the_version() {
+        assert_eq!(
+            window_title("vim", "0.0.1 (dev-abc1234)"),
+            "vim - fantermo 0.0.1 (dev-abc1234)"
+        );
+        assert_eq!(window_title("vim", "0.0.1"), "vim - fantermo 0.0.1");
+    }
+
+    #[test]
+    fn window_titles_without_a_tab_title_are_only_the_version() {
+        assert_eq!(window_title("", "0.0.1"), "fantermo 0.0.1");
+        assert_eq!(
+            window_title("", "0.0.1 (dev-abc1234)"),
+            "fantermo 0.0.1 (dev-abc1234)"
+        );
+    }
 
     #[test]
     fn mouse_positions_keep_their_sign() {
