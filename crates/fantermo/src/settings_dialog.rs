@@ -29,8 +29,9 @@ use windows::{
     Win32::{
         Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
-            COLOR_BTNFACE, CreateFontIndirectW, CreateSolidBrush, DeleteObject, HBRUSH, HFONT,
-            HGDIOBJ, InvalidateRect,
+            COLOR_BTNFACE, CreateFontIndirectW, CreateSolidBrush, DT_CALCRECT, DT_WORDBREAK,
+            DeleteObject, DrawTextW, GetDC, HBRUSH, HFONT, HGDIOBJ, InvalidateRect, ReleaseDC,
+            SelectObject,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
@@ -55,12 +56,12 @@ use windows::{
                 LB_RESETCONTENT, LB_SETCURSEL, LB_SETTABSTOPS, LBN_DBLCLK, LBN_SELCHANGE,
                 LBS_NOTIFY, LBS_USETABSTOPS, LoadCursorW, MB_ICONQUESTION, MB_ICONWARNING, MB_OK,
                 MB_YESNO, MessageBoxW, MoveWindow, RegisterClassW, SW_HIDE, SW_SHOW,
-                SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetTimer, SetWindowLongPtrW,
-                SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE,
-                WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_NEXTDLGCTL, WM_NOTIFY,
-                WM_SETFONT, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE,
-                WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_GROUP, WS_POPUP, WS_SYSMENU,
-                WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+                SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetTimer,
+                SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE,
+                WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED,
+                WM_NEXTDLGCTL, WM_NOTIFY, WM_SETFONT, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_CHILD,
+                WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_GROUP, WS_POPUP,
+                WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
             },
         },
     },
@@ -152,8 +153,6 @@ const PAGES: [&str; 6] = ["外観", "背景", "動作", "プロファイル", "�
 
 /// プロファイルの一覧の高さ。
 const PROFILE_LIST_HEIGHT: i32 = 98;
-/// コマンドラインの入力欄の下の警告の文の高さ（3 行）。文がないときも場所を空けておく。
-const PROFILE_COMMAND_WARNING_HEIGHT: i32 = 52;
 /// プロファイルのページの下の説明の文の高さ。
 const PROFILE_NOTE_HEIGHT: i32 = 3 * ROW_HEIGHT;
 /// プロファイルの接続方式の選択肢。[`BackendKind::ALL`] の順。
@@ -162,8 +161,6 @@ const PROFILE_BACKEND_LABELS: [&str; 3] = [
     "Cygwin（ブリッジ）",
     "WSL（ブリッジ）",
 ];
-/// STATIC のスタイル。文字の「&」をアクセラレータとして読まない。
-const SS_NOPREFIX: u32 = 0x0080;
 /// `EM_SETCUEBANNER`（入力欄が空のときに薄く見せる文字）。
 const EM_SETCUEBANNER: u32 = 0x1501;
 /// `EM_SETCUEBANNER` の wParam。入力欄にフォーカスがあっても見せる。
@@ -222,15 +219,39 @@ fn set_profile_location(profile: &mut Profile, location: String) {
 
 /// `profile` のコマンドラインの入力欄の下に出す警告の文。ブリッジのプロファイルで Windows のプログラムを
 /// 起動するときだけ。
-fn profile_command_warning(profile: &Profile) -> Option<String> {
-    let program = profile.windows_program_in_bridge()?;
-    let side = match profile.backend {
-        BackendKind::Cygwin => "Cygwin",
-        BackendKind::Conpty | BackendKind::Wsl => "WSL",
+fn profile_command_warning(profile: &Profile) -> Option<&'static str> {
+    profile.windows_program_in_bridge()?;
+    Some(match profile.backend {
+        BackendKind::Cygwin => {
+            "Windows のプログラムは指定しないでください。Cygwin の中のコマンド（例: /bin/zsh -l）を書くか、空にしてください。空ならログインシェルを起動します。"
+        }
+        BackendKind::Conpty | BackendKind::Wsl => {
+            "Windows のプログラムは指定しないでください。WSL の中のコマンド（例: /bin/bash）を書くか、空にしてください。空ならログインシェルを起動します。"
+        }
+    })
+}
+
+/// `text` をフォント `font` で、幅 `width` に折り返したときの高さ。`control` の DC で測る。
+fn wrapped_text_height(control: HWND, font: HFONT, text: &str, width: i32) -> i32 {
+    let mut wide: Vec<u16> = text.encode_utf16().collect();
+    let mut rect = RECT {
+        right: width,
+        ..RECT::default()
     };
-    Some(format!(
-        "{program} は Windows のプログラムです。ブリッジの中から起動すると ConPTY を通るので、画像などが届きません。{side} の中のコマンドを書くか、空にしてください。"
-    ))
+    // SAFETY: control は有効なウィンドウで、font はダイアログが閉じるまで消さない。選んだフォントは
+    // DC を返す前に元に戻す。wide と rect は書き込める。
+    let height = unsafe {
+        let dc = GetDC(Some(control));
+        let previous = SelectObject(dc, HGDIOBJ(font.0));
+        let height = DrawTextW(dc, &mut wide, &mut rect, DT_CALCRECT | DT_WORDBREAK);
+        SelectObject(dc, previous);
+        ReleaseDC(Some(control), dc);
+        height
+    };
+    if height == 0 {
+        tracing::warn!("failed to measure the text of a settings dialog control");
+    }
+    height
 }
 
 /// `profiles` のどれとも違う、足すプロファイルの名前。
@@ -711,8 +732,9 @@ struct Controls {
     /// 一覧で選んでいるプロファイルの名前とコマンドライン。
     profile_name: HWND,
     profile_command: HWND,
-    /// コマンドラインの入力欄の下の警告の文。
+    /// コマンドラインの入力欄の下の警告の文と、文があるとその高さの分だけ下がるコントロール。
     profile_command_warning: HWND,
+    profile_below_command_warning: [HWND; 4],
     /// 一覧で選んでいるプロファイルの接続方式（[`BackendKind::ALL`] の順）と、Cygwin のフォルダか
     /// ディストリビューションの入力欄とその見出し。
     profile_backend: HWND,
@@ -1523,43 +1545,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         Some([control_left, profile_name_row, control_width, ROW_HEIGHT]),
     )?;
     profiles_page.push(profile_name);
-    let profile_command_row = profile_name_row + ROW_HEIGHT + MARGIN;
-    let (class, text, rect) = label("コマンドライン(&C):", label_rect(profile_command_row));
-    profiles_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let profile_command = child(
-        w!("EDIT"),
-        "",
-        edit_style,
-        WS_EX_CLIENTEDGE,
-        ID_PROFILE_COMMAND,
-        Some([control_left, profile_command_row, control_width, ROW_HEIGHT]),
-    )?;
-    profiles_page.push(profile_command);
-    let profile_command_warning_row = profile_command_row + ROW_HEIGHT + LABEL_OFFSET;
-    // 文には利用者が書いたプログラムの名前が入るので、「&」をアクセラレータとして読まない。
-    let profile_command_warning = child(
-        w!("STATIC"),
-        "",
-        WINDOW_STYLE(SS_NOPREFIX),
-        none,
-        ID_PROFILE_COMMAND_WARNING,
-        Some([
-            control_left,
-            profile_command_warning_row,
-            control_width,
-            PROFILE_COMMAND_WARNING_HEIGHT,
-        ]),
-    )?;
-    profiles_page.push(profile_command_warning);
-    let profile_backend_row =
-        profile_command_warning_row + PROFILE_COMMAND_WARNING_HEIGHT + LABEL_OFFSET;
+    let profile_backend_row = profile_name_row + ROW_HEIGHT + MARGIN;
     let (class, text, rect) = label("接続方式(&B):", label_rect(profile_backend_row));
     profiles_page.push(child(
         class,
@@ -1610,8 +1596,8 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         ]),
     )?;
     profiles_page.push(profile_location);
-    let profile_icon_row = profile_location_row + ROW_HEIGHT + MARGIN;
-    let (class, text, rect) = label("アイコン(&I):", label_rect(profile_icon_row));
+    let profile_command_row = profile_location_row + ROW_HEIGHT + MARGIN;
+    let (class, text, rect) = label("コマンドライン(&C):", label_rect(profile_command_row));
     profiles_page.push(child(
         class,
         &text,
@@ -1620,6 +1606,34 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         ID_LABEL,
         Some(rect),
     )?);
+    let profile_command = child(
+        w!("EDIT"),
+        "",
+        edit_style,
+        WS_EX_CLIENTEDGE,
+        ID_PROFILE_COMMAND,
+        Some([control_left, profile_command_row, control_width, ROW_HEIGHT]),
+    )?;
+    profiles_page.push(profile_command);
+    // 高さは文に合わせて決める（文がなければ 0）。
+    let profile_command_warning = child(
+        w!("STATIC"),
+        "",
+        WINDOW_STYLE(0),
+        none,
+        ID_PROFILE_COMMAND_WARNING,
+        Some([
+            control_left,
+            profile_command_row + ROW_HEIGHT + LABEL_OFFSET,
+            control_width,
+            0,
+        ]),
+    )?;
+    profiles_page.push(profile_command_warning);
+    let profile_icon_row = profile_command_row + ROW_HEIGHT + MARGIN;
+    let (class, text, rect) = label("アイコン(&I):", label_rect(profile_icon_row));
+    let profile_icon_label = child(class, &text, WINDOW_STYLE(0), none, ID_LABEL, Some(rect))?;
+    profiles_page.push(profile_icon_label);
     let profile_icon = child(
         w!("EDIT"),
         "",
@@ -1667,14 +1681,8 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             PROFILE_NOTE_HEIGHT,
         ],
     );
-    profiles_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
+    let profile_note = child(class, &text, WINDOW_STYLE(0), none, ID_LABEL, Some(rect))?;
+    profiles_page.push(profile_note);
 
     // キー
     let mut keys_page = Vec::new();
@@ -1929,6 +1937,12 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             profile_name,
             profile_command,
             profile_command_warning,
+            profile_below_command_warning: [
+                profile_icon_label,
+                profile_icon,
+                profile_icon_choose,
+                profile_note,
+            ],
             profile_backend,
             profile_location_label,
             profile_location,
@@ -2278,7 +2292,8 @@ impl State<'_> {
         }
     }
 
-    /// コマンドラインの入力欄の下の警告の文を、選んでいるプロファイルに合わせる。
+    /// コマンドラインの入力欄の下の警告の文を、選んでいるプロファイルに合わせる。文があれば、その高さの
+    /// 分だけ下の行をずらす。
     fn show_profile_command_warning(&self) {
         let warning = self.selected_profile().and_then(|index| {
             self.profiles
@@ -2286,10 +2301,53 @@ impl State<'_> {
                 .get(index)
                 .and_then(profile_command_warning)
         });
-        set_text(
-            self.controls.profile_command_warning,
-            warning.as_deref().unwrap_or(""),
-        );
+        let c = &self.controls;
+        let dpi = self.dpi.get();
+        set_text(c.profile_command_warning, warning.unwrap_or(""));
+        let Some(&(_, [left, top, width, _])) = c
+            .placed
+            .iter()
+            .find(|(control, _)| *control == c.profile_command_warning)
+        else {
+            return;
+        };
+        let width = scale(width, dpi);
+        let height = warning.map_or(0, |text| {
+            wrapped_text_height(c.profile_command_warning, self.font.get(), text, width)
+        });
+        // SAFETY: 警告の文はダイアログの子の有効なウィンドウ。
+        unsafe {
+            _ = MoveWindow(
+                c.profile_command_warning,
+                scale(left, dpi),
+                scale(top, dpi),
+                width,
+                height,
+                true,
+            );
+        }
+        let shift = if height > 0 {
+            height + scale(LABEL_OFFSET, dpi)
+        } else {
+            0
+        };
+        for &(control, [left, top, _, _]) in &c.placed {
+            if !c.profile_below_command_warning.contains(&control) {
+                continue;
+            }
+            // SAFETY: control はダイアログの子の有効なウィンドウ。
+            unsafe {
+                _ = SetWindowPos(
+                    control,
+                    None,
+                    scale(left, dpi),
+                    scale(top, dpi) + shift,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+        }
     }
 
     /// 選んでいるプロファイルの接続方式が変わった。場所の入力欄を空にして見出しを替え、プロファイルに
@@ -2962,6 +3020,7 @@ impl State<'_> {
                 _ = EnableWindow(spin, IsWindowEnabled(buddy).as_bool());
             }
         }
+        self.show_profile_command_warning();
     }
 
     /// `page` 番目のページのコントロールだけを見せる。
@@ -3812,20 +3871,18 @@ mod tests {
     }
 
     #[test]
-    fn profile_command_warning_names_the_program_and_the_side() {
+    fn profile_command_warning_says_what_to_write_on_each_side() {
         let warning = |backend: BackendKind, command: &str| {
             profile_command_warning(&Profile::new("p", command, backend))
         };
         let wsl = warning(BackendKind::Wsl, r"C:\Windows\System32\wsl.exe -d Ubuntu")
             .expect("wsl.exe in a bridge");
-        assert!(
-            wsl.starts_with("wsl.exe は Windows のプログラムです。"),
-            "{wsl}"
-        );
-        assert!(wsl.contains("WSL の中のコマンド"), "{wsl}");
+        assert!(wsl.contains("WSL の中のコマンド（例: /bin/bash）"), "{wsl}");
         let cygwin = warning(BackendKind::Cygwin, "cmd.exe").expect("cmd.exe in a bridge");
-        assert!(cygwin.starts_with("cmd.exe は"), "{cygwin}");
-        assert!(cygwin.contains("Cygwin の中のコマンド"), "{cygwin}");
+        assert!(
+            cygwin.contains("Cygwin の中のコマンド（例: /bin/zsh -l）"),
+            "{cygwin}"
+        );
         assert_eq!(warning(BackendKind::Conpty, "wsl.exe"), None);
         assert_eq!(warning(BackendKind::Cygwin, "zsh.exe -l"), None);
         assert_eq!(warning(BackendKind::Wsl, ""), None);
@@ -3835,13 +3892,13 @@ mod tests {
     fn the_profile_page_fits_above_the_buttons() {
         let name_row =
             MARGIN + ROW_HEIGHT + PROFILE_LIST_HEIGHT + BUTTON_GAP + BUTTON_HEIGHT + MARGIN;
-        let command_row = name_row + ROW_HEIGHT + MARGIN;
-        let backend_row =
-            command_row + ROW_HEIGHT + LABEL_OFFSET + PROFILE_COMMAND_WARNING_HEIGHT + LABEL_OFFSET;
-        // 接続方式、場所、アイコンの 3 行の下に説明の文。
-        let note_top = backend_row + 3 * (ROW_HEIGHT + MARGIN);
+        // 名前の下に接続方式、場所、コマンドライン、アイコンの 4 行と説明の文。
+        let note_top = name_row + 5 * (ROW_HEIGHT + MARGIN);
         let button_top = CLIENT_HEIGHT - MARGIN - BUTTON_HEIGHT;
-        assert!(note_top + PROFILE_NOTE_HEIGHT <= button_top - MARGIN);
+        // 警告の文（幅に対して 3 行、既定のメッセージのフォントで 1 行 16 ピクセルまで）が出ると、説明の
+        // 文もその分だけ下がる。
+        let warning_shift = LABEL_OFFSET + 3 * 16;
+        assert!(note_top + warning_shift + PROFILE_NOTE_HEIGHT <= button_top - MARGIN);
     }
 
     #[test]
