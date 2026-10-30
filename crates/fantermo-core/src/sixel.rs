@@ -1,5 +1,7 @@
 //! sixel のデコーダ。DCS の中身を少しずつ受け取り、RGBA の画像にする。
 
+use crate::base64;
+
 /// 画像の幅の上限（ピクセル）。
 pub const MAX_IMAGE_WIDTH: u32 = 4096;
 /// 画像の高さの上限（ピクセル）。
@@ -38,11 +40,6 @@ const BYTES_PER_PIXEL: usize = 4;
 /// 不透明のアルファ。
 const OPAQUE: u8 = u8::MAX;
 
-/// base64 の文字の並び。
-const BASE64_ALPHABET: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-/// base64 の 4 文字にまとめるバイト数。
-const BASE64_GROUP_BYTES: usize = 3;
 /// kitty graphics protocol の転送一つに載せる元のバイト数（base64 で 4096 文字、仕様の上限）。
 const KITTY_CHUNK_PIXEL_BYTES: usize = 3072;
 /// kitty graphics protocol の APC 一つの大きさの見込み。
@@ -103,25 +100,9 @@ impl SixelImage {
             apc.extend_from_slice(b"q=2,m=");
             apc.push(if chunks.peek().is_some() { b'1' } else { b'0' });
             apc.push(b';');
-            push_base64(&mut apc, chunk);
+            base64::push(&mut apc, chunk);
             apc.extend_from_slice(b"\x1b\\");
             write(&apc);
-        }
-    }
-}
-
-/// `data` を base64 にして `out` に足す。
-fn push_base64(out: &mut Vec<u8>, data: &[u8]) {
-    for group in data.chunks(BASE64_GROUP_BYTES) {
-        let byte = |index: usize| u32::from(group.get(index).copied().unwrap_or(0));
-        let bits = byte(0) << 16 | byte(1) << 8 | byte(2);
-        for position in 0..=BASE64_GROUP_BYTES {
-            if position <= group.len() {
-                let shift = 18 - 6 * position;
-                out.push(BASE64_ALPHABET[(bits >> shift) as usize & 0x3f]);
-            } else {
-                out.push(b'=');
-            }
         }
     }
 }
@@ -624,21 +605,6 @@ mod tests {
             assert_eq!(pixel(&image, 1, y), HOLE, "{y}");
         }
         assert_eq!(pixel(&image, 99, 120), RED);
-    }
-
-    #[test]
-    fn base64_follows_the_padding_rules() {
-        let encode = |data: &[u8]| {
-            let mut out = Vec::new();
-            push_base64(&mut out, data);
-            String::from_utf8(out).unwrap()
-        };
-        assert_eq!(encode(b""), "");
-        assert_eq!(encode(b"f"), "Zg==");
-        assert_eq!(encode(b"fo"), "Zm8=");
-        assert_eq!(encode(b"foo"), "Zm9v");
-        assert_eq!(encode(b"foob"), "Zm9vYg==");
-        assert_eq!(encode(&[0xfb, 0xff]), "+/8=");
     }
 
     #[test]

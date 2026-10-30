@@ -4,6 +4,7 @@
 
 pub mod backend;
 pub mod background;
+pub mod base64;
 pub mod config;
 pub mod config_edit;
 pub mod frame;
