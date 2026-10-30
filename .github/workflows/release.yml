@@ -310,8 +310,8 @@ jobs:
           body: |
             fantermo ${{ needs.version.outputs.name }}
 
-            MSI を開いて「インストール」を押すと、ユーザー単位で %LOCALAPPDATA%\Programs\fantermo に入る（管理者権限は要らない）。
-            スタートメニューの fantermo から起動する。アプリの中から更新できるのは MSI で入れたバージョンだけ。
+            MSI を開いて「インストール」をクリックすると、ユーザー単位で %LOCALAPPDATA%\Programs\fantermo にインストールする（管理者権限は不要）。
+            スタートメニューの fantermo から起動する。アプリの中から更新できるのは MSI でインストールしたバージョンだけ。
 
             zip は、展開して中の fantermo.exe を起動する。
           files: |
