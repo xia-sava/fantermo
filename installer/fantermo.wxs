@@ -11,6 +11,10 @@
     StageDir  zip と同じ中身（fantermo.exe、LICENSE、THIRD-PARTY-NOTICES.txt、README.md）を置いたフォルダ
     IconFile  「プログラムと機能」に出すアイコン（assets/icon/fantermo.ico）
 
+  画面は WiX の UI の拡張（WixToolset.UI.wixext）の標準の画面を並べ、文は ja-JP のローカライズと
+  fantermo.ja-JP.wxl から取る（wix build -ext WixToolset.UI.wixext -culture ja-JP -loc fantermo.ja-JP.wxl）。
+  データベースのコードページは ja-JP のローカライズと同じ 932。
+
   ユーザーのプロファイルの下に入れる部品は、キーパスをファイルではなく HKCU のレジストリ値にし（ICE38）、
   作ったフォルダをアンインストールで消す（ICE64）。
 -->
@@ -20,6 +24,7 @@
     Manufacturer="ISIGE, Akira"
     Version="$(var.Version)"
     UpgradeCode="C4FC87EE-5E35-4A23-8EF4-BF71B422CB1D"
+    Codepage="932"
     Scope="perUser">
 
     <!-- 同じバージョンの入れ直しも上書きにする。分けると「プログラムと機能」に同じバージョンが二つ
@@ -27,7 +32,7 @@
     <MajorUpgrade
       AllowSameVersionUpgrades="yes"
       Schedule="afterInstallInitialize"
-      DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+      DowngradeErrorMessage="!(loc.DowngradeErrorMessage)" />
 
     <MediaTemplate EmbedCab="yes" />
 
@@ -52,7 +57,91 @@
       <ComponentGroupRef Id="ProgramFiles" />
       <ComponentRef Id="StartMenuShortcut" />
     </Feature>
+
+    <UIRef Id="FantermoUI" />
   </Package>
+
+  <!--
+    画面の並び。
+      入っていないとき（上のバージョンや同じバージョンの別のビルドで上書きするときも、製品コードが違うので
+      こちら）: FantermoWelcomeDlg → ProgressDlg → ExitDialog（「fantermo を起動する」）
+      同じ MSI を開き直したとき: MaintenanceWelcomeDlg → MaintenanceTypeDlg（修復・削除。「変更」は
+      ARPNOMODIFY で押せない）→ VerifyReadyDlg → ProgressDlg → ExitDialog
+    使用許諾とインストール先の画面は出さない。msiexec /qn では画面を出さず、fantermo も起動しない。
+  -->
+  <Fragment>
+    <UI Id="FantermoUI">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+
+      <!-- 開始の画面。WiX の WelcomeEulaDlg から使用許諾の欄と同意のチェックボックスを除いたもの。
+           「インストール」で入れ始める。 -->
+      <Dialog Id="FantermoWelcomeDlg" Width="370" Height="270" Title="!(loc.WelcomeDlg_Title)">
+        <Control Id="Install" Type="PushButton" X="228" Y="243" Width="64" Height="17" Default="yes" Text="!(loc.WelcomeEulaDlgInstall)">
+          <Publish Event="SpawnWaitDialog" Value="WaitForCostingDlg" Condition="!(wix.WixUICostingPopupOptOut) OR CostingComplete = 1" />
+          <Publish Event="EndDialog" Value="Return" Condition="OutOfDiskSpace &lt;&gt; 1" />
+          <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Condition="OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST=&quot;P&quot; OR NOT PROMPTROLLBACKCOST)" />
+          <Publish Event="EndDialog" Value="Return" Condition="OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST=&quot;D&quot;" />
+          <Publish Event="EnableRollback" Value="False" Condition="OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST=&quot;D&quot;" />
+          <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Condition="(OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST=&quot;F&quot;)" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+        <Control Id="Bitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="234" TabSkip="no" Text="!(loc.WelcomeDlgBitmap)" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="373" Height="0" />
+        <Control Id="Title" Type="Text" X="135" Y="20" Width="220" Height="60" Transparent="yes" NoPrefix="yes" Text="!(loc.FantermoWelcomeDlgTitle)" />
+        <Control Id="Description" Type="Text" X="135" Y="80" Width="220" Height="100" Transparent="yes" NoPrefix="yes" Text="!(loc.FantermoWelcomeDlgDescription)" />
+      </Dialog>
+
+      <InstallUISequence>
+        <Show Dialog="FantermoWelcomeDlg" Before="ProgressDlg" Condition="NOT Installed" />
+      </InstallUISequence>
+
+      <!-- 完了の画面の題に入れる操作の名前。修復・削除を選んだら差し替える。 -->
+      <Property Id="FantermoOperation" Value="!(loc.FantermoOperationInstall)" />
+
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
+
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Property="FantermoOperation" Value="!(loc.FantermoOperationRepair)" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Property="FantermoOperation" Value="!(loc.FantermoOperationRemove)" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
+
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" />
+
+      <!-- 完了の画面の「fantermo を起動する」。はじめから選んでおく。チェックボックスは入れたときだけ出る
+           （ExitDialog の ShowCondition が NOT Installed）ので、起動も同じ条件にする。 -->
+      <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="!(loc.FantermoLaunchCheckBox)" />
+      <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchFantermo" Order="1" Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+    </UI>
+
+    <UIRef Id="WixUI_Common" />
+    <UIRef Id="WixUI_ErrorProgressText" />
+
+    <!-- 完了の画面から起動する。作業フォルダをスタートメニューのショートカットと同じホームのフォルダにする
+         （端末のシェルは fantermo の作業フォルダで始まる）。終わるのを待たない。 -->
+    <CustomAction
+      Id="LaunchFantermo"
+      Directory="USERPROFILEFOLDER"
+      ExeCommand="&quot;[#fantermo.exe]&quot;"
+      Return="asyncNoWait" />
+  </Fragment>
 
   <Fragment>
     <ComponentGroup Id="ProgramFiles" Directory="INSTALLFOLDER">

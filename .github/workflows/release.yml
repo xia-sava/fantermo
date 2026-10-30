@@ -107,6 +107,8 @@ jobs:
       # 入れる。
       # WiX 7 は OSMF の EULA への同意がないとどのコマンドも止まるので、ランナーのユーザーとして一度
       # 同意しておき、build には -acceptEula も付ける。
+      # 画面は UI の拡張（WixToolset.UI.wixext）で組む。拡張のバージョンは WiX と同じものに固定し、
+      # 作業ツリーの .wix/extensions に入れる。文は ja-JP のローカライズと installer/fantermo.ja-JP.wxl。
       - name: Pack msi
         shell: pwsh
         env:
@@ -116,11 +118,18 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $name = "fantermo-$env:VERSION_NAME-x64"
           $stage = Join-Path $env:RUNNER_TEMP $name
+          $wixVersion = (Get-Content .config/dotnet-tools.json -Raw | ConvertFrom-Json).tools.wix.version
+          $uiExtension = "WixToolset.UI.wixext/$wixVersion"
           dotnet tool restore
           if ($LASTEXITCODE -ne 0) { throw "dotnet tool restore が失敗しました（$LASTEXITCODE）" }
           dotnet tool run wix eula accept wix7
           if ($LASTEXITCODE -ne 0) { throw "wix eula accept が失敗しました（$LASTEXITCODE）" }
+          dotnet tool run wix extension add $uiExtension
+          if ($LASTEXITCODE -ne 0) { throw "wix extension add $uiExtension が失敗しました（$LASTEXITCODE）" }
           dotnet tool run wix build -acceptEula wix7 -arch x64 `
+            -ext $uiExtension `
+            -culture ja-JP `
+            -loc installer/fantermo.ja-JP.wxl `
             -d "Version=$env:CARGO_VERSION" `
             -d "StageDir=$stage" `
             -d "IconFile=$(Join-Path $env:GITHUB_WORKSPACE 'assets\icon\fantermo.ico')" `
@@ -252,7 +261,7 @@ jobs:
           body: |
             fantermo ${{ needs.version.outputs.name }}
 
-            MSI を開くと、ユーザー単位で %LOCALAPPDATA%\Programs\fantermo に入る（管理者権限は要らない）。
+            MSI を開いて「インストール」を押すと、ユーザー単位で %LOCALAPPDATA%\Programs\fantermo に入る（管理者権限は要らない）。
             スタートメニューの fantermo から起動する。アプリの中から更新できるのは MSI で入れたバージョンだけ。
 
             zip は、展開して中の fantermo.exe を起動する。

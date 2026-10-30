@@ -81,6 +81,12 @@ gh run list --workflow Release --limit 3
 `wix eula accept wix7` で同意し、`wix build` にも `-acceptEula wix7` を付けている。組んだあと `wix msi validate` で ICE の検証を通す。
 **MSI を組むのは GitHub Actions だけで、手元には WiX を入れない。**
 
+画面は UI の拡張（`WixToolset.UI.wixext`）の標準の画面を `fantermo.wxs` の `FantermoUI` で並べる（開始の画面
+`FantermoWelcomeDlg` は自前、進み具合と完了の画面は標準）。拡張は `wix extension add WixToolset.UI.wixext/<WiX の
+バージョン>` で入れ、`wix build -ext` で読む。バージョンはワークフローが `.config/dotnet-tools.json` の WiX の
+バージョンから組み立てるので、WiX と別に上げることはない。画面の文は拡張の ja-JP のローカライズ（`-culture ja-JP`）と
+`installer/fantermo.ja-JP.wxl`（`-loc`）で、MSI のコードページは 932。
+
 - 中身は zip と同じ（`fantermo.exe`・`LICENSE`・`THIRD-PARTY-NOTICES.txt`・`README.md`）。ユーザー単位で
   `%LOCALAPPDATA%\Programs\fantermo\` に入れ、スタートメニューに「fantermo」を置く
 - 製品のバージョンは Cargo のバージョン。バージョンを上げた MSI は `MajorUpgrade` で古いバージョンを
@@ -89,7 +95,10 @@ gh run list --workflow Release --limit 3
   上書きできず二つ並び、アプリの中からの更新も届かなくなる
 - 部品の GUID（`Component` の `Guid`）も変えない。変えるなら、部品を足すときに新しい GUID を作る
 - WiX のバージョンを上げるときは `.config/dotnet-tools.json` の `version` を変え、EULA の ID（`wix7`）が
-  変わっていないかを確かめる
+  変わっていないかを確かめる。UI の拡張も同じバージョンになるので、そのバージョンが NuGet にあることと、
+  `FantermoWelcomeDlg` の元にした拡張の `WelcomeEulaDlg` や、使っている文の Id が変わっていないかも確かめる
+- アプリの中からの更新は `msiexec /qn` なので画面を出さず、完了の画面からの起動もしない（起動し直すのは
+  更新のスクリプト）
 
 ## 気をつけること
 

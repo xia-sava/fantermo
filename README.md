@@ -18,7 +18,7 @@ libghostty-vt は [libghostty-rs](https://github.com/uzaaft/libghostty-rs) の�
 
 [Releases](https://github.com/xia-sava/fantermo/releases) にバージョンごとのインストーラ（`fantermo-<バージョン>-x64.msi`）と zip（`fantermo-<バージョン>-x64.zip`）を置いています．
 
-- インストーラ: 開くと，使っているユーザーだけのために `%LOCALAPPDATA%\Programs\fantermo\` に入れます．管理者権限は要りません．スタートメニューの「fantermo」から起動してください．新しいバージョンのインストーラを開くと，前のバージョンを置き換えます．アンインストールは「設定」の「アプリ」（「プログラムと機能」）からできます．
+- インストーラ: 開いて「インストール」を押すと，使っているユーザーだけのために `%LOCALAPPDATA%\Programs\fantermo\` に入れます．管理者権限は要りません．完了の画面で「fantermo を起動する」を選んだままにすると，「完了」で起動します．次からはスタートメニューの「fantermo」から起動してください．新しいバージョンのインストーラを開くと，前のバージョンを置き換えます．アンインストールは「設定」の「アプリ」（「プログラムと機能」）からできます．
 - zip: 好きな場所に展開して，中の `fantermo.exe` を起動してください．
 
 設定ファイルとウィンドウの状態は `%APPDATA%\fantermo\` に，ログは `%LOCALAPPDATA%\fantermo\logs\` に置きます．どちらもアンインストールしても消さないので，要らなければ手で消してください．
