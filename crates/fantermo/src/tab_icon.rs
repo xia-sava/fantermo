@@ -1,7 +1,7 @@
 //! タブのタイトルの左に出す、小さな正方形のアイコン。
 //!
 //! プロファイルに画像を書いていなければ、角を丸めた淡い色の正方形に、利用者の環境にある本物のアイコン
-//! （`Cygwin.ico`、`wsl.exe`、ConPTY の実行ファイル）を載せて作る。読めなければ、つなぎ方ごとの絵（Cygwin の
+//! （`Cygwin.ico`、`wsl.exe`、ConPTY の実行ファイル）を載せて作る。読めなければ、接続方式ごとの絵（Cygwin の
 //! C、WSL のペンギン、ConPTY の `>_`）を描く。同じ絵になるプロファイルが複数あるときだけ、絵を小さくして
 //! プロファイル名の頭文字を添える。色はプロファイル名から決まるので、起動のたびに同じになる。作った絵は
 //! 乗算済みアルファの BGRA（[`Decoded`]）で返す。
@@ -215,9 +215,9 @@ fn has_icon(path: &Path) -> bool {
 enum Picture {
     /// `icon` に書いた画像のファイル。
     Image(String),
-    /// 本物のアイコンのファイル。つなぎ方によらず、ファイルが同じなら同じ絵。
+    /// 本物のアイコンのファイル。接続方式によらず、ファイルが同じなら同じ絵。
     Real(String),
-    /// つなぎ方ごとの絵。
+    /// 接続方式ごとの絵。
     Drawn(BackendKind),
 }
 
@@ -401,7 +401,7 @@ impl Ink {
     }
 }
 
-/// つなぎ方 `backend` の絵を、一辺 `side` の正方形に描く形。座標は正方形の左上から。
+/// 接続方式 `backend` の絵を、一辺 `side` の正方形に描く形。座標は正方形の左上から。
 fn picture_shapes(backend: BackendKind, side: f32) -> Vec<(Ink, Shape)> {
     match backend {
         BackendKind::Conpty => prompt_shapes(side),
@@ -498,7 +498,7 @@ pub struct InitialFont<'a> {
 }
 
 /// `icon` の画像を使わない形の絵を、一辺 `size` ピクセルの乗算済みアルファの BGRA に描く。`picture` は読んだ
-/// 本物のアイコン（一辺は [`picture_side`]）で、なければつなぎ方の絵を描く。
+/// 本物のアイコン（一辺は [`picture_side`]）で、なければ接続方式の絵を描く。
 pub fn draw_generated(
     wic: &IWICImagingFactory,
     factory: &ID2D1Factory1,
@@ -617,7 +617,7 @@ fn draw_picture(
     Ok(())
 }
 
-/// つなぎ方 `backend` の絵を `area` に描く。
+/// 接続方式 `backend` の絵を `area` に描く。
 fn draw_backend_picture(
     target: &ID2D1RenderTarget,
     factory: &ID2D1Factory1,
@@ -948,9 +948,9 @@ mod tests {
         let ubuntu = Profile::new("Ubuntu", "", BackendKind::Wsl);
         // 一つだけなら絵だけ。
         assert_eq!(initials(std::slice::from_ref(&zsh)), [None], "one profile");
-        // つなぎ方が違えば絵が違う。
+        // 接続方式が違えば絵が違う。
         assert_eq!(initials(&[zsh.clone(), ubuntu.clone()]), [None, None]);
-        // 同じつなぎ方なら両方に付け、ほかのつなぎ方には付けない。
+        // 同じ接続方式なら両方に付け、ほかの接続方式には付けない。
         assert_eq!(
             initials(&[zsh.clone(), ubuntu, bash]),
             [Some("Z".to_owned()), None, Some("B".to_owned())]

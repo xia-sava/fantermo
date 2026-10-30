@@ -67,7 +67,7 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # 行頭の「#」を消して値を書き換え、保存すると読み直す。書いていない項目は既定値になる。
 
 # 新しいタブで起動するプロファイル。[[profiles]] のテーブルを並べ、name に名前、command に起動するコマンドラインを
-# 書く。backend はシェルとのつなぎ方で、"conpty"（Windows の疑似コンソール）、"cygwin"（Cygwin のブリッジ）、
+# 書く。backend はシェルとの接続方式で、"conpty"（Windows の疑似コンソール）、"cygwin"（Cygwin のブリッジ）、
 # "wsl"（WSL のブリッジ）を書ける。書かなければ "conpty"。"cygwin" と "wsl" の command は Cygwin・WSL の側の
 # コマンドラインで、書かなければログインシェルを起動する。"cygwin" では cygwin_root に Cygwin のフォルダを書ける
 # （書かなければ環境変数 PATH と、よくある場所（C:\cygwin64、C:\cygwin）から探す）。"wsl" では distribution に
@@ -316,7 +316,7 @@ impl Profile {
     }
 
     /// 最上位の `shell` に書いたコマンドライン `command` のプロファイル。名前は実行ファイルの名前。
-    /// つなぎ方は [`Profile::from_shell_with`] で決め、Cygwin のフォルダかどうかは [`is_cygwin_root`]
+    /// 接続方式は [`Profile::from_shell_with`] で決め、Cygwin のフォルダかどうかは [`is_cygwin_root`]
     /// で見る。
     pub fn from_shell(command: &str) -> Self {
         Self::from_shell_with(command, is_cygwin_root)
@@ -574,7 +574,7 @@ fn command_words(text: &str) -> Vec<(usize, usize)> {
     words
 }
 
-/// プロファイルのシェルとのつなぎ方（`profiles[].backend`）。
+/// プロファイルのシェルとの接続方式（`profiles[].backend`）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum BackendKind {
     /// Windows の疑似コンソール（ConPTY）。

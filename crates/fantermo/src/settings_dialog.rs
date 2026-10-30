@@ -101,7 +101,7 @@ const ID_PROFILE_DEFAULT: i32 = 403;
 const ID_PROFILE_NAME: i32 = 404;
 const ID_PROFILE_COMMAND: i32 = 405;
 const ID_PROFILE_BACKEND: i32 = 406;
-/// `cygwin_root` か `distribution` の入力欄。どちらかはつなぎ方で決まる。
+/// `cygwin_root` か `distribution` の入力欄。どちらかは接続方式で決まる。
 const ID_PROFILE_LOCATION: i32 = 407;
 const ID_PROFILE_COMMAND_WARNING: i32 = 408;
 const ID_PROFILE_ICON: i32 = 409;
@@ -156,7 +156,7 @@ const PROFILE_LIST_HEIGHT: i32 = 98;
 const PROFILE_COMMAND_WARNING_HEIGHT: i32 = 52;
 /// プロファイルのページの下の説明の文の高さ。
 const PROFILE_NOTE_HEIGHT: i32 = 3 * ROW_HEIGHT;
-/// プロファイルのつなぎ方の選択肢。[`BackendKind::ALL`] の順。
+/// プロファイルの接続方式の選択肢。[`BackendKind::ALL`] の順。
 const PROFILE_BACKEND_LABELS: [&str; 3] = [
     "ConPTY（Windows の疑似コンソール）",
     "Cygwin（ブリッジ）",
@@ -178,7 +178,7 @@ const SELECT_TO_END: isize = -1;
 const NEW_PROFILE_NAME: &str = "新しいプロファイル";
 
 /// プロファイルの一覧の行。名前（既定なら印を添える）とコマンドラインをタブで区切る。ブリッジなら
-/// コマンドラインの前につなぎ方を添え、空のコマンドラインは「（ログインシェル）」と見せる。
+/// コマンドラインの前に接続方式を添え、空のコマンドラインは「（ログインシェル）」と見せる。
 fn profile_row_text(profile: &Profile, is_default: bool) -> String {
     let mark = if is_default { "（既定）" } else { "" };
     let via = match profile.backend {
@@ -194,7 +194,7 @@ fn profile_row_text(profile: &Profile, is_default: bool) -> String {
     format!("{}{mark}\t{via}{command}", profile.name)
 }
 
-/// つなぎ方が `backend` のプロファイルの、場所の入力欄の見出しと、空のときに薄く見せる文字。
+/// 接続方式が `backend` のプロファイルの、場所の入力欄の見出しと、空のときに薄く見せる文字。
 /// ConPTY では使わない。
 fn profile_location_texts(backend: BackendKind) -> (&'static str, &'static str) {
     match backend {
@@ -210,7 +210,7 @@ fn profile_location_texts(backend: BackendKind) -> (&'static str, &'static str) 
     }
 }
 
-/// 場所の入力欄の値 `location`（前後の空白を除いたもの）を、つなぎ方に合わせて `profile` に入れる。
+/// 場所の入力欄の値 `location`（前後の空白を除いたもの）を、接続方式に合わせて `profile` に入れる。
 fn set_profile_location(profile: &mut Profile, location: String) {
     let location = (!location.is_empty()).then_some(location);
     (profile.cygwin_root, profile.distribution) = match profile.backend {
@@ -713,7 +713,7 @@ struct Controls {
     profile_command: HWND,
     /// コマンドラインの入力欄の下の警告の文。
     profile_command_warning: HWND,
-    /// 一覧で選んでいるプロファイルのつなぎ方（[`BackendKind::ALL`] の順）と、Cygwin のフォルダか
+    /// 一覧で選んでいるプロファイルの接続方式（[`BackendKind::ALL`] の順）と、Cygwin のフォルダか
     /// ディストリビューションの入力欄とその見出し。
     profile_backend: HWND,
     profile_location_label: HWND,
@@ -1560,7 +1560,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     profiles_page.push(profile_command_warning);
     let profile_backend_row =
         profile_command_warning_row + PROFILE_COMMAND_WARNING_HEIGHT + LABEL_OFFSET;
-    let (class, text, rect) = label("つなぎ方(&B):", label_rect(profile_backend_row));
+    let (class, text, rect) = label("接続方式(&B):", label_rect(profile_backend_row));
     profiles_page.push(child(
         class,
         &text,
@@ -2253,7 +2253,7 @@ impl State<'_> {
         }
     }
 
-    /// 場所の入力欄の見出しと、コマンドラインと場所の入力欄が空のときに薄く見せる文字を、つなぎ方
+    /// 場所の入力欄の見出しと、コマンドラインと場所の入力欄が空のときに薄く見せる文字を、接続方式
     /// `backend` に合わせる。
     fn show_profile_backend(&self, backend: BackendKind) {
         let c = &self.controls;
@@ -2292,7 +2292,7 @@ impl State<'_> {
         );
     }
 
-    /// 選んでいるプロファイルのつなぎ方が変わった。場所の入力欄を空にして見出しを替え、プロファイルに
+    /// 選んでいるプロファイルの接続方式が変わった。場所の入力欄を空にして見出しを替え、プロファイルに
     /// 入れる。
     fn on_profile_backend_changed(&self) {
         let c = &self.controls;
@@ -3838,7 +3838,7 @@ mod tests {
         let command_row = name_row + ROW_HEIGHT + MARGIN;
         let backend_row =
             command_row + ROW_HEIGHT + LABEL_OFFSET + PROFILE_COMMAND_WARNING_HEIGHT + LABEL_OFFSET;
-        // つなぎ方、場所、アイコンの 3 行の下に説明の文。
+        // 接続方式、場所、アイコンの 3 行の下に説明の文。
         let note_top = backend_row + 3 * (ROW_HEIGHT + MARGIN);
         let button_top = CLIENT_HEIGHT - MARGIN - BUTTON_HEIGHT;
         assert!(note_top + PROFILE_NOTE_HEIGHT <= button_top - MARGIN);
