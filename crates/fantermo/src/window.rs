@@ -100,6 +100,9 @@ use crate::{
     update, version, window_state,
 };
 
+#[cfg(feature = "e2e")]
+mod e2e;
+
 const WINDOW_CLASS: PCWSTR = w!("fantermo");
 const WINDOW_TITLE: &str = "fantermo";
 
@@ -118,6 +121,10 @@ const WM_APP_UPDATE: u32 = WM_APP + 3;
 
 /// クリップボードの読み出しの依頼が確かめを待っているかもしれないことを、ウィンドウに知らせる。
 const WM_APP_CLIPBOARD_PROMPT: u32 = WM_APP + 4;
+
+/// e2e テストの制御の口に要求が届いたと知らせるメッセージ。
+#[cfg(feature = "e2e")]
+const WM_APP_E2E: u32 = WM_APP + 5;
 
 /// 画面の書き出しに使うタイマー。
 const DUMP_TIMER_ID: usize = 1;
@@ -246,6 +253,10 @@ pub fn run(
     )?;
     app.state_path = state_path;
     app.settings_written = written;
+    #[cfg(feature = "e2e")]
+    {
+        app.e2e = crate::e2e_server::start(poster(hwnd, WM_APP_E2E, WPARAM(0)));
+    }
     let app = Box::into_raw(Box::new(RefCell::new(app)));
     // SAFETY: hwnd はこのスレッドが作ったウィンドウ。ポインタは WM_NCDESTROY で取り戻して解放する。
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, app as isize) };
@@ -730,6 +741,9 @@ struct App {
     /// `WM_APP_UPDATE` で知らせる。
     update_sender: mpsc::Sender<update::Event>,
     update_events: mpsc::Receiver<update::Event>,
+    /// e2e テストの制御の口。環境変数で開くよう指定されていなければ `None`。
+    #[cfg(feature = "e2e")]
+    e2e: Option<crate::e2e_server::Control>,
 }
 
 impl App {
@@ -845,6 +859,8 @@ impl App {
             update_busy: false,
             update_sender,
             update_events,
+            #[cfg(feature = "e2e")]
+            e2e: None,
         };
         app.sessions[0].background_image = app.choose_background_image();
         Ok(app)
@@ -923,8 +939,25 @@ impl App {
         action: KeyAction,
         chars: &[char],
     ) -> Option<Deferred> {
-        let mods = keyboard::current_mods();
-        let key = keyboard::key_from_position(position);
+        self.on_key_input(
+            keyboard::key_from_position(position),
+            keyboard::current_mods(),
+            keyboard::unshifted_codepoint(virtual_key),
+            action,
+            chars,
+        )
+    }
+
+    /// キー `key` を修飾キー `mods` とともに押した・離した。`unshifted` はそのキーが修飾なしで打つ文字の
+    /// コードポイント。`chars` は同じキーから TranslateMessage が作った文字。
+    fn on_key_input(
+        &mut self,
+        key: Key,
+        mods: Mods,
+        unshifted: char,
+        action: KeyAction,
+        chars: &[char],
+    ) -> Option<Deferred> {
         // Ctrl を押した・離したときは、マウスが動かなくてもリンクの下線を出し入れする。押し続けたときの
         // 繰り返しでは、状態が変わらないので探し直さない。
         if is_modifier_key(key) && action != KeyAction::Repeat {
@@ -953,7 +986,7 @@ impl App {
             action,
             mods,
             consumed_mods: keyboard::consumed_mods(mods, text.is_some()),
-            unshifted: keyboard::unshifted_codepoint(virtual_key),
+            unshifted,
             text: text.as_deref(),
         };
         match self.session_mut().vt.encode_key(&input) {
@@ -3154,6 +3187,11 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             if let Some(event) = event {
                 run_deferred(hwnd, Some(Deferred::Update(event)), &with_app);
             }
+            LRESULT(0)
+        }
+        #[cfg(feature = "e2e")]
+        WM_APP_E2E => {
+            e2e::on_wake(hwnd, &with_app);
             LRESULT(0)
         }
         WM_APP_CLIPBOARD_PROMPT => {

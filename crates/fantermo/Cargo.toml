@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# e2e テストの制御の口（開発用。既定で無効で、配布物には入らない）。
+e2e = []
+
 [dependencies]
 fantermo-bridge-protocol.workspace = true
 fantermo-core.workspace = true

@@ -23,6 +23,8 @@ mod conpty;
 mod context_menu;
 mod decoration;
 mod dump;
+#[cfg(feature = "e2e")]
+mod e2e_server;
 mod file_dialog;
 mod font;
 mod image_cache;
