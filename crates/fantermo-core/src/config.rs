@@ -66,21 +66,26 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # コマンドラインで、書かなければログインシェルを起動する。"cygwin" では cygwin_root に Cygwin のフォルダを書ける
 # （書かなければ C:\cygwin64、C:\cygwin の順に探す）。"wsl" では distribution にディストリビューションの名前を
 # 書ける（書かなければ既定のディストリビューション）。
+# Cygwin と WSL はブリッジでつなぐことを勧める。ConPTY を通すと、アプリの出力の一部が書き換えられたり順番が
+# 変わったりし、端末への問い合わせの一部に ConPTY が代わりに答えるか届かず、ウィンドウの大きさを変えると
+# スクロールバックの行が欠けることがある。
 # タブバーの「+」は既定のプロファイルを開き、その右の「▾」か「+」の右クリックで一覧から選んで開く。fantermo を
 # 引数つきで起動したときは、「+」とキーとメニューの「新しいタブ」も引数のコマンドラインを使う。
 # 書かなければ PowerShell（powershell.exe -NoLogo）を起動する。書き換えたら、次に開くタブから使う。
 # プロファイルを書かずに、最上位に shell = 'コマンドライン' と一つだけ書いてもよい（名前は実行ファイルの名前）。
+# Cygwin の bin の下の実行ファイルと wsl.exe は、ブリッジでつなぐプロファイルにする。
 # default_profile は「+」で開くプロファイルの名前。書かなければ先頭のプロファイル。[[profiles]] より前に書く。
 # default_profile = "PowerShell"
 
 # 例: [[profiles]]
-# 例: name = "zsh"
-# 例: command = 'C:\cygwin64\bin\zsh.exe -l'
+# 例: name = "PowerShell"
+# 例: command = "powershell.exe -NoLogo"
 #
 # 例: [[profiles]]
-# 例: name = "Cygwin"
+# 例: name = "zsh"
 # 例: backend = "cygwin"
 # 例: cygwin_root = 'C:\cygwin64'
+# 例: command = "zsh -l"
 #
 # 例: [[profiles]]
 # 例: name = "Ubuntu"
@@ -2095,7 +2100,20 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(parsed.config.profiles[0].name, "zsh");
+        assert_eq!(
+            parsed.config.profiles,
+            [
+                Profile::builtin(),
+                Profile {
+                    cygwin_root: Some(r"C:\cygwin64".to_owned()),
+                    ..Profile::new("zsh", "zsh -l", BackendKind::Cygwin)
+                },
+                Profile {
+                    distribution: Some("Ubuntu".to_owned()),
+                    ..Profile::new("Ubuntu", "", BackendKind::Wsl)
+                },
+            ]
+        );
     }
 
     #[test]
