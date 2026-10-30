@@ -159,6 +159,7 @@ const PROFILE_COMMAND: &str = "command";
 const PROFILE_BACKEND: &str = "backend";
 const PROFILE_CYGWIN_ROOT: &str = "cygwin_root";
 const PROFILE_DISTRIBUTION: &str = "distribution";
+const PROFILE_ICON: &str = "icon";
 
 /// フォントの名前の並び。一つなら文字列、二つ以上なら配列。
 fn families_value(families: &[String]) -> Value {
@@ -637,6 +638,7 @@ fn profile_inline_table(profile: &Profile) -> Value {
     for (key, text) in [
         (PROFILE_CYGWIN_ROOT, &profile.cygwin_root),
         (PROFILE_DISTRIBUTION, &profile.distribution),
+        (PROFILE_ICON, &profile.icon),
     ] {
         if let Some(text) = text {
             table.insert(key, Value::from(text.as_str()));
@@ -796,6 +798,7 @@ fn update_profile_table(table: &mut Table, profile: &Profile) {
     }
     set_or_remove_table_text(table, PROFILE_CYGWIN_ROOT, profile.cygwin_root.as_deref());
     set_or_remove_table_text(table, PROFILE_DISTRIBUTION, profile.distribution.as_deref());
+    set_or_remove_table_text(table, PROFILE_ICON, profile.icon.as_deref());
 }
 
 /// プロファイルの `command` に書く値。ブリッジで空なら（相手のログインシェル）書かない。
@@ -1887,6 +1890,35 @@ mod tests {
         assert_eq!(
             update(text, &base, &edited).unwrap(),
             "profiles = [{ name = \"a\", backend = \"cygwin\", cygwin_root = \"C:/cygwin\" }]\n"
+        );
+    }
+
+    #[test]
+    fn profile_icons_are_written_and_removed() {
+        let parse = |text: &str| config::parse(text, &Config::default()).config;
+        let text = "[[profiles]]\nname = 'a'\ncommand = 'cmd.exe'\nicon = 'old.png' # mine\n\n[[profiles]]\nname = 'b'\ncommand = 'pwsh.exe'\n\n[font]\nsize = 9\n";
+        let base = parse(text);
+        let mut edited = base.clone();
+        edited.profiles[0].icon = None;
+        edited.profiles[1].icon = Some(r"C:\pics\b.png".to_owned());
+        edited.profiles.push(Profile {
+            icon: Some("c.ico".to_owned()),
+            ..profile("c", "zsh")
+        });
+        let updated = update(text, &base, &edited).unwrap();
+        assert_eq!(
+            updated,
+            "[[profiles]]\nname = 'a'\ncommand = 'cmd.exe'\n\n[[profiles]]\nname = 'b'\ncommand = 'pwsh.exe'\nicon = 'C:\\pics\\b.png'\n\n[[profiles]]\nname = \"c\"\ncommand = \"zsh\"\nicon = \"c.ico\"\n\n[font]\nsize = 9\n"
+        );
+        assert_eq!(parse(&updated).profiles, edited.profiles);
+
+        let text = "profiles = [{ name = 'a', command = 'cmd.exe' }]\n";
+        let base = parse(text);
+        let mut edited = base.clone();
+        edited.profiles[0].icon = Some("a.png".to_owned());
+        assert_eq!(
+            update(text, &base, &edited).unwrap(),
+            "profiles = [{ name = \"a\", command = \"cmd.exe\", icon = \"a.png\" }]\n"
         );
     }
 

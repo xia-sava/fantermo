@@ -72,6 +72,8 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # コマンドラインで、書かなければログインシェルを起動する。"cygwin" では cygwin_root に Cygwin のフォルダを書ける
 # （書かなければ環境変数 PATH と、よくある場所（C:\cygwin64、C:\cygwin）から探す）。"wsl" では distribution に
 # ディストリビューションの名前を書ける（書かなければ既定のディストリビューション）。
+# icon はタブに出すアイコンの画像ファイル（PNG、ICO など）。相対パスは設定ファイルのフォルダから。書かないか、読めな
+# ければ、つなぎ方の絵とプロファイル名の頭文字のアイコンを作る。背景の色はプロファイル名から決まる。
 # Cygwin と WSL はブリッジでつなぐことを勧める。ConPTY を通すと、アプリの出力の一部が書き換えられたり順番が
 # 変わったりし、端末への問い合わせの一部に ConPTY が代わりに答えるか届かず、kitty graphics protocol と sixel の
 # 画像も届かず、ウィンドウの大きさを変えるとスクロールバックの行が欠けることがある。
@@ -91,6 +93,7 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # 例: name = "zsh"
 # 例: backend = "cygwin"
 # 例: command = "zsh -l"
+# 例: icon = 'C:\画像\zsh.png'
 #
 # 例: [[profiles]]
 # 例: name = "Ubuntu"
@@ -274,6 +277,9 @@ pub struct Profile {
     /// `backend = "wsl"` のディストリビューションの名前。`None` なら既定のディストリビューション。
     /// ほかの種類では `None`。
     pub distribution: Option<String>,
+    /// タブに出すアイコンの画像ファイル。書いたままの文字列で、相対パスは設定ファイルのフォルダから。
+    /// `None` なら自動で作る。
+    pub icon: Option<String>,
 }
 
 impl Profile {
@@ -285,6 +291,7 @@ impl Profile {
             backend,
             cygwin_root: None,
             distribution: None,
+            icon: None,
         }
     }
 
@@ -1426,6 +1433,7 @@ fn read_profile(reader: &mut Reader, path: &str, value: Value) -> Option<Profile
         backend,
         BackendKind::Wsl,
     );
+    let icon = read_profile_icon(reader, &mut table, path);
     reader.warn_unknown(&table, section);
     Some(Profile {
         name: name?,
@@ -1433,7 +1441,23 @@ fn read_profile(reader: &mut Reader, path: &str, value: Value) -> Option<Profile
         backend: backend?,
         cygwin_root,
         distribution,
+        icon,
     })
+}
+
+/// プロファイルのテーブルの `icon` を読む。書いていない・空なら（空は警告して）`None`。
+fn read_profile_icon(reader: &mut Reader, table: &mut Table, path: &str) -> Option<String> {
+    const ICON: &str = "icon";
+    let section = Some(path);
+    let Item::Valid(text) = reader.take::<String>(table, section, ICON) else {
+        return None;
+    };
+    if text.trim().is_empty() {
+        let key_path = key_path(section, ICON);
+        reader.warn(&key_path, format!("ignoring {key_path}: empty"));
+        return None;
+    }
+    Some(text)
 }
 
 /// プロファイルのテーブルの `cygwin_root` のような、種類が `owner` のプロファイルだけが使うキー `key` を
@@ -2208,7 +2232,10 @@ mod tests {
             parsed.config.profiles,
             [
                 Profile::builtin(),
-                Profile::new("zsh", "zsh -l", BackendKind::Cygwin),
+                Profile {
+                    icon: Some(r"C:\画像\zsh.png".to_owned()),
+                    ..Profile::new("zsh", "zsh -l", BackendKind::Cygwin)
+                },
                 Profile {
                     distribution: Some("Ubuntu".to_owned()),
                     ..Profile::new("Ubuntu", "", BackendKind::Wsl)
@@ -2991,6 +3018,26 @@ size = 10
                 ),
                 (Some(23), "ignoring profiles[5]: expected a command"),
             ]
+        );
+    }
+
+    #[test]
+    fn profiles_take_an_icon_with_any_backend() {
+        let parsed = parse(
+            "[[profiles]]\nname = 'a'\ncommand = 'cmd.exe'\nicon = 'C:\\pics\\a.png'\n[[profiles]]\nname = 'b'\nbackend = 'wsl'\nicon = 'b.ico'\n[[profiles]]\nname = 'c'\ncommand = 'x'\nicon = ' '\n[[profiles]]\nname = 'd'\ncommand = 'x'\nicon = 3\n",
+        );
+        let icons: Vec<Option<&str>> = parsed
+            .config
+            .profiles
+            .iter()
+            .map(|profile| profile.icon.as_deref())
+            .collect();
+        assert_eq!(icons, [Some(r"C:\pics\a.png"), Some("b.ico"), None, None]);
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .any(|warning| warning == "ignoring profiles[2].icon: empty"),
         );
     }
 
