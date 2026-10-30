@@ -90,6 +90,7 @@ use crate::{
     session::{Session, SessionId, Startup},
     settings_dialog::{self, FontChoice},
     tab_bar::{self, Hit, TabView},
+    tab_icon::TabIcon,
     text_dialog,
     ui_font::UiFont,
     update, version, window_state,
@@ -1643,8 +1644,25 @@ impl App {
 
     /// タブバーの新しいタブのボタンとプロファイルの一覧のボタンの下に、ボタンを隠さずにプロファイルの
     /// 一覧を出すよう返す。
-    fn profile_menu(&self) -> Deferred {
+    fn profile_menu(&mut self) -> Deferred {
         let (new_tab, profiles) = self.tab_bar_layout().new_tab_buttons();
+        let side = tab_bar::tab_icon_size(self.dpi);
+        let config_dir = self.config_path.as_deref().and_then(Path::parent);
+        let renderer = &mut self.renderer;
+        let profile_icons = self
+            .profiles
+            .iter()
+            .map(|profile| {
+                let icon = TabIcon::for_profile(profile, config_dir);
+                match renderer.tab_icon_pixels(&icon, side) {
+                    Ok(pixels) => Some(pixels),
+                    Err(e) => {
+                        tracing::warn!("failed to make the icon of {:?}: {e}", profile.name);
+                        None
+                    }
+                }
+            })
+            .collect();
         let (left, top) = self.client_to_screen(new_tab.x as i32, new_tab.y as i32);
         let (right, bottom) =
             self.client_to_screen(profiles.right() as i32, profiles.bottom() as i32);
@@ -1655,6 +1673,7 @@ impl App {
                 .map(|profile| profile.name.clone())
                 .collect(),
             default_profile: self.default_profile_index(),
+            profile_icons,
             exclude: Some(RECT {
                 left,
                 top,
@@ -1679,6 +1698,7 @@ impl App {
             can_open_settings: self.config_path.is_some(),
             profiles: Vec::new(),
             default_profile: 0,
+            profile_icons: Vec::new(),
         }
     }
 
@@ -3270,7 +3290,6 @@ mod tests {
     use fantermo_core::config::BackendKind;
 
     use super::*;
-    use crate::tab_icon::TabIcon;
 
     const NOTCH: i32 = WHEEL_DELTA as i32;
 

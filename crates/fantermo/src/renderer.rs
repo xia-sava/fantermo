@@ -495,7 +495,7 @@ impl Renderer {
     }
 
     /// タブのアイコン `icon` の一辺 `side` のピクセル。画像が読めなければ、警告して自動で作る。
-    fn tab_icon_pixels(&mut self, icon: &TabIcon, side: u32) -> windows::core::Result<Decoded> {
+    pub fn tab_icon_pixels(&mut self, icon: &TabIcon, side: u32) -> windows::core::Result<Decoded> {
         let decoder = match &self.decoder {
             Some(decoder) => decoder,
             None => self.decoder.insert(Decoder::new()?),

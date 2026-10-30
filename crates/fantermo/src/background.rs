@@ -29,6 +29,7 @@ const BYTES_PER_PIXEL: u32 = 4;
 const MAX_ICON_FRAMES: u32 = 32;
 
 /// 読んだ画像。乗算済みアルファの BGRA で、行の間は詰めてある。
+#[derive(Clone, Debug)]
 pub struct Decoded {
     pub width: u32,
     pub height: u32,

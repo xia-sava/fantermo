@@ -98,6 +98,11 @@ pub fn height(dpi: u32) -> u32 {
     Metrics { dpi }.bar_height()
 }
 
+/// DPI が `dpi` のウィンドウでの、タブのアイコンの一辺（ピクセル）。
+pub fn tab_icon_size(dpi: u32) -> u32 {
+    Metrics { dpi }.tab_icon()
+}
+
 /// タブバーの寸法を決めるもの。寸法はウィンドウの DPI に比例させる。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Metrics {
@@ -1168,6 +1173,13 @@ mod tests {
             ..tab(0, 480)
         };
         assert_eq!(tab_content(METRICS, &short, false, 32).icon, None);
+    }
+
+    #[test]
+    fn the_icon_size_follows_the_dpi() {
+        assert_eq!(tab_icon_size(96), 18);
+        assert_eq!(tab_icon_size(144), 27);
+        assert_eq!(tab_icon_size(192), 36);
     }
 
     #[test]

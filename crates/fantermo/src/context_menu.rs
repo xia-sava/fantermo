@@ -4,16 +4,23 @@
 use windows::{
     Win32::{
         Foundation::{HWND, RECT},
+        Graphics::Gdi::{
+            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateDIBSection, DIB_RGB_COLORS, DeleteObject,
+            HBITMAP,
+        },
         UI::WindowsAndMessaging::{
-            AppendMenuW, CreatePopupMenu, DestroyMenu, HMENU, MENU_ITEM_FLAGS, MF_CHECKED,
-            MF_GRAYED, MF_SEPARATOR, MF_STRING, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-            TPM_TOPALIGN, TPM_VERTICAL, TPMPARAMS, TrackPopupMenuEx,
+            AppendMenuW, CreatePopupMenu, DestroyMenu, HMENU, MENU_ITEM_FLAGS, MENUITEMINFOW,
+            MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MIIM_BITMAP, SetMenuItemInfoW,
+            TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_TOPALIGN, TPM_VERTICAL, TPMPARAMS,
+            TrackPopupMenuEx,
         },
     },
     core::HSTRING,
 };
 
 use fantermo_core::keymap::{Action, KeyCombo, Keymap};
+
+use crate::background::Decoded;
 
 /// メニューで選ばれた操作。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,11 +208,78 @@ pub struct MenuRequest {
     pub profiles: Vec<String>,
     /// 既定のプロファイルの、`profiles` の中の位置。一覧で印を付ける。
     pub default_profile: usize,
+    /// プロファイルの一覧の項目に付けるアイコン。`profiles` と同じ順で、作れなかったものは `None`。
+    pub profile_icons: Vec<Option<Decoded>>,
+}
+
+/// メニューの項目に付けたビットマップ。メニューは破棄しても項目のビットマップを消さないので、メニューを
+/// 破棄したあとにこれを手放す。
+#[derive(Default)]
+struct ItemBitmaps(Vec<HBITMAP>);
+
+impl Drop for ItemBitmaps {
+    fn drop(&mut self) {
+        for bitmap in self.0.drain(..) {
+            // SAFETY: bitmap は create_bitmap が作ったもので、使っていたメニューはもうない。
+            if !unsafe { DeleteObject(bitmap.into()) }.as_bool() {
+                tracing::warn!("failed to delete a menu item bitmap");
+            }
+        }
+    }
+}
+
+/// `image`（乗算済みアルファの BGRA）の 32 ビットの DIB。
+fn create_bitmap(image: &Decoded) -> windows::core::Result<HBITMAP> {
+    let info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: image.width as i32,
+            // 負の高さは、上の行から並べることを表す。
+            biHeight: -(image.height as i32),
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut bits = std::ptr::null_mut();
+    // SAFETY: info は初期化済みで、bits は書き込める。
+    let bitmap = unsafe { CreateDIBSection(None, &info, DIB_RGB_COLORS, &mut bits, None, 0)? };
+    // SAFETY: bits は高さ × 幅 × 4 バイトの、行の間を詰めた領域で、image.pixels も同じ大きさと並び。
+    unsafe {
+        std::ptr::copy_nonoverlapping(image.pixels.as_ptr(), bits.cast::<u8>(), image.pixels.len());
+    }
+    Ok(bitmap)
+}
+
+/// `menu` の ID が `id` の項目に `image` を付ける。作ったビットマップは `bitmaps` が持つ。付けられなければ
+/// 警告して、絵のない項目のままにする。
+fn set_item_bitmap(menu: HMENU, id: usize, image: &Decoded, bitmaps: &mut ItemBitmaps) {
+    let bitmap = match create_bitmap(image) {
+        Ok(bitmap) => bitmap,
+        Err(e) => {
+            tracing::warn!("failed to create a menu item bitmap: {e}");
+            return;
+        }
+    };
+    bitmaps.0.push(bitmap);
+    let item = MENUITEMINFOW {
+        cbSize: size_of::<MENUITEMINFOW>() as u32,
+        fMask: MIIM_BITMAP,
+        hbmpItem: bitmap,
+        ..Default::default()
+    };
+    // SAFETY: menu は有効なメニューで、item は cbSize を入れて初期化済み。
+    if let Err(e) = unsafe { SetMenuItemInfoW(menu, id as u32, false, &item) } {
+        tracing::warn!("failed to set a menu item bitmap: {e}");
+    }
 }
 
 /// `request` のとおりにメニューを出し、選ばれたものを返す。
 pub fn show(owner: HWND, request: &MenuRequest) -> Option<Chosen> {
-    let menu = match build(request) {
+    let mut bitmaps = ItemBitmaps::default();
+    let menu = match build(request, &mut bitmaps) {
         Ok(menu) => menu,
         Err(e) => {
             tracing::warn!("failed to build the menu: {e}");
@@ -248,7 +322,7 @@ fn enabled(command: MenuCommand, request: &MenuRequest) -> bool {
     }
 }
 
-fn build(request: &MenuRequest) -> windows::core::Result<HMENU> {
+fn build(request: &MenuRequest, bitmaps: &mut ItemBitmaps) -> windows::core::Result<HMENU> {
     // SAFETY: 空のメニューを作るだけ。
     let menu = unsafe { CreatePopupMenu()? };
     if request.menu == Menu::Profiles {
@@ -259,7 +333,11 @@ fn build(request: &MenuRequest) -> windows::core::Result<HMENU> {
                 MF_STRING
             };
             let label = HSTRING::from(profile_label(index, name));
-            append(menu, flags, PROFILE_ID_BASE + index, Some(&label))?;
+            let id = PROFILE_ID_BASE + index;
+            append(menu, flags, id, Some(&label))?;
+            if let Some(Some(icon)) = request.profile_icons.get(index) {
+                set_item_bitmap(menu, id, icon, bitmaps);
+            }
         }
         return Ok(menu);
     }
@@ -299,7 +377,36 @@ fn append(
 
 #[cfg(test)]
 mod tests {
+    use windows::Win32::Graphics::Gdi::{DIBSECTION, GetObjectW};
+
     use super::*;
+
+    #[test]
+    fn bitmaps_have_the_size_and_pixels_of_the_image() {
+        // 2×1 の、左が青、右が半透明の赤。
+        let image = Decoded {
+            width: 2,
+            height: 1,
+            pixels: vec![0xff, 0, 0, 0xff, 0, 0, 0x80, 0x80],
+        };
+        let bitmap = create_bitmap(&image).unwrap();
+        let mut section = DIBSECTION::default();
+        // SAFETY: bitmap は有効なビットマップで、section は書き込める。
+        let written = unsafe {
+            GetObjectW(
+                bitmap.into(),
+                size_of::<DIBSECTION>() as i32,
+                Some((&raw mut section).cast()),
+            )
+        };
+        assert_eq!(written as usize, size_of::<DIBSECTION>());
+        assert_eq!((section.dsBm.bmWidth, section.dsBm.bmHeight), (2, 1));
+        assert_eq!(section.dsBm.bmBitsPixel, 32);
+        // SAFETY: bmBits は 2×4 バイトの有効な領域。
+        let bits = unsafe { std::slice::from_raw_parts(section.dsBm.bmBits.cast::<u8>(), 8) };
+        assert_eq!(bits, image.pixels);
+        ItemBitmaps(vec![bitmap]);
+    }
 
     #[test]
     fn ids_round_trip_and_avoid_zero() {
