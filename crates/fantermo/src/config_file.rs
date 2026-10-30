@@ -91,8 +91,8 @@ impl Occasion {
     /// ファイル全体を読めなかったときに、どの設定で動いているか。
     fn whole(self) -> &'static str {
         match self {
-            Occasion::Startup => "既定の設定で動いています",
-            Occasion::Reload => "前の設定のまま動いています",
+            Occasion::Startup => "既定の設定で動作しています",
+            Occasion::Reload => "前の設定のまま動作しています",
         }
     }
 
@@ -118,7 +118,7 @@ pub fn load(path: Option<&Path>) -> Loaded {
         return Loaded {
             config: Config::default(),
             notice: Some(format!(
-                "設定ファイルを作れなかったので、{}。\n\n{}\n{e}",
+                "設定ファイルを作成できなかったため、{}。\n\n{}\n{e}",
                 Occasion::Startup.whole(),
                 path.display()
             )),
@@ -175,7 +175,7 @@ fn read(path: Option<&Path>, previous: &Config, occasion: Occasion) -> Loaded {
             return Loaded {
                 config: previous.clone(),
                 notice: Some(format!(
-                    "設定ファイルを読めなかったので、{}。\n\n{}\n{e}",
+                    "設定ファイルを読み込めなかったため、{}。\n\n{}\n{e}",
                     occasion.whole(),
                     path.display()
                 )),
@@ -263,14 +263,14 @@ pub fn save(path: &Path, base: &Config, edited: &Config) -> Result<String, Strin
         Err(e) if e.kind() == io::ErrorKind::NotFound => (config::TEMPLATE.to_owned(), false),
         Err(e) => {
             return Err(failed(
-                "設定ファイルを読めなかったので、書き換えませんでした。",
+                "設定ファイルを読み込めなかったため、変更を保存しませんでした。",
                 &e,
             ));
         }
     };
     let updated = config_edit::update(&text, base, edited).map_err(|e| {
         failed(
-            "設定ファイルを TOML として読めなかったので、書き換えませんでした。",
+            "設定ファイルを TOML として読み込めなかったため、変更を保存しませんでした。",
             &e,
         )
     })?;
@@ -279,7 +279,7 @@ pub fn save(path: &Path, base: &Config, edited: &Config) -> Result<String, Strin
         return Ok(updated);
     }
     if let Err(e) = window_state::write_replacing(path, &updated) {
-        return Err(failed("設定ファイルに書けませんでした。", &e));
+        return Err(failed("設定ファイルに保存できませんでした。", &e));
     }
     tracing::info!("saved the settings to {}", path.display());
     Ok(updated)
@@ -292,7 +292,7 @@ fn notice_text(path: &Path, parsed: &Parsed, occasion: Occasion) -> Option<Strin
     }
     let lead = if parsed.syntax_error {
         format!(
-            "設定ファイルを TOML として読めなかったので、{}。",
+            "設定ファイルを TOML として読み込めなかったため、{}。",
             occasion.whole()
         )
     } else {
@@ -520,7 +520,7 @@ mod tests {
         std::fs::write(&path, "[font\n").unwrap();
         let error = save(&path, &base, &Config::default()).unwrap_err();
         assert!(
-            error.starts_with("設定ファイルを TOML として読めなかった"),
+            error.starts_with("設定ファイルを TOML として読み込めなかった"),
             "{error}"
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[font\n");
@@ -581,7 +581,7 @@ mod tests {
         let text = notice_text(path, &parsed, Occasion::Startup).unwrap();
         assert!(
             text.starts_with(
-                "設定ファイルを TOML として読めなかったので、既定の設定で動いています。\n\n\
+                "設定ファイルを TOML として読み込めなかったため、既定の設定で動作しています。\n\n\
                  C:\\settings\\config.toml\n1 行目: cannot parse the settings: "
             ),
             "{text}"

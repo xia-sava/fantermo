@@ -152,15 +152,14 @@ impl CheckError {
     pub fn message(&self) -> String {
         match self {
             Self::Fetch(HttpError::Status(status)) => {
-                format!("更新の情報を取得できませんでした（HTTP {status}）。")
+                format!("更新情報を取得できませんでした（HTTP {status}）。")
             }
             Self::Fetch(_) => {
-                "更新の情報を取得できませんでした。ネットワークにつながっているか確かめてください。"
-                    .to_owned()
+                "更新情報を取得できませんでした。ネットワークの接続を確認してください。".to_owned()
             }
-            Self::Signature(_) => "配布物の署名を確認できませんでした。".to_owned(),
-            Self::Manifest(_) => "更新の情報を読めませんでした。".to_owned(),
-            Self::CurrentVersion => "いまのバージョンを読めませんでした。".to_owned(),
+            Self::Signature(_) => "更新情報の署名を確認できませんでした。".to_owned(),
+            Self::Manifest(_) => "更新情報を読み取れませんでした。".to_owned(),
+            Self::CurrentVersion => "現在のバージョンを読み取れませんでした。".to_owned(),
         }
     }
 }
@@ -239,11 +238,11 @@ impl DownloadError {
                 format!("新しいバージョンをダウンロードできませんでした（HTTP {status}）。")
             }
             Self::Fetch(_) => {
-                "新しいバージョンをダウンロードできませんでした。ネットワークにつながっているか確かめてください。"
+                "新しいバージョンをダウンロードできませんでした。ネットワークの接続を確認してください。"
                     .to_owned()
             }
-            Self::Digest => "ダウンロードした配布物が、更新の情報と合いませんでした。".to_owned(),
-            Self::Save(_) => "ダウンロードした配布物を保存できませんでした。".to_owned(),
+            Self::Digest => "ダウンロードしたファイルが、更新情報と一致しませんでした。".to_owned(),
+            Self::Save(_) => "ダウンロードしたファイルを保存できませんでした。".to_owned(),
         }
     }
 }
@@ -468,15 +467,15 @@ mod tests {
     fn messages_tell_apart_fetching_verifying_and_reading() {
         assert_eq!(
             CheckError::Fetch(HttpError::Status(404)).message(),
-            "更新の情報を取得できませんでした（HTTP 404）。"
+            "更新情報を取得できませんでした（HTTP 404）。"
         );
         assert_eq!(
             CheckError::Signature(String::new()).message(),
-            "配布物の署名を確認できませんでした。"
+            "更新情報の署名を確認できませんでした。"
         );
         assert_eq!(
             CheckError::Manifest(ManifestError::NoMsi).message(),
-            "更新の情報を読めませんでした。"
+            "更新情報を読み取れませんでした。"
         );
     }
 

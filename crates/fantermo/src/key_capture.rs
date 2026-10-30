@@ -187,7 +187,7 @@ fn create(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> windows::core::Re
             None,
         )?
     };
-    let text = format!("{prompt}\nEsc でやめる。");
+    let text = format!("{prompt}\nEsc キーでキャンセルします。");
     // SAFETY: hwnd は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
     let label = unsafe {
         CreateWindowExW(

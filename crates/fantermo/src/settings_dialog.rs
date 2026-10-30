@@ -198,11 +198,11 @@ fn profile_location_texts(backend: BackendKind) -> (&'static str, &'static str) 
         BackendKind::Conpty => ("場所(&O):", ""),
         BackendKind::Cygwin => (
             "Cygwin のフォルダ(&O):",
-            "空なら PATH とよくある場所から探す",
+            "空欄なら PATH と標準のインストール先から探す",
         ),
         BackendKind::Wsl => (
             "ディストリビューション(&O):",
-            "空なら既定のディストリビューション",
+            "空欄なら既定のディストリビューション",
         ),
     }
 }
@@ -223,10 +223,10 @@ fn profile_command_warning(profile: &Profile) -> Option<&'static str> {
     profile.windows_program_in_bridge()?;
     Some(match profile.backend {
         BackendKind::Cygwin => {
-            "Windows のプログラムは指定しないでください。Cygwin の中のコマンド（例: /bin/zsh -l）を書くか、空にしてください。空ならログインシェルを起動します。"
+            "Windows のプログラムは指定しないでください。Cygwin の中のコマンド（例: /bin/zsh -l）を入力するか、空欄にしてください。空欄ならログインシェルを起動します。"
         }
         BackendKind::Conpty | BackendKind::Wsl => {
-            "Windows のプログラムは指定しないでください。WSL の中のコマンド（例: /bin/bash）を書くか、空にしてください。空ならログインシェルを起動します。"
+            "Windows のプログラムは指定しないでください。WSL の中のコマンド（例: /bin/bash）を入力するか、空欄にしてください。空欄ならログインシェルを起動します。"
         }
     })
 }
@@ -282,14 +282,14 @@ fn check_profiles(profiles: &[Profile]) -> Result<(), (usize, ProfileField, &'st
             return Err((
                 index,
                 ProfileField::Name,
-                "プロファイルの名前を書いてください。",
+                "プロファイルの名前を入力してください。",
             ));
         }
         if profile.command.trim().is_empty() && !profile.backend.is_bridge() {
             return Err((
                 index,
                 ProfileField::Command,
-                "プロファイルのコマンドラインを書いてください。",
+                "プロファイルのコマンドラインを入力してください。",
             ));
         }
         if profiles[..index]
@@ -412,7 +412,7 @@ const COLOR_SCHEME_LABELS: [&str; 2] = ["ダーク", "ライト"];
 const COLOR_SCHEME_WIDTH: i32 = 96;
 
 /// 端末の色の表示。[`config::TERMINAL_COLOR_KEYS`] の順。
-const TERMINAL_COLOR_LABELS: [&str; 2] = ["背景色", "文字の色"];
+const TERMINAL_COLOR_LABELS: [&str; 2] = ["背景色", "文字色"];
 
 /// タブバーの色の表示。[`config::TAB_BAR_COLOR_KEYS`] の順。
 const TAB_BAR_COLOR_LABELS: [&str; 9] = [
@@ -421,7 +421,7 @@ const TAB_BAR_COLOR_LABELS: [&str; 9] = [
     "表示しているタブの縁",
     "表示しているタブの文字",
     "表示していないタブの文字",
-    "タブの区切りの線",
+    "タブの区切り線",
     "マウスを載せているタブ",
     "「+」「▾」「≡」",
     "ベルの印",
@@ -491,16 +491,16 @@ const PAGE_APPEARANCE: usize = 0;
 /// `font.wide_glyph` の選択肢の表示。[`WideGlyph::ALL`] の順。
 const WIDE_GLYPH_LABELS: [&str; WideGlyph::ALL.len()] = [
     "横に縮めてセルに収める",
-    "縮めずに、はみ出しを切る",
+    "縮めずに、はみ出た部分を切り取る",
     "縮めずに、右のセルへはみ出す",
-    "縮めずに、真ん中から左右のセルへはみ出す",
+    "縮めずに、中央から左右のセルへはみ出す",
 ];
 
 /// `paste.confirm` の選択肢の表示。[`PasteConfirm::ALL`] の順。
 const PASTE_CONFIRM_LABELS: [&str; 3] = [
-    "コマンドとして実行されうるとき",
+    "コマンドとして実行される可能性があるとき",
     "改行を含むとき",
-    "確かめない",
+    "確認しない",
 ];
 
 /// `clipboard.read` の選択肢の表示。[`ClipboardRead::ALL`] の順。
@@ -936,7 +936,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     appearance.push(font);
     // SAFETY: font は有効なコンボボックス。
     unsafe { SendMessageW(font, CB_SETMINVISIBLE, Some(WPARAM(VISIBLE_FONTS)), None) };
-    let (class, text, rect) = label("大きさ(&S):", label_rect(row(1)));
+    let (class, text, rect) = label("サイズ(&S):", label_rect(row(1)));
     appearance.push(child(
         class,
         &text,
@@ -1187,7 +1187,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     )?;
     background_page.push(background_opacity_spin);
     let (class, text, rect) = label(
-        "0（消す）〜1（そのまま）",
+        "0（透明）〜1（不透明）",
         opacity_note_rect(opacity_row, background_control_left),
     );
     background_page.push(child(
@@ -1367,7 +1367,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         Some(rect),
     )?);
     let (class, text, rect) = label(
-        "新しいタブを開くたびに、一覧からランダムに一枚選ぶ（フォルダはその中の画像から）。画像には端末の背景色を重ね、不透明度のとおりに薄める。",
+        "新しいタブを開くたびに、一覧からランダムに 1 枚選ぶ（フォルダはその中の画像から選ぶ）。画像は、不透明度に応じて端末の背景色を重ねて薄くする。",
         [
             page_left,
             images_bottom + BUTTON_GAP,
@@ -1386,7 +1386,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
 
     // 動作
     let mut behavior = Vec::new();
-    let (class, text, rect) = label("貼り付ける前に確かめる(&P):", label_rect(row(0)));
+    let (class, text, rect) = label("貼り付け前の確認(&P):", label_rect(row(0)));
     behavior.push(child(
         class,
         &text,
@@ -1409,7 +1409,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         behavior.push(paste_confirm[index]);
     }
     let (class, text, rect) = label(
-        "改行を含む文字列を貼り付ける前に、内容を編集できるダイアログで確かめる。「コマンドとして実行されうるとき」は、アプリが bracketed paste を有効にしていないときなど。",
+        "改行を含む文字列を貼り付ける前に、内容を編集できるダイアログで確認する。「コマンドとして実行される可能性があるとき」は、アプリが bracketed paste を有効にしていないときなど。",
         [
             page_left,
             row(0) + 3 * ROW_HEIGHT + MARGIN,
@@ -1426,7 +1426,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         Some(rect),
     )?);
     let clipboard_row = row(0) + 6 * ROW_HEIGHT + 2 * MARGIN;
-    let (class, text, rect) = label("クリップボードの読み出し(&L):", label_rect(clipboard_row));
+    let (class, text, rect) = label("クリップボードの読み取り(&L):", label_rect(clipboard_row));
     behavior.push(child(
         class,
         &text,
@@ -1449,7 +1449,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         behavior.push(clipboard_read[index]);
     }
     let (class, text, rect) = label(
-        "アプリがクリップボードの内容を読み出そうとしたとき（OSC 52）。アプリからの書き込みは、この設定によらず受ける。",
+        "アプリがクリップボードの内容を読み取ろうとしたとき（OSC 52）。アプリからの書き込みは、この設定に関係なく受け付ける。",
         [
             page_left,
             clipboard_row + 3 * ROW_HEIGHT + MARGIN,
@@ -1648,7 +1648,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         ]),
     )?;
     profiles_page.push(profile_icon);
-    let profile_icon_cue = HSTRING::from("空なら自動で作る");
+    let profile_icon_cue = HSTRING::from("空欄なら自動で作成する");
     // SAFETY: profile_icon は有効な入力欄で、文字列はこの呼び出しの間は生きている。
     unsafe {
         SendMessageW(
@@ -1660,7 +1660,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     };
     let profile_icon_choose = child(
         w!("BUTTON"),
-        "選ぶ(&E)…",
+        "参照(&E)…",
         WS_GROUP | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
         none,
         ID_PROFILE_ICON_CHOOSE,
@@ -1673,7 +1673,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     )?;
     profiles_page.push(profile_icon_choose);
     let (class, text, rect) = label(
-        "タブバーの「+」は既定のプロファイルを開き、「▾」か「+」の右クリックで一覧から選んで開く。fantermo を引数つきで起動したときは、「+」とキーも引数のコマンドラインを使う。Cygwin と WSL のコマンドラインは相手の側のもの（空ならログインシェル）。書き換えたら、次に開くタブから使う。",
+        "タブバーの「+」は既定のプロファイルを開き、「▾」か「+」の右クリックで一覧から選んで開く。fantermo を引数つきで起動したときは、「+」とキーとメニューの「新しいタブ」も引数のコマンドラインを使う。Cygwin と WSL のコマンドラインは Cygwin・WSL の中で実行するもの（空欄ならログインシェル）。変更は次に開くタブから反映される。",
         [
             page_left,
             profile_icon_row + ROW_HEIGHT + MARGIN,
@@ -1844,7 +1844,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             left += COLOR_TEXT_WIDTH + BUTTON_GAP;
             let choose = child(
                 w!("BUTTON"),
-                "選ぶ…",
+                "選択…",
                 WS_GROUP | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
                 none,
                 id + COLOR_CHOOSE,
@@ -2274,7 +2274,7 @@ impl State<'_> {
         let (label, cue) = profile_location_texts(backend);
         set_text(c.profile_location_label, label);
         let command_cue = if backend.is_bridge() {
-            "空ならログインシェル"
+            "空欄ならログインシェル"
         } else {
             ""
         };
@@ -2375,10 +2375,10 @@ impl State<'_> {
         self.on_profile_edited();
     }
 
-    /// アイコンの「選ぶ…」が押された。選んだファイルの絶対パスを入力欄に入れる（入力欄の変更の知らせで
+    /// アイコンの「参照…」が押された。選んだファイルの絶対パスを入力欄に入れる（入力欄の変更の知らせで
     /// プロファイルに入る）。
     fn on_profile_icon_choose(&self) {
-        let chosen = match file_dialog::open_file(self.hwnd, "アイコンを選ぶ", &icon_filters())
+        let chosen = match file_dialog::open_file(self.hwnd, "アイコンの選択", &icon_filters())
         {
             Ok(chosen) => chosen,
             Err(e) => {
@@ -2895,7 +2895,10 @@ impl State<'_> {
 
     /// 動作 `action` に割り当てるキーを、押したキーを読み取るダイアログで読む。
     fn capture_key(&self, action: Action) -> Option<KeyCombo> {
-        let prompt = format!("「{}」に割り当てるキーを押す。", action_label(action));
+        let prompt = format!(
+            "「{}」に割り当てるキーを押してください。",
+            action_label(action)
+        );
         key_capture::capture(self.hwnd, &prompt, self.font.get(), self.dpi.get())
     }
 
@@ -2910,7 +2913,7 @@ impl State<'_> {
             && other != action
         {
             let text = format!(
-                "{} は「{}」に割り当てています。「{}」に割り当て直しますか？",
+                "{} は「{}」に割り当てられています。「{}」に割り当て直しますか？",
                 new.label(),
                 action_label(other),
                 action_label(action)
@@ -3054,7 +3057,7 @@ impl State<'_> {
                     .collect();
         }
         config.font.size_pt = config::parse_font_size(&get_text(c.size)).ok_or((
-            "フォントの大きさは、1 から 128 までの数で書いてください。",
+            "フォントサイズは、1 から 128 までの数値を入力してください。",
             c.size,
         ))?;
         if let Some(index) = checked(&c.wide_glyph) {
@@ -3062,11 +3065,13 @@ impl State<'_> {
         }
         config.scroll_bar.width = config::parse_scroll_bar_width(&get_text(c.scroll_bar_width))
             .ok_or((
-                "スクロールバーの幅は、4 から 64 までの整数で書いてください。",
+                "スクロールバーの幅は、4 から 64 までの整数を入力してください。",
                 c.scroll_bar_width,
             ))?;
-        config.window.padding = config::parse_padding(&get_text(c.padding))
-            .ok_or(("余白は、0 から 64 までの整数で書いてください。", c.padding))?;
+        config.window.padding = config::parse_padding(&get_text(c.padding)).ok_or((
+            "余白は、0 から 64 までの整数を入力してください。",
+            c.padding,
+        ))?;
         if let Some(index) = checked(&c.paste_confirm) {
             config.paste.confirm = PasteConfirm::ALL[index];
         }
@@ -3098,13 +3103,13 @@ impl State<'_> {
             && config::parse_image_opacity(&get_text(c.background_item_opacity)).is_none()
         {
             return Err((
-                "選択した項目の不透明度は、0 から 1 までの数で書いてください。",
+                "選択した項目の不透明度は、0 から 1 までの数値を入力してください。",
                 c.background_item_opacity,
             ));
         }
         config.background.images = self.background_images.borrow().clone();
         config.background.image_opacity = self.default_opacity().ok_or((
-            "不透明度は、0 から 1 までの数で書いてください。",
+            "不透明度は、0 から 1 までの数値を入力してください。",
             c.background_opacity,
         ))?;
         // SAFETY: コンボボックスは有効なウィンドウ。

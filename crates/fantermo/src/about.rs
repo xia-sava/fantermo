@@ -27,7 +27,7 @@ const REPOSITORY_URL: &str = "https://github.com/xia-sava/fantermo";
 /// 「更新を確認」のボタンのコントロール ID。
 const CHECK_UPDATE_ID: i32 = 101;
 /// 「更新を確認」を押せないときに添える行。
-const UPDATE_UNAVAILABLE: &str = "自動更新はインストーラで入れたバージョンでのみ可能です";
+const UPDATE_UNAVAILABLE: &str = "自動更新は、インストーラでインストールした場合にのみ利用できます";
 /// `THIRD-PARTY-NOTICES.txt` の区切りの線の幅。これが折り返さずに収まる幅で開く。
 const TEXT_COLUMNS: u32 = 80;
 

@@ -6,11 +6,11 @@
 <WixLocalization Culture="ja-JP" Codepage="932" xmlns="http://wixtoolset.org/schemas/v4/wxl">
   <!-- 開始の画面（FantermoWelcomeDlg） -->
   <String Id="FantermoWelcomeDlgTitle" Value="{\WixUI_Font_Bigger}[ProductName] をインストールします" />
-  <String Id="FantermoWelcomeDlgDescription" Value="使っているユーザーだけのために、[ProductName] を次のフォルダにインストールします。管理者権限は要りません。&#13;&#10;&#13;&#10;[INSTALLFOLDER]&#13;&#10;&#13;&#10;始めるには [\[]インストール[\]] を押してください。" />
+  <String Id="FantermoWelcomeDlgDescription" Value="現在のユーザーだけが使えるように、[ProductName] を次のフォルダにインストールします。管理者権限は不要です。&#13;&#10;&#13;&#10;[INSTALLFOLDER]&#13;&#10;&#13;&#10;始めるには [\[]インストール[\]] をクリックしてください。" />
 
   <!-- 完了の画面（ExitDialog）。題の [FantermoOperation] は操作の名前。 -->
   <String Id="ExitDialogTitle" Value="{\WixUI_Font_Bigger}[ProductName] の[FantermoOperation]が完了しました" />
-  <String Id="ExitDialogDescription" Value="閉じるには [\[]完了[\]] を押してください。" />
+  <String Id="ExitDialogDescription" Value="閉じるには [\[]完了[\]] をクリックしてください。" />
   <String Id="FantermoOperationInstall" Value="インストール" />
   <String Id="FantermoOperationRepair" Value="修復" />
   <String Id="FantermoOperationRemove" Value="削除" />

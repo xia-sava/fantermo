@@ -80,13 +80,13 @@ fn checked_prompt(comparison: &Comparison, current: &str) -> Prompt {
     match comparison {
         Comparison::UpToDate { latest } => Prompt {
             text: format!(
-                "fantermo は最新バージョンです。\n\nいまのバージョン: {current}\n配布しているバージョン: {latest}"
+                "fantermo は最新バージョンです。\n\n現在のバージョン: {current}\n公開中のバージョン: {latest}"
             ),
             style: MB_OK | MB_ICONINFORMATION,
         },
         Comparison::Newer(release) => Prompt {
             text: format!(
-                "新しいバージョン {} があります（いまのバージョンは {current}）。\n\nダウンロードして更新しますか？",
+                "新しいバージョン {} があります（現在のバージョンは {current}）。\n\nダウンロードして更新しますか？",
                 release.version
             ),
             style: MB_YESNO | MB_ICONQUESTION,
@@ -108,8 +108,8 @@ fn on_downloaded(owner: HWND, downloaded: Downloaded) -> Next {
     let others = downloaded.other_instances();
     if !others.is_empty() {
         let text = format!(
-            "ほかに fantermo が {} 個動いています。\n\n更新は、それらがすべて閉じてから入れます\
-             （{} 分たっても閉じなければ、待たずに入れます）。続けますか？",
+            "ほかに fantermo が {} 個起動しています。\n\n更新は、それらがすべて終了してからインストールします\
+             （{} 分たっても終了しなければ、待たずにインストールします）。続けますか？",
             others.len(),
             wait_minutes()
         );
@@ -118,7 +118,7 @@ fn on_downloaded(owner: HWND, downloaded: Downloaded) -> Next {
         }
     }
     let text = format!(
-        "全部のタブを閉じて、バージョン {} に更新します。\n\n更新を入れ終えたら、fantermo を起動し直します。",
+        "すべてのタブを閉じて、バージョン {} に更新します。\n\n更新のインストールが終わったら、fantermo を再起動します。",
         downloaded.version
     );
     if show(owner, &text, MB_OKCANCEL | MB_ICONINFORMATION) != IDOK {
@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(
             prompt,
             Prompt {
-                text: "fantermo は最新バージョンです。\n\nいまのバージョン: 0.0.1\n配布しているバージョン: 0.0.1"
+                text: "fantermo は最新バージョンです。\n\n現在のバージョン: 0.0.1\n公開中のバージョン: 0.0.1"
                     .to_owned(),
                 style: MB_OK | MB_ICONINFORMATION,
             }
@@ -188,7 +188,7 @@ mod tests {
         assert_eq!(
             prompt,
             Prompt {
-                text: "新しいバージョン 0.0.2 があります（いまのバージョンは 0.0.1）。\n\nダウンロードして更新しますか？"
+                text: "新しいバージョン 0.0.2 があります（現在のバージョンは 0.0.1）。\n\nダウンロードして更新しますか？"
                     .to_owned(),
                 style: MB_YESNO | MB_ICONQUESTION,
             }
@@ -202,7 +202,7 @@ mod tests {
             prompt,
             Prompt {
                 text:
-                    "更新を確認できませんでした。\n\n更新の情報を取得できませんでした（HTTP 404）。"
+                    "更新を確認できませんでした。\n\n更新情報を取得できませんでした（HTTP 404）。"
                         .to_owned(),
                 style: MB_OK | MB_ICONWARNING,
             }

@@ -57,7 +57,7 @@ pub fn request_text(tab_number: usize, profile: Option<&str>, shown: bool) -> St
         None => format!("タブ {tab_number}（{shown}）"),
     };
     format!(
-        "{place}のアプリが、クリップボードの内容を読み出そうとしています。\n\n許可すると、いまクリップボードにある文字列がそのアプリへ渡ります。"
+        "{place}のアプリが、クリップボードの内容を読み取ろうとしています。\n\n許可すると、現在クリップボードにある文字列がそのアプリに渡されます。"
     )
 }
 
@@ -96,7 +96,7 @@ pub fn ask(owner: HWND, text: &str) -> Choice {
         Anonymous1: TASKDIALOGCONFIG_0 {
             pszMainIcon: TD_WARNING_ICON,
         },
-        pszMainInstruction: w!("クリップボードの読み出しの依頼"),
+        pszMainInstruction: w!("クリップボードの読み取りの要求"),
         pszContent: PCWSTR(content.as_ptr()),
         cButtons: buttons.len() as u32,
         pButtons: buttons.as_ptr(),
@@ -154,7 +154,7 @@ mod tests {
             text.starts_with("タブ 2（プロファイル「Cygwin」、表示していないタブ）のアプリが、"),
             "{text}"
         );
-        assert!(text.contains("読み出そうとしています"), "{text}");
+        assert!(text.contains("読み取ろうとしています"), "{text}");
         let text = request_text(1, None, true);
         assert!(
             text.starts_with("タブ 1（表示しているタブ）のアプリが、"),
