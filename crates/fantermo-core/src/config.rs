@@ -9,7 +9,11 @@
 
 pub mod migrate;
 
-use std::{collections::HashMap, ops::RangeInclusive, path::Path};
+use std::{
+    collections::HashMap,
+    ops::RangeInclusive,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, de::DeserializeOwned};
 use toml::{
@@ -292,10 +296,10 @@ impl Profile {
     }
 
     /// 最上位の `shell` に書いたコマンドライン `command` のプロファイル。名前は実行ファイルの名前。
-    /// つなぎ方は [`Profile::from_shell_with`] で決め、Cygwin のフォルダかどうかは `bin` に
-    /// `cygwin1.dll` があるかで見る。
+    /// つなぎ方は [`Profile::from_shell_with`] で決め、Cygwin のフォルダかどうかは [`is_cygwin_root`]
+    /// で見る。
     pub fn from_shell(command: &str) -> Self {
-        Self::from_shell_with(command, |root| root.join("bin").join(CYGWIN_DLL).is_file())
+        Self::from_shell_with(command, is_cygwin_root)
     }
 
     /// 最上位の `shell` に書いたコマンドライン `command` のプロファイル。`is_cygwin_root` はフォルダが
@@ -331,6 +335,16 @@ impl Profile {
 
 /// Cygwin のフォルダの `bin` にある DLL。
 const CYGWIN_DLL: &str = "cygwin1.dll";
+
+/// フォルダ `root` が Cygwin のフォルダだとしたときの、`cygwin1.dll` のパス。
+pub fn cygwin_dll_path(root: &Path) -> PathBuf {
+    root.join("bin").join(CYGWIN_DLL)
+}
+
+/// フォルダ `root` が Cygwin のフォルダか（`bin` に `cygwin1.dll` があるか）。
+pub fn is_cygwin_root(root: &Path) -> bool {
+    cygwin_dll_path(root).is_file()
+}
 
 /// WSL を起動する実行ファイルの名前（フォルダと `.exe` を除く）。
 const WSL_PROGRAM: &str = "wsl";

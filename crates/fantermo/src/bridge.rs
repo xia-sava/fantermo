@@ -27,7 +27,10 @@ use std::{
 use fantermo_bridge_protocol::{
     self as protocol, ChildExit, Decoder, FromBridge, MAX_PAYLOAD_LEN, ToBridge, WindowSize,
 };
-use fantermo_core::backend::{Backend, ExitCode, GridSize, SpawnOptions, Wake};
+use fantermo_core::{
+    backend::{Backend, ExitCode, GridSize, SpawnOptions, Wake},
+    config::{cygwin_dll_path, is_cygwin_root},
+};
 use windows::Win32::{
     Foundation::{HANDLE, WAIT_OBJECT_0},
     System::Threading::{
@@ -42,8 +45,6 @@ const LINUX_BRIDGE: (&str, &str) = ("fantermo-bridge", "x86_64-unknown-linux-mus
 
 /// `cygwin_root` を書いていないときに、この順に探す Cygwin のフォルダ。
 const CYGWIN_ROOTS: [&str; 2] = [r"C:\cygwin64", r"C:\cygwin"];
-/// Cygwin のフォルダにあるはずの DLL（`bin` の下）。
-const CYGWIN_DLL: &str = "cygwin1.dll";
 
 /// Cygwin のブリッジに、相手の側のコマンドラインを渡す環境変数。Cygwin のプログラムはコマンドラインを
 /// 独自の決まりで引数に分ける（`\` の扱いが引数の形で変わる）ので、利用者の書いた文字列は引数に入れない。
@@ -412,21 +413,20 @@ fn wslenv_with_term(current: Option<&str>) -> String {
 /// Cygwin のフォルダ。`configured` を書いていればそれ、なければ [`CYGWIN_ROOTS`] の順に、`bin` に
 /// `cygwin1.dll` があるもの。見つからなければその理由の文。
 fn cygwin_root(configured: Option<&str>) -> Result<PathBuf, String> {
-    let has_dll = |root: &Path| root.join("bin").join(CYGWIN_DLL).is_file();
     if let Some(root) = configured {
         let root = PathBuf::from(root);
-        if has_dll(&root) {
+        if is_cygwin_root(&root) {
             return Ok(root);
         }
         return Err(format!(
             "Cygwin が見つかりません（{} がありません）。cygwin_root に Cygwin のフォルダを書いてください。",
-            root.join("bin").join(CYGWIN_DLL).display()
+            cygwin_dll_path(&root).display()
         ));
     }
     CYGWIN_ROOTS
         .iter()
         .map(PathBuf::from)
-        .find(|root| has_dll(root))
+        .find(|root| is_cygwin_root(root))
         .ok_or_else(|| {
             format!(
                 "Cygwin が見つかりません（{} を探しました）。cygwin_root に Cygwin のフォルダを書いてください。",
