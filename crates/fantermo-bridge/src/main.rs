@@ -73,7 +73,7 @@ fn run() -> i32 {
         }
     };
     if let Err(error) = send(&FromBridge::Hello { version: VERSION }) {
-        log!("名乗りを送れません: {error}");
+        log!("開始の通知を送れません: {error}");
         return EXIT_IO_ERROR;
     }
 
@@ -86,7 +86,9 @@ fn run() -> i32 {
             }
         }
         Ok(Some(other)) => {
-            report_error(&format!("最初の単位が名乗りではありません: {other:?}"));
+            report_error(&format!(
+                "最初のデータが開始の通知ではありません: {other:?}"
+            ));
             return EXIT_PROTOCOL_ERROR;
         }
         Ok(None) => return EXIT_OK,
@@ -100,7 +102,7 @@ fn run() -> i32 {
         Ok(Some(ToBridge::Quit) | None) => return EXIT_OK,
         Ok(Some(other)) => {
             report_error(&format!(
-                "名乗りの次の単位がリサイズではありません: {other:?}"
+                "開始の通知の次のデータがリサイズの通知ではありません: {other:?}"
             ));
             return EXIT_PROTOCOL_ERROR;
         }
@@ -140,7 +142,7 @@ fn run() -> i32 {
     match Relay::new(child, decoder) {
         Ok(relay) => relay.run(),
         Err(error) => {
-            report_error(&format!("pty へ書くスレッドを起動できません: {error}"));
+            report_error(&format!("pty へ書き込むスレッドを起動できません: {error}"));
             EXIT_SPAWN_FAILED
         }
     }
@@ -654,7 +656,9 @@ impl Relay {
                 ToBridge::Data(bytes) => self.input.write(bytes),
                 ToBridge::Resize(size) => self.child.resize(size),
                 ToBridge::Quit => self.child.hang_up(),
-                ToBridge::Hello { .. } => return self.protocol_error("名乗りが二度届きました"),
+                ToBridge::Hello { .. } => {
+                    return self.protocol_error("開始の通知を二度受信しました");
+                }
             }
         }
         Flow::Continue
@@ -777,11 +781,11 @@ fn receive_blocking(decoder: &mut Decoder) -> Result<Option<ToBridge>, String> {
         if let Some(message) = decoder.next_message().map_err(|error| error.to_string())? {
             return Ok(Some(message));
         }
-        let n =
-            read_fd(STDIN, &mut buf).map_err(|error| format!("標準入力から読めません: {error}"))?;
+        let n = read_fd(STDIN, &mut buf)
+            .map_err(|error| format!("標準入力から読み取れません: {error}"))?;
         if n == 0 {
             if decoder.pending_len() > 0 {
-                return Err("標準入力が単位の途中で閉じました".to_string());
+                return Err("標準入力がデータの途中で閉じました".to_string());
             }
             return Ok(None);
         }

@@ -126,13 +126,19 @@ impl fmt::Display for DecodeError {
         match self {
             Self::TooLong { kind, len } => write!(
                 f,
-                "単位が長すぎます（種類 {kind}、長さ {len}、上限 {MAX_PAYLOAD_LEN}）"
+                "データが長すぎます（種類 {kind}、長さ {len}、上限 {MAX_PAYLOAD_LEN}）"
             ),
-            Self::UnknownKind(kind) => write!(f, "知らない種類の単位です（種類 {kind}）"),
+            Self::UnknownKind(kind) => write!(f, "不明な種類のデータです（種類 {kind}）"),
             Self::BadLength { kind, len } => {
-                write!(f, "単位の長さが違います（種類 {kind}、長さ {len}）")
+                write!(
+                    f,
+                    "データの長さが正しくありません（種類 {kind}、長さ {len}）"
+                )
             }
-            Self::BadExitTag(tag) => write!(f, "子プロセスの終わり方の値が違います（{tag}）"),
+            Self::BadExitTag(tag) => write!(
+                f,
+                "子プロセスの終了の種類を示す値が正しくありません（{tag}）"
+            ),
             Self::InvalidText => write!(f, "エラーの文が UTF-8 ではありません"),
         }
     }
@@ -169,7 +175,7 @@ impl fmt::Display for VersionMismatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "ブリッジのプロトコルのバージョンが合いません（こちら {}、相手 {}）",
+            "ブリッジのプロトコルのバージョンが一致しません（こちら {}、相手 {}）。fantermo を入れ直してください。",
             self.ours, self.theirs
         )
     }

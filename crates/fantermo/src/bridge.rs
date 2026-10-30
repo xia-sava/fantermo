@@ -322,7 +322,7 @@ fn wsl_command(
     let exe = find_bridge(LINUX_BRIDGE)?;
     let linux_exe = wsl_path(&exe).ok_or_else(|| {
         format!(
-            "ブリッジ（{}）を WSL のパスに直せません。ドライブ文字のあるフォルダに置いてください。",
+            "ブリッジ（{}）のパスを WSL のパスに変換できません。ドライブ文字のあるフォルダに置いてください。",
             exe.display()
         )
     })?;
@@ -423,13 +423,13 @@ pub fn cygwin_root(configured: Option<&str>) -> Result<PathBuf, String> {
             return Ok(root);
         }
         return Err(format!(
-            "Cygwin が見つかりません（{} がありません）。cygwin_root に Cygwin のフォルダを書いてください。",
+            "Cygwin が見つかりません（{} がありません）。cygwin_root に Cygwin のフォルダを指定してください。",
             cygwin_dll_path(&root).display()
         ));
     }
     find_cygwin_root().ok_or_else(|| {
         format!(
-            "Cygwin が見つかりません（環境変数 PATH と {} を探しました）。cygwin_root に Cygwin のフォルダを書くか、Cygwin の bin を PATH に入れてください。",
+            "Cygwin が見つかりません（環境変数 PATH と {} を探しました）。cygwin_root に Cygwin のフォルダを指定するか、Cygwin の bin を PATH に追加してください。",
             COMMON_CYGWIN_ROOTS.join("、")
         )
     })
@@ -447,7 +447,7 @@ fn find_bridge((file_name, triple): (&str, &str)) -> Result<PathBuf, String> {
         .cloned()
         .ok_or_else(|| {
             format!(
-                "ブリッジ（{file_name}）が見つかりません（{} を探しました）。",
+                "ブリッジ（{file_name}）が見つかりません（{} を探しました）。fantermo を入れ直してください。",
                 candidates[0].display()
             )
         })
@@ -627,7 +627,8 @@ impl OutputReader {
                 Ok(None) => break,
                 Err(e) => {
                     if self.greeted {
-                        events.push(self.fail(&format!("ブリッジの出力を読めませんでした: {e}")));
+                        events
+                            .push(self.fail(&format!("ブリッジの出力を読み取れませんでした: {e}")));
                     } else {
                         // 単位として読めないものは、ブリッジの前に動いたもの（wsl.exe など）の文かもしれない。
                         // 閉じるまで待って、届いたものをまとめて見せる。
@@ -649,7 +650,7 @@ impl OutputReader {
                     .map(|e| self.fail(&e.to_string()))
             }
             FromBridge::Hello { .. } => None,
-            _ if !self.greeted => Some(self.fail("ブリッジが名乗る前に、ほかの単位が届きました。")),
+            _ if !self.greeted => Some(self.fail("ブリッジの起動時の応答が正しくありません。")),
             FromBridge::Data(data) => Some(Event::Output(data)),
             FromBridge::Exit(exit) => {
                 self.done = true;
@@ -680,9 +681,9 @@ impl OutputReader {
         }
         let code = code.map_or_else(|| "不明".to_owned(), exit_code_text);
         let mut message = if self.greeted {
-            format!("ブリッジが終わりました（終了コード {code}）。")
+            format!("ブリッジが終了しました（終了コード {code}）。")
         } else {
-            format!("ブリッジが名乗らずに終わりました（終了コード {code}）。")
+            format!("ブリッジが起動の途中で終了しました（終了コード {code}）。")
         };
         let raw = readable_text(&self.raw);
         if !raw.trim().is_empty() {
@@ -844,7 +845,7 @@ mod tests {
         ]));
         let text = String::from_utf8(output(&events)).unwrap();
         assert!(text.starts_with("\r\n\x1b[31mfantermo: "), "{text:?}");
-        assert!(text.contains("バージョンが合いません"), "{text:?}");
+        assert!(text.contains("バージョンが一致しません"), "{text:?}");
         assert!(!text.contains("after"));
         assert!(reader.closed(Some(3)).is_empty());
 
@@ -871,7 +872,7 @@ mod tests {
         let events = reader.closed(Some(u32::MAX));
         let text = String::from_utf8(output(&events)).unwrap();
         assert!(
-            text.contains("名乗らずに終わりました（終了コード 0xffffffff）"),
+            text.contains("起動の途中で終了しました（終了コード 0xffffffff）"),
             "{text:?}"
         );
         assert!(
