@@ -26,15 +26,16 @@ use libghostty_vt::{
     },
     style::{Palette, PaletteIndex, RgbColor, Style, StyleColor, Underline as StyleUnderline},
     terminal::{
-        ClipboardMime, ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType,
-        Point, PointCoordinate, PointSpace, PrimaryDeviceAttributes, ScrollViewport,
-        SecondaryDeviceAttributes, SizeReportSize,
+        ClipboardMime, ClipboardWrite, ClipboardWriteError, ConformanceLevel,
+        DeviceAttributeFeature, DeviceAttributes, DeviceType, Point, PointCoordinate, PointSpace,
+        PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes, SizeReportSize,
     },
 };
 use std::time::Duration;
 
 use crate::{
     backend::GridSize,
+    clipboard::{self, ReadRequest, WriteRequest},
     config::TerminalColors,
     frame::{
         CellView, CursorView, Frame, ImageKey, ImageLayer, ImagePixels, ImageSource, ImageView,
@@ -176,6 +177,36 @@ const INDEX: &[u8] = b"\x1bD";
 /// kitty graphics protocol の Unicode placeholder の文字。画像は描画の状態が一覧に載せるので、文字としては描かない。
 const KITTY_PLACEHOLDER: char = '\u{10EEEE}';
 
+/// アプリからの書き込み `request` を、クリップボードへの書き込みにする。OSC 52 の選択先（`p`、`s` など）は
+/// 見ない。Windows のクリップボードは一つなので、どれも同じところへ書く。
+fn clipboard_write_request(
+    request: &ClipboardWrite<'_>,
+) -> Result<WriteRequest, ClipboardWriteError> {
+    let mut contents = request.contents();
+    if contents.len() == 0 {
+        return Ok(WriteRequest::Clear);
+    }
+    let Some(text) = contents.find(|content| is_text_mime(content.mime)) else {
+        tracing::warn!("ignoring a clipboard write without text");
+        return Err(ClipboardWriteError::Unsupported);
+    };
+    clipboard::write_request(text.data).ok_or_else(|| {
+        tracing::warn!(
+            "ignoring a clipboard write of {} bytes: over the limit of {}",
+            text.data.len(),
+            clipboard::MAX_WRITE_BYTES
+        );
+        ClipboardWriteError::InvalidData
+    })
+}
+
+/// `mime` が文字列の種類（`text/plain` か、`text/plain;charset=utf-8` のように添え書きの付いたもの）。
+fn is_text_mime(mime: &[u8]) -> bool {
+    let plain = PLAIN_TEXT_MIME.as_bytes();
+    mime.strip_prefix(plain)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(b";"))
+}
+
 /// libghostty-vt のログを `tracing` に流す。どの処理の警告かをアプリの出力が決めるものはログを埋めるので、
 /// 端末の外への働きかけ（クリップボードへの書き込みなど）の警告とエラーだけを流す。
 struct VtLogger;
@@ -221,6 +252,10 @@ pub struct Vt {
     last_title: Vec<u8>,
     /// ベル（BEL）を受けた。`take_bell` で下ろす。
     bell_rang: Rc<Cell<bool>>,
+    /// アプリからのクリップボードへの書き込み。コールバックの中で溜める。
+    clipboard_writes: Rc<RefCell<Vec<WriteRequest>>>,
+    /// アプリからのクリップボードの読み出しの依頼。
+    clipboard_reads: Vec<ReadRequest>,
     /// 画面を取り出すときに使い回す、描画用の状態と行・セルの反復子。
     render_state: RenderState<'static>,
     row_iter: RowIterator<'static>,
@@ -247,13 +282,15 @@ impl Vt {
         let replies = Rc::new(RefCell::new(Vec::new()));
         let size_cell = Rc::new(Cell::new(size));
         let bell_rang = Rc::new(Cell::new(false));
+        let clipboard_writes = Rc::new(RefCell::new(Vec::new()));
 
         install_process_hooks()?;
         let mut terminal = Terminal::new(size.cols, size.rows)?;
         terminal
             .set_scrollback_max_lines(Some(SCROLLBACK_LINES))?
             .set_terminfo_name(terminfo_name)?
-            .set_kitty_image_storage_limit(IMAGE_STORAGE_LIMIT)?;
+            .set_kitty_image_storage_limit(IMAGE_STORAGE_LIMIT)?
+            .set_clipboard_write_max_bytes(Some(clipboard::MAX_WRITE_BYTES))?;
         // 生成時の指定にはセルのピクセル寸法がないので、大きさを指定し直して渡す。
         terminal.resize(
             size.cols,
@@ -284,6 +321,16 @@ impl Vt {
             .on_bell({
                 let bell_rang = Rc::clone(&bell_rang);
                 move |_terminal| bell_rang.set(true)
+            })?
+            .on_clipboard_write({
+                let clipboard_writes = Rc::clone(&clipboard_writes);
+                move |_terminal, request| match clipboard_write_request(&request) {
+                    Ok(write) => {
+                        clipboard_writes.borrow_mut().push(write);
+                        request.reply(Ok(()), false);
+                    }
+                    Err(error) => request.reply(Err(error), false),
+                }
             })?;
 
         Ok(Self {
@@ -293,6 +340,8 @@ impl Vt {
             size: size_cell,
             last_title: Vec::new(),
             bell_rang,
+            clipboard_writes,
+            clipboard_reads: Vec::new(),
             render_state: RenderState::new()?,
             row_iter: RowIterator::new()?,
             cell_iter: CellIterator::new()?,
@@ -593,6 +642,7 @@ impl Vt {
     pub fn feed(&mut self, data: &[u8]) {
         let terminal = &mut self.terminal;
         let replies = &self.replies;
+        let clipboard_reads = &mut self.clipboard_reads;
         let size = self.size.get();
         self.output_scanner.scan(data, &mut |event| match event {
             OutputEvent::Bytes(bytes) => terminal.vt_write(bytes),
@@ -600,7 +650,18 @@ impl Vt {
             OutputEvent::Sixel { image, scrolling } => {
                 place_sixel(terminal, size, &image, scrolling);
             }
+            OutputEvent::ClipboardRead(request) => clipboard_reads.push(request),
         });
+    }
+
+    /// アプリからのクリップボードへの書き込みを、来た順に取り出す（OSC 52、OSC 1337 Copy、OSC 5522）。
+    pub fn take_clipboard_writes(&mut self) -> Vec<WriteRequest> {
+        std::mem::take(&mut *self.clipboard_writes.borrow_mut())
+    }
+
+    /// アプリからのクリップボードの読み出しの依頼（OSC 52）を、来た順に取り出す。
+    pub fn take_clipboard_reads(&mut self) -> Vec<ReadRequest> {
+        std::mem::take(&mut self.clipboard_reads)
     }
 
     /// 前に呼んだときからタイトル（OSC 0 / OSC 2 で設定されたもの）が変わっていれば、新しいタイトルを
@@ -1228,6 +1289,154 @@ mod tests {
         assert_eq!(vt.take_title_change().unwrap(), None);
         vt.feed(b"\x1b]2;vim\x1b\\");
         assert_eq!(vt.take_title_change().unwrap().as_deref(), Some("vim"));
+    }
+
+    fn set(text: &str) -> WriteRequest {
+        WriteRequest::Set(text.to_owned())
+    }
+
+    #[test]
+    fn osc_52_writes_are_decoded_for_every_selector_and_terminator() {
+        let mut vt = new_vt();
+        for data in [
+            b"\x1b]52;c;aGVsbG8=\x07".as_slice(),
+            b"\x1b]52;c;aGVsbG8=\x1b\\",
+            b"\x1b]52;;aGVsbG8=\x07",
+            b"\x1b]52;p;aGVsbG8=\x07",
+            b"\x1b]52;s;aGVsbG8=\x07",
+            b"\x1b]52;c;aGVsbG8\x07",
+        ] {
+            vt.feed(data);
+            assert_eq!(vt.take_clipboard_writes(), [set("hello")], "{data:?}");
+            assert!(vt.take_replies().is_empty());
+        }
+    }
+
+    #[test]
+    fn osc_1337_copy_writes_like_osc_52() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b]1337;Copy=:aGVsbG8=\x07");
+        assert_eq!(vt.take_clipboard_writes(), [set("hello")]);
+    }
+
+    #[test]
+    fn osc_5522_writes_text_and_refuses_the_rest() {
+        let mut vt = new_vt();
+        vt.feed(
+            b"\x1b]5522;type=write:id=c1\x1b\\\
+              \x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;SGVsbG8=\x1b\\\
+              \x1b]5522;type=wdata\x1b\\",
+        );
+        assert_eq!(vt.take_clipboard_writes(), [set("Hello")]);
+        assert_eq!(
+            vt.take_replies(),
+            b"\x1b]5522;type=write:status=DONE:id=c1\x1b\\"
+        );
+
+        vt.feed(
+            b"\x1b]5522;type=write:id=c2\x1b\\\
+              \x1b]5522;type=wdata:mime=aW1hZ2UvcG5n;SGVsbG8=\x1b\\\
+              \x1b]5522;type=wdata\x1b\\",
+        );
+        assert!(vt.take_clipboard_writes().is_empty());
+        assert_eq!(
+            vt.take_replies(),
+            b"\x1b]5522;type=write:status=ENOSYS:id=c2\x1b\\"
+        );
+    }
+
+    #[test]
+    fn invalid_base64_writes_nothing() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b]52;c;not base64!\x07");
+        assert!(vt.take_clipboard_writes().is_empty());
+    }
+
+    #[test]
+    fn an_empty_osc_52_clears_the_clipboard() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b]52;c;\x07");
+        assert_eq!(vt.take_clipboard_writes(), [WriteRequest::Clear]);
+    }
+
+    #[test]
+    fn writes_are_kept_in_order_across_chunks() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b]52;c;YQ");
+        vt.feed(b"==\x07\x1b]52;c;Yg==\x07");
+        assert_eq!(vt.take_clipboard_writes(), [set("a"), set("b")]);
+        assert!(vt.take_clipboard_writes().is_empty());
+    }
+
+    /// base64 で `encoded_bytes` バイトになる OSC 52 の書き込み。
+    fn osc_52_of_length(encoded_bytes: usize) -> Vec<u8> {
+        let mut data = b"\x1b]52;c;".to_vec();
+        data.extend(std::iter::repeat_n(b'A', encoded_bytes));
+        data.push(0x07);
+        data
+    }
+
+    #[test]
+    fn long_writes_reach_the_clipboard_up_to_the_length_of_an_escape_sequence() {
+        const ENCODED_GROUP: usize = 4;
+        let mut vt = new_vt();
+        // libghostty-vt が手元に置く 2048 バイトを超えても届く。
+        for encoded in [ENCODED_GROUP * 1024, 4 * 1024 * 1024] {
+            vt.feed(&osc_52_of_length(encoded));
+            let writes = vt.take_clipboard_writes();
+            let [WriteRequest::Set(text)] = writes.as_slice() else {
+                panic!("expected one write of {encoded} encoded bytes");
+            };
+            assert_eq!(text.len(), encoded / ENCODED_GROUP * 3);
+        }
+        // エスケープシーケンスの長さの上限（8 MiB）を超えると、端末エミュレーションが捨てる。
+        vt.feed(&osc_52_of_length(9 * 1024 * 1024));
+        assert!(vt.take_clipboard_writes().is_empty());
+    }
+
+    #[test]
+    fn clipboard_reads_are_queued_and_not_answered() {
+        use crate::clipboard::Terminator;
+
+        let mut vt = new_vt();
+        vt.feed(b"a\x1b]52;c;?\x07b\x1b]52;;?\x1b\\");
+        assert!(vt.take_replies().is_empty());
+        assert_eq!(
+            vt.take_clipboard_reads(),
+            [
+                ReadRequest {
+                    selector: Some(b'c'),
+                    terminator: Terminator::Bel,
+                },
+                ReadRequest {
+                    selector: None,
+                    terminator: Terminator::St,
+                },
+            ]
+        );
+        assert!(vt.take_clipboard_reads().is_empty());
+        assert!(vt.take_clipboard_writes().is_empty());
+        assert!(vt.plain_text().unwrap().contains("ab"));
+    }
+
+    #[test]
+    fn osc_5522_reads_are_refused() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b]5522;type=read:id=r1;dGV4dC9wbGFpbg==\x1b\\");
+        assert_eq!(
+            vt.take_replies(),
+            b"\x1b]5522;type=read:status=EPERM:id=r1\x1b\\"
+        );
+        assert!(vt.take_clipboard_reads().is_empty());
+    }
+
+    #[test]
+    fn pasting_sends_the_text_even_if_the_application_asks_for_paste_events() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b[?5522h");
+        vt.take_replies();
+        assert_eq!(vt.paste("abc", false).unwrap(), PasteOutcome::Pasted);
+        assert_eq!(vt.take_replies(), b"abc");
     }
 
     #[test]

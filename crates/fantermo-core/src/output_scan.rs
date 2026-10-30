@@ -1,9 +1,22 @@
 //! 子プロセスの出力を端末エミュレーションへ流す前に見て、libghostty-vt が扱わないもの（sixel の DCS と
-//! 関係するモード）を取り出す。それ以外のバイトは順番を変えずに渡す。チャンクの切れ目はどこにあってもよい。
+//! 関係するモード）と、あとで答えるもの（OSC 52 の読み出しの依頼）を取り出す。それ以外のバイトは順番を
+//! 変えずに渡す。チャンクの切れ目はどこにあってもよい。
+//!
+//! OSC 52 の読み出しの依頼を libghostty-vt に渡さないのは、そのコールバックの中で答えなければ空の答えを
+//! 書き込むので、ダイアログで確かめてから答えることも、拒否して何も返さないこともできないため。
 
-use crate::sixel::{COLOR_REGISTERS, MAX_IMAGE_HEIGHT, MAX_IMAGE_WIDTH, SixelDecoder, SixelImage};
+use crate::{
+    clipboard::{ReadRequest, Terminator},
+    sixel::{COLOR_REGISTERS, MAX_IMAGE_HEIGHT, MAX_IMAGE_WIDTH, SixelDecoder, SixelImage},
+};
 
 const ESC: u8 = 0x1b;
+/// OSC を終える BEL。
+const BEL: u8 = 0x07;
+/// OSC の始まりの `ESC ]` のバイト数。
+const OSC_INTRODUCER_LEN: usize = 2;
+/// `ESC ]` に続く OSC 52 の始まり。
+const OSC_52_PREFIX: &[u8] = b"52;";
 /// 8 ビットの DCS の始まり。
 const C1_DCS: u8 = 0x90;
 /// 8 ビットの ST。
@@ -57,6 +70,8 @@ pub enum OutputEvent<'a> {
         /// カーソルを動かさない。
         scrolling: bool,
     },
+    /// アプリからのクリップボードの読み出しの依頼。
+    ClipboardRead(ReadRequest),
 }
 
 /// どこまで読んだか。
@@ -72,6 +87,26 @@ enum State {
     CsiPrivate,
     /// `ESC [ ?` とそのパラメータの後ろで `$` を読んだ（`$` は手元に置かない）。
     CsiPrivateDollar,
+    /// `ESC ]` と、そのあとの `52;` の途中までを読んでいる。
+    OscPrefix,
+    /// `ESC ] 52 ;` を読んだ。`Pc` が来るところ。
+    Osc52Selector,
+    /// `ESC ] 52 ; Pc` を読んだ。`;` が来るところ。
+    Osc52SelectorEnd {
+        selector: Option<u8>,
+    },
+    /// `ESC ] 52 ; Pc ;` を読んだ。`?` が来るところ。
+    Osc52Payload {
+        selector: Option<u8>,
+    },
+    /// `ESC ] 52 ; Pc ; ?` を読んだ。終端が来るところ。
+    Osc52Terminator {
+        selector: Option<u8>,
+    },
+    /// `ESC ] 52 ; Pc ; ?` の後ろで `ESC` を読んだ。`\` が来るところ。
+    Osc52TerminatorEscape {
+        selector: Option<u8>,
+    },
     /// sixel の中身を読んでいる。
     Sixel(Box<SixelDecoder>),
     /// sixel の中身の後ろで `ESC` を読んだ。
@@ -138,6 +173,11 @@ impl OutputScanner {
                         b'[' => {
                             self.held.push(byte);
                             self.state = State::Csi;
+                            index += 1;
+                        }
+                        b']' => {
+                            self.held.push(byte);
+                            self.state = State::OscPrefix;
                             index += 1;
                         }
                         _ => {
@@ -222,6 +262,87 @@ impl OutputScanner {
                         index += 1;
                     } else {
                         self.held.push(b'$');
+                        self.release_held(sink);
+                    }
+                    span_start = index;
+                }
+                State::OscPrefix => {
+                    // `held` は `ESC ]` と、そのあとに読んだ `52;` の始まり。
+                    let read = self.held.len() - OSC_INTRODUCER_LEN;
+                    if OSC_52_PREFIX.get(read) == Some(&byte) {
+                        self.held.push(byte);
+                        index += 1;
+                        if read + 1 == OSC_52_PREFIX.len() {
+                            self.state = State::Osc52Selector;
+                        }
+                    } else {
+                        self.release_held(sink);
+                    }
+                    span_start = index;
+                }
+                State::Osc52Selector => {
+                    match byte {
+                        b';' => {
+                            self.held.push(byte);
+                            self.state = State::Osc52Payload { selector: None };
+                            index += 1;
+                        }
+                        _ if is_selector(byte) => {
+                            self.held.push(byte);
+                            self.state = State::Osc52SelectorEnd {
+                                selector: Some(byte),
+                            };
+                            index += 1;
+                        }
+                        _ => self.release_held(sink),
+                    }
+                    span_start = index;
+                }
+                &mut State::Osc52SelectorEnd { selector } => {
+                    if byte == b';' {
+                        self.held.push(byte);
+                        self.state = State::Osc52Payload { selector };
+                        index += 1;
+                    } else {
+                        self.release_held(sink);
+                    }
+                    span_start = index;
+                }
+                &mut State::Osc52Payload { selector } => {
+                    if byte == b'?' {
+                        self.held.push(byte);
+                        self.state = State::Osc52Terminator { selector };
+                        index += 1;
+                    } else {
+                        self.release_held(sink);
+                    }
+                    span_start = index;
+                }
+                &mut State::Osc52Terminator { selector } => {
+                    match byte {
+                        BEL | C1_ST => {
+                            let terminator = if byte == BEL {
+                                Terminator::Bel
+                            } else {
+                                Terminator::St
+                            };
+                            self.finish_clipboard_read(selector, terminator, sink);
+                            index += 1;
+                        }
+                        ESC => {
+                            self.held.push(byte);
+                            self.state = State::Osc52TerminatorEscape { selector };
+                            index += 1;
+                        }
+                        _ => self.release_held(sink),
+                    }
+                    span_start = index;
+                }
+                &mut State::Osc52TerminatorEscape { selector } => {
+                    if byte == b'\\' {
+                        self.finish_clipboard_read(selector, Terminator::St, sink);
+                        index += 1;
+                    } else {
                         self.release_held(sink);
                     }
                     span_start = index;
@@ -316,6 +437,21 @@ impl OutputScanner {
         self.state = State::Ground;
     }
 
+    /// 読み終えた読み出しの依頼を渡し、Ground に戻る。
+    fn finish_clipboard_read(
+        &mut self,
+        selector: Option<u8>,
+        terminator: Terminator,
+        sink: &mut dyn FnMut(OutputEvent),
+    ) {
+        sink(OutputEvent::ClipboardRead(ReadRequest {
+            selector,
+            terminator,
+        }));
+        self.held.clear();
+        self.state = State::Ground;
+    }
+
     fn finish_sixel(&mut self, decoder: SixelDecoder, sink: &mut dyn FnMut(OutputEvent)) {
         if let Some(image) = decoder.finish() {
             sink(OutputEvent::Sixel {
@@ -324,6 +460,11 @@ impl OutputScanner {
             });
         }
     }
+}
+
+/// `byte` が OSC 52 の `Pc` になれる。libghostty-vt と同じく 1 文字だけを見る。
+fn is_selector(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
 }
 
 /// XTSMGRAPHICS（`CSI ? Pi ; Pa ; Pv S`）への答え。色レジスタの数と sixel の大きさは決まった値で、変える
@@ -376,6 +517,7 @@ mod tests {
         Bytes(Vec<u8>),
         Reply(Vec<u8>),
         Sixel(u32, u32, bool),
+        ClipboardRead(ReadRequest),
     }
 
     /// `chunks` を順に読ませ、続いたバイト列を一つにまとめて返す。
@@ -393,6 +535,9 @@ mod tests {
                 OutputEvent::Reply(reply) => events.push(Owned::Reply(reply)),
                 OutputEvent::Sixel { image, scrolling } => {
                     events.push(Owned::Sixel(image.width, image.height, scrolling));
+                }
+                OutputEvent::ClipboardRead(request) => {
+                    events.push(Owned::ClipboardRead(request));
                 }
             });
         }
@@ -595,6 +740,86 @@ mod tests {
         // ほかのモードの問い合わせは端末エミュレーションが答える。
         assert_eq!(scan_checked(b"\x1b[?25$p"), [bytes(b"\x1b[?25$p")]);
         assert_eq!(scan_checked(b"\x1b[?80$x"), [bytes(b"\x1b[?80$x")]);
+    }
+
+    fn clipboard_read(selector: Option<u8>, terminator: Terminator) -> Owned {
+        Owned::ClipboardRead(ReadRequest {
+            selector,
+            terminator,
+        })
+    }
+
+    #[test]
+    fn clipboard_reads_are_cut_out_in_the_order_of_the_stream() {
+        assert_eq!(
+            scan_checked(b"ab\x1b]52;c;?\x07cd"),
+            [
+                bytes(b"ab"),
+                clipboard_read(Some(b'c'), Terminator::Bel),
+                bytes(b"cd"),
+            ]
+        );
+    }
+
+    #[test]
+    fn clipboard_reads_take_any_selector_and_terminator() {
+        for (data, selector, terminator) in [
+            (b"\x1b]52;c;?\x1b\\".as_slice(), Some(b'c'), Terminator::St),
+            (b"\x1b]52;p;?\x9c", Some(b'p'), Terminator::St),
+            (b"\x1b]52;s;?\x07", Some(b's'), Terminator::Bel),
+            (b"\x1b]52;0;?\x07", Some(b'0'), Terminator::Bel),
+            (b"\x1b]52;;?\x07", None, Terminator::Bel),
+        ] {
+            assert_eq!(
+                scan_checked(data),
+                [clipboard_read(selector, terminator)],
+                "{data:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_oscs_pass_unchanged() {
+        for data in [
+            // 書き込み。
+            b"\x1b]52;c;aGVsbG8=\x07".as_slice(),
+            b"\x1b]52;;aGVsbG8=\x1b\\",
+            // 空にする。
+            b"\x1b]52;c;\x07",
+            // `?` で終わらないもの。
+            b"\x1b]52;c;?x\x07",
+            // `Pc` が 2 文字以上のものは、libghostty-vt も読まない。
+            b"\x1b]52;pc;?\x07",
+            b"\x1b]52\x07",
+            b"\x1b]521;c;?\x07",
+            b"\x1b]5;c;?\x07",
+            b"\x1b]7;file:///c/\x07",
+            b"\x1b]\x07",
+        ] {
+            assert_eq!(scan_checked(data), [bytes(data)], "{data:?}");
+        }
+    }
+
+    #[test]
+    fn an_escape_after_the_question_mark_starts_the_next_sequence() {
+        let data = b"\x1b]52;c;?\x1b[0m";
+        assert_eq!(scan_checked(data), [bytes(data)]);
+        // 手元に置いていたものを流したあとの `ESC` から、読み出しの依頼を読み直す。
+        assert_eq!(
+            scan_checked(b"\x1b]52;c;\x1b]52;c;?\x07"),
+            [
+                bytes(b"\x1b]52;c;"),
+                clipboard_read(Some(b'c'), Terminator::Bel),
+            ]
+        );
+    }
+
+    #[test]
+    fn long_clipboard_writes_are_not_held() {
+        let mut data = b"\x1b]52;c;".to_vec();
+        data.extend(std::iter::repeat_n(b'A', MAX_HELD_BYTES * 4));
+        data.push(0x07);
+        assert_eq!(scan_checked(&data), [bytes(&data)]);
     }
 
     #[test]

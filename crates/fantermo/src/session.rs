@@ -42,6 +42,8 @@ pub struct Startup {
     pub distribution: Option<String>,
     /// タブに出すアイコン。
     pub tab_icon: TabIcon,
+    /// プロファイルの名前。プロファイルなしで起動するなら `None`。
+    pub profile_name: Option<String>,
 }
 
 impl Startup {
@@ -53,6 +55,7 @@ impl Startup {
             cygwin_root: None,
             distribution: None,
             tab_icon: TabIcon::without_profile(),
+            profile_name: None,
         }
     }
 
@@ -64,6 +67,7 @@ impl Startup {
             cygwin_root: profile.cygwin_root.clone(),
             distribution: profile.distribution.clone(),
             tab_icon: TabIcon::for_profile(profile, config_dir),
+            profile_name: Some(profile.name.clone()),
         }
     }
 }
@@ -117,6 +121,10 @@ pub struct Session {
     pub background_image: Option<Candidate>,
     /// タブに出すアイコン。開いたときのプロファイルで決まり、プロファイルを変えても消しても変わらない。
     pub tab_icon: TabIcon,
+    /// 開いたときのプロファイルの名前。プロファイルなしで開いたなら `None`。
+    pub profile_name: Option<String>,
+    /// このタブのアプリには、クリップボードの読み出しを確かめずに許可する。利用者がダイアログで決める。
+    pub clipboard_read_allowed: bool,
 }
 
 /// 子プロセスの出力を流し込んだ結果。
@@ -153,6 +161,7 @@ impl Session {
         )?;
         let mut session = Self::with_backend(id, vt, backend);
         session.tab_icon = startup.tab_icon.clone();
+        session.profile_name = startup.profile_name.clone();
         Ok(session)
     }
 
@@ -171,6 +180,8 @@ impl Session {
             bell_marked: false,
             background_image: None,
             tab_icon: TabIcon::without_profile(),
+            profile_name: None,
+            clipboard_read_allowed: false,
         }
     }
 

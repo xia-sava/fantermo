@@ -12,6 +12,7 @@ use std::{
 use fantermo_core::{
     backend::{ExitCode, GridSize},
     background::{Candidate, Random},
+    clipboard::{ReadDecision, ReadPrompts, ReadRequest, WriteRequest, read_decision},
     config::{
         self, BackgroundConfig, ClipboardConfig, ClipboardRead, ColorsConfig, Config,
         DEFAULT_FONT_FAMILIES, FontConfig, PasteConfig, PasteConfirm, Profile, ScrollBarConfig,
@@ -45,21 +46,22 @@ use windows::{
             Controls::WM_MOUSELEAVE,
             HiDpi::{AdjustWindowRectExForDpi, GetDpiForSystem, GetDpiForWindow},
             Input::KeyboardAndMouse::{
-                GetDoubleClickTime, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT,
-                TrackMouseEvent, VK_F4, VK_PROCESSKEY, VK_SPACE,
+                GetDoubleClickTime, IsWindowEnabled, ReleaseCapture, SetCapture, TME_LEAVE,
+                TRACKMOUSEEVENT, TrackMouseEvent, VK_F4, VK_PROCESSKEY, VK_SPACE,
             },
             WindowsAndMessaging::{
                 CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
                 DestroyWindow, DispatchMessageW, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO,
                 FlashWindowEx, GWLP_USERDATA, GetClientRect, GetForegroundWindow, GetMessageW,
-                GetWindowLongPtrW, GetWindowRect, HTCLIENT, IDC_ARROW, IDC_HAND, KillTimer,
-                LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage,
-                RegisterClassExW, SPI_GETWHEELSCROLLLINES, SW_SHOWDEFAULT, SW_SHOWMAXIMIZED,
-                SWP_NOACTIVATE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW,
-                SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-                SystemParametersInfoW, TranslateMessage, WA_INACTIVE, WHEEL_DELTA, WINDOW_EX_STYLE,
-                WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE,
-                WM_CONTEXTMENU, WM_DEADCHAR, WM_DESTROY, WM_DPICHANGED, WM_ENDSESSION,
+                GetWindowLongPtrW, GetWindowRect, HTCLIENT, IDC_ARROW, IDC_HAND, IsWindow,
+                KillTimer, LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostMessageW,
+                PostQuitMessage, RegisterClassExW, SPI_GETWHEELSCROLLLINES, SW_SHOWDEFAULT,
+                SW_SHOWMAXIMIZED, SWP_NOACTIVATE, SWP_NOZORDER,
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetCursor, SetTimer,
+                SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, SystemParametersInfoW,
+                TranslateMessage, WA_INACTIVE, WHEEL_DELTA, WINDOW_EX_STYLE, WINDOW_STYLE,
+                WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU,
+                WM_DEADCHAR, WM_DESTROY, WM_DPICHANGED, WM_ENABLE, WM_ENDSESSION,
                 WM_GETDPISCALEDSIZE, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
                 WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
                 WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_QUERYENDSESSION,
@@ -76,6 +78,7 @@ use crate::{
     about, app_icon,
     background::DiskFiles,
     clipboard,
+    clipboard_prompt::{self, Choice},
     config_file::{self, Loaded},
     context_menu::{self, Chosen, Menu, MenuCommand, MenuRequest},
     dump::{DUMP_INTERVAL, ScreenDump},
@@ -112,6 +115,9 @@ const WM_APP_CONFIG_CHANGED: u32 = WM_APP + 2;
 
 /// 更新の確認かダウンロードをするスレッドが、結果を `App::update_events` に送ったと知らせるメッセージ。
 const WM_APP_UPDATE: u32 = WM_APP + 3;
+
+/// クリップボードの読み出しの依頼が確かめを待っているかもしれないことを、ウィンドウに知らせる。
+const WM_APP_CLIPBOARD_PROMPT: u32 = WM_APP + 4;
 
 /// 画面の書き出しに使うタイマー。
 const DUMP_TIMER_ID: usize = 1;
@@ -592,6 +598,8 @@ enum Deferred {
     Warn { topic: Topic, text: String },
     /// 更新のスレッドの結果を見せ、次にすることを決める。
     Update(update::Event),
+    /// クリップボードの読み出しの依頼を、本文 `text` のダイアログで確かめる。
+    AskClipboardRead { text: String },
 }
 
 /// スクロールバーの上で左ボタンを押してから離すまでの操作。
@@ -639,6 +647,8 @@ struct App {
     paste_confirm: PasteConfirm,
     /// アプリがクリップボードの内容を読み出そうとしたときにどうするか。
     clipboard_read: ClipboardRead,
+    /// 確かめを待っているクリップボードの読み出しの依頼。
+    clipboard_prompts: ReadPrompts<SessionId>,
     /// fantermo の引数（子プロセスのコマンドライン）。
     arguments: Option<String>,
     /// 設定のプロファイル。少なくとも一つある。
@@ -795,6 +805,7 @@ impl App {
             font_config,
             paste_confirm: config.paste.confirm,
             clipboard_read: config.clipboard.read,
+            clipboard_prompts: ReadPrompts::default(),
             arguments,
             profiles: config.profiles,
             default_profile: config.default_profile,
@@ -1044,6 +1055,9 @@ impl App {
             self.leave_active();
         }
         let closed = self.sessions.remove(index);
+        if self.clipboard_prompts.discard_tab(closed.id()) {
+            clipboard_prompt::close();
+        }
         self.renderer.drop_terminal_images(closed.id().0);
         drop(closed);
         self.drop_unused_background_images();
@@ -1158,6 +1172,103 @@ impl App {
             tracing::warn!("failed to clear the selection: {e}");
         }
         self.invalidate();
+    }
+
+    /// `sessions` の `index` の端末のアプリからの、クリップボードの書き込みと読み出しの依頼を処理する。
+    fn on_clipboard_requests(&mut self, index: usize) {
+        for write in self.sessions[index].vt.take_clipboard_writes() {
+            let result = match write {
+                WriteRequest::Set(text) => clipboard::set_text(self.hwnd, &text),
+                WriteRequest::Clear => clipboard::clear(self.hwnd),
+            };
+            if let Err(e) = result {
+                tracing::warn!("failed to write to the clipboard for an application: {e}");
+            }
+        }
+        let id = self.sessions[index].id();
+        for request in self.sessions[index].vt.take_clipboard_reads() {
+            let allowed = self.sessions[index].clipboard_read_allowed;
+            match read_decision(self.clipboard_read, allowed) {
+                ReadDecision::Answer => self.answer_clipboard_read(id, request),
+                ReadDecision::Refuse => tracing::debug!("refused a clipboard read from {id:?}"),
+                ReadDecision::Ask => {
+                    self.clipboard_prompts.push(id, request);
+                    self.post_clipboard_prompt();
+                }
+            }
+        }
+    }
+
+    /// 確かめを待っている依頼を見るよう、ウィンドウに知らせる。
+    fn post_clipboard_prompt(&self) {
+        poster(self.hwnd, WM_APP_CLIPBOARD_PROMPT, WPARAM(0))();
+    }
+
+    /// いまのクリップボードの文字列を、端末 `id` のアプリへ答える。文字列がなければ空で答える。
+    fn answer_clipboard_read(&mut self, id: SessionId, request: ReadRequest) {
+        let text = match clipboard::text(self.hwnd) {
+            Ok(text) => text.as_deref().map(text_dialog::from_crlf),
+            Err(e) => {
+                tracing::warn!("failed to read the clipboard for an application: {e}");
+                None
+            }
+        };
+        let reply = request.reply(text.as_deref().unwrap_or_default());
+        match self.sessions.iter_mut().find(|session| session.id() == id) {
+            Some(session) => session.write(&reply),
+            None => tracing::debug!("dropping a clipboard answer for a closed terminal {id:?}"),
+        }
+    }
+
+    /// 次に確かめる依頼があれば、ダイアログを開くよう返す。ほかのダイアログを開いている間（ウィンドウが無効の
+    /// 間）は開かず、有効に戻ったときに見直す。待っている間に設定やタブの許可が変わったら、それに従って片づける。
+    fn next_clipboard_prompt(&mut self) -> Option<Deferred> {
+        // SAFETY: ウィンドウのハンドルを調べるだけ。
+        if !unsafe { IsWindowEnabled(self.hwnd) }.as_bool() {
+            return None;
+        }
+        while let Some((id, request)) = self.clipboard_prompts.start_next() {
+            let index = self.sessions.iter().position(|session| session.id() == id);
+            let allowed = index.is_some_and(|index| self.sessions[index].clipboard_read_allowed);
+            match read_decision(self.clipboard_read, allowed) {
+                ReadDecision::Answer => self.answer_clipboard_read(id, request),
+                ReadDecision::Refuse => tracing::debug!("refused a clipboard read from {id:?}"),
+                ReadDecision::Ask => {
+                    if let Some(index) = index {
+                        let session = &self.sessions[index];
+                        return Some(Deferred::AskClipboardRead {
+                            text: clipboard_prompt::request_text(
+                                index + 1,
+                                session.profile_name.as_deref(),
+                                index == self.active,
+                            ),
+                        });
+                    }
+                }
+            }
+            self.clipboard_prompts.finish();
+        }
+        None
+    }
+
+    /// 確認のダイアログの答え `choice` に従う。ダイアログの間にタブを閉じていれば、何もしない。
+    fn finish_clipboard_prompt(&mut self, choice: Choice) {
+        if let Some((id, request)) = self.clipboard_prompts.finish() {
+            tracing::debug!("the user answered a clipboard read from {id:?}: {choice:?}");
+            let allows = choice != Choice::Deny && self.clipboard_read != ClipboardRead::Deny;
+            if allows {
+                if choice == Choice::AllowForTab
+                    && let Some(session) =
+                        self.sessions.iter_mut().find(|session| session.id() == id)
+                {
+                    session.clipboard_read_allowed = true;
+                }
+                self.answer_clipboard_read(id, request);
+            }
+        }
+        if self.clipboard_prompts.has_waiting() {
+            self.post_clipboard_prompt();
+        }
     }
 
     /// ウィンドウのクライアント領域の中の位置を、端末を描く領域の左上からの位置にする。
@@ -1969,6 +2080,7 @@ impl App {
             return false;
         };
         let events = self.sessions[index].on_output();
+        self.on_clipboard_requests(index);
         let shown = index == self.active;
         if events.bell {
             self.ring_bell();
@@ -2629,6 +2741,14 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
             Deferred::Update(event) => {
                 next = continue_update(update::prompt::on_event(hwnd, event), with_app);
             }
+            Deferred::AskClipboardRead { text } => {
+                let choice = clipboard_prompt::ask(hwnd, &text);
+                // ダイアログの間に最後の端末が終わると、ウィンドウはもうなく、App も解放されている。
+                // SAFETY: ウィンドウのハンドルを調べるだけ。
+                if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+                    with_app(&mut |app| app.finish_clipboard_prompt(choice));
+                }
+            }
         }
     }
 }
@@ -3034,6 +3154,20 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
             LRESULT(0)
         }
+        WM_APP_CLIPBOARD_PROMPT => {
+            let mut deferred = None;
+            with_app(&mut |app| deferred = app.next_clipboard_prompt());
+            run_deferred(hwnd, deferred, &with_app);
+            LRESULT(0)
+        }
+        // ダイアログを閉じてウィンドウが有効に戻ったら、待っていた確かめを始める。この場ではダイアログの片づけの
+        // 途中なので、積んであとで見る。
+        WM_ENABLE => {
+            if wparam.0 != 0 {
+                poster(hwnd, WM_APP_CLIPBOARD_PROMPT, WPARAM(0))();
+            }
+            LRESULT(0)
+        }
         // 知らせが続けて届くたびにタイマーを掛け直し、止んでから一度だけ読み直す。
         WM_APP_CONFIG_CHANGED => {
             // SAFETY: hwnd は有効なウィンドウ。同じ番号のタイマーは掛け直しになる。
@@ -3421,6 +3555,7 @@ mod tests {
                 cygwin_root: None,
                 distribution: Some("Ubuntu".to_owned()),
                 tab_icon: TabIcon::for_profile(&wsl, None),
+                profile_name: Some(wsl.name.clone()),
             }
         );
     }

@@ -17,6 +17,7 @@ mod background;
 mod boxdraw;
 mod bridge;
 mod clipboard;
+mod clipboard_prompt;
 mod config_file;
 mod conpty;
 mod context_menu;

@@ -66,6 +66,13 @@ pub fn set_text(owner: HWND, text: &str) -> windows::core::Result<()> {
     result
 }
 
+/// クリップボードを空にする。
+pub fn clear(owner: HWND) -> windows::core::Result<()> {
+    let _clipboard = OpenedClipboard::open(owner)?;
+    // SAFETY: クリップボードは開いている。
+    unsafe { EmptyClipboard() }
+}
+
 /// クリップボードの文字列。文字列がなければ `None`。
 pub fn text(owner: HWND) -> windows::core::Result<Option<String>> {
     let _clipboard = OpenedClipboard::open(owner)?;
