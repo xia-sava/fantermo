@@ -2,7 +2,8 @@
 //!
 //! 開いている間は呼び出し元のウィンドウを無効にし、メッセージはこのダイアログのループで回す。IDOK の
 //! ボタンを押せば入力欄の文字列を返し、IDCANCEL のボタンや Esc なら何も返さない。ほかのボタンを押せば、その
-//! ボタンを返して閉じる。リンクを押せば既定のアプリで開く。
+//! ボタンを返して閉じる（`Dialog::on_button` が閉じないと答えたものを除く）。リンクを押せば既定のアプリで
+//! 開く。
 
 use std::{
     cell::{Cell, RefCell},
@@ -76,7 +77,8 @@ const FONT_RATIO: f32 = 0.75;
 
 /// ダイアログの下に右から並べるボタン。
 pub struct Button {
-    /// 押したときのコントロール ID。どのボタンを押してもダイアログを閉じる。
+    /// 押したときのコントロール ID。押せばダイアログを閉じる（`Dialog::on_button` が閉じないと答えたものを
+    /// 除く）。
     pub id: i32,
     pub label: &'static str,
     /// Enter で押されるボタンとして描く。
@@ -106,7 +108,16 @@ pub struct Dialog<'a> {
     pub min_columns: Option<u32>,
     /// 左から順に並べるボタン。
     pub buttons: &'a [Button],
+    /// IDOK と IDCANCEL のほかのボタンを押したときに、ダイアログとボタンのコントロール ID を渡して呼ぶ。真を
+    /// 返したら、ダイアログを閉じない。
+    pub on_button: Option<&'a dyn Fn(HWND, i32) -> bool>,
+    /// 呼び出し元のウィンドウ宛てに積まれたメッセージを、ほかに渡す前にダイアログとあわせて渡して呼ぶ。真を
+    /// 返したら、そのメッセージはほかに渡さない。中でダイアログを閉じてもよい（[`close`]）。
+    pub on_owner_message: Option<&'a OwnerMessageHook<'a>>,
 }
+
+/// [`Dialog::on_owner_message`] で呼ぶもの。
+pub type OwnerMessageHook<'a> = dyn Fn(HWND, &MSG) -> bool + 'a;
 
 /// ダイアログを閉じたわけ。
 #[derive(Debug, PartialEq, Eq)]
@@ -125,7 +136,10 @@ pub fn run(owner: HWND, dialog: &Dialog, font: &Font) -> Closed {
         tracing::warn!("failed to register the text dialog: {e}");
         return Closed::Cancel;
     }
-    let state = DialogState::default();
+    let state = DialogState {
+        on_button: dialog.on_button,
+        ..DialogState::default()
+    };
     let hwnd = match create(owner, dialog, &state, font) {
         Ok(hwnd) => hwnd,
         Err(e) => {
@@ -136,7 +150,7 @@ pub fn run(owner: HWND, dialog: &Dialog, font: &Font) -> Closed {
     // SAFETY: 入力欄はこのダイアログの子で、文字列はこの呼び出しの間は生きている。
     unsafe { _ = SetWindowTextW(state.edit.get(), &HSTRING::from(to_crlf(dialog.text))) };
 
-    run_modal(owner, hwnd, &state);
+    run_modal(owner, hwnd, &state, dialog.on_owner_message);
 
     for created_font in [state.font.get(), state.header_font.get()] {
         if !created_font.is_invalid() {
@@ -147,9 +161,19 @@ pub fn run(owner: HWND, dialog: &Dialog, font: &Font) -> Closed {
     state.result.take().unwrap_or(Closed::Cancel)
 }
 
+/// 開いているダイアログ `dialog` を閉じる。閉じたわけは [`Closed::Cancel`] になる。
+pub fn close(dialog: HWND) {
+    // SAFETY: dialog はこのスレッドのウィンドウ。もう閉じていれば失敗するだけ。
+    if let Err(e) = unsafe { DestroyWindow(dialog) } {
+        tracing::warn!("failed to close the text dialog: {e}");
+    }
+}
+
 /// ダイアログの状態。ウィンドウプロシージャからも使うので、共有の参照だけで読み書きする。
 #[derive(Default)]
-struct DialogState {
+struct DialogState<'a> {
+    /// [`Dialog::on_button`]。
+    on_button: Option<&'a dyn Fn(HWND, i32) -> bool>,
     edit: Cell<HWND>,
     /// 入力欄の上の行。上から順に並べる。
     header: RefCell<Vec<HWND>>,
@@ -211,7 +235,7 @@ fn register_class() -> windows::core::Result<()> {
 fn create(
     owner: HWND,
     dialog: &Dialog,
-    state: &DialogState,
+    state: &DialogState<'_>,
     font: &Font,
 ) -> windows::core::Result<HWND> {
     // SAFETY: owner は呼び出し元の有効なウィンドウ。
@@ -508,9 +532,19 @@ fn fit_horizontally(owner: HWND, left: i32, width: i32) -> (i32, i32) {
 }
 
 /// 呼び出し元のウィンドウを無効にし、ダイアログが閉じるまでメッセージを回す。入力欄での Ctrl+A は、すべてを
-/// 選ぶ。
-fn run_modal(owner: HWND, dialog: HWND, state: &DialogState) {
+/// 選ぶ。呼び出し元のウィンドウ宛てのメッセージは、先に `on_owner_message` に渡す。
+fn run_modal(
+    owner: HWND,
+    dialog: HWND,
+    state: &DialogState<'_>,
+    on_owner_message: Option<&OwnerMessageHook<'_>>,
+) {
     modal::run(owner, dialog, &state.closed, |msg| {
+        if msg.hwnd == owner
+            && let Some(on_owner_message) = on_owner_message
+        {
+            return on_owner_message(dialog, msg);
+        }
         if !is_select_all(msg, state.edit.get()) {
             return false;
         }
@@ -539,7 +573,7 @@ fn is_select_all(msg: &MSG, edit: HWND) -> bool {
 }
 
 /// 入力欄の上の行を上から並べ、入力欄を広く取り、ボタンを右下に並べる。
-fn layout(dialog: HWND, state: &DialogState) {
+fn layout(dialog: HWND, state: &DialogState<'_>) {
     let mut client = RECT::default();
     // SAFETY: dialog は有効なウィンドウで、client は書き込める。
     if unsafe { GetClientRect(dialog, &mut client) }.is_err() {
@@ -597,9 +631,9 @@ fn read_text(edit: HWND) -> String {
 }
 
 /// ダイアログに結び付けた状態。WM_DESTROY で外すまで有効。
-fn state_of<'a>(dialog: HWND) -> Option<&'a DialogState> {
+fn state_of<'a>(dialog: HWND) -> Option<&'a DialogState<'a>> {
     // SAFETY: GWLP_USERDATA には create が入れた DialogState のポインタか 0 が入っている。
-    let pointer = unsafe { GetWindowLongPtrW(dialog, GWLP_USERDATA) } as *const DialogState;
+    let pointer = unsafe { GetWindowLongPtrW(dialog, GWLP_USERDATA) } as *const DialogState<'a>;
     // SAFETY: 0 でなければ、run の中の DialogState を指し、ダイアログが閉じるまで有効。
     unsafe { pointer.as_ref() }
 }
@@ -621,7 +655,8 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             } else if id == IDCANCEL.0 {
                 Some(Closed::Cancel)
             } else if state.button_ids.borrow().contains(&id) {
-                Some(Closed::Button(id))
+                let keep_open = state.on_button.is_some_and(|on_button| on_button(hwnd, id));
+                (!keep_open).then_some(Closed::Button(id))
             } else {
                 None
             };

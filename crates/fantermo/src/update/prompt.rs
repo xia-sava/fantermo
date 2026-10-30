@@ -11,7 +11,7 @@ use windows::{
     core::HSTRING,
 };
 
-use super::{Comparison, Downloaded, Event, Release, current_version, wait_minutes};
+use super::{CheckError, Comparison, Downloaded, Event, Release, current_version, wait_minutes};
 use crate::logging;
 
 /// メッセージボックスのタイトル。
@@ -27,17 +27,28 @@ pub enum Next {
     Quit,
 }
 
-/// 別のスレッドの結果 `event` を、ウィンドウ `owner` の上のメッセージボックスで見せる。
+impl Next {
+    /// 更新の流れがこの先も続くか（ダウンロードに進むか、fantermo を閉じるか）。
+    pub fn continues(&self) -> bool {
+        !matches!(self, Self::Nothing)
+    }
+}
+
+/// メッセージボックスに出す文と、ボタンとアイコン。
+#[derive(Debug, PartialEq, Eq)]
+struct Prompt {
+    text: String,
+    style: MESSAGEBOX_STYLE,
+}
+
+/// 別のスレッドの結果 `event` を、ウィンドウ `owner` の上のモーダルのメッセージボックスで見せる。
 pub fn on_event(owner: HWND, event: Event) -> Next {
     match event {
         Event::Checked(Ok(comparison)) => on_checked(owner, comparison),
         Event::Checked(Err(e)) => {
             tracing::warn!("{e}");
-            show(
-                owner,
-                &format!("更新を確認できませんでした。\n\n{}", e.message()),
-                MB_OK | MB_ICONWARNING,
-            );
+            let prompt = check_failed_prompt(&e);
+            show(owner, &prompt.text, prompt.style);
             Next::Nothing
         }
         Event::Downloaded(Ok(downloaded)) => on_downloaded(owner, downloaded),
@@ -55,28 +66,39 @@ pub fn on_event(owner: HWND, event: Event) -> Next {
 
 fn on_checked(owner: HWND, comparison: Comparison) -> Next {
     let current = current_version().map_or_else(String::new, |version| version.to_string());
+    let prompt = checked_prompt(&comparison, &current);
+    let answer = show(owner, &prompt.text, prompt.style);
     match comparison {
-        Comparison::UpToDate { latest } => {
-            show(
-                owner,
-                &format!(
-                    "fantermo は最新バージョンです。\n\nいまのバージョン: {current}\n配布しているバージョン: {latest}"
-                ),
-                MB_OK | MB_ICONINFORMATION,
-            );
-            Next::Nothing
-        }
-        Comparison::Newer(release) => {
-            let text = format!(
+        Comparison::Newer(release) if answer == IDYES => Next::Download(release),
+        Comparison::Newer(_) | Comparison::UpToDate { .. } => Next::Nothing,
+    }
+}
+
+/// 確かめた結果 `comparison` を、いまのバージョン `current` とあわせて見せる文。新しいバージョンがあれば、
+/// 更新するかを「はい」「いいえ」で尋ねる。
+fn checked_prompt(comparison: &Comparison, current: &str) -> Prompt {
+    match comparison {
+        Comparison::UpToDate { latest } => Prompt {
+            text: format!(
+                "fantermo は最新バージョンです。\n\nいまのバージョン: {current}\n配布しているバージョン: {latest}"
+            ),
+            style: MB_OK | MB_ICONINFORMATION,
+        },
+        Comparison::Newer(release) => Prompt {
+            text: format!(
                 "新しいバージョン {} があります（いまのバージョンは {current}）。\n\nダウンロードして更新しますか？",
                 release.version
-            );
-            if show(owner, &text, MB_YESNO | MB_ICONQUESTION) == IDYES {
-                Next::Download(release)
-            } else {
-                Next::Nothing
-            }
-        }
+            ),
+            style: MB_YESNO | MB_ICONQUESTION,
+        },
+    }
+}
+
+/// 確かめられなかったわけ `error` を見せる文。
+fn check_failed_prompt(error: &CheckError) -> Prompt {
+    Prompt {
+        text: format!("更新を確認できませんでした。\n\n{}", error.message()),
+        style: MB_OK | MB_ICONWARNING,
     }
 }
 
@@ -126,5 +148,75 @@ fn show(owner: HWND, text: &str, style: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
             &HSTRING::from(TITLE),
             style,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{super::http::HttpError, super::signature::SHA256_LEN, *};
+    use crate::update::Version;
+
+    fn version(text: &str) -> Version {
+        Version::parse(text).unwrap()
+    }
+
+    #[test]
+    fn up_to_date_is_told_with_ok_only() {
+        let prompt = checked_prompt(
+            &Comparison::UpToDate {
+                latest: version("0.0.1"),
+            },
+            "0.0.1",
+        );
+        assert_eq!(
+            prompt,
+            Prompt {
+                text: "fantermo は最新バージョンです。\n\nいまのバージョン: 0.0.1\n配布しているバージョン: 0.0.1"
+                    .to_owned(),
+                style: MB_OK | MB_ICONINFORMATION,
+            }
+        );
+    }
+
+    #[test]
+    fn newer_version_asks_whether_to_update() {
+        let release = Release {
+            version: version("0.0.2"),
+            msi_sha256: [0; SHA256_LEN],
+        };
+        let prompt = checked_prompt(&Comparison::Newer(release), "0.0.1");
+        assert_eq!(
+            prompt,
+            Prompt {
+                text: "新しいバージョン 0.0.2 があります（いまのバージョンは 0.0.1）。\n\nダウンロードして更新しますか？"
+                    .to_owned(),
+                style: MB_YESNO | MB_ICONQUESTION,
+            }
+        );
+    }
+
+    #[test]
+    fn failed_check_is_told_with_ok_only() {
+        let prompt = check_failed_prompt(&CheckError::Fetch(HttpError::Status(404)));
+        assert_eq!(
+            prompt,
+            Prompt {
+                text:
+                    "更新を確認できませんでした。\n\n更新の情報を取得できませんでした（HTTP 404）。"
+                        .to_owned(),
+                style: MB_OK | MB_ICONWARNING,
+            }
+        );
+    }
+
+    #[test]
+    fn only_download_and_quit_continue_the_update() {
+        let release = Release {
+            version: version("0.0.2"),
+            msi_sha256: [0; SHA256_LEN],
+        };
+        assert!(!Next::Nothing.continues());
+        assert!(Next::Download(release).continues());
+        assert!(Next::Quit.continues());
     }
 }

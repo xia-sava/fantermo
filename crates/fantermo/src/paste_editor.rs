@@ -37,6 +37,8 @@ pub fn edit(owner: HWND, text: &str, font: &Font) -> Option<String> {
         read_only: false,
         min_columns: None,
         buttons: &BUTTONS,
+        on_button: None,
+        on_owner_message: None,
     };
     match text_dialog::run(owner, &dialog, font) {
         Closed::Ok(text) => Some(text),

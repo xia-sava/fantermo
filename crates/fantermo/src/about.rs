@@ -5,11 +5,17 @@
 //! ライセンスの文はリポジトリ直下の `LICENSE` と `THIRD-PARTY-NOTICES.txt`（`tools/licenses.sh` が作る）を
 //! 実行ファイルに埋め込んだもの。
 
-use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::IDCANCEL};
+use windows::Win32::{
+    Foundation::HWND,
+    UI::{
+        Input::KeyboardAndMouse::{EnableWindow, GetFocus, SetFocus},
+        WindowsAndMessaging::{GetDlgItem, IDCANCEL, MSG},
+    },
+};
 
 use crate::{
     font::Font,
-    text_dialog::{self, Button, Closed, Dialog, HeaderLine},
+    text_dialog::{self, Button, Dialog, HeaderLine},
     update, version,
 };
 
@@ -39,10 +45,32 @@ const TEXT: &str = concat!(
     include_str!("../../../THIRD-PARTY-NOTICES.txt"),
 );
 
-/// 「fantermo について」のダイアログを開き、閉じるまで待つ。「更新を確認」を押して閉じたら真を返す。
+/// 「fantermo について」を開いている間の、更新の確認とのやりとり。
+pub struct UpdateHooks<'a> {
+    /// 開くときに、更新の確認かダウンロードを別のスレッドでしている。
+    pub busy: bool,
+    /// 更新の確認を別のスレッドで始める。始められたら真。
+    pub start_check: &'a dyn Fn() -> bool,
+    /// 呼び出し元のウィンドウ宛てのメッセージを受け取る。更新のスレッドの知らせなら、その結果をダイアログの
+    /// 上に見せる。
+    pub on_owner_message: &'a dyn Fn(HWND, &MSG) -> Received,
+}
+
+/// 呼び出し元のウィンドウ宛てのメッセージを受け取ったあと、ダイアログをどうするか。
+pub enum Received {
+    /// 更新のスレッドの知らせではない。ほかに渡す。
+    Other,
+    /// 結果を見せ終えた。ダイアログは開いたままにし、「更新を確認」を押せるように戻す。
+    Shown,
+    /// 結果を見せ、更新に進むので、ダイアログを閉じる。
+    Close,
+}
+
+/// 「fantermo について」のダイアログを開き、閉じるまで待つ。
 ///
-/// 「更新を確認」は、インストーラで入れたバージョン（[`update::can_update`]）でだけ押せる。
-pub fn show(owner: HWND, font: &Font) -> bool {
+/// 「更新を確認」は、インストーラで入れたバージョン（[`update::can_update`]）でだけ押せる。押してもダイアログは
+/// 閉じず、確かめている間は押せなくする。結果は `hooks` がダイアログの上に見せる。
+pub fn show(owner: HWND, font: &Font, hooks: &UpdateHooks) {
     let can_update = update::can_update();
     let version = format!("バージョン: {}", version::display());
     let commit = format!("コミット: {}", version::COMMIT);
@@ -61,7 +89,7 @@ pub fn show(owner: HWND, font: &Font) -> bool {
             id: CHECK_UPDATE_ID,
             label: "更新を確認(&U)",
             default: false,
-            enabled: can_update,
+            enabled: check_enabled(can_update, hooks.busy),
         },
         Button {
             id: IDCANCEL.0,
@@ -70,6 +98,27 @@ pub fn show(owner: HWND, font: &Font) -> bool {
             enabled: true,
         },
     ];
+    let on_button = |dialog: HWND, id: i32| {
+        if id != CHECK_UPDATE_ID {
+            return false;
+        }
+        set_check_enabled(dialog, false);
+        if !(hooks.start_check)() {
+            set_check_enabled(dialog, check_enabled(can_update, false));
+        }
+        true
+    };
+    let on_owner_message = |dialog: HWND, msg: &MSG| match (hooks.on_owner_message)(dialog, msg) {
+        Received::Other => false,
+        Received::Shown => {
+            set_check_enabled(dialog, check_enabled(can_update, false));
+            true
+        }
+        Received::Close => {
+            text_dialog::close(dialog);
+            true
+        }
+    };
     let dialog = Dialog {
         title: TITLE,
         header: &header,
@@ -77,8 +126,35 @@ pub fn show(owner: HWND, font: &Font) -> bool {
         read_only: true,
         min_columns: Some(TEXT_COLUMNS),
         buttons: &buttons,
+        on_button: Some(&on_button),
+        on_owner_message: Some(&on_owner_message),
     };
-    text_dialog::run(owner, &dialog, font) == Closed::Button(CHECK_UPDATE_ID)
+    text_dialog::run(owner, &dialog, font);
+}
+
+/// 「更新を確認」を押せるか。インストーラで入れたバージョン（`can_update`）で、更新の確認かダウンロードを
+/// していない（`busy` が偽）ときだけ押せる。
+fn check_enabled(can_update: bool, busy: bool) -> bool {
+    can_update && !busy
+}
+
+/// ダイアログ `dialog` の「更新を確認」を押せるか押せないかにする。押せなくするボタンに入力のフォーカスが
+/// あれば、「閉じる」に移す。
+fn set_check_enabled(dialog: HWND, enabled: bool) {
+    // SAFETY: dialog は開いているダイアログで、ボタンはその子。
+    unsafe {
+        let Ok(button) = GetDlgItem(Some(dialog), CHECK_UPDATE_ID) else {
+            tracing::warn!("the update button is missing");
+            return;
+        };
+        if !enabled
+            && GetFocus() == button
+            && let Ok(close) = GetDlgItem(Some(dialog), IDCANCEL.0)
+        {
+            _ = SetFocus(Some(close));
+        }
+        _ = EnableWindow(button, enabled);
+    }
 }
 
 /// `LICENSE` の著作権の行。
@@ -102,6 +178,14 @@ mod tests {
             .unwrap();
         assert!(own < notices);
         assert!(TEXT.contains("Ghostty (MIT)"));
+    }
+
+    #[test]
+    fn update_button_is_enabled_only_for_installed_builds_while_idle() {
+        assert!(check_enabled(true, false));
+        assert!(!check_enabled(true, true));
+        assert!(!check_enabled(false, false));
+        assert!(!check_enabled(false, true));
     }
 
     #[test]

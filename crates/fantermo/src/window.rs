@@ -1,7 +1,7 @@
 //! 端末のウィンドウ。Win32 のメッセージを受け、端末の状態・バックエンド・描画をつなぐ。
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     hash::{BuildHasher, Hasher, RandomState},
     path::{Path, PathBuf},
     rc::Rc,
@@ -1712,17 +1712,19 @@ impl App {
         }
     }
 
-    /// 更新の確認かダウンロードを別のスレッドで始める。前のものが終わっていなければ始めない。
-    fn start_update(&mut self, work: update::Work) {
+    /// 更新の確認かダウンロードを別のスレッドで始める。前のものが終わっていなければ始めない。始めたら真を
+    /// 返す。
+    fn start_update(&mut self, work: update::Work) -> bool {
         if self.update_busy {
             tracing::info!("an update check or download is already running");
-            return;
+            return false;
         }
         self.update_busy = update::start(
             work,
             self.update_sender.clone(),
             poster(self.hwnd, WM_APP_UPDATE, WPARAM(0)),
         );
+        self.update_busy
     }
 
     /// テキストカーソルのセルの左下にコンテキストメニューを出すよう返す。キーボードから開くときに使う。
@@ -2528,11 +2530,7 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
                     });
                 }
             }
-            Deferred::ShowAbout { font } => {
-                if about::show(hwnd, &font) {
-                    with_app(&mut |app| app.start_update(update::Work::Check));
-                }
-            }
+            Deferred::ShowAbout { font } => next = show_about(hwnd, &font, with_app),
             Deferred::EditSettings => edit_settings(hwnd, with_app),
             Deferred::Menu(request) => match context_menu::show(hwnd, &request) {
                 Some(Chosen::Command(command)) => next = run_menu_command(command, with_app),
@@ -2544,21 +2542,76 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
             // DestroyWindow はこの場で WM_DESTROY を送るので、借用を手放してから呼ぶ。
             Deferred::CloseWindow => destroy_window(hwnd),
             Deferred::Warn { topic, text } => notice::warn(hwnd, topic, text),
-            Deferred::Update(event) => match update::prompt::on_event(hwnd, event) {
-                update::prompt::Next::Nothing => with_app(&mut |app| app.update_busy = false),
-                update::prompt::Next::Download(release) => {
-                    let mut work = Some(update::Work::Download(release));
-                    with_app(&mut |app| {
-                        app.update_busy = false;
-                        if let Some(work) = work.take() {
-                            app.start_update(work);
-                        }
-                    });
-                }
-                // ウィンドウを閉じるので、新しく始めないよう `update_busy` は立てたままにする。
-                update::prompt::Next::Quit => next = Some(Deferred::CloseWindow),
-            },
+            Deferred::Update(event) => {
+                next = continue_update(update::prompt::on_event(hwnd, event), with_app);
+            }
         }
+    }
+}
+
+/// 「fantermo について」を開き、閉じるまで待つ。「更新を確認」を押したら、確かめる仕事を始め、届いた結果を
+/// 「fantermo について」の上に見せる。更新に進むと決めたら「fantermo について」を閉じ、続けてすることを返す。
+fn show_about(hwnd: HWND, font: &Font, with_app: &WithApp) -> Option<Deferred> {
+    let mut busy = false;
+    with_app(&mut |app| busy = app.update_busy);
+    let start_check = || {
+        let mut started = false;
+        with_app(&mut |app| started = app.start_update(update::Work::Check));
+        started
+    };
+    // 更新に進むと決めたときの次のこと。「fantermo について」を閉じてから続ける。
+    let after = Cell::new(None);
+    let on_owner_message = |dialog: HWND, msg: &MSG| {
+        if msg.message != WM_APP_UPDATE {
+            return about::Received::Other;
+        }
+        let mut event = None;
+        with_app(&mut |app| event = app.update_events.try_recv().ok());
+        let Some(event) = event else {
+            return about::Received::Other;
+        };
+        let next = update::prompt::on_event(dialog, event);
+        if next.continues() {
+            after.set(Some(next));
+            about::Received::Close
+        } else {
+            with_app(&mut |app| app.update_busy = false);
+            about::Received::Shown
+        }
+    };
+    about::show(
+        hwnd,
+        font,
+        &about::UpdateHooks {
+            busy,
+            start_check: &start_check,
+            on_owner_message: &on_owner_message,
+        },
+    );
+    after
+        .take()
+        .and_then(|next| continue_update(next, with_app))
+}
+
+/// 更新の結果を見せたあとの `next` をする。続けてすることがあれば返す。
+fn continue_update(next: update::prompt::Next, with_app: &WithApp) -> Option<Deferred> {
+    match next {
+        update::prompt::Next::Nothing => {
+            with_app(&mut |app| app.update_busy = false);
+            None
+        }
+        update::prompt::Next::Download(release) => {
+            let mut work = Some(update::Work::Download(release));
+            with_app(&mut |app| {
+                app.update_busy = false;
+                if let Some(work) = work.take() {
+                    app.start_update(work);
+                }
+            });
+            None
+        }
+        // ウィンドウを閉じるので、新しく始めないよう `update_busy` は立てたままにする。
+        update::prompt::Next::Quit => Some(Deferred::CloseWindow),
     }
 }
 
@@ -2889,7 +2942,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         WM_APP_UPDATE => {
             let mut event = None;
             with_app(&mut |app| event = app.update_events.try_recv().ok());
-            // メッセージボックスを開くので、借用を手放してから見せる。
+            // 「fantermo について」を開いている間は、そのループが先に受け取って上に見せる（`show_about`）。
+            // ここに届くのは開いていないときで、ウィンドウの上に見せる。メッセージボックスを開くので、借用を
+            // 手放してから見せる。
             if let Some(event) = event {
                 run_deferred(hwnd, Some(Deferred::Update(event)), &with_app);
             }
