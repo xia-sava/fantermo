@@ -7,7 +7,8 @@
 use serde::{Deserialize, Serialize};
 
 /// 書き出すときに先頭に付ける説明。
-const HEADER: &str = "# fantermo が終わるときに書くファイル。手で書き換えるものではない。\n\n";
+const HEADER: &str =
+    "# fantermo が終了するときに書き出すファイル。手で書き換えるものではない。\n\n";
 
 /// 状態の全体。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,7 +92,7 @@ mod tests {
         let text = to_toml(&state);
         assert_eq!(
             text,
-            "# fantermo が終わるときに書くファイル。手で書き換えるものではない。\n\n\
+            "# fantermo が終了するときに書き出すファイル。手で書き換えるものではない。\n\n\
              [window]\nleft = -20\ntop = 40\nwidth = 1600\nheight = 1000\nmaximized = true\n"
         );
         assert_eq!(parse(&text), Ok(state));
