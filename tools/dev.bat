@@ -37,4 +37,11 @@ if errorlevel 1 (
   exit /b 1
 )
 
+rem The e2e feature changes fantermo.exe. Build it in its own output folder so that it never replaces
+rem (or fails on) the target\debug\fantermo.exe that may be running.
+set "DEV_ARGS= %* "
+if not defined CARGO_TARGET_DIR if not "%DEV_ARGS: --features e2e =%"=="%DEV_ARGS%" (
+  for %%r in ("%~dp0..") do set "CARGO_TARGET_DIR=%%~fr\target\e2e"
+)
+
 cargo %*

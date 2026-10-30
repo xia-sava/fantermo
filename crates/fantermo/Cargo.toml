@@ -10,6 +10,12 @@ publish.workspace = true
 # e2e テストの制御の口（開発用。既定で無効で、配布物には入らない）。
 e2e = []
 
+# `required-features` により、feature なしの `cargo test` はこのテストのために fantermo.exe を作り直さない。
+[[test]]
+name = "e2e"
+path = "tests/e2e.rs"
+required-features = ["e2e"]
+
 [dependencies]
 fantermo-bridge-protocol.workspace = true
 fantermo-core.workspace = true
