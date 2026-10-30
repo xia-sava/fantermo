@@ -7,31 +7,73 @@ use std::io;
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize, SpawnOptions, Wake},
     background::Candidate,
-    config::{BackendKind, TerminalColors},
+    config::{BackendKind, Profile, TerminalColors},
     link::Link,
     vt::Vt,
 };
 
-use crate::conpty::ConPty;
+use crate::{
+    bridge::{self, Bridge},
+    conpty::ConPty,
+};
 
 /// 子プロセスの `TERM` と、端末が名乗る terminfo の名前。
 const TERM: &str = "xterm-256color";
 
-/// 端末で起動するもの。バックエンドの種類と、子プロセスのコマンドライン。
+/// 端末で起動するもの。バックエンドの種類と、子プロセスのコマンドライン（ブリッジなら相手の側の
+/// コマンドラインで、空なら相手のログインシェル）、ブリッジのつなぐ先。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Startup {
     pub backend: BackendKind,
     pub command_line: String,
+    /// `cygwin` の Cygwin のフォルダ。`None` ならよくある場所を探す。
+    pub cygwin_root: Option<String>,
+    /// `wsl` のディストリビューション。`None` なら既定。
+    pub distribution: Option<String>,
 }
 
-/// `kind` の種類のバックエンドを起動する。
+impl Startup {
+    /// `command_line` を ConPTY で起動する。
+    pub fn conpty(command_line: &str) -> Self {
+        Self {
+            backend: BackendKind::Conpty,
+            command_line: command_line.to_owned(),
+            cygwin_root: None,
+            distribution: None,
+        }
+    }
+
+    /// プロファイル `profile` のものを起動する。
+    pub fn from_profile(profile: &Profile) -> Self {
+        Self {
+            backend: profile.backend,
+            command_line: profile.command.clone(),
+            cygwin_root: profile.cygwin_root.clone(),
+            distribution: profile.distribution.clone(),
+        }
+    }
+}
+
+/// `startup` の種類のバックエンドを起動する。
 fn spawn_backend(
-    kind: BackendKind,
+    startup: &Startup,
     options: &SpawnOptions,
     wake: Wake,
 ) -> io::Result<Box<dyn Backend>> {
-    match kind {
+    match startup.backend {
         BackendKind::Conpty => Ok(Box::new(ConPty::spawn(options, wake)?)),
+        BackendKind::Cygwin => {
+            let target = bridge::Target::Cygwin {
+                root: startup.cygwin_root.as_deref(),
+            };
+            Ok(Box::new(Bridge::spawn(target, options, wake)?))
+        }
+        BackendKind::Wsl => {
+            let target = bridge::Target::Wsl {
+                distribution: startup.distribution.as_deref(),
+            };
+            Ok(Box::new(Bridge::spawn(target, options, wake)?))
+        }
     }
 }
 
@@ -85,7 +127,7 @@ impl Session {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let vt = new_vt(size, colors)?;
         let backend = spawn_backend(
-            startup.backend,
+            startup,
             &SpawnOptions {
                 command_line: &startup.command_line,
                 env: &[("TERM", TERM)],

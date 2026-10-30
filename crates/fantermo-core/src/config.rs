@@ -61,7 +61,11 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # 行頭の「#」を消して値を書き換え、保存すると読み直す。書いていない項目は既定値になる。
 
 # 新しいタブで起動するプロファイル。[[profiles]] のテーブルを並べ、name に名前、command に起動するコマンドラインを
-# 書く。backend はシェルとのつなぎ方で、"conpty"（Windows の疑似コンソール）だけを書ける。書かなければ "conpty"。
+# 書く。backend はシェルとのつなぎ方で、"conpty"（Windows の疑似コンソール）、"cygwin"（Cygwin のブリッジ）、
+# "wsl"（WSL のブリッジ）を書ける。書かなければ "conpty"。"cygwin" と "wsl" の command は Cygwin・WSL の側の
+# コマンドラインで、書かなければログインシェルを起動する。"cygwin" では cygwin_root に Cygwin のフォルダを書ける
+# （書かなければ C:\cygwin64、C:\cygwin の順に探す）。"wsl" では distribution にディストリビューションの名前を
+# 書ける（書かなければ既定のディストリビューション）。
 # タブバーの「+」は既定のプロファイルを開き、その右の「▾」か「+」の右クリックで一覧から選んで開く。fantermo を
 # 引数つきで起動したときは、「+」とキーとメニューの「新しいタブ」も引数のコマンドラインを使う。
 # 書かなければ PowerShell（powershell.exe -NoLogo）を起動する。書き換えたら、次に開くタブから使う。
@@ -72,6 +76,16 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # 例: [[profiles]]
 # 例: name = "zsh"
 # 例: command = 'C:\cygwin64\bin\zsh.exe -l'
+#
+# 例: [[profiles]]
+# 例: name = "Cygwin"
+# 例: backend = "cygwin"
+# 例: cygwin_root = 'C:\cygwin64'
+#
+# 例: [[profiles]]
+# 例: name = "Ubuntu"
+# 例: backend = "wsl"
+# 例: distribution = "Ubuntu"
 
 [font]
 # フォントの名前。先頭から探し、最初に見つかったものを使う。名前一つだけでもよい。
@@ -240,28 +254,41 @@ pub fn default_profile_index(profiles: &[Profile], default: Option<&str>) -> usi
 pub struct Profile {
     /// タブバーの一覧に見せる名前。空ではない。
     pub name: String,
-    /// 起動するコマンドライン。空ではない。
+    /// 起動するコマンドライン。ConPTY では空ではない。ブリッジ（`cygwin`・`wsl`）では Cygwin・WSL の
+    /// 側のコマンドラインで、空なら相手のログインシェル。
     pub command: String,
     pub backend: BackendKind,
+    /// `backend = "cygwin"` の Cygwin のフォルダ。`None` ならよくある場所を探す。ほかの種類では `None`。
+    pub cygwin_root: Option<String>,
+    /// `backend = "wsl"` のディストリビューションの名前。`None` なら既定のディストリビューション。
+    /// ほかの種類では `None`。
+    pub distribution: Option<String>,
 }
 
 impl Profile {
+    /// 名前が `name`、コマンドラインが `command` の、`backend` でつなぐプロファイル。
+    pub fn new(name: &str, command: &str, backend: BackendKind) -> Self {
+        Self {
+            name: name.to_owned(),
+            command: command.to_owned(),
+            backend,
+            cygwin_root: None,
+            distribution: None,
+        }
+    }
+
     /// プロファイルも `shell` も書いていないときのプロファイル。
     pub fn builtin() -> Self {
-        Self {
-            name: DEFAULT_PROFILE_NAME.to_owned(),
-            command: DEFAULT_COMMAND_LINE.to_owned(),
-            backend: BackendKind::default(),
-        }
+        Self::new(
+            DEFAULT_PROFILE_NAME,
+            DEFAULT_COMMAND_LINE,
+            BackendKind::default(),
+        )
     }
 
     /// 最上位の `shell` に書いたコマンドライン `command` のプロファイル。名前は実行ファイルの名前。
     pub fn from_shell(command: &str) -> Self {
-        Self {
-            name: program_name(command),
-            command: command.to_owned(),
-            backend: BackendKind::default(),
-        }
+        Self::new(&program_name(command), command, BackendKind::default())
     }
 }
 
@@ -293,17 +320,28 @@ pub enum BackendKind {
     /// Windows の疑似コンソール（ConPTY）。
     #[default]
     Conpty,
+    /// Cygwin のブリッジ。
+    Cygwin,
+    /// WSL のブリッジ。
+    Wsl,
 }
 
 impl BackendKind {
     /// 書ける値のすべて。
-    pub const ALL: [BackendKind; 1] = [BackendKind::Conpty];
+    pub const ALL: [BackendKind; 3] = [BackendKind::Conpty, BackendKind::Cygwin, BackendKind::Wsl];
 
     /// 設定ファイルに書く名前。
     pub fn name(self) -> &'static str {
         match self {
             BackendKind::Conpty => "conpty",
+            BackendKind::Cygwin => "cygwin",
+            BackendKind::Wsl => "wsl",
         }
+    }
+
+    /// ブリッジでつなぐ。`command` を相手の側のコマンドラインとして渡し、空なら相手のログインシェル。
+    pub fn is_bridge(self) -> bool {
+        self != BackendKind::Conpty
     }
 
     /// 設定ファイルに書く名前 `name` の値。
@@ -1101,34 +1139,102 @@ fn read_profiles(reader: &mut Reader, root: &mut Table, config: &mut Config) {
     }
 }
 
-/// `profiles` の項目一つ（キーのパスは `path`）を読む。テーブルで、`name` と `command` が空でない文字列で、
-/// `backend` が書いていないか知っている名前なら、そのプロファイル。そうでなければ警告して `None`。
+/// `profiles` の項目一つ（キーのパスは `path`）を読む。テーブルで、`name` が空でない文字列で、`backend` が
+/// 書いていないか知っている名前で、`command` が空でない文字列（ブリッジなら書かなくても空でもよい）なら、
+/// そのプロファイル。そうでなければ警告して `None`。`cygwin_root`・`distribution` は、その種類の
+/// プロファイルでなければ警告して使わない。
 fn read_profile(reader: &mut Reader, path: &str, value: Value) -> Option<Profile> {
     let Value::Table(mut table) = value else {
         reader.warn(path, format!("ignoring {path}: expected a table"));
         return None;
     };
     let section = Some(path);
-    let text = |reader: &mut Reader, table: &mut Table, key: &str| -> Option<String> {
-        match reader.take::<String>(table, section, key) {
-            Item::Valid(text) if !text.trim().is_empty() => Some(text),
-            Item::Valid(_) => {
-                reader.warn(
-                    &key_path(section, key),
-                    format!("ignoring {path}: {key} must not be empty"),
-                );
-                None
-            }
-            Item::Absent => {
-                reader.warn(path, format!("ignoring {path}: expected a {key}"));
-                None
-            }
-            Item::Invalid => None,
+    let backend = read_profile_backend(reader, &mut table, path);
+    let text = |reader: &mut Reader, table: &mut Table, key: &str, required: bool| match reader
+        .take::<String>(
+        table, section, key,
+    ) {
+        Item::Valid(text) if !text.trim().is_empty() => Some(text),
+        Item::Valid(_) if !required => Some(String::new()),
+        Item::Valid(_) => {
+            reader.warn(
+                &key_path(section, key),
+                format!("ignoring {path}: {key} must not be empty"),
+            );
+            None
         }
+        Item::Absent if !required => Some(String::new()),
+        Item::Absent => {
+            reader.warn(path, format!("ignoring {path}: expected a {key}"));
+            None
+        }
+        Item::Invalid => None,
     };
-    let name = text(reader, &mut table, "name");
-    let command = text(reader, &mut table, "command");
-    let backend = match reader.take::<String>(&mut table, section, "backend") {
+    let name = text(reader, &mut table, "name", true);
+    let command_required = !backend.is_some_and(BackendKind::is_bridge);
+    let command = text(reader, &mut table, "command", command_required);
+    let cygwin_root = read_profile_option(
+        reader,
+        &mut table,
+        path,
+        "cygwin_root",
+        backend,
+        BackendKind::Cygwin,
+    );
+    let distribution = read_profile_option(
+        reader,
+        &mut table,
+        path,
+        "distribution",
+        backend,
+        BackendKind::Wsl,
+    );
+    reader.warn_unknown(&table, section);
+    Some(Profile {
+        name: name?,
+        command: command?,
+        backend: backend?,
+        cygwin_root,
+        distribution,
+    })
+}
+
+/// プロファイルのテーブルの `cygwin_root` のような、種類が `owner` のプロファイルだけが使うキー `key` を
+/// 読む。書いていない・空・ほかの種類なら（警告して）`None`。
+fn read_profile_option(
+    reader: &mut Reader,
+    table: &mut Table,
+    path: &str,
+    key: &str,
+    backend: Option<BackendKind>,
+    owner: BackendKind,
+) -> Option<String> {
+    let section = Some(path);
+    let Item::Valid(text) = reader.take::<String>(table, section, key) else {
+        return None;
+    };
+    let key_path = key_path(section, key);
+    if text.trim().is_empty() {
+        reader.warn(&key_path, format!("ignoring {key_path}: empty"));
+        return None;
+    }
+    if backend.is_some_and(|backend| backend != owner) {
+        reader.warn(
+            &key_path,
+            format!(
+                "ignoring {key_path}: used only with backend = {:?}",
+                owner.name()
+            ),
+        );
+        return None;
+    }
+    Some(text)
+}
+
+/// プロファイルのテーブルの `backend` を読む。書いていなければ既定の種類、知らない名前なら警告して `None`。
+fn read_profile_backend(reader: &mut Reader, table: &mut Table, path: &str) -> Option<BackendKind> {
+    let section = Some(path);
+    match reader.take::<String>(table, section, "backend") {
         Item::Valid(name) => match BackendKind::from_name(&name) {
             Some(kind) => Some(kind),
             None => {
@@ -1142,13 +1248,7 @@ fn read_profile(reader: &mut Reader, path: &str, value: Value) -> Option<Profile
         },
         Item::Absent => Some(BackendKind::default()),
         Item::Invalid => None,
-    };
-    reader.warn_unknown(&table, section);
-    Some(Profile {
-        name: name?,
-        command: command?,
-        backend: backend?,
-    })
+    }
 }
 
 fn read_font(reader: &mut Reader, table: &mut Table, font: &mut FontConfig) {
@@ -2278,11 +2378,11 @@ mod tests {
         assert_eq!(parsed.config.font.size_pt, 12.0);
         assert_eq!(
             parsed.config.profiles,
-            [Profile {
-                name: "PowerShell".to_owned(),
-                command: "powershell.exe -NoLogo".to_owned(),
-                backend: BackendKind::Conpty,
-            }]
+            [Profile::new(
+                "PowerShell",
+                "powershell.exe -NoLogo",
+                BackendKind::Conpty
+            )]
         );
         assert_eq!(parsed.config.default_profile_index(), 0);
     }
@@ -2313,11 +2413,11 @@ mod tests {
                     size_pt: 10.5,
                     wide_glyph: WideGlyph::Overflow,
                 },
-                profiles: vec![Profile {
-                    name: "zsh".to_owned(),
-                    command: r"C:\cygwin64\bin\zsh.exe -l".to_owned(),
-                    backend: BackendKind::Conpty,
-                }],
+                profiles: vec![Profile::new(
+                    "zsh",
+                    r"C:\cygwin64\bin\zsh.exe -l",
+                    BackendKind::Conpty,
+                )],
                 paste: PasteConfig {
                     confirm: PasteConfirm::Never,
                 },
@@ -2589,7 +2689,7 @@ size = 10
                 ),
                 (
                     Some(8),
-                    "ignoring profiles[1]: unknown backend \"bridge\", expected one of [\"conpty\"]"
+                    "ignoring profiles[1]: unknown backend \"bridge\", expected one of [\"conpty\", \"cygwin\", \"wsl\"]"
                 ),
                 (Some(10), "ignoring profiles[2]: name must not be empty"),
                 (Some(12), "ignoring profiles[3]: expected a name"),
@@ -2604,16 +2704,60 @@ size = 10
     }
 
     #[test]
+    fn bridge_profiles_take_their_own_keys() {
+        let parsed = super::parse(
+            "[[profiles]]\nname = 'cyg'\nbackend = 'cygwin'\ncygwin_root = 'C:\\app\\cygwin'\n[[profiles]]\nname = 'u'\nbackend = 'wsl'\ncommand = 'zsh -l'\ndistribution = 'Ubuntu'\n[[profiles]]\nname = 'w'\nbackend = 'wsl'\ncommand = ''\n[[profiles]]\nname = 'x'\ncommand = 'cmd.exe'\ndistribution = 'Ubuntu'\ncygwin_root = ''\n[[profiles]]\nname = 'y'\nbackend = 'wsl'\ncygwin_root = 'C:\\cygwin'\n[[profiles]]\nname = 'z'\n",
+            &Config::default(),
+        );
+        assert_eq!(
+            parsed.config.profiles,
+            [
+                Profile {
+                    cygwin_root: Some(r"C:\app\cygwin".to_owned()),
+                    ..Profile::new("cyg", "", BackendKind::Cygwin)
+                },
+                Profile {
+                    distribution: Some("Ubuntu".to_owned()),
+                    ..Profile::new("u", "zsh -l", BackendKind::Wsl)
+                },
+                Profile::new("w", "", BackendKind::Wsl),
+                Profile::new("x", "cmd.exe", BackendKind::Conpty),
+                Profile::new("y", "", BackendKind::Wsl),
+            ]
+        );
+        let warnings: Vec<(Option<usize>, &str)> = parsed
+            .warnings
+            .iter()
+            .map(|w| (w.line, w.message.as_str()))
+            .collect();
+        assert_eq!(
+            warnings,
+            [
+                (
+                    Some(17),
+                    "ignoring profiles[3].distribution: used only with backend = \"wsl\""
+                ),
+                (Some(18), "ignoring profiles[3].cygwin_root: empty"),
+                (
+                    Some(22),
+                    "ignoring profiles[4].cygwin_root: used only with backend = \"cygwin\""
+                ),
+                (Some(23), "ignoring profiles[5]: expected a command"),
+            ]
+        );
+    }
+
+    #[test]
     fn shell_makes_a_single_profile_unless_profiles_are_written() {
         let parsed = parse(r#"shell = '"C:\Program Files\PowerShell\7\pwsh.EXE" -NoLogo'"#);
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
         assert_eq!(
             parsed.config.profiles,
-            [Profile {
-                name: "pwsh".to_owned(),
-                command: r#""C:\Program Files\PowerShell\7\pwsh.EXE" -NoLogo"#.to_owned(),
-                backend: BackendKind::Conpty,
-            }]
+            [Profile::new(
+                "pwsh",
+                r#""C:\Program Files\PowerShell\7\pwsh.EXE" -NoLogo"#,
+                BackendKind::Conpty,
+            )]
         );
         assert_eq!(Profile::from_shell("zsh -l").name, "zsh");
         assert_eq!(Profile::from_shell(r"C:\cygwin64\bin\zsh.exe").name, "zsh");

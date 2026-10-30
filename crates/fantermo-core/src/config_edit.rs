@@ -157,6 +157,8 @@ const SHELL_KEY: &str = "shell";
 const PROFILE_NAME: &str = "name";
 const PROFILE_COMMAND: &str = "command";
 const PROFILE_BACKEND: &str = "backend";
+const PROFILE_CYGWIN_ROOT: &str = "cygwin_root";
+const PROFILE_DISTRIBUTION: &str = "distribution";
 
 /// フォントの名前の並び。一つなら文字列、二つ以上なら配列。
 fn families_value(families: &[String]) -> Value {
@@ -626,9 +628,19 @@ fn update_profiles(doc: &mut DocumentMut, base: &Config, edited: &Config) -> Res
 fn profile_inline_table(profile: &Profile) -> Value {
     let mut table = InlineTable::new();
     table.insert(PROFILE_NAME, Value::from(profile.name.as_str()));
-    table.insert(PROFILE_COMMAND, Value::from(profile.command.as_str()));
+    if let Some(command) = profile_command(profile) {
+        table.insert(PROFILE_COMMAND, Value::from(command));
+    }
     if profile.backend != BackendKind::default() {
         table.insert(PROFILE_BACKEND, Value::from(profile.backend.name()));
+    }
+    for (key, text) in [
+        (PROFILE_CYGWIN_ROOT, &profile.cygwin_root),
+        (PROFILE_DISTRIBUTION, &profile.distribution),
+    ] {
+        if let Some(text) = text {
+            table.insert(key, Value::from(text.as_str()));
+        }
     }
     table.fmt();
     Value::InlineTable(table)
@@ -670,9 +682,7 @@ fn merge_profile_tables(doc: &mut DocumentMut, wanted: &[Profile]) {
             continue;
         }
         if let Some(index) = (0..written.len()).find(|&index| {
-            !used[index]
-                && named(index)
-                && written[index].1.as_deref() == Some(want.command.as_str())
+            !used[index] && named(index) && written[index].1.as_deref() == profile_command(want)
         }) {
             used[index] = true;
             *pair = Some(index);
@@ -780,9 +790,26 @@ fn merge_profile_tables(doc: &mut DocumentMut, wanted: &[Profile]) {
 
 fn update_profile_table(table: &mut Table, profile: &Profile) {
     set_table_text(table, PROFILE_NAME, &profile.name);
-    set_table_text(table, PROFILE_COMMAND, &profile.command);
+    set_or_remove_table_text(table, PROFILE_COMMAND, profile_command(profile));
     if table.contains_key(PROFILE_BACKEND) || profile.backend != BackendKind::default() {
         set_table_text(table, PROFILE_BACKEND, profile.backend.name());
+    }
+    set_or_remove_table_text(table, PROFILE_CYGWIN_ROOT, profile.cygwin_root.as_deref());
+    set_or_remove_table_text(table, PROFILE_DISTRIBUTION, profile.distribution.as_deref());
+}
+
+/// プロファイルの `command` に書く値。ブリッジで空なら（相手のログインシェル）書かない。
+fn profile_command(profile: &Profile) -> Option<&str> {
+    (!(profile.backend.is_bridge() && profile.command.is_empty())).then_some(&profile.command)
+}
+
+/// テーブル `table` の `key` を、`text` があればその文字列に、なければ消す。
+fn set_or_remove_table_text(table: &mut Table, key: &str, text: Option<&str>) {
+    match text {
+        Some(text) => set_table_text(table, key, text),
+        None => {
+            table.remove(key);
+        }
     }
 }
 
@@ -1826,11 +1853,41 @@ mod tests {
     }
 
     fn profile(name: &str, command: &str) -> Profile {
-        Profile {
-            name: name.to_owned(),
-            command: command.to_owned(),
-            backend: BackendKind::Conpty,
-        }
+        Profile::new(name, command, BackendKind::Conpty)
+    }
+
+    #[test]
+    fn bridge_profiles_write_their_own_keys() {
+        let parse = |text: &str| config::parse(text, &Config::default()).config;
+        let text = "[[profiles]]\nname = 'cyg'\nbackend = 'cygwin'\ncommand = 'zsh -l' # mine\n\n[[profiles]]\nname = 'u'\nbackend = 'wsl'\ndistribution = 'Ubuntu'\n\n[font]\nsize = 9\n";
+        let base = parse(text);
+        assert_eq!(base.profiles[1].distribution.as_deref(), Some("Ubuntu"));
+        let mut edited = base.clone();
+        edited.profiles[0].command = String::new();
+        edited.profiles[0].cygwin_root = Some(r"C:\app\cygwin".to_owned());
+        edited.profiles[1].distribution = None;
+        edited.profiles.push(Profile {
+            distribution: Some("Debian".to_owned()),
+            ..Profile::new("d", "bash", BackendKind::Wsl)
+        });
+        let updated = update(text, &base, &edited).unwrap();
+        assert_eq!(
+            updated,
+            "[[profiles]]\nname = 'cyg'\nbackend = 'cygwin'\ncygwin_root = 'C:\\app\\cygwin'\n\n[[profiles]]\nname = 'u'\nbackend = 'wsl'\n\n[[profiles]]\nname = \"d\"\ncommand = \"bash\"\nbackend = \"wsl\"\ndistribution = \"Debian\"\n\n[font]\nsize = 9\n"
+        );
+        assert_eq!(parse(&updated).profiles, edited.profiles);
+
+        let text = "profiles = [{ name = 'a', command = 'cmd.exe' }]\n";
+        let base = parse(text);
+        let mut edited = base.clone();
+        edited.profiles[0] = Profile {
+            cygwin_root: Some("C:/cygwin".to_owned()),
+            ..Profile::new("a", "", BackendKind::Cygwin)
+        };
+        assert_eq!(
+            update(text, &base, &edited).unwrap(),
+            "profiles = [{ name = \"a\", backend = \"cygwin\", cygwin_root = \"C:/cygwin\" }]\n"
+        );
     }
 
     #[test]

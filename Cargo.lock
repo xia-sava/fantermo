@@ -94,6 +94,7 @@ name = "fantermo"
 version = "0.0.2"
 dependencies = [
  "embed-resource",
+ "fantermo-bridge-protocol",
  "fantermo-core",
  "png",
  "serde",

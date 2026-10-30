@@ -178,8 +178,9 @@ enum ProfileField {
     Command,
 }
 
-/// 編集中のプロファイル `profiles` を設定ファイルと同じ決まりで確かめる。名前とコマンドラインが空で
-/// なく、名前がどれも違えば `Ok`。そうでなければ、最初のエラーの位置と入力欄とエラーメッセージ。
+/// 編集中のプロファイル `profiles` を設定ファイルと同じ決まりで確かめる。名前とコマンドライン（ブリッジ
+/// では空でよい）が空でなく、名前がどれも違えば `Ok`。そうでなければ、最初のエラーの位置と入力欄と
+/// エラーメッセージ。
 fn check_profiles(profiles: &[Profile]) -> Result<(), (usize, ProfileField, &'static str)> {
     for (index, profile) in profiles.iter().enumerate() {
         if profile.name.trim().is_empty() {
@@ -189,7 +190,7 @@ fn check_profiles(profiles: &[Profile]) -> Result<(), (usize, ProfileField, &'st
                 "プロファイルの名前を書いてください。",
             ));
         }
-        if profile.command.trim().is_empty() {
+        if profile.command.trim().is_empty() && !profile.backend.is_bridge() {
             return Err((
                 index,
                 ProfileField::Command,
@@ -1997,11 +1998,11 @@ impl State<'_> {
             ID_PROFILE_ADD => {
                 let mut profiles = self.profiles.borrow_mut();
                 let name = new_profile_name(&profiles);
-                profiles.push(Profile {
-                    name,
-                    command: config::DEFAULT_COMMAND_LINE.to_owned(),
-                    backend: BackendKind::default(),
-                });
+                profiles.push(Profile::new(
+                    &name,
+                    config::DEFAULT_COMMAND_LINE,
+                    BackendKind::default(),
+                ));
                 profiles.len() - 1
             }
             ID_PROFILE_REMOVE => {
@@ -3200,11 +3201,7 @@ mod tests {
     }
 
     fn profile(name: &str, command: &str) -> Profile {
-        Profile {
-            name: name.to_owned(),
-            command: command.to_owned(),
-            backend: BackendKind::Conpty,
-        }
+        Profile::new(name, command, BackendKind::Conpty)
     }
 
     #[test]

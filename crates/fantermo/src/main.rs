@@ -15,6 +15,7 @@ mod app_icon;
 mod atlas;
 mod background;
 mod boxdraw;
+mod bridge;
 mod clipboard;
 mod config_file;
 mod conpty;

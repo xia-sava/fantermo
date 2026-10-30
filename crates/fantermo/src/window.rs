@@ -13,8 +13,8 @@ use fantermo_core::{
     backend::{ExitCode, GridSize},
     background::{Candidate, Random},
     config::{
-        self, BackendKind, BackgroundConfig, ColorsConfig, Config, DEFAULT_FONT_FAMILIES,
-        FontConfig, PasteConfig, PasteConfirm, Profile, ScrollBarConfig, WideGlyph, WindowConfig,
+        self, BackgroundConfig, ColorsConfig, Config, DEFAULT_FONT_FAMILIES, FontConfig,
+        PasteConfig, PasteConfirm, Profile, ScrollBarConfig, WideGlyph, WindowConfig,
     },
     frame::Rgb,
     keymap::{self, Keymap},
@@ -166,24 +166,13 @@ fn startup_for(
     launch: Launch,
 ) -> Startup {
     let index = match (launch, arguments) {
-        (Launch::Default, Some(arguments)) => {
-            return Startup {
-                backend: BackendKind::default(),
-                command_line: arguments.to_owned(),
-            };
-        }
+        (Launch::Default, Some(arguments)) => return Startup::conpty(arguments),
         (Launch::Default, None) => default,
         (Launch::Profile(index), _) => index,
     };
     match profiles.get(index).or(profiles.first()) {
-        Some(profile) => Startup {
-            backend: profile.backend,
-            command_line: profile.command.clone(),
-        },
-        None => Startup {
-            backend: BackendKind::default(),
-            command_line: config::DEFAULT_COMMAND_LINE.to_owned(),
-        },
+        Some(profile) => Startup::from_profile(profile),
+        None => Startup::conpty(config::DEFAULT_COMMAND_LINE),
     }
 }
 
@@ -3206,6 +3195,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
 #[cfg(test)]
 mod tests {
+    use fantermo_core::config::BackendKind;
+
     use super::*;
 
     const NOTCH: i32 = WHEEL_DELTA as i32;
@@ -3309,9 +3300,20 @@ mod tests {
         assert_eq!(line(None, 0, Launch::Profile(7)), "powershell.exe -NoLogo");
         assert_eq!(
             startup_for(None, &[], 0, Launch::Default),
+            Startup::conpty(config::DEFAULT_COMMAND_LINE)
+        );
+        // ブリッジのプロファイルは、つなぐ先も渡す。
+        let wsl = Profile {
+            distribution: Some("Ubuntu".to_owned()),
+            ..Profile::new("u", "", BackendKind::Wsl)
+        };
+        assert_eq!(
+            startup_for(Some("cmd.exe"), &[wsl], 0, Launch::Profile(0)),
             Startup {
-                backend: BackendKind::Conpty,
-                command_line: config::DEFAULT_COMMAND_LINE.to_owned(),
+                backend: BackendKind::Wsl,
+                command_line: String::new(),
+                cygwin_root: None,
+                distribution: Some("Ubuntu".to_owned()),
             }
         );
     }
