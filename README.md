@@ -44,6 +44,8 @@ Windows + Rust（edition 2024）+ MSVC ツールチェインと，Zig が必要�
 ./tools/dev.sh test
 ```
 
+e2e テスト（実際の fantermo を画面に出ないデスクトップで起動して確かめる）は `./tools/dev.sh test --features e2e` で実行します．出力先は `target/e2e/` です．
+
 ビルドの途中で Zig が作る補助の exe は，cargo の出力先の下の 120 文字ほど深いパスに置かれます．出力先（既定はリポジトリ直下の `target/`）のパスが 130 文字ほどを超えると，Windows のパスの上限（260 文字）を超えてビルドが失敗します．
 
 ## ライセンス
