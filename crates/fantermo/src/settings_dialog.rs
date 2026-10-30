@@ -101,6 +101,7 @@ const ID_PROFILE_COMMAND: i32 = 405;
 const ID_PROFILE_BACKEND: i32 = 406;
 /// `cygwin_root` か `distribution` の入力欄。どちらかはつなぎ方で決まる。
 const ID_PROFILE_LOCATION: i32 = 407;
+const ID_PROFILE_COMMAND_WARNING: i32 = 408;
 const ID_BACKGROUND_IMAGES: i32 = 450;
 const ID_BACKGROUND_ADD_FILES: i32 = 451;
 const ID_BACKGROUND_ADD_FOLDER: i32 = 452;
@@ -125,7 +126,7 @@ const ID_LABEL: i32 = -1;
 /// 96 DPI のときの寸法（ピクセル）。ウィンドウの DPI に合わせて拡大する。
 const BASE_DPI: u32 = 96;
 const CLIENT_WIDTH: i32 = 640;
-const CLIENT_HEIGHT: i32 = 490;
+const CLIENT_HEIGHT: i32 = 540;
 const MARGIN: i32 = 12;
 const PAGES_WIDTH: i32 = 120;
 /// ページの見出しの列の幅。コントロールはその右に置く。
@@ -147,12 +148,18 @@ const PAGES: [&str; 6] = ["外観", "背景", "動作", "プロファイル", "�
 
 /// プロファイルの一覧の高さ。
 const PROFILE_LIST_HEIGHT: i32 = 110;
+/// コマンドラインの入力欄の下の警告の文の高さ（3 行）。文がないときも場所を空けておく。
+const PROFILE_COMMAND_WARNING_HEIGHT: i32 = 52;
+/// プロファイルのページの下の説明の文の高さ。
+const PROFILE_NOTE_HEIGHT: i32 = 4 * ROW_HEIGHT;
 /// プロファイルのつなぎ方の選択肢。[`BackendKind::ALL`] の順。
 const PROFILE_BACKEND_LABELS: [&str; 3] = [
     "ConPTY（Windows の疑似コンソール）",
     "Cygwin（ブリッジ）",
     "WSL（ブリッジ）",
 ];
+/// STATIC のスタイル。文字の「&」をアクセラレータとして読まない。
+const SS_NOPREFIX: u32 = 0x0080;
 /// `EM_SETCUEBANNER`（入力欄が空のときに薄く見せる文字）。
 const EM_SETCUEBANNER: u32 = 0x1501;
 /// `EM_SETCUEBANNER` の wParam。入力欄にフォーカスがあっても見せる。
@@ -207,6 +214,19 @@ fn set_profile_location(profile: &mut Profile, location: String) {
         BackendKind::Cygwin => (location, None),
         BackendKind::Wsl => (None, location),
     };
+}
+
+/// `profile` のコマンドラインの入力欄の下に出す警告の文。ブリッジのプロファイルで Windows のプログラムを
+/// 起動するときだけ。
+fn profile_command_warning(profile: &Profile) -> Option<String> {
+    let program = profile.windows_program_in_bridge()?;
+    let side = match profile.backend {
+        BackendKind::Cygwin => "Cygwin",
+        BackendKind::Conpty | BackendKind::Wsl => "WSL",
+    };
+    Some(format!(
+        "{program} は Windows のプログラムです。ブリッジの中から起動すると ConPTY を通るので、画像などが届きません。{side} の中のコマンドを書くか、空にしてください。"
+    ))
 }
 
 /// `profiles` のどれとも違う、足すプロファイルの名前。
@@ -683,6 +703,8 @@ struct Controls {
     /// 一覧で選んでいるプロファイルの名前とコマンドライン。
     profile_name: HWND,
     profile_command: HWND,
+    /// コマンドラインの入力欄の下の警告の文。
+    profile_command_warning: HWND,
     /// 一覧で選んでいるプロファイルのつなぎ方（[`BackendKind::ALL`] の順）と、Cygwin のフォルダか
     /// ディストリビューションの入力欄とその見出し。
     profile_backend: HWND,
@@ -1469,7 +1491,24 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         Some([control_left, profile_command_row, control_width, ROW_HEIGHT]),
     )?;
     profiles_page.push(profile_command);
-    let profile_backend_row = profile_command_row + ROW_HEIGHT + MARGIN;
+    let profile_command_warning_row = profile_command_row + ROW_HEIGHT + LABEL_OFFSET;
+    // 文には利用者が書いたプログラムの名前が入るので、「&」をアクセラレータとして読まない。
+    let profile_command_warning = child(
+        w!("STATIC"),
+        "",
+        WINDOW_STYLE(SS_NOPREFIX),
+        none,
+        ID_PROFILE_COMMAND_WARNING,
+        Some([
+            control_left,
+            profile_command_warning_row,
+            control_width,
+            PROFILE_COMMAND_WARNING_HEIGHT,
+        ]),
+    )?;
+    profiles_page.push(profile_command_warning);
+    let profile_backend_row =
+        profile_command_warning_row + PROFILE_COMMAND_WARNING_HEIGHT + LABEL_OFFSET;
     let (class, text, rect) = label("つなぎ方(&B):", label_rect(profile_backend_row));
     profiles_page.push(child(
         class,
@@ -1526,7 +1565,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             page_left,
             profile_location_row + ROW_HEIGHT + MARGIN,
             page_width,
-            4 * ROW_HEIGHT,
+            PROFILE_NOTE_HEIGHT,
         ],
     );
     profiles_page.push(child(
@@ -1789,6 +1828,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             profile_default: profile_buttons[2],
             profile_name,
             profile_command,
+            profile_command_warning,
             profile_backend,
             profile_location_label,
             profile_location,
@@ -2077,6 +2117,7 @@ impl State<'_> {
         set_text(c.profile_location, location.unwrap_or(""));
         self.filling_profile.set(false);
         self.show_profile_backend(backend);
+        self.show_profile_command_warning();
         let count = self.profiles.borrow().len();
         for (control, enabled) in [
             (c.profile_remove, selected.is_some() && count > 1),
@@ -2120,6 +2161,20 @@ impl State<'_> {
                 )
             };
         }
+    }
+
+    /// コマンドラインの入力欄の下の警告の文を、選んでいるプロファイルに合わせる。
+    fn show_profile_command_warning(&self) {
+        let warning = self.selected_profile().and_then(|index| {
+            self.profiles
+                .borrow()
+                .get(index)
+                .and_then(profile_command_warning)
+        });
+        set_text(
+            self.controls.profile_command_warning,
+            warning.as_deref().unwrap_or(""),
+        );
     }
 
     /// 選んでいるプロファイルのつなぎ方が変わった。場所の入力欄を空にして見出しを替え、プロファイルに
@@ -2179,6 +2234,7 @@ impl State<'_> {
             );
             SendMessageW(list, LB_SETCURSEL, Some(WPARAM(index)), None);
         }
+        self.show_profile_command_warning();
         self.schedule_preview();
     }
 
@@ -3603,6 +3659,38 @@ mod tests {
             thumb(&written),
             scroll_bar::Palette::from_terminal(black, scheme.foreground).colors()[1]
         );
+    }
+
+    #[test]
+    fn profile_command_warning_names_the_program_and_the_side() {
+        let warning = |backend: BackendKind, command: &str| {
+            profile_command_warning(&Profile::new("p", command, backend))
+        };
+        let wsl = warning(BackendKind::Wsl, r"C:\Windows\System32\wsl.exe -d Ubuntu")
+            .expect("wsl.exe in a bridge");
+        assert!(
+            wsl.starts_with("wsl.exe は Windows のプログラムです。"),
+            "{wsl}"
+        );
+        assert!(wsl.contains("WSL の中のコマンド"), "{wsl}");
+        let cygwin = warning(BackendKind::Cygwin, "cmd.exe").expect("cmd.exe in a bridge");
+        assert!(cygwin.starts_with("cmd.exe は"), "{cygwin}");
+        assert!(cygwin.contains("Cygwin の中のコマンド"), "{cygwin}");
+        assert_eq!(warning(BackendKind::Conpty, "wsl.exe"), None);
+        assert_eq!(warning(BackendKind::Cygwin, "zsh.exe -l"), None);
+        assert_eq!(warning(BackendKind::Wsl, ""), None);
+    }
+
+    #[test]
+    fn the_profile_page_fits_above_the_buttons() {
+        let name_row =
+            MARGIN + ROW_HEIGHT + PROFILE_LIST_HEIGHT + BUTTON_GAP + BUTTON_HEIGHT + MARGIN;
+        let command_row = name_row + ROW_HEIGHT + MARGIN;
+        let backend_row =
+            command_row + ROW_HEIGHT + LABEL_OFFSET + PROFILE_COMMAND_WARNING_HEIGHT + LABEL_OFFSET;
+        let note_top = backend_row + 2 * (ROW_HEIGHT + MARGIN);
+        let button_top = CLIENT_HEIGHT - MARGIN - BUTTON_HEIGHT;
+        assert!(note_top + PROFILE_NOTE_HEIGHT <= button_top - MARGIN);
     }
 
     #[test]

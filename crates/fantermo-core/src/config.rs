@@ -333,6 +333,40 @@ impl Profile {
         }
         Self::new(&name, command, BackendKind::default())
     }
+
+    /// ブリッジのプロファイルの `command` が Windows のプログラムを起動するなら、そのファイルの名前
+    /// （フォルダを除き、書いたままの形）。相手の側から起動した Windows のプログラムは ConPTY を通るので、
+    /// ブリッジで届くもの（画像など）が届かない。
+    ///
+    /// WSL では `wsl` と `.exe` で終わるものすべて。Cygwin ではプログラムの実行ファイルも `.exe` で
+    /// 終わるので、[`CYGWIN_KNOWN_WINDOWS_PROGRAMS`] の名前だけ。最初の語だけを見る。
+    pub fn windows_program_in_bridge(&self) -> Option<&str> {
+        let program = file_name(bridge_program(&self.command));
+        let stem = file_stem(program);
+        let is_windows_program = match self.backend {
+            BackendKind::Conpty => false,
+            BackendKind::Wsl => stem.eq_ignore_ascii_case(WSL_PROGRAM) || stem != program,
+            BackendKind::Cygwin => CYGWIN_KNOWN_WINDOWS_PROGRAMS
+                .iter()
+                .any(|known| stem.eq_ignore_ascii_case(known)),
+        };
+        is_windows_program.then_some(program)
+    }
+}
+
+/// Cygwin のブリッジの `command` で、Windows のプログラムと分かる実行ファイルの名前（フォルダと `.exe`
+/// を除く）。
+const CYGWIN_KNOWN_WINDOWS_PROGRAMS: [&str; 4] = [WSL_PROGRAM, "cmd", "powershell", "pwsh"];
+
+/// Cygwin・WSL の側のコマンドライン `command` の実行ファイル（`'` か `"` で囲んでいれば中身）。
+fn bridge_program(command: &str) -> &str {
+    let command = command.trim();
+    match command.strip_prefix('\'') {
+        Some(quoted) => quoted
+            .split_once('\'')
+            .map_or(quoted, |(program, _)| program),
+        None => split_program(command).0,
+    }
 }
 
 /// Cygwin のフォルダの `bin` にある DLL。
@@ -426,10 +460,15 @@ fn split_program(command: &str) -> (&str, &str) {
     }
 }
 
+/// パス `program` のファイルの名前。
+fn file_name(program: &str) -> &str {
+    program.rsplit(['\\', '/']).next().unwrap_or(program)
+}
+
 /// パス `program` のファイルの名前から `.exe` を除いたもの。
 fn file_stem(program: &str) -> &str {
     const EXE: &str = ".exe";
-    let file = program.rsplit(['\\', '/']).next().unwrap_or(program);
+    let file = file_name(program);
     match file.len().checked_sub(EXE.len()) {
         Some(end) if file.is_char_boundary(end) && file[end..].eq_ignore_ascii_case(EXE) => {
             &file[..end]
@@ -3037,6 +3076,79 @@ size = 10
                 Profile::new(&program_name(command), command, BackendKind::Conpty),
                 "{command}"
             );
+        }
+    }
+
+    #[test]
+    fn windows_programs_are_found_in_bridge_commands() {
+        let found = |backend: BackendKind, command: &str| {
+            Profile::new("p", command, backend)
+                .windows_program_in_bridge()
+                .map(str::to_owned)
+        };
+        let wsl = |command: &str| found(BackendKind::Wsl, command);
+        let cygwin = |command: &str| found(BackendKind::Cygwin, command);
+
+        // wsl はどちらのブリッジでも。パスと大文字小文字を問わず、書いたままの名前を返す。
+        for (command, program) in [
+            ("wsl", "wsl"),
+            ("wsl.exe", "wsl.exe"),
+            ("WSL.EXE -d Ubuntu", "WSL.EXE"),
+            (r"C:\Windows\System32\wsl.exe", "wsl.exe"),
+            ("/mnt/c/Windows/System32/wsl.exe -d Ubuntu", "wsl.exe"),
+            (r#"  "C:\Windows\System32\Wsl.exe" -d Ubuntu "#, "Wsl.exe"),
+            (
+                "'/cygdrive/c/Windows/System32/wsl.exe' -d Ubuntu",
+                "wsl.exe",
+            ),
+        ] {
+            assert_eq!(wsl(command).as_deref(), Some(program), "{command}");
+            assert_eq!(cygwin(command).as_deref(), Some(program), "{command}");
+        }
+
+        // WSL では .exe で終わるものはすべて Windows のプログラム。
+        for command in [
+            "docker.exe run -it --rm otiai10/amesh",
+            "cmd.exe",
+            "'/mnt/c/Program Files/PowerShell/7/pwsh.EXE' -NoLogo",
+        ] {
+            assert!(wsl(command).is_some(), "{command}");
+        }
+        for command in [
+            "",
+            "   ",
+            "zsh -l",
+            "/usr/bin/docker run",
+            "cmd",
+            "a.exe.bak",
+            "echo wsl.exe",
+        ] {
+            assert_eq!(wsl(command), None, "{command}");
+        }
+
+        // Cygwin では分かっている名前だけ。Cygwin のプログラムも .exe で終わる。
+        for command in [
+            "cmd.exe /c dir",
+            "cmd",
+            "powershell.exe -NoLogo",
+            "PWSH.EXE",
+        ] {
+            assert!(cygwin(command).is_some(), "{command}");
+        }
+        for command in [
+            "",
+            "zsh.exe -l",
+            "/bin/bash.exe",
+            "docker.exe run",
+            "zsh -l",
+            "echo cmd.exe",
+        ] {
+            assert_eq!(cygwin(command), None, "{command}");
+        }
+
+        // ConPTY では wsl.exe が正しい。
+        for command in ["wsl.exe", "cmd.exe", "powershell.exe -NoLogo"] {
+            assert_eq!(found(BackendKind::Conpty, command), None, "{command}");
         }
     }
 

@@ -192,11 +192,27 @@ fn read(path: Option<&Path>, previous: &Config, occasion: Occasion) -> Loaded {
         tracing::warn!("kept the settings in use; {} was not read", path.display());
     } else {
         tracing::info!("loaded the settings from {}", path.display());
+        warn_windows_programs_in_bridges(path, &parsed.config);
     }
     Loaded {
         notice: notice_text(path, &parsed, occasion),
         config: parsed.config,
         written,
+    }
+}
+
+/// ブリッジのプロファイルの `command` が Windows のプログラムなら、ログに残す。使えるプロファイルなので、
+/// [`notice_text`] には入れない。
+fn warn_windows_programs_in_bridges(path: &Path, config: &Config) {
+    for profile in &config.profiles {
+        if let Some(program) = profile.windows_program_in_bridge() {
+            tracing::warn!(
+                "{}: profile {:?} starts the Windows program {program} from the {} bridge; it runs through ConPTY, so images and the like do not arrive",
+                path.display(),
+                profile.name,
+                profile.backend.name(),
+            );
+        }
     }
 }
 
