@@ -1,0 +1,37 @@
+name: Set up the bridge toolchain
+description: >-
+  ブリッジ（crates/fantermo-bridge）のビルドに要るものを入れる。Linux（musl）向けは Rust の stable と
+  ターゲット、Cygwin 向けは nightly（rust-src と clippy）と、リンカの gcc を持つ Cygwin。
+
+outputs:
+  cygwin-root:
+    description: 入れた Cygwin のフォルダ（tools/bridge.sh の CYGWIN_ROOT に渡す）
+    value: ${{ steps.cygwin.outputs.root }}
+
+runs:
+  using: composite
+  steps:
+    # nightly の日付は tools/bridge.sh の既定（BRIDGE_NIGHTLY がないときに使うもの）から読む。
+    - name: Install Rust
+      shell: bash
+      run: |
+        set -euo pipefail
+        nightly=$(sed -n 's/^nightly="\${BRIDGE_NIGHTLY:-\(.*\)}"$/\1/p' tools/bridge.sh)
+        if [ -z "$nightly" ]; then
+          echo "tools/bridge.sh から nightly の既定が読めません" >&2
+          exit 1
+        fi
+        rustup update stable --no-self-update
+        rustup default stable
+        rustup component add clippy rustfmt
+        rustup target add x86_64-unknown-linux-musl
+        rustup toolchain install "$nightly" --profile minimal --component rust-src,clippy --no-self-update
+
+    # Cygwin の bin は PATH に足さない（git bash の MSYS のコマンドとぶつかるため）。tools/bridge.sh は
+    # CYGWIN_ROOT からリンカのパスを組み立てる。
+    - name: Install Cygwin
+      id: cygwin
+      uses: cygwin/cygwin-install-action@v7
+      with:
+        packages: gcc-core
+        add-to-path: false

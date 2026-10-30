@@ -46,3 +46,38 @@ jobs:
       - name: Test
         shell: cmd
         run: call tools\dev.bat test --locked
+
+  # ブリッジ（crates/fantermo-bridge）は workspace の外にあり、上の fmt・clippy は見ない。Cygwin と Linux（musl）
+  # 向けに、手元と同じ tools/bridge.sh で確かめる。プロトコルの crate のテストは上の test で実行する。
+  bridge:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - id: toolchain
+        uses: ./.github/actions/setup-bridge-toolchain
+
+      # ブリッジは自分の Cargo.lock を持ち、出力先は tools/bridge.sh が決める target/bridge/。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/fantermo-bridge -> ../../target/bridge
+
+      - name: Check formatting
+        shell: bash
+        run: ./tools/bridge.sh fmt --check
+
+      - name: Clippy
+        shell: bash
+        env:
+          CYGWIN_ROOT: ${{ steps.toolchain.outputs.cygwin-root }}
+        run: ./tools/bridge.sh clippy all -- -D warnings
+
+      - name: Build
+        shell: bash
+        env:
+          CYGWIN_ROOT: ${{ steps.toolchain.outputs.cygwin-root }}
+        run: ./tools/bridge.sh build all
