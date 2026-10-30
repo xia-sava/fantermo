@@ -36,28 +36,29 @@ use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::{atlas, background::Decoded, boxdraw::Shape, paint::arc};
 
-/// プロファイル名から選ぶ背景の色。白の文字と絵が読め、ライトとダークのどちらのタブの上でも沈まない
-/// 明るさの色だけを並べる（テストで固定する）。
+/// プロファイル名から選ぶ背景の色。青・水色・青緑・緑・藍・紫の淡い色で、警告に使う赤・橙・黄は入れない。
+/// 濃い色の絵と頭文字が読め、明るいタブの白と灰色のどちらからも、暗いタブからも分かれる明るさの色だけを
+/// 並べる（テストで固定する）。
 const PALETTE: [Rgb; 10] = [
-    rgb(0xc6, 0x28, 0x28),
-    rgb(0xc2, 0x57, 0x0c),
-    rgb(0x9a, 0x67, 0x00),
-    rgb(0x2e, 0x7d, 0x32),
-    rgb(0x0f, 0x76, 0x6e),
-    rgb(0x0e, 0x74, 0x90),
-    rgb(0x1d, 0x6f, 0xd1),
-    rgb(0x4f, 0x46, 0xe5),
-    rgb(0x7e, 0x3f, 0xc4),
-    rgb(0xbe, 0x2a, 0x78),
+    rgb(0xd2, 0xe4, 0xf9),
+    rgb(0xc5, 0xe8, 0xf7),
+    rgb(0xb3, 0xeb, 0xf4),
+    rgb(0x9d, 0xf1, 0xe9),
+    rgb(0xa1, 0xf2, 0xd7),
+    rgb(0xaa, 0xf3, 0xc2),
+    rgb(0xaa, 0xf3, 0xb0),
+    rgb(0xde, 0xde, 0xfc),
+    rgb(0xe4, 0xdc, 0xfb),
+    rgb(0xec, 0xdc, 0xfb),
 ];
 
 /// プロファイルなしで開いたタブの背景の色。
-const NO_PROFILE_COLOR: Rgb = rgb(0x55, 0x60, 0x70);
+const NO_PROFILE_COLOR: Rgb = rgb(0xdc, 0xe3, 0xea);
 
-/// 絵と頭文字の白。
+/// ペンギンの腹の白。
 const LIGHT_INK: Rgb = rgb(0xff, 0xff, 0xff);
 
-/// ペンギンの体の色。
+/// 絵と頭文字の濃い色。
 const DARK_INK: Rgb = rgb(0x1a, 0x1c, 0x20);
 
 /// ペンギンのくちばしの色。
@@ -242,7 +243,7 @@ fn prompt_shapes(side: f32) -> Vec<(Ink, Shape)> {
     let bottom = side - inset;
     vec![
         (
-            Ink::Light,
+            Ink::Dark,
             Shape::Polyline {
                 points: vec![
                     (inset, inset),
@@ -253,7 +254,7 @@ fn prompt_shapes(side: f32) -> Vec<(Ink, Shape)> {
             },
         ),
         (
-            Ink::Light,
+            Ink::Dark,
             Shape::Rect {
                 left: side * 0.3,
                 top: bottom - inset,
@@ -273,7 +274,7 @@ fn letter_c_shapes(side: f32) -> Vec<(Ink, Shape)> {
     let center = (side / 2.0, side / 2.0);
     let radius = (side - width) / 2.0;
     vec![(
-        Ink::Light,
+        Ink::Dark,
         Shape::Polyline {
             points: arc(center, radius, OPENING, 2.0 * PI - OPENING),
             width,
@@ -343,7 +344,7 @@ pub fn draw_generated(
     // SAFETY: bitmap は作ったばかりの 32bpp の乗算済み BGRA で、properties は初期化済み。
     let target = unsafe { factory.CreateWicBitmapRenderTarget(&bitmap, &properties)? };
     // SAFETY: target は有効で、色は呼び出しの間は生きている。
-    let brush = unsafe { target.CreateSolidColorBrush(&d2d_color(LIGHT_INK), None)? };
+    let brush = unsafe { target.CreateSolidColorBrush(&d2d_color(DARK_INK), None)? };
     // SAFETY: target は有効。BeginDraw と EndDraw を対にする。
     let ended = unsafe {
         target.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
@@ -489,7 +490,7 @@ fn draw_initial(
     };
     // SAFETY: 描画中の target と、同じ target が作ったブラシ。layout はこの呼び出しの間は生きている。
     unsafe {
-        brush.SetColor(&d2d_color(LIGHT_INK));
+        brush.SetColor(&d2d_color(DARK_INK));
         target.DrawTextLayout(
             origin,
             &layout,
@@ -577,21 +578,33 @@ mod tests {
 
     #[test]
     fn every_color_reads_on_light_and_dark_tabs() {
-        // タブの色: 既定の表示しているタブ、既定のタブバー、ダークの表示しているタブ、ダークのタブバー。
+        // タブの色: 既定の表示しているタブ、既定のタブバー、暗い `[colors.tab_bar]` の表示しているタブ、
+        // タブバー。淡い色は白にも灰色にも近いので、明るいタブとは明るさの差を小さく、両方の間に置く。
         const LIGHT_TABS: [Rgb; 2] = [rgb(0xff, 0xff, 0xff), rgb(0xcc, 0xcc, 0xcc)];
         const DARK_TABS: [Rgb; 2] = [rgb(0x1e, 0x1e, 0x1e), rgb(0x30, 0x30, 0x30)];
         for color in PALETTE.iter().chain([&NO_PROFILE_COLOR]) {
-            assert!(contrast(*color, LIGHT_INK) >= 3.5, "{color:?} and its ink");
-            assert!(
-                contrast(*color, DARK_INK) >= 2.0,
-                "{color:?} and the penguin"
-            );
+            assert!(contrast(*color, DARK_INK) >= 7.0, "{color:?} and its ink");
             for tab in LIGHT_TABS {
-                assert!(contrast(*color, tab) >= 2.0, "{color:?} on {tab:?}");
+                assert!(contrast(*color, tab) >= 1.2, "{color:?} on {tab:?}");
             }
             for tab in DARK_TABS {
-                assert!(contrast(*color, tab) >= 1.5, "{color:?} on {tab:?}");
+                assert!(contrast(*color, tab) >= 7.0, "{color:?} on {tab:?}");
             }
+        }
+    }
+
+    #[test]
+    fn the_palette_has_tinted_colors_without_warning_hues() {
+        /// 灰色と見分けられる色味（チャンネルの最大と最小の差）の下限。
+        const MIN_TINT: u8 = 0x10;
+        for color in PALETTE {
+            let channels = [color.r, color.g, color.b];
+            let (Some(&max), Some(&min)) = (channels.iter().max(), channels.iter().min()) else {
+                unreachable!("three channels");
+            };
+            assert!(max - min >= MIN_TINT, "{color:?}");
+            // 赤・橙・黄は赤のチャンネルが青より強い。
+            assert!(color.r < color.b, "{color:?}");
         }
     }
 
@@ -734,14 +747,15 @@ mod tests {
     #[test]
     fn pictures_differ_by_backend() {
         let shapes = |backend| picture_shapes(backend, 16.0);
-        // Cygwin は線一本の C。WSL は暗い色と白とくちばしの色を使う。ConPTY は線と下線。
+        // Cygwin は線一本の C。WSL は濃い色と白とくちばしの色を使う。ConPTY は線と下線。
         assert_eq!(shapes(BackendKind::Cygwin).len(), 1);
         let inks = |backend| -> Vec<Ink> { shapes(backend).iter().map(|(ink, _)| *ink).collect() };
         assert_eq!(
             inks(BackendKind::Wsl),
             [Ink::Dark, Ink::Dark, Ink::Light, Ink::Beak]
         );
-        assert_eq!(inks(BackendKind::Conpty), [Ink::Light, Ink::Light]);
+        assert_eq!(inks(BackendKind::Conpty), [Ink::Dark, Ink::Dark]);
+        assert_eq!(inks(BackendKind::Cygwin), [Ink::Dark]);
     }
 
     #[test]
