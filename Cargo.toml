@@ -6,6 +6,8 @@ members = [
     "crates/fantermo-core",
     "crates/run-hidden",
 ]
+# ブリッジは Cygwin と Linux 向けにだけビルドする（tools/bridge.sh）。
+exclude = ["crates/fantermo-bridge"]
 
 [workspace.package]
 version = "0.0.2"

@@ -1,0 +1,22 @@
+# fantermo の workspace の外に置く（Cygwin と Linux 向けにだけビルドするため）。ビルドは tools/bridge.sh。
+[package]
+name = "fantermo-bridge"
+version = "0.0.2"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+publish = false
+
+[dependencies]
+fantermo-bridge-protocol = { path = "../fantermo-bridge-protocol" }
+libc = "0.2.191"
+
+# x86_64-pc-cygwin は std をビルドし直す（-Zbuild-std=std,panic_abort）ので、巻き戻しを使わない形に揃える。
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
