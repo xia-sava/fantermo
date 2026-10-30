@@ -48,8 +48,8 @@ const CYGWIN_DLL: &str = "cygwin1.dll";
 /// Cygwin のブリッジに、相手の側のコマンドラインを渡す環境変数。Cygwin のプログラムはコマンドラインを
 /// 独自の決まりで引数に分ける（`\` の扱いが引数の形で変わる）ので、利用者の書いた文字列は引数に入れない。
 const COMMAND_VARIABLE: &str = "FANTERMO_BRIDGE_COMMAND";
-/// Cygwin のブリッジに起動させるシェルのスクリプト。[`COMMAND_VARIABLE`] を消してから、その中身を
-/// `/bin/sh -c` で実行する（一つのコマンドならシェルを残さずそのコマンドになる）。
+/// Cygwin のブリッジに起動させるシェルのスクリプト。[`COMMAND_VARIABLE`] を消してから、その中身
+/// （[`shell_command`] にしたもの）を `/bin/sh -c` で実行する。
 const CYGWIN_COMMAND_SCRIPT: &str =
     "c=$FANTERMO_BRIDGE_COMMAND; unset FANTERMO_BRIDGE_COMMAND; exec /bin/sh -c \"$c\"";
 
@@ -305,7 +305,7 @@ fn cygwin_command(
     }
     if !command_line.trim().is_empty() {
         command
-            .env(COMMAND_VARIABLE, command_line)
+            .env(COMMAND_VARIABLE, shell_command(command_line))
             .raw_arg("--")
             .raw_arg("/bin/sh")
             .raw_arg("-c")
@@ -337,13 +337,62 @@ fn wsl_command(
     }
     command.arg("--exec").arg(linux_exe);
     if !command_line.trim().is_empty() {
-        command.args(["--", "/bin/sh", "-c", command_line]);
+        command.args(["--", "/bin/sh", "-c", &shell_command(command_line)]);
     }
     command.env(
         "WSLENV",
         wslenv_with_term(env::var("WSLENV").ok().as_deref()),
     );
     Ok(command)
+}
+
+/// 引用の外にあると、コマンドを区切る・つなぐ・入出力を付け替える・別のシェルで実行するシェルの記号。
+const SHELL_OPERATORS: [char; 10] = ['|', '&', ';', '<', '>', '(', ')', '`', '\n', '\r'];
+/// 先頭にあると、続くものが一つのコマンドでなくなる語（`exec` は付けても変わらないので含める）。
+const SHELL_KEYWORDS: [&str; 22] = [
+    "!", "{", "}", "[[", "]]", "case", "do", "done", "elif", "else", "esac", "exec", "fi", "for",
+    "function", "if", "in", "select", "then", "time", "until", "while",
+];
+
+/// 利用者のコマンドライン `command_line` を `/bin/sh -c` に渡す形。一つのコマンドなら `exec` を前に
+/// 付け、シェルを親として残さずそのコマンドにする（Ubuntu の dash などは一つのコマンドでも exec せず、
+/// Ctrl+C でシェルも終わってそのシェルの終了コードが返る）。パイプや `;` などを含むときに `exec` を
+/// 付けると最初のコマンドだけが exec されて意味が変わるので、そのまま渡す。
+fn shell_command(command_line: &str) -> String {
+    let command_line = command_line.trim();
+    if is_single_command(command_line) {
+        format!("exec {command_line}")
+    } else {
+        command_line.to_owned()
+    }
+}
+
+/// `command` が、シェルの文法の記号を引用の外に含まない一つのコマンドか。先頭が変数の代入
+/// （`NAME=値`）やシェルの予約語のものは含めない。
+fn is_single_command(command: &str) -> bool {
+    let first = command.split_whitespace().next().unwrap_or_default();
+    if first.is_empty() || first.contains('=') || SHELL_KEYWORDS.contains(&first) {
+        return false;
+    }
+    let mut quote = None;
+    let mut escaped = false;
+    for c in command.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match (quote, c) {
+            (Some('\''), '\'') => quote = None,
+            (Some('\''), _) => {}
+            (_, '\\') => escaped = true,
+            (Some(_), '"') => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(c),
+            (None, c) if SHELL_OPERATORS.contains(&c) => return false,
+            (None, _) => {}
+        }
+    }
+    quote.is_none() && !escaped
 }
 
 /// `WSLENV` の値 `current` に `TERM` を足したもの。すでにあればそのまま。
@@ -853,6 +902,39 @@ mod tests {
         assert!(!CYGWIN_COMMAND_SCRIPT.contains('\\'));
         assert!(!CYGWIN_COMMAND_SCRIPT.contains('\''));
         assert!(CYGWIN_COMMAND_SCRIPT.contains(COMMAND_VARIABLE));
+    }
+
+    #[test]
+    fn single_commands_are_executed_in_place_of_the_shell() {
+        assert_eq!(shell_command(" zsh -l "), "exec zsh -l");
+        assert_eq!(
+            shell_command(r#"sh -c 'trap "exit 7" INT; sleep 100'"#),
+            r#"exec sh -c 'trap "exit 7" INT; sleep 100'"#
+        );
+        assert_eq!(
+            shell_command(r#"printf "%s|%s\n" a\;b "$(date)""#),
+            r#"exec printf "%s|%s\n" a\;b "$(date)""#
+        );
+        for command in [
+            "ls | less",
+            "cd /tmp; zsh",
+            "make && zsh",
+            "sleep 1 &",
+            "zsh > log",
+            "(zsh)",
+            "echo `date`",
+            "echo $(date; date)",
+            "a\nb",
+            "LANG=C zsh",
+            "exec zsh",
+            "if true; then zsh; fi",
+            "{ zsh; }",
+            "! false",
+            "echo 'open",
+            "echo end\\",
+        ] {
+            assert_eq!(shell_command(command), command, "{command:?}");
+        }
     }
 
     #[test]
