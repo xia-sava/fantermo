@@ -14,7 +14,8 @@
 #      rustup toolchain install nightly-2026-10-30 --profile minimal --component rust-src
 #    clippy には同じ nightly の clippy も要る（--component clippy）。
 #    リンカは Cygwin の x86_64-pc-cygwin-gcc。CYGWIN_ROOT（例 C:\app\cygwin）があればその bin のものを使い、
-#    なければ PATH から探す。Windows 形式のパスをそのまま渡してよい（Cygwin の gcc が読める）。
+#    cargo を実行する間だけその bin を PATH の先頭に置く。なければ PATH から探す（Cygwin の bin が PATH に
+#    要る）。Windows 形式のパスをそのまま渡してよい（Cygwin の gcc が読める）。
 #  linux: x86_64-unknown-linux-musl。既定のツールチェインで、リンカは rust-lld。
 #      rustup target add x86_64-unknown-linux-musl
 # ============================================================
@@ -48,11 +49,14 @@ platform="$1"
 shift
 
 cygwin() {
+  local path="$PATH"
   if [ -n "${CYGWIN_ROOT:-}" ]; then
     export CARGO_TARGET_X86_64_PC_CYGWIN_LINKER="$CYGWIN_ROOT\\bin\\x86_64-pc-cygwin-gcc.exe"
+    # gcc が起動する collect2 や ld は Cygwin の bin の DLL を読むので、cargo の間だけ PATH の先頭に置く。
+    path="$(cygpath -u "$CYGWIN_ROOT")/bin:$PATH"
   fi
   echo "[bridge.sh] $subcommand x86_64-pc-cygwin（$nightly）" >&2
-  cargo "+$nightly" "$subcommand" --manifest-path "$manifest" --locked \
+  PATH="$path" cargo "+$nightly" "$subcommand" --manifest-path "$manifest" --locked \
     --target x86_64-pc-cygwin -Zbuild-std=std,panic_abort "$@"
 }
 
