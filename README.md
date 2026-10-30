@@ -26,6 +26,8 @@ libghostty-vt は [libghostty-rs](https://github.com/uzaaft/libghostty-rs) の�
 
 どちらにも，`fantermo.exe` と同じフォルダにブリッジ（`fantermo-bridge.exe` と `fantermo-bridge`）が入っています．プロファイルで Cygwin や WSL にブリッジでつなぐときに使うので，`fantermo.exe` と離さないでください．Cygwin 向けのブリッジは，入れてある Cygwin の `cygwin1.dll` などを使います．Cygwin のフォルダは，プロファイルの `cygwin_root` に書かなければ，環境変数 `PATH` とよくある場所（`C:\cygwin64`，`C:\cygwin`）から探します．Cygwin と WSL は，ConPTY よりブリッジでつなぐことを勧めます（設定ファイルの `[[profiles]]` に `backend = "cygwin"` か `backend = "wsl"` を書きます．ConPTY を通すと，アプリの出力の一部が書き換えられ，端末への問い合わせの一部が届かず，kitty graphics protocol と sixel の画像も届かず，ウィンドウの大きさを変えるとスクロールバックの行が欠けることがあります）．
 
+タブのタイトルの左には，プロファイルのアイコンを出します．設定ファイルの `[[profiles]]` の `icon` に画像ファイル（PNG，ICO など）のパスを書くとその画像を，書かなければ，つなぎ方の絵（Cygwin の C，WSL のペンギン，ConPTY の `>_`）とプロファイル名の頭文字のアイコンを作って出します．
+
 設定ファイルとウィンドウの状態は `%APPDATA%\fantermo\` に，ログは `%LOCALAPPDATA%\fantermo\logs\` に置きます．どちらもアンインストールしても消さないので，要らなければ手で消してください．
 
 タブバーのメニューのボタン（≡）の「fantermo について…」で，バージョンとビルドしたコミットを見られます．インストーラで入れた fantermo は，ここの「更新を確認」で新しいバージョンを確かめて更新できます（zip から展開したものでは，このボタンは押せません）．
