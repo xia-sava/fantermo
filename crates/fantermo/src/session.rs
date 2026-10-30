@@ -2,7 +2,7 @@
 //! リンクの下線・タイトル・背景画像に選んだファイルなど、端末ごとに持つ状態を添える。ウィンドウ・描画・
 //! 設定は持たない（背景画像のテクスチャは描画が持つ）。
 
-use std::{io, path::Path};
+use std::io;
 
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize, SpawnOptions, Wake},
@@ -59,14 +59,14 @@ impl Startup {
         }
     }
 
-    /// プロファイル `profile` のものを起動する。相対パスのアイコンは `config_dir` から辿る。
-    pub fn from_profile(profile: &Profile, config_dir: Option<&Path>) -> Self {
+    /// プロファイル `profile` のものを起動する。タブには `tab_icon` を出す。
+    pub fn from_profile(profile: &Profile, tab_icon: TabIcon) -> Self {
         Self {
             backend: profile.backend,
             command_line: profile.command.clone(),
             cygwin_root: profile.cygwin_root.clone(),
             distribution: profile.distribution.clone(),
-            tab_icon: TabIcon::for_profile(profile, config_dir),
+            tab_icon,
             profile_name: Some(profile.name.clone()),
         }
     }

@@ -192,8 +192,12 @@ fn startup_for(
         (Launch::Default, None) => default,
         (Launch::Profile(index), _) => index,
     };
-    match profiles.get(index).or(profiles.first()) {
-        Some(profile) => Startup::from_profile(profile, config_dir),
+    let index = if index < profiles.len() { index } else { 0 };
+    match profiles.get(index) {
+        Some(profile) => Startup::from_profile(
+            profile,
+            TabIcon::for_profiles(profiles, config_dir).swap_remove(index),
+        ),
         None => Startup::conpty(config::DEFAULT_COMMAND_LINE),
     }
 }
@@ -1802,16 +1806,16 @@ impl App {
         let profile_icons = self
             .profiles
             .iter()
-            .map(|profile| {
-                let icon = TabIcon::for_profile(profile, config_dir);
-                match renderer.tab_icon_pixels(&icon, side) {
+            .zip(TabIcon::for_profiles(&self.profiles, config_dir))
+            .map(
+                |(profile, icon)| match renderer.tab_icon_pixels(&icon, side) {
                     Ok(pixels) => Some(pixels),
                     Err(e) => {
                         tracing::warn!("failed to make the icon of {:?}: {e}", profile.name);
                         None
                     }
-                }
-            })
+                },
+            )
             .collect();
         let (left, top) = self.client_to_screen(new_tab.x as i32, new_tab.y as i32);
         let (right, bottom) =
@@ -3594,7 +3598,7 @@ mod tests {
                 command_line: String::new(),
                 cygwin_root: None,
                 distribution: Some("Ubuntu".to_owned()),
-                tab_icon: TabIcon::for_profile(&wsl, None),
+                tab_icon: TabIcon::for_profiles(std::slice::from_ref(&wsl), None).remove(0),
                 profile_name: Some(wsl.name.clone()),
             }
         );
@@ -3609,7 +3613,7 @@ mod tests {
         let folder = Path::new(r"C:\conf");
         let icon =
             |arguments, launch| startup_for(arguments, &profiles, 0, launch, Some(folder)).tab_icon;
-        let from_profile = TabIcon::for_profile(&profiles[0], Some(folder));
+        let from_profile = TabIcon::for_profiles(&profiles, Some(folder)).remove(0);
         assert_eq!(icon(None, Launch::Default), from_profile);
         assert_eq!(from_profile.image, Some(folder.join("zsh.png")));
         // 引数のコマンドラインで開いたタブはプロファイルなし。一覧から選べばプロファイルのもの。

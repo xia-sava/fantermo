@@ -1,8 +1,9 @@
 //! タブのタイトルの左に出す、小さな正方形のアイコン。
 //!
-//! プロファイルに画像を書いていなければ、角を丸めた色の正方形に、つなぎ方ごとの絵（Cygwin の C、WSL の
-//! ペンギン、ConPTY の `>_`）とプロファイル名の頭文字を描いて作る。色はプロファイル名から決まるので、
-//! 起動のたびに同じになる。作った絵は乗算済みアルファの BGRA（[`Decoded`]）で返す。
+//! プロファイルに画像を書いていなければ、角を丸めた淡い色の正方形に、つなぎ方ごとの絵（Cygwin の C、WSL の
+//! ペンギン、ConPTY の `>_`）を描いて作る。同じ絵になるプロファイルが複数あるときだけ、絵を小さくして
+//! プロファイル名の頭文字を添える。色はプロファイル名から決まるので、起動のたびに同じになる。作った絵は
+//! 乗算済みアルファの BGRA（[`Decoded`]）で返す。
 
 use std::{
     f32::consts::PI,
@@ -67,11 +68,13 @@ const BEAK_INK: Rgb = rgb(0xf5, 0xb8, 0x1e);
 /// 正方形の角の半径（一辺に対する割合）。
 const CORNER_RATIO: f32 = 0.2;
 
-/// 頭文字があるときの絵の左上の位置と一辺（アイコンの一辺に対する割合）。
-const PICTURE_WITH_INITIAL: (f32, f32) = (0.06, 0.56);
+/// 頭文字があるときの絵の左上の位置と一辺（アイコンの一辺に対する割合）。背景の正方形が大きく見えるように、
+/// 絵を小さめに置く。
+const PICTURE_WITH_INITIAL: (f32, f32) = (0.06, 0.5);
 
-/// 頭文字がないときの絵の左上の位置と一辺（アイコンの一辺に対する割合）。
-const PICTURE_ALONE: (f32, f32) = (0.18, 0.64);
+/// 頭文字がないときの絵のまわりの余白（アイコンの一辺に対する割合）。絵を大きく置き、背景の正方形は縁として
+/// 見える程度にする。
+const PICTURE_ALONE_MARGIN: f32 = 0.06;
 
 /// 頭文字を収める範囲の右下の角からの一辺（アイコンの一辺に対する割合）。
 const INITIAL_SIDE: f32 = 0.52;
@@ -99,10 +102,41 @@ pub struct TabIcon {
     /// 画像のファイル。読めなければ下の値で作る。
     pub image: Option<PathBuf>,
     pub backend: BackendKind,
-    /// 絵に添える頭文字。
+    /// 絵に添える頭文字。同じ絵になるプロファイルが複数あるときだけ。
     pub initial: Option<String>,
     /// 背景の色。
     pub color: Rgb,
+}
+
+/// プロファイルがタブに出す絵。同じ値なら見分けがつかない。
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Picture {
+    /// `icon` に書いた画像のファイル。大文字と小文字、`/` と `\` の違いは同じファイル。
+    Image(String),
+    /// つなぎ方ごとの絵。
+    Drawn(BackendKind),
+}
+
+impl Picture {
+    fn of(icon: &TabIcon) -> Self {
+        match &icon.image {
+            Some(path) => Self::Image(path_key(path)),
+            None => Self::Drawn(icon.backend),
+        }
+    }
+}
+
+/// パス `path` を比べるための文字列。
+fn path_key(path: &Path) -> String {
+    path.to_string_lossy().replace('/', "\\").to_lowercase()
+}
+
+/// `pictures` のそれぞれについて、同じ絵がほかにもあるか。
+fn shared_pictures(pictures: &[Picture]) -> Vec<bool> {
+    pictures
+        .iter()
+        .map(|picture| pictures.iter().filter(|other| *other == picture).count() > 1)
+        .collect()
 }
 
 impl TabIcon {
@@ -116,8 +150,25 @@ impl TabIcon {
         }
     }
 
-    /// プロファイル `profile` のアイコン。相対パスの画像は `config_dir` から辿る。
-    pub fn for_profile(profile: &Profile, config_dir: Option<&Path>) -> Self {
+    /// 設定の `profiles` のそれぞれのアイコン。相対パスの画像は `config_dir` から辿る。頭文字は `profiles`
+    /// 全体を見て、同じ絵になるプロファイルが複数あるものにだけ付ける。
+    pub fn for_profiles(profiles: &[Profile], config_dir: Option<&Path>) -> Vec<Self> {
+        let mut icons: Vec<Self> = profiles
+            .iter()
+            .map(|profile| Self::without_initial(profile, config_dir))
+            .collect();
+        let pictures: Vec<Picture> = icons.iter().map(Picture::of).collect();
+        let shared = shared_pictures(&pictures);
+        for ((icon, profile), shared) in icons.iter_mut().zip(profiles).zip(shared) {
+            if shared {
+                icon.initial = initial(&profile.name);
+            }
+        }
+        icons
+    }
+
+    /// プロファイル `profile` の、頭文字を決める前のアイコン。
+    fn without_initial(profile: &Profile, config_dir: Option<&Path>) -> Self {
         let image = profile.icon.as_deref().map(|path| match config_dir {
             Some(folder) => folder.join(path),
             None => PathBuf::from(path),
@@ -125,7 +176,7 @@ impl TabIcon {
         Self {
             image,
             backend: profile.backend,
-            initial: initial(&profile.name),
+            initial: None,
             color: color_of(&profile.name),
         }
     }
@@ -181,15 +232,19 @@ impl Square {
 
 /// 一辺 `size` のアイコンの中の、絵の範囲。ピクセルの境目に合わせる。
 fn picture_square(size: f32, has_initial: bool) -> Square {
-    let (offset, side) = if has_initial {
-        PICTURE_WITH_INITIAL
-    } else {
-        PICTURE_ALONE
-    };
+    if has_initial {
+        let (offset, side) = PICTURE_WITH_INITIAL;
+        return Square {
+            x: (size * offset).round(),
+            y: (size * offset).round(),
+            side: (size * side).round(),
+        };
+    }
+    let margin = (size * PICTURE_ALONE_MARGIN).round().max(1.0);
     Square {
-        x: (size * offset).round(),
-        y: (size * offset).round(),
-        side: (size * side).round(),
+        x: margin,
+        y: margin,
+        side: size - 2.0 * margin,
     }
 }
 
@@ -672,10 +727,12 @@ mod tests {
             icon: Some(r"icons\zsh.png".to_owned()),
             ..Profile::new("zsh", "zsh -l", BackendKind::Cygwin)
         };
-        let icon = TabIcon::for_profile(&profile, Some(Path::new(r"C:\conf")));
+        let one = |profile: &Profile, config_dir| {
+            TabIcon::for_profiles(std::slice::from_ref(profile), config_dir).remove(0)
+        };
+        let icon = one(&profile, Some(Path::new(r"C:\conf")));
         assert_eq!(icon.image, Some(PathBuf::from(r"C:\conf\icons\zsh.png")));
         assert_eq!(icon.backend, BackendKind::Cygwin);
-        assert_eq!(icon.initial.as_deref(), Some("Z"));
         assert_eq!(icon.color, color_of("zsh"));
         // 絶対パスは設定ファイルのフォルダによらない。
         let absolute = Profile {
@@ -683,16 +740,93 @@ mod tests {
             ..profile.clone()
         };
         assert_eq!(
-            TabIcon::for_profile(&absolute, Some(Path::new(r"C:\conf"))).image,
+            one(&absolute, Some(Path::new(r"C:\conf"))).image,
             Some(PathBuf::from(r"D:\pics\a.png"))
         );
         assert_eq!(
-            TabIcon::for_profile(&profile, None).image,
+            one(&profile, None).image,
             Some(PathBuf::from(r"icons\zsh.png"))
         );
-        let plain = TabIcon::for_profile(&Profile::builtin(), None);
+        let plain = one(&Profile::builtin(), None);
         assert_eq!(plain.image, None);
         assert_eq!(plain.backend, BackendKind::Conpty);
+    }
+
+    #[test]
+    fn the_same_picture_in_several_profiles_is_told_apart_by_the_initial() {
+        let initials = |profiles: &[Profile]| -> Vec<Option<String>> {
+            TabIcon::for_profiles(profiles, None)
+                .into_iter()
+                .map(|icon| icon.initial)
+                .collect()
+        };
+        let zsh = Profile::new("zsh", "zsh -l", BackendKind::Cygwin);
+        let bash = Profile::new("bash", "bash -l", BackendKind::Cygwin);
+        let ubuntu = Profile::new("Ubuntu", "", BackendKind::Wsl);
+        // 一つだけなら絵だけ。
+        assert_eq!(initials(std::slice::from_ref(&zsh)), [None], "one profile");
+        // つなぎ方が違えば絵が違う。
+        assert_eq!(initials(&[zsh.clone(), ubuntu.clone()]), [None, None]);
+        // 同じつなぎ方なら両方に付け、ほかのつなぎ方には付けない。
+        assert_eq!(
+            initials(&[zsh.clone(), ubuntu, bash]),
+            [Some("Z".to_owned()), None, Some("B".to_owned())]
+        );
+        // 頭文字にできるものがない名前には付けない。
+        let blank = Profile::new("\u{3000}", "ash", BackendKind::Cygwin);
+        assert_eq!(initials(&[zsh, blank]), [Some("Z".to_owned()), None]);
+    }
+
+    #[test]
+    fn written_images_are_the_same_picture_only_for_the_same_file() {
+        let with_image = |name, image: &str| Profile {
+            icon: Some(image.to_owned()),
+            ..Profile::new(name, "x", BackendKind::Conpty)
+        };
+        let shared = |profiles: &[Profile]| -> Vec<bool> {
+            TabIcon::for_profiles(profiles, None)
+                .iter()
+                .map(|icon| icon.initial.is_some())
+                .collect()
+        };
+        assert_eq!(
+            shared(&[
+                with_image("a", r"C:\p\a.png"),
+                with_image("b", r"C:\p\b.png")
+            ]),
+            [false, false]
+        );
+        assert_eq!(
+            shared(&[
+                with_image("a", r"C:\P\a.png"),
+                with_image("b", "c:/p/A.PNG")
+            ]),
+            [true, true]
+        );
+        // 画像と自前の絵は別の絵。
+        assert_eq!(
+            shared(&[
+                with_image("a", r"C:\p\a.png"),
+                Profile::new("b", "x", BackendKind::Conpty)
+            ]),
+            [false, false]
+        );
+    }
+
+    #[test]
+    fn shared_pictures_looks_at_the_whole_list() {
+        let drawn = Picture::Drawn(BackendKind::Wsl);
+        let image = Picture::Image("a".to_owned());
+        assert_eq!(shared_pictures(&[]), [false; 0]);
+        assert_eq!(shared_pictures(std::slice::from_ref(&drawn)), [false]);
+        assert_eq!(
+            shared_pictures(&[drawn.clone(), image.clone(), drawn.clone()]),
+            [true, false, true]
+        );
+        assert_eq!(
+            shared_pictures(&[image.clone(), image, drawn]),
+            [true, true, false]
+        );
     }
 
     #[test]
@@ -788,10 +922,17 @@ mod tests {
             assert!(area.x >= 0.0 && area.x + area.side <= size, "{size}");
             assert_eq!((area.x.fract(), area.side.fract()), (0.0, 0.0));
         }
-        // 頭文字がなければ、絵は真ん中に大きく。
-        let alone = picture_square(18.0, false);
-        assert_eq!(alone.x * 2.0 + alone.side, 18.0);
-        assert!(alone.side > picture_square(18.0, true).side);
+        for size in [18.0, 27.0, 36.0] {
+            // 頭文字がなければ、絵は真ん中に大きく、背景の正方形は縁として残る。
+            let alone = picture_square(size, false);
+            assert_eq!(alone.x * 2.0 + alone.side, size);
+            assert!(alone.x >= 1.0, "{size}");
+            assert!(alone.side / size >= 0.8, "{size}");
+            // 頭文字があれば、絵を小さく置いて、背景の正方形を大きく見せる。
+            let with_initial = picture_square(size, true);
+            assert!(with_initial.side <= size * 0.5 + 0.5, "{size}");
+            assert!(alone.side > with_initial.side, "{size}");
+        }
     }
 
     #[test]
