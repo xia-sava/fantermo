@@ -9,5 +9,6 @@ pub mod config_edit;
 pub mod frame;
 pub mod keymap;
 pub mod link;
+pub mod sixel;
 pub mod state;
 pub mod vt;
