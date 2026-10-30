@@ -119,6 +119,12 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # ときなど）、"multiline" は bracketed paste に関わらず改行を含むとき、"never" は確かめずに改行ごと送る。
 # confirm = "unsafe"
 
+[clipboard]
+# アプリがクリップボードの内容を読み出そうとしたとき（OSC 52）。
+# "ask" は確認のダイアログを出す、"allow" は確かめずに渡す、"deny" は何も返さない。
+# アプリからクリップボードへの書き込みは、この設定によらず受ける。
+# read = "ask"
+
 [scroll_bar]
 # 端末の右のスクロールバーの幅（96 DPI でのピクセル。画面の拡大率に合わせて広げる）。4 から 64 まで。
 # 書き換えたら、端末の桁数と行数を保ったままウィンドウの幅を変える。
@@ -223,6 +229,7 @@ pub struct Config {
     /// 既定のプロファイルの名前。`profiles` のどれかの名前で、`None` なら先頭のプロファイル。
     pub default_profile: Option<String>,
     pub paste: PasteConfig,
+    pub clipboard: ClipboardConfig,
     pub scroll_bar: ScrollBarConfig,
     pub window: WindowConfig,
     pub colors: ColorsConfig,
@@ -238,6 +245,7 @@ impl Default for Config {
             profiles: vec![Profile::builtin()],
             default_profile: None,
             paste: PasteConfig::default(),
+            clipboard: ClipboardConfig::default(),
             scroll_bar: ScrollBarConfig::default(),
             window: WindowConfig::default(),
             colors: ColorsConfig::default(),
@@ -989,6 +997,44 @@ impl PasteConfirm {
     }
 }
 
+/// `[clipboard]` の設定。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClipboardConfig {
+    /// アプリがクリップボードの内容を読み出そうとしたとき。
+    pub read: ClipboardRead,
+}
+
+/// アプリがクリップボードの内容を読み出そうとしたときにどうするか（`clipboard.read`）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipboardRead {
+    /// 確認のダイアログを出す。
+    #[default]
+    Ask,
+    /// 確かめずに渡す。
+    Allow,
+    /// 何も返さない。
+    Deny,
+}
+
+impl ClipboardRead {
+    /// 書ける値のすべて。設定ファイルの説明と同じ順。
+    pub const ALL: [ClipboardRead; 3] = [
+        ClipboardRead::Ask,
+        ClipboardRead::Allow,
+        ClipboardRead::Deny,
+    ];
+
+    /// 設定ファイルに書く名前。
+    pub fn name(self) -> &'static str {
+        match self {
+            ClipboardRead::Ask => "ask",
+            ClipboardRead::Allow => "allow",
+            ClipboardRead::Deny => "deny",
+        }
+    }
+}
+
 /// `[font]` の設定。
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontConfig {
@@ -1216,6 +1262,17 @@ pub fn parse(text: &str, previous: &Config) -> Parsed {
                 .take::<PasteConfirm>(&mut paste, SECTION, "confirm")
                 .apply(&mut config.paste.confirm, PasteConfirm::default());
             reader.warn_unknown(&paste, SECTION);
+        }
+    }
+    match reader.take::<Table>(&mut root, None, "clipboard") {
+        Item::Absent => config.clipboard = ClipboardConfig::default(),
+        Item::Invalid => {}
+        Item::Valid(mut clipboard) => {
+            const SECTION: Option<&str> = Some("clipboard");
+            reader
+                .take::<ClipboardRead>(&mut clipboard, SECTION, "read")
+                .apply(&mut config.clipboard.read, ClipboardRead::default());
+            reader.warn_unknown(&clipboard, SECTION);
         }
     }
     match reader.take::<Table>(&mut root, None, "scroll_bar") {
@@ -1876,6 +1933,9 @@ mod tests {
             paste: PasteConfig {
                 confirm: PasteConfirm::Never,
             },
+            clipboard: ClipboardConfig {
+                read: ClipboardRead::Deny,
+            },
             scroll_bar: ScrollBarConfig { width: 20 },
             window: WindowConfig { padding: 10 },
             colors: ColorsConfig {
@@ -2191,7 +2251,7 @@ mod tests {
             .lines()
             .filter(|line| !line.starts_with('#') && line.contains(" = "))
             .count();
-        assert_eq!(settings, 8 + 9 + 2 + 15, "{text}");
+        assert_eq!(settings, 9 + 9 + 2 + 15, "{text}");
         // 背景色と文字の色の例は、既定の配色の色。
         assert_eq!(
             parsed.config.colors.terminal_colors(),
@@ -2535,12 +2595,12 @@ mod tests {
     fn invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults() {
         let previous = customized();
         let parsed = super::parse(
-            "shell = ' '\ndefault_profile = 3\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[scroll_bar]\nwidth = 2\n[window]\npadding = 65\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors]\nscheme = 'sepia'\nforeground = 'blue'\n[colors.tab_bar]\nbar = 'red'\n[background]\nimages = ''\nimage_opacity = 2\nfit = 0\n",
+            "shell = ' '\ndefault_profile = 3\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[clipboard]\nread = 1\n[scroll_bar]\nwidth = 2\n[window]\npadding = 65\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors]\nscheme = 'sepia'\nforeground = 'blue'\n[colors.tab_bar]\nbar = 'red'\n[background]\nimages = ''\nimage_opacity = 2\nfit = 0\n",
             &previous,
         );
         assert!(!parsed.syntax_error);
         assert_eq!(parsed.config, previous);
-        assert_eq!(parsed.warnings.len(), 16, "{:?}", parsed.warnings);
+        assert_eq!(parsed.warnings.len(), 17, "{:?}", parsed.warnings);
         // 配列でない profiles も、前のプロファイルのまま。
         let parsed = super::parse("profiles = 'zsh'\ndefault_profile = 'zsh'\n", &previous);
         assert_eq!(parsed.config.profiles, previous.profiles);
@@ -2789,6 +2849,36 @@ mod tests {
             assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
             assert_eq!(parsed.config.paste.confirm, confirm);
         }
+    }
+
+    #[test]
+    fn clipboard_read_takes_each_name() {
+        assert_eq!(parse("").config.clipboard.read, ClipboardRead::Ask);
+        for read in ClipboardRead::ALL {
+            let parsed = parse(&format!("[clipboard]\nread = '{}'\n", read.name()));
+            assert_eq!(parsed.warnings, Vec::<String>::new());
+            assert_eq!(parsed.config.clipboard.read, read);
+        }
+    }
+
+    #[test]
+    fn an_invalid_clipboard_read_warns_and_keeps_the_previous_value() {
+        let previous = customized();
+        let parsed = super::parse("[clipboard]\nread = 'always'\ncolor = 1\n", &previous);
+        assert_eq!(parsed.config.clipboard.read, ClipboardRead::Deny);
+        let mut warnings: Vec<String> = parsed.warnings.into_iter().map(|w| w.message).collect();
+        warnings.sort();
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("ignoring clipboard.read:"),
+            "{warnings:?}"
+        );
+        assert_eq!(warnings[1], "ignoring unknown setting clipboard.color");
+        // 消したら既定に戻す。
+        assert_eq!(
+            super::parse("", &previous).config.clipboard.read,
+            ClipboardRead::Ask
+        );
     }
 
     #[test]

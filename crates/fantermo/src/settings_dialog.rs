@@ -19,8 +19,8 @@ use std::{
 use fantermo_core::{
     background::IMAGE_EXTENSIONS,
     config::{
-        self, BackendKind, BackgroundFit, BackgroundImage, ColorScheme, ColorTable, ColorsConfig,
-        Config, PasteConfirm, Profile, WideGlyph, format_color,
+        self, BackendKind, BackgroundFit, BackgroundImage, ClipboardRead, ColorScheme, ColorTable,
+        ColorsConfig, Config, PasteConfirm, Profile, WideGlyph, format_color,
     },
     frame::Rgb,
     keymap::{Action, KeyCombo, Keymap},
@@ -92,6 +92,8 @@ const ID_PADDING: i32 = 230;
 const ID_PADDING_SPIN: i32 = 231;
 /// `paste.confirm` のラジオボタン。[`PasteConfirm::ALL`] の順に ID が続く。
 const ID_PASTE_CONFIRM: i32 = 300;
+/// `clipboard.read` のラジオボタン。[`ClipboardRead::ALL`] の順に ID が続く。
+const ID_CLIPBOARD_READ: i32 = 310;
 const ID_PROFILES: i32 = 400;
 const ID_PROFILE_ADD: i32 = 401;
 const ID_PROFILE_REMOVE: i32 = 402;
@@ -480,6 +482,9 @@ const PASTE_CONFIRM_LABELS: [&str; 3] = [
     "確かめない",
 ];
 
+/// `clipboard.read` の選択肢の表示。[`ClipboardRead::ALL`] の順。
+const CLIPBOARD_READ_LABELS: [&str; 3] = ["確認する", "常に許可する", "常に拒否する"];
+
 /// キーの割り当ての一覧の、組み合わせの列の位置（ダイアログの単位）。
 const KEY_COLUMN_TAB_STOP: i32 = 110;
 
@@ -697,6 +702,7 @@ struct Controls {
     padding: HWND,
     padding_spin: HWND,
     paste_confirm: [HWND; 3],
+    clipboard_read: [HWND; 3],
     /// プロファイルの一覧。
     profiles_list: HWND,
     /// 削除・既定にするのボタン。
@@ -1397,6 +1403,46 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         ID_LABEL,
         Some(rect),
     )?);
+    let clipboard_row = row(0) + 6 * ROW_HEIGHT + 2 * MARGIN;
+    let (class, text, rect) = label("クリップボードの読み出し(&L):", label_rect(clipboard_row));
+    behavior.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let mut clipboard_read = [HWND::default(); 3];
+    for (index, text) in CLIPBOARD_READ_LABELS.iter().enumerate() {
+        let top = clipboard_row + index as i32 * ROW_HEIGHT;
+        clipboard_read[index] = child(
+            w!("BUTTON"),
+            text,
+            radio(index == 0),
+            none,
+            ID_CLIPBOARD_READ + index as i32,
+            Some([control_left, top, control_width, ROW_HEIGHT]),
+        )?;
+        behavior.push(clipboard_read[index]);
+    }
+    let (class, text, rect) = label(
+        "アプリがクリップボードの内容を読み出そうとしたとき（OSC 52）。アプリからの書き込みは、この設定によらず受ける。",
+        [
+            page_left,
+            clipboard_row + 3 * ROW_HEIGHT + MARGIN,
+            page_width,
+            2 * ROW_HEIGHT,
+        ],
+    );
+    behavior.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
 
     // プロファイル
     let mut profiles_page = Vec::new();
@@ -1876,6 +1922,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             padding,
             padding_spin,
             paste_confirm,
+            clipboard_read,
             profiles_list,
             profile_remove: profile_buttons[1],
             profile_default: profile_buttons[2],
@@ -1968,6 +2015,10 @@ impl State<'_> {
             .iter()
             .position(|&value| value == config.paste.confirm);
         check_one(&c.paste_confirm, paste_confirm);
+        let clipboard_read = ClipboardRead::ALL
+            .iter()
+            .position(|&value| value == config.clipboard.read);
+        check_one(&c.clipboard_read, clipboard_read);
         *self.profiles.borrow_mut() = config.profiles.clone();
         self.default_profile.set(config.default_profile_index());
         self.refresh_profiles(config.default_profile_index());
@@ -2960,6 +3011,9 @@ impl State<'_> {
         if let Some(index) = checked(&c.paste_confirm) {
             config.paste.confirm = PasteConfirm::ALL[index];
         }
+        if let Some(index) = checked(&c.clipboard_read) {
+            config.clipboard.read = ClipboardRead::ALL[index];
+        }
         let profiles = self.profiles.borrow().clone();
         if let Err((index, field, message)) = check_profiles(&profiles) {
             // エラーのあるプロファイルを選び、その入力欄へ移れるようにする。
@@ -3378,7 +3432,8 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 (id, BN_CLICKED)
                     if (ID_WIDE_GLYPH..ID_WIDE_GLYPH + WideGlyph::ALL.len() as i32)
                         .contains(&id)
-                        || (ID_PASTE_CONFIRM..ID_PASTE_CONFIRM + 3).contains(&id) =>
+                        || (ID_PASTE_CONFIRM..ID_PASTE_CONFIRM + 3).contains(&id)
+                        || (ID_CLIPBOARD_READ..ID_CLIPBOARD_READ + 3).contains(&id) =>
                 {
                     state.preview();
                 }

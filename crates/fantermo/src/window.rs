@@ -13,8 +13,9 @@ use fantermo_core::{
     backend::{ExitCode, GridSize},
     background::{Candidate, Random},
     config::{
-        self, BackgroundConfig, ColorsConfig, Config, DEFAULT_FONT_FAMILIES, FontConfig,
-        PasteConfig, PasteConfirm, Profile, ScrollBarConfig, WideGlyph, WindowConfig,
+        self, BackgroundConfig, ClipboardConfig, ClipboardRead, ColorsConfig, Config,
+        DEFAULT_FONT_FAMILIES, FontConfig, PasteConfig, PasteConfirm, Profile, ScrollBarConfig,
+        WideGlyph, WindowConfig,
     },
     frame::Rgb,
     keymap::{self, Keymap},
@@ -636,6 +637,8 @@ struct App {
     font_config: FontConfig,
     /// 貼り付ける前に、編集のダイアログで確かめるとき。
     paste_confirm: PasteConfirm,
+    /// アプリがクリップボードの内容を読み出そうとしたときにどうするか。
+    clipboard_read: ClipboardRead,
     /// fantermo の引数（子プロセスのコマンドライン）。
     arguments: Option<String>,
     /// 設定のプロファイル。少なくとも一つある。
@@ -791,6 +794,7 @@ impl App {
             state_path: None,
             font_config,
             paste_confirm: config.paste.confirm,
+            clipboard_read: config.clipboard.read,
             arguments,
             profiles: config.profiles,
             default_profile: config.default_profile,
@@ -2151,6 +2155,7 @@ impl App {
     /// 返す（[`App::reload_config`]）。
     fn apply_config(&mut self, config: Config) -> Option<u32> {
         self.paste_confirm = config.paste.confirm;
+        self.clipboard_read = config.clipboard.read;
         self.profiles = config.profiles;
         self.default_profile = config.default_profile;
         self.keymap = config.keys;
@@ -2211,6 +2216,9 @@ impl App {
             default_profile: self.default_profile.clone(),
             paste: PasteConfig {
                 confirm: self.paste_confirm,
+            },
+            clipboard: ClipboardConfig {
+                read: self.clipboard_read,
             },
             scroll_bar: ScrollBarConfig {
                 width: self.scroll_bar_width,

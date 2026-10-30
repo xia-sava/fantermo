@@ -79,6 +79,7 @@ enum Setting {
     FontSize,
     WideGlyph,
     PasteConfirm,
+    ClipboardRead,
     ScrollBarWidth,
     WindowPadding,
     ColorScheme,
@@ -87,12 +88,13 @@ enum Setting {
 }
 
 impl Setting {
-    const ALL: [Setting; 10] = [
+    const ALL: [Setting; 11] = [
         Setting::DefaultProfile,
         Setting::FontFamily,
         Setting::FontSize,
         Setting::WideGlyph,
         Setting::PasteConfirm,
+        Setting::ClipboardRead,
         Setting::ScrollBarWidth,
         Setting::WindowPadding,
         Setting::ColorScheme,
@@ -106,6 +108,7 @@ impl Setting {
             Setting::DefaultProfile => &[],
             Setting::FontFamily | Setting::FontSize | Setting::WideGlyph => &["font"],
             Setting::PasteConfirm => &["paste"],
+            Setting::ClipboardRead => &["clipboard"],
             Setting::ScrollBarWidth => &["scroll_bar"],
             Setting::WindowPadding => &["window"],
             Setting::ColorScheme => &["colors"],
@@ -120,6 +123,7 @@ impl Setting {
             Setting::FontSize => "size",
             Setting::WideGlyph => "wide_glyph",
             Setting::PasteConfirm => "confirm",
+            Setting::ClipboardRead => "read",
             Setting::ScrollBarWidth => "width",
             Setting::WindowPadding => "padding",
             Setting::ColorScheme => "scheme",
@@ -136,6 +140,7 @@ impl Setting {
             Setting::FontSize => Some(number_value(config.font.size_pt)),
             Setting::WideGlyph => Some(Value::from(config.font.wide_glyph.name())),
             Setting::PasteConfirm => Some(Value::from(config.paste.confirm.name())),
+            Setting::ClipboardRead => Some(Value::from(config.clipboard.read.name())),
             Setting::ScrollBarWidth => Some(Value::from(i64::from(config.scroll_bar.width))),
             Setting::WindowPadding => Some(Value::from(i64::from(config.window.padding))),
             Setting::ColorScheme => Some(Value::from(config.colors.scheme.name())),
@@ -1315,8 +1320,9 @@ mod tests {
     use super::*;
     use crate::{
         config::{
-            self, BackgroundConfig, BackgroundFit, ColorScheme, ColorsConfig, FontConfig,
-            PasteConfig, PasteConfirm, ScrollBarConfig, TEMPLATE, WideGlyph, WindowConfig,
+            self, BackgroundConfig, BackgroundFit, ClipboardConfig, ClipboardRead, ColorScheme,
+            ColorsConfig, FontConfig, PasteConfig, PasteConfirm, ScrollBarConfig, TEMPLATE,
+            WideGlyph, WindowConfig,
         },
         frame::Rgb,
         keymap::Keymap,
@@ -1466,6 +1472,9 @@ mod tests {
             paste: PasteConfig {
                 confirm: PasteConfirm::Never,
             },
+            clipboard: ClipboardConfig {
+                read: ClipboardRead::Deny,
+            },
             scroll_bar: ScrollBarConfig { width: 20 },
             window: WindowConfig { padding: 0 },
             // 色は既定に戻すとひな形と違う行になるので、色の書き戻しは別に確かめる。
@@ -1516,6 +1525,7 @@ mod tests {
             .replace("# size = 12", "size = 10.5")
             .replace(r#"# wide_glyph = "shrink""#, r#"wide_glyph = "overflow""#)
             .replace(r#"# confirm = "unsafe""#, r#"confirm = "never""#)
+            .replace(r#"# read = "ask""#, r#"read = "deny""#)
             .replace("# width = 12", "width = 20")
             .replace("# padding = 4", "padding = 0")
             .replace("# image_opacity = 0.2", "image_opacity = 0.65")
@@ -1563,6 +1573,7 @@ mod tests {
             |c, d| c.keys = d.keys.clone(),
             |c, d| {
                 c.paste = d.paste.clone();
+                c.clipboard = d.clipboard.clone();
                 c.font.wide_glyph = d.font.wide_glyph;
             },
         ];
