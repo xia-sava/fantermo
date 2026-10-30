@@ -28,7 +28,7 @@ use windows::{
                 EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
                 InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
                 PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
-                STARTUPINFOEXW, UpdateProcThreadAttribute, WaitForSingleObject,
+                STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
             },
         },
     },
@@ -37,6 +37,12 @@ use windows::{
 
 /// 出力のパイプから一度に読む大きさ。
 const READ_BUFFER_SIZE: usize = 64 * 1024;
+
+/// 疑似コンソールを閉じたあと、子プロセスが終わるのを待つ上限（ミリ秒）。
+const CLOSE_TIMEOUT_MS: u32 = 5000;
+
+/// 終わらなかった子プロセスを終わらせるときの終了コード。
+const TERMINATED_EXIT_CODE: u32 = 1;
 
 pub struct ConPty {
     console: HPCON,
@@ -149,15 +155,39 @@ impl Backend for ConPty {
 }
 
 impl Drop for ConPty {
+    /// 子プロセスが起動の途中だと、疑似コンソールを閉じても子プロセスと conhost が残り、出力のパイプが閉じない
+    /// ことがある。呼び出し元（ウィンドウのスレッド）を止めないよう、閉じるのは別のスレッドでする。
     fn drop(&mut self) {
-        // 疑似コンソールを閉じると出力のパイプも閉じ、読むためのスレッドが抜ける。
-        // SAFETY: self.console はここで一度だけ閉じる。
-        unsafe { ClosePseudoConsole(self.console) };
-        if let Some(reader) = self.reader.take()
-            && reader.join().is_err()
-        {
-            tracing::warn!("the conpty reader thread panicked");
+        let console = self.console.0;
+        let process = Arc::clone(&self.process);
+        let reader = self.reader.take();
+        let closing = thread::Builder::new()
+            .name("conpty-closer".into())
+            .spawn(move || close_console(HPCON(console), &process, reader));
+        if let Err(e) = closing {
+            tracing::warn!("failed to start closing the pseudo console: {e}");
         }
+    }
+}
+
+/// 疑似コンソールを閉じ、子プロセスが終わらなければ終わらせて、読むためのスレッドが抜けるのを待つ。
+fn close_console(console: HPCON, process: &OwnedHandle, reader: Option<thread::JoinHandle<()>>) {
+    // 疑似コンソールを閉じると出力のパイプも閉じ、読むためのスレッドが抜ける。
+    // SAFETY: console は Drop がこのスレッドに渡したもので、ここで一度だけ閉じる。
+    unsafe { ClosePseudoConsole(console) };
+    let handle = HANDLE(process.as_raw_handle());
+    // SAFETY: handle は process が持つ有効なハンドル。
+    if unsafe { WaitForSingleObject(handle, CLOSE_TIMEOUT_MS) } != WAIT_OBJECT_0 {
+        tracing::warn!("the child did not end after closing the pseudo console; terminating it");
+        // SAFETY: handle は process が持つ有効なハンドル。
+        if let Err(e) = unsafe { TerminateProcess(handle, TERMINATED_EXIT_CODE) } {
+            tracing::warn!("failed to terminate the child: {e}");
+        }
+    }
+    if let Some(reader) = reader
+        && reader.join().is_err()
+    {
+        tracing::warn!("the conpty reader thread panicked");
     }
 }
 
