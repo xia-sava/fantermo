@@ -5,6 +5,30 @@ use libghostty_vt::{
     key::{self, Key},
 };
 
+/// kitty keyboard protocol の「エスケープコードの曖昧さをなくす」（フラグ 1）でも、変換器は渡された
+/// ロックの状態を修飾キーの数に入れる（Shift 1 + Num Lock 128 で 130）。`vt::Vt::encode_key` は
+/// フラグ 8 がないときロックの状態を外して渡す。
+#[test]
+fn kitty_disambiguate_counts_lock_mods_as_given() {
+    let mut terminal = Terminal::new(80, 24).unwrap();
+    terminal.vt_write(b"\x1b[>1u");
+    let mut encoder = key::Encoder::new().unwrap();
+    let mut event = key::Event::new().unwrap();
+    event
+        .set_action(key::Action::Press)
+        .set_key(Key::Enter)
+        .set_mods(key::Mods::SHIFT | key::Mods::NUM_LOCK)
+        .set_consumed_mods(key::Mods::empty())
+        .set_unshifted_codepoint('\0')
+        .set_utf8(None::<&str>);
+    let mut out = Vec::new();
+    encoder
+        .set_options_from_terminal(&terminal)
+        .encode_to_vec(&event, &mut out)
+        .unwrap();
+    assert_eq!(out, b"\x1b[13;130u");
+}
+
 fn encode_ctrl_c(text: Option<&str>) -> Vec<u8> {
     let terminal = Terminal::new(80, 24).unwrap();
     let mut encoder = key::Encoder::new().unwrap();

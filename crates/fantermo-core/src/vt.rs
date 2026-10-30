@@ -38,6 +38,9 @@ pub use libghostty_vt::{
     mouse::{Action as MouseAction, Button as MouseButton},
 };
 
+/// ロックの状態を表す修飾キー。
+const LOCK_MODS: Mods = Mods::CAPS_LOCK.union(Mods::NUM_LOCK);
+
 /// アプリへ報告するマウスの操作一つ。
 #[derive(Clone, Copy, Debug)]
 pub struct MouseInput {
@@ -493,10 +496,11 @@ impl Vt {
     /// キーを、端末のいまのモード（カーソルキーのモード、kitty keyboard protocol など）に合わせて
     /// シェルへ送るバイト列に変える。送るものがなければ空を返す。
     pub fn encode_key(&mut self, input: &KeyInput) -> Result<Vec<u8>, VtError> {
+        let mods = self.mods_to_report(input.mods)?;
         self.key_event
             .set_action(input.action)
             .set_key(input.key)
-            .set_mods(input.mods)
+            .set_mods(mods)
             .set_consumed_mods(input.consumed_mods)
             .set_unshifted_codepoint(input.unshifted)
             .set_utf8(input.text);
@@ -505,6 +509,22 @@ impl Vt {
             .set_options_from_terminal(&self.terminal)
             .encode_to_vec(&self.key_event, &mut encoded)?;
         Ok(encoded)
+    }
+
+    /// キーの変換器に渡す修飾キー。
+    ///
+    /// kitty keyboard protocol では、変換器は渡されたロックの状態（Caps Lock 64、Num Lock 128）を
+    /// そのまま修飾キーの数に入れる。そのため Num Lock を点けているだけで Shift+Enter が `CSI 13;130u`
+    /// になり、`CSI 13;2u` と比べるアプリには Shift+Enter と分からない。ロックの状態は、アプリが
+    /// 「すべてのキーをエスケープコードで報告する」を求めたときだけ渡す（仕様はロックの状態をすべての
+    /// キーで得る方法としてこれを挙げている）。kitty keyboard protocol を使っていないときは、テンキーの
+    /// 変換が Num Lock を見るのでそのまま渡す。
+    fn mods_to_report(&self, mods: Mods) -> Result<Mods, VtError> {
+        let flags = self.terminal.kitty_keyboard_flags()?;
+        if flags.is_empty() || flags.contains(key::KittyKeyFlags::REPORT_ALL) {
+            return Ok(mods);
+        }
+        Ok(mods - LOCK_MODS)
     }
 
     /// シェルの出力を流し込む。
@@ -1589,6 +1609,78 @@ mod tests {
             .encode_key(&press(Key::ArrowUp, Mods::empty(), '\0', None))
             .unwrap();
         assert_eq!(encoded, b"\x1bOA");
+    }
+
+    /// kitty keyboard protocol の「エスケープコードの曖昧さをなくす」（フラグ 1）では、ロックの状態を
+    /// 修飾キーの数に入れない。
+    #[test]
+    fn kitty_disambiguate_leaves_out_lock_mods() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b[>1u");
+        assert_eq!(
+            vt.terminal.kitty_keyboard_flags().unwrap(),
+            key::KittyKeyFlags::DISAMBIGUATE
+        );
+        let mut encode = |input| vt.encode_key(&input).unwrap();
+        let num_lock = Mods::NUM_LOCK;
+        let caps_lock = Mods::CAPS_LOCK;
+        assert_eq!(
+            encode(press(Key::Enter, Mods::SHIFT | num_lock, '\0', None)),
+            b"\x1b[13;2u"
+        );
+        assert_eq!(
+            encode(press(Key::Enter, Mods::CTRL | num_lock, '\0', None)),
+            b"\x1b[13;5u"
+        );
+        assert_eq!(
+            encode(press(Key::I, Mods::CTRL | num_lock, 'i', None)),
+            b"\x1b[105;5u"
+        );
+        assert_eq!(
+            encode(press(Key::Enter, Mods::SHIFT | caps_lock, '\0', None)),
+            b"\x1b[13;2u"
+        );
+        assert_eq!(
+            encode(press(Key::I, Mods::CTRL | caps_lock | num_lock, 'i', None)),
+            b"\x1b[105;5u"
+        );
+        assert_eq!(
+            encode(press(Key::Enter, num_lock | caps_lock, '\0', None)),
+            b"\r"
+        );
+        assert_eq!(encode(press(Key::A, caps_lock, 'a', Some("A"))), b"A");
+    }
+
+    /// 「すべてのキーをエスケープコードで報告する」（フラグ 8）では、ロックの状態も修飾キーの数に入れる。
+    #[test]
+    fn kitty_report_all_includes_lock_mods() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b[>8u");
+        let mut encode = |input| vt.encode_key(&input).unwrap();
+        assert_eq!(
+            encode(press(Key::Enter, Mods::SHIFT | Mods::NUM_LOCK, '\0', None)),
+            b"\x1b[13;130u"
+        );
+        assert_eq!(
+            encode(press(Key::Enter, Mods::NUM_LOCK, '\0', None)),
+            b"\x1b[13;129u"
+        );
+        assert_eq!(
+            encode(press(Key::A, Mods::CAPS_LOCK, 'a', Some("A"))),
+            b"\x1b[97;65u"
+        );
+    }
+
+    /// kitty keyboard protocol をやめたあとは、ロックの状態をこれまでどおり渡す。
+    #[test]
+    fn lock_mods_pass_through_after_kitty_is_popped() {
+        let mut vt = new_vt();
+        vt.feed(b"\x1b[>1u\x1b[<u");
+        assert!(vt.terminal.kitty_keyboard_flags().unwrap().is_empty());
+        assert_eq!(
+            vt.mods_to_report(Mods::SHIFT | Mods::NUM_LOCK).unwrap(),
+            Mods::SHIFT | Mods::NUM_LOCK
+        );
     }
 
     #[test]
