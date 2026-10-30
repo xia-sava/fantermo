@@ -5,7 +5,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use fantermo_core::frame::Rgb;
 
-use crate::boxdraw::Shape;
+use crate::{boxdraw::Shape, tab_icon::TabIcon};
 
 /// 円や円弧を多角形にするときの、一周の頂点の数。
 const CIRCLE_SEGMENTS: usize = 48;
@@ -72,6 +72,8 @@ pub enum Paint {
         text: String,
         color: Rgb,
     },
+    /// 一辺が `area` の幅の正方形に、タブのアイコン `icon` を描く。
+    TabIcon { icon: TabIcon, area: Area },
 }
 
 /// 矩形の角。
@@ -177,7 +179,7 @@ fn rect(left: f32, top: f32, right: f32, bottom: f32) -> Shape {
 
 /// 中心 `center`、半径 `radius` の円周の、角度 `from` から `to` まで（ラジアン。y が下向きなので、
 /// 増えると右回り）の点。両端を含む。
-fn arc(center: (f32, f32), radius: f32, from: f32, to: f32) -> Vec<(f32, f32)> {
+pub fn arc(center: (f32, f32), radius: f32, from: f32, to: f32) -> Vec<(f32, f32)> {
     let steps = (((to - from).abs() / (2.0 * PI)) * CIRCLE_SEGMENTS as f32).ceil() as usize;
     let steps = steps.max(1);
     (0..=steps)

@@ -164,12 +164,13 @@ enum Launch {
 /// 端末を開くときに起動するもの。`launch` が [`Launch::Default`] なら、fantermo の引数
 /// `arguments` があればそのコマンドラインを既定のバックエンドで、なければ既定のプロファイル
 /// （`profiles` の `default` 番目）のもの。一覧から選んだプロファイルなら、引数があってもその
-/// プロファイルのもの。並びの外なら先頭のもの。
+/// プロファイルのもの。並びの外なら先頭のもの。プロファイルの相対パスのアイコンは `config_dir` から辿る。
 fn startup_for(
     arguments: Option<&str>,
     profiles: &[Profile],
     default: usize,
     launch: Launch,
+    config_dir: Option<&Path>,
 ) -> Startup {
     let index = match (launch, arguments) {
         (Launch::Default, Some(arguments)) => return Startup::conpty(arguments),
@@ -177,7 +178,7 @@ fn startup_for(
         (Launch::Profile(index), _) => index,
     };
     match profiles.get(index).or(profiles.first()) {
-        Some(profile) => Startup::from_profile(profile),
+        Some(profile) => Startup::from_profile(profile, config_dir),
         None => Startup::conpty(config::DEFAULT_COMMAND_LINE),
     }
 }
@@ -755,6 +756,7 @@ impl App {
                 &config.profiles,
                 config::default_profile_index(&config.profiles, config.default_profile.as_deref()),
                 Launch::Default,
+                config_path.as_deref().and_then(Path::parent),
             ),
             size,
             &config.colors.terminal_colors(),
@@ -1000,6 +1002,7 @@ impl App {
             &self.profiles,
             self.default_profile_index(),
             launch,
+            self.config_path.as_deref().and_then(Path::parent),
         );
         let size = grid_size(&self.font, self.terminal_area);
         let mut session = match Session::spawn(
@@ -1039,6 +1042,9 @@ impl App {
         self.renderer.drop_terminal_images(closed.id().0);
         drop(closed);
         self.drop_unused_background_images();
+        let sessions = &self.sessions;
+        self.renderer
+            .retain_tab_icons(|icon| sessions.iter().any(|session| session.tab_icon == *icon));
         self.active = active_after_close(self.active, index, self.sessions.len());
         if was_active {
             self.on_activated();
@@ -2340,6 +2346,7 @@ impl App {
             .map(|session| TabView {
                 title: tab_title(session),
                 bell: session.bell_marked,
+                icon: &session.tab_icon,
             })
             .collect();
         let pressed = match self.tab_bar_press {
@@ -3263,6 +3270,7 @@ mod tests {
     use fantermo_core::config::BackendKind;
 
     use super::*;
+    use crate::tab_icon::TabIcon;
 
     const NOTCH: i32 = WHEEL_DELTA as i32;
 
@@ -3351,7 +3359,7 @@ mod tests {
     fn command_line_prefers_arguments_then_the_default_profile() {
         let profiles = [Profile::builtin(), Profile::from_shell("zsh -l")];
         let line = |arguments, default, launch| {
-            let startup = startup_for(arguments, &profiles, default, launch);
+            let startup = startup_for(arguments, &profiles, default, launch, None);
             assert_eq!(startup.backend, BackendKind::Conpty);
             startup.command_line
         };
@@ -3364,7 +3372,7 @@ mod tests {
         assert_eq!(line(None, 5, Launch::Default), "powershell.exe -NoLogo");
         assert_eq!(line(None, 0, Launch::Profile(7)), "powershell.exe -NoLogo");
         assert_eq!(
-            startup_for(None, &[], 0, Launch::Default),
+            startup_for(None, &[], 0, Launch::Default, None),
             Startup::conpty(config::DEFAULT_COMMAND_LINE)
         );
         // ブリッジのプロファイルは、つなぐ先も渡す。
@@ -3373,14 +3381,41 @@ mod tests {
             ..Profile::new("u", "", BackendKind::Wsl)
         };
         assert_eq!(
-            startup_for(Some("cmd.exe"), &[wsl], 0, Launch::Profile(0)),
+            startup_for(
+                Some("cmd.exe"),
+                std::slice::from_ref(&wsl),
+                0,
+                Launch::Profile(0),
+                None
+            ),
             Startup {
                 backend: BackendKind::Wsl,
                 command_line: String::new(),
                 cygwin_root: None,
                 distribution: Some("Ubuntu".to_owned()),
+                tab_icon: TabIcon::for_profile(&wsl, None),
             }
         );
+    }
+
+    #[test]
+    fn tabs_get_the_icon_of_their_profile() {
+        let profiles = [Profile {
+            icon: Some("zsh.png".to_owned()),
+            ..Profile::new("zsh", "zsh -l", BackendKind::Cygwin)
+        }];
+        let folder = Path::new(r"C:\conf");
+        let icon =
+            |arguments, launch| startup_for(arguments, &profiles, 0, launch, Some(folder)).tab_icon;
+        let from_profile = TabIcon::for_profile(&profiles[0], Some(folder));
+        assert_eq!(icon(None, Launch::Default), from_profile);
+        assert_eq!(from_profile.image, Some(folder.join("zsh.png")));
+        // 引数のコマンドラインで開いたタブはプロファイルなし。一覧から選べばプロファイルのもの。
+        assert_eq!(
+            icon(Some("cmd.exe"), Launch::Default),
+            TabIcon::without_profile()
+        );
+        assert_eq!(icon(Some("cmd.exe"), Launch::Profile(0)), from_profile);
     }
 
     #[test]

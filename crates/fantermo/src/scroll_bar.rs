@@ -495,6 +495,7 @@ mod tests {
             .map(|paint| match paint {
                 Paint::Fill { area, color } | Paint::Icon { area, color, .. } => (*area, *color),
                 Paint::Label { .. } => panic!("unexpected label"),
+                Paint::TabIcon { .. } => panic!("unexpected tab icon"),
             })
             .collect()
     }

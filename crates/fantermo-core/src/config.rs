@@ -559,7 +559,7 @@ fn command_words(text: &str) -> Vec<(usize, usize)> {
 }
 
 /// プロファイルのシェルとのつなぎ方（`profiles[].backend`）。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum BackendKind {
     /// Windows の疑似コンソール（ConPTY）。
     #[default]

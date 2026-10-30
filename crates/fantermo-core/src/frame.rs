@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use crate::background::{Placement, Rect};
 
 /// 8 ビットの RGB。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Rgb {
     pub r: u8,
     pub g: u8,

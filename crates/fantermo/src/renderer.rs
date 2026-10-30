@@ -41,6 +41,7 @@ use crate::{
     image_cache::ImageCache,
     paint::{Area, Paint},
     pipeline::{CellPipeline, DrawList, Instance, InstanceKind},
+    tab_icon::{self, TabIcon},
     ui_font::UiFont,
 };
 
@@ -77,9 +78,11 @@ pub struct Renderer {
     images: HashMap<PathBuf, ImageTexture>,
     /// 端末の中の画像。テクスチャを作れなかったものは `None` で覚え、作り直さない。
     terminal_images: ImageCache<Option<ImageTexture>>,
+    /// タブのアイコンと一辺ごとのテクスチャ。作れなかったものは `None` で覚え、作り直さない。
+    tab_icons: HashMap<(TabIcon, u32), Option<ImageTexture>>,
 }
 
-/// 背景画像と端末の中の画像のテクスチャ（ミップマップつき）。
+/// 背景画像と端末の中の画像とタブのアイコンのテクスチャ（ミップマップつき）。
 struct ImageTexture {
     view: ID3D11ShaderResourceView,
     width: u32,
@@ -144,6 +147,7 @@ impl Renderer {
             decoder: None,
             images: HashMap::new(),
             terminal_images: ImageCache::new(TERMINAL_IMAGE_TEXTURE_LIMIT),
+            tab_icons: HashMap::new(),
         };
         renderer.create_target()?;
         Ok(renderer)
@@ -442,9 +446,81 @@ impl Renderer {
             self.push_frame(list, frame, area)?;
         }
         for paint in paints {
-            list.push(self.paint_instance(paint)?);
+            self.push_paint(list, paint)?;
         }
         Ok(())
+    }
+
+    /// タブのアイコン `icon` を `area` に描く。
+    fn push_tab_icon(&mut self, list: &mut DrawList, icon: &TabIcon, area: Area) {
+        let key = (icon.clone(), area.width);
+        if !self.tab_icons.contains_key(&key) {
+            let texture = self.create_tab_icon(icon, area.width);
+            self.tab_icons.insert(key.clone(), texture);
+        }
+        let Some(Some(texture)) = self.tab_icons.get(&key) else {
+            return;
+        };
+        let whole = background::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+        };
+        let placement = Placement {
+            rect: background::Rect {
+                x: area.x as f32,
+                y: area.y as f32,
+                width: area.width as f32,
+                height: area.height as f32,
+            },
+            uv: whole,
+            repeat: false,
+        };
+        list.push_image(image_instance(&placement), &texture.view);
+    }
+
+    /// タブのアイコン `icon` の一辺 `side` のテクスチャを作る。作れなければ警告して `None`。
+    fn create_tab_icon(&mut self, icon: &TabIcon, side: u32) -> Option<ImageTexture> {
+        let created = self
+            .tab_icon_pixels(icon, side)
+            .and_then(|decoded| self.create_image(&decoded));
+        match created {
+            Ok(texture) => Some(texture),
+            Err(e) => {
+                tracing::warn!("failed to create a tab icon: {e}");
+                None
+            }
+        }
+    }
+
+    /// タブのアイコン `icon` の一辺 `side` のピクセル。画像が読めなければ、警告して自動で作る。
+    fn tab_icon_pixels(&mut self, icon: &TabIcon, side: u32) -> windows::core::Result<Decoded> {
+        let decoder = match &self.decoder {
+            Some(decoder) => decoder,
+            None => self.decoder.insert(Decoder::new()?),
+        };
+        if let Some(path) = &icon.image {
+            match decoder.decode_icon(path, side) {
+                Ok(decoded) => {
+                    tracing::info!("loaded the tab icon {} at {side} px", path.display());
+                    return Ok(decoded);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to read the tab icon {}, generating one: {e}",
+                        path.display()
+                    );
+                }
+            }
+        }
+        let (factory, dwrite, family) = self.atlas.tab_icon_resources();
+        tab_icon::draw_generated(decoder.factory(), factory, dwrite, family, icon, side)
+    }
+
+    /// 作ったタブのアイコンのうち、`keep` が偽のものを捨てる。
+    pub fn retain_tab_icons(&mut self, keep: impl Fn(&TabIcon) -> bool) {
+        self.tab_icons.retain(|(icon, _), _| keep(icon));
     }
 
     /// `frame` の画像のうち `layer` の層のものを、下から順に `list` に並べる。画面の外へはみ出す分は
@@ -474,13 +550,13 @@ impl Renderer {
         }
     }
 
-    /// `paint` を描く四角形。
-    fn paint_instance(&mut self, paint: &Paint) -> Result<Instance, AtlasFull> {
-        Ok(match paint {
-            Paint::Fill { area, color } => solid(area_rect(*area), *color),
+    /// `paint` を描く四角形を `list` に並べる。
+    fn push_paint(&mut self, list: &mut DrawList, paint: &Paint) -> Result<(), AtlasFull> {
+        match paint {
+            Paint::Fill { area, color } => list.push(solid(area_rect(*area), *color)),
             Paint::Icon { icon, area, color } => {
                 let slot = self.atlas.icon_slot(*icon, area.width, area.height)?;
-                glyph(
+                list.push(glyph(
                     [
                         area.x as f32,
                         area.y as f32,
@@ -489,11 +565,11 @@ impl Renderer {
                     ],
                     slot,
                     *color,
-                )
+                ));
             }
             Paint::Label { x, y, text, color } => {
                 let slot = self.atlas.label_slot(text)?;
-                glyph(
+                list.push(glyph(
                     [
                         *x as f32 - slot.left as f32,
                         *y as f32,
@@ -502,9 +578,11 @@ impl Renderer {
                     ],
                     slot,
                     *color,
-                )
+                ));
             }
-        })
+            Paint::TabIcon { icon, area } => self.push_tab_icon(list, icon, *area),
+        }
+        Ok(())
     }
 
     /// 背景より下の画像、背景、文字より下の画像、カーソル、グリフ、装飾、文字より上の画像の順に

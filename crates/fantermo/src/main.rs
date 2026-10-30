@@ -42,6 +42,7 @@ mod session;
 mod settings_dialog;
 mod shader;
 mod tab_bar;
+mod tab_icon;
 mod text_dialog;
 mod ui_font;
 mod update;

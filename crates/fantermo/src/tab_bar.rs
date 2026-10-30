@@ -8,7 +8,10 @@
 
 use fantermo_core::{config::TAB_BAR_COLOR_KEYS, frame::Rgb, vt};
 
-use crate::paint::{Area, Corner, Icon, Paint, mix, scale};
+use crate::{
+    paint::{Area, Corner, Icon, Paint, mix, scale},
+    tab_icon::TabIcon,
+};
 
 /// タブバーの高さ。
 const BAR_HEIGHT: u32 = 26;
@@ -45,6 +48,15 @@ const BELL_MARK: u32 = 6;
 
 /// ベルの印とタイトルの間のすき間。
 const BELL_GAP: u32 = 6;
+
+/// タブのアイコンの一辺。タブの高さから上下に少しずつ空ける。
+const TAB_ICON: u32 = 18;
+
+/// タブの左端とアイコンの間の空き。
+const TAB_ICON_MARGIN: u32 = 6;
+
+/// アイコンとその右のもの（ベルの印かタイトル）の間のすき間。
+const TAB_ICON_GAP: u32 = 5;
 
 /// タブの間の区切りの線の太さ。
 const SEPARATOR_WIDTH: u32 = 1;
@@ -143,6 +155,21 @@ impl Metrics {
     /// ベルの印とタイトルの間のすき間。
     fn mark_gap(self) -> u32 {
         self.scale(BELL_GAP)
+    }
+
+    /// タブのアイコンの一辺。
+    fn tab_icon(self) -> u32 {
+        self.scale(TAB_ICON)
+    }
+
+    /// タブの左端とアイコンの間の空き。
+    fn tab_icon_margin(self) -> u32 {
+        self.scale(TAB_ICON_MARGIN)
+    }
+
+    /// アイコンとその右のものの間のすき間。
+    fn tab_icon_gap(self) -> u32 {
+        self.scale(TAB_ICON_GAP)
     }
 
     /// タブの間の区切りの線の太さと高さ。
@@ -397,9 +424,11 @@ pub fn fit_title(title: &str, width: u32, measure: &impl Measure) -> String {
     shortened(fitting)
 }
 
-/// タブ一つの中の、ベルの印とタイトルの位置。
+/// タブ一つの中の、アイコンとベルの印とタイトルの位置。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TabContent {
+    /// アイコンを描く正方形。タブが狭くて入らないときは `None`。
+    icon: Option<Area>,
     /// ベルの印の円を描く矩形。印を付けないときは `None`。
     mark: Option<Area>,
     /// タイトルの左端。
@@ -410,16 +439,36 @@ struct TabContent {
     text_y: u32,
 }
 
-/// タブ `slot` の中の、閉じるボタンより左に、ベルの印（`bell` のとき）と、1 行の高さが `text_height`
-/// のタイトルを置く。閉じるボタンを出していないときも、その幅は空けておく（マウスを載せてもタイトルの
-/// 省略が変わらないように）。印はタイトルの左に置き、タイトルを省略する前にその幅を取る。タイトルに
+/// タブ `slot` の中の、閉じるボタンより左に、アイコンと、ベルの印（`bell` のとき）と、1 行の高さが
+/// `text_height` のタイトルを左から順に置く。閉じるボタンを出していないときも、その幅は空けておく（マウスを
+/// 載せてもタイトルの省略が変わらないように）。アイコンと印の幅は、タイトルを省略する前に取る。アイコンと
+/// 印が閉じるボタンの左に並ばないほどタブが狭ければ、状態を知らせる印を残してアイコンを出さない。タイトルに
 /// 残る幅がなくても印は消さず、余白に収まらなければタブの真ん中に置き、タブより大きければタブの幅に
 /// 縮める。
 fn tab_content(metrics: Metrics, slot: &TabSlot, bell: bool, text_height: u32) -> TabContent {
     let tab = slot.area;
-    let left = tab.x + metrics.padding();
     let right = slot.close.x;
     let text_y = tab.y + tab.height.saturating_sub(text_height) / 2;
+    let icon_size = metrics.tab_icon();
+    let icon_x = tab.x + metrics.tab_icon_margin();
+    let needed_after_icon = if bell {
+        metrics.tab_icon_gap() + metrics.mark_size()
+    } else {
+        0
+    };
+    let icon =
+        (icon_size <= tab.height && icon_x + icon_size + needed_after_icon <= right).then(|| {
+            Area {
+                x: icon_x,
+                y: tab.y + (tab.height - icon_size) / 2,
+                width: icon_size,
+                height: icon_size,
+            }
+        });
+    let left = match icon {
+        Some(icon) => icon.right() + metrics.tab_icon_gap(),
+        None => tab.x + metrics.padding(),
+    };
     let mut title_x = left;
     let mut mark = None;
     if bell {
@@ -438,6 +487,7 @@ fn tab_content(metrics: Metrics, slot: &TabSlot, bell: bool, text_height: u32) -
         title_x = x + size + metrics.mark_gap();
     }
     TabContent {
+        icon,
         mark,
         title_x,
         title_width: right.saturating_sub(title_x),
@@ -451,6 +501,8 @@ pub struct TabView<'a> {
     pub title: &'a str,
     /// 表示していない間にベルが鳴った。タイトルの前に印を付ける。
     pub bell: bool,
+    /// タイトルの左に出すアイコン。
+    pub icon: &'a TabIcon,
 }
 
 /// Windows のシステムの色（`GetSysColor`）。タブバーの既定の色（[`Palette::from_system`]）を決める。
@@ -645,6 +697,12 @@ pub fn paints(
             (colors.bar, colors.inactive_title)
         };
         let content = tab_content(metrics, slot, tab.bell, measure.height());
+        if let Some(area) = content.icon {
+            paints.push(Paint::TabIcon {
+                icon: tab.icon.clone(),
+                area,
+            });
+        }
         if let Some(mark) = content.mark {
             paints.push(Paint::Icon {
                 icon: Icon::Dot,
@@ -829,6 +887,9 @@ mod tests {
         window_text: gray(0x10),
     };
 
+    /// タブのアイコン。
+    static ICON: TabIcon = TabIcon::without_profile();
+
     /// 表示しているタブの色。
     const WINDOW: Rgb = SYSTEM.window;
 
@@ -840,7 +901,8 @@ mod tests {
     }
 
     /// 192 DPI の寸法。タブバーの高さ 52（その下の端末の画面の上の余白 8 は別）、上の空き 4、角の半径
-    /// 10、すき間 12、余白 20、ボタン 36、閉じるボタン 32、ベルの印 12、印のすき間 12、タブの幅 144〜480。
+    /// 10、すき間 12、余白 20、ボタン 36、閉じるボタン 32、アイコン 36（タブの左端から 12、右に 10 空ける）、
+    /// ベルの印 12、印のすき間 12、タブの幅 144〜480。
     const METRICS: Metrics = Metrics { dpi: 192 };
 
     /// セルの幅が 16 ピクセルの 100 桁のウィンドウのタブバーの幅。
@@ -1059,31 +1121,65 @@ mod tests {
     fn a_bell_mark_comes_before_the_title() {
         let plain = tab_content(METRICS, &tab(20, 480), false, 32);
         assert_eq!(plain.mark, None);
-        // タイトルは閉じるボタンの左まで。
-        assert_eq!((plain.title_x, plain.title_width), (40, 418));
+        // アイコンはタブの左端から 12 空け、タブの高さの真ん中に置く。
+        assert_eq!(plain.icon, Some(square(32, 10, 36)));
+        // タイトルはアイコンの右から、閉じるボタンの左まで。
+        assert_eq!((plain.title_x, plain.title_width), (78, 380));
         // タイトルはタブの高さの真ん中に置く。
         assert_eq!(plain.text_y, 12);
         assert_eq!(tab_content(METRICS, &tab(20, 480), false, 20).text_y, 18);
         let marked = tab_content(METRICS, &tab(20, 480), true, 32);
-        // 直径 12 の円を左の余白の次に置き、すき間 12 を空けてタイトル。
+        assert_eq!(marked.icon, plain.icon);
+        // 直径 12 の円をアイコンの次に置き、すき間 12 を空けてタイトル。
         assert_eq!(
             marked.mark,
             Some(Area {
-                x: 40,
+                x: 78,
                 y: 22,
                 width: 12,
                 height: 12
             })
         );
-        assert_eq!((marked.title_x, marked.title_width), (64, 394));
+        assert_eq!((marked.title_x, marked.title_width), (102, 356));
+    }
+
+    #[test]
+    fn the_icon_gives_way_in_narrow_tabs() {
+        let has_icon = |width: u32, bell: bool| {
+            tab_content(METRICS, &tab(0, width), bell, 32)
+                .icon
+                .is_some()
+        };
+        // 閉じるボタンは右端から 42。アイコンの右端 48 まで入れば出す。
+        assert!(has_icon(90, false));
+        assert!(!has_icon(89, false));
+        // 印があれば、印の右端 70 まで入らなければアイコンをやめる。
+        assert!(has_icon(112, true));
+        assert!(!has_icon(111, true));
+        // 入らなければ、タイトルは余白の次から。
+        let content = tab_content(METRICS, &tab(0, 89), false, 32);
+        assert_eq!((content.title_x, content.title_width), (20, 27));
+        // タブの高さより大きければ出さない。
+        let short = TabSlot {
+            area: Area {
+                height: 30,
+                ..tab(0, 480).area
+            },
+            ..tab(0, 480)
+        };
+        assert_eq!(tab_content(METRICS, &short, false, 32).icon, None);
     }
 
     #[test]
     fn a_bell_mark_stays_in_narrow_tabs() {
         // タブの幅ごとに、印の左端と直径、タイトルに残る幅（ピクセル）。
-        let cases: [(u32, (u32, u32), u32); 5] = [
-            // 幅の下限: 余白、印、すき間、タイトル、閉じるボタン。
-            (144, (20, 12), 58),
+        let cases: [(u32, (u32, u32), u32); 7] = [
+            // 幅の下限: アイコン、印、すき間、タイトル、閉じるボタン。
+            (144, (58, 12), 20),
+            // アイコンと閉じるボタンの間に印が収まる。タイトルに残る幅はない。
+            (112, (58, 12), 0),
+            // 収まらなければアイコンをやめる。
+            (111, (20, 12), 25),
             // 余白と閉じるボタンの間に印が収まる。タイトルに残る幅はない。
             (76, (20, 12), 0),
             // 収まらなければ真ん中に置く。
@@ -1132,14 +1228,17 @@ mod tests {
             TabView {
                 title: powershell,
                 bell: true,
+                icon: &ICON,
             },
             TabView {
                 title: powershell,
                 bell: false,
+                icon: &ICON,
             },
             TabView {
                 title: "zsh",
                 bell: false,
+                icon: &ICON,
             },
         ];
         let layout = layout(METRICS, WIDTH, 3, 2);
@@ -1157,12 +1256,12 @@ mod tests {
             .into_iter()
             .map(|(_, _, text, ..)| text)
             .collect();
-        // 印のあるタブは 394 ピクセル、ないタブは 418 ピクセルに収める。
+        // タブの幅は 478。印のあるタブは 354 ピクセル、ないタブは 378 ピクセルに収める。
         assert_eq!(
             titles,
             vec![
-                r"C:\WINDOWS\System32\WindowsPowerShell\…",
-                r"C:\WINDOWS\System32\WindowsPowerShell\v1…",
+                r"C:\WINDOWS\System32\WindowsPowerSh…",
+                r"C:\WINDOWS\System32\WindowsPowerShel…",
                 "zsh",
             ]
         );
@@ -1174,6 +1273,7 @@ mod tests {
             .map(|index| TabView {
                 title: "abcdefghijklmnopqrstuvwxyz",
                 bell: index % 2 == 0,
+                icon: &ICON,
             })
             .collect();
         let layout = layout(METRICS, WIDTH, tabs.len(), 3);
@@ -1288,10 +1388,12 @@ mod tests {
             TabView {
                 title: "one",
                 bell: false,
+                icon: &ICON,
             },
             TabView {
                 title: "端末",
                 bell: false,
+                icon: &ICON,
             },
         ];
         let layout = layout(METRICS, WIDTH, 2, 1);
@@ -1397,16 +1499,27 @@ mod tests {
         assert!(last_border < first_window);
         // どれもタブバーの中に描く。
         assert!(paints.iter().all(|paint| match paint {
-            Paint::Fill { area, .. } | Paint::Icon { area, .. } => area.bottom() <= 52,
+            Paint::Fill { area, .. } | Paint::Icon { area, .. } | Paint::TabIcon { area, .. } => {
+                area.bottom() <= 52
+            }
             Paint::Label { y, .. } => y + FixedWidth.height() <= 52,
         }));
-        // タイトルは一つの文字列として、余白の右、タブの高さの真ん中に置く。表示しているタブの
+        // アイコンは、タブごとにタイトルの左に。
+        let tab_icons: Vec<Area> = paints
+            .iter()
+            .filter_map(|paint| match paint {
+                Paint::TabIcon { icon, area } if *icon == ICON => Some(*area),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tab_icons, vec![square(72, 10, 36), square(552, 10, 36)]);
+        // タイトルは一つの文字列として、アイコンの右、タブの高さの真ん中に置く。表示しているタブの
         // タイトルはウィンドウの文字の色、ほかはコントロールの文字の色。
         assert_eq!(
             titles(&paints),
             vec![
-                (80, 12, "one".to_owned(), SYSTEM.text),
-                (560, 12, "端末".to_owned(), WINDOW_TEXT),
+                (118, 12, "one".to_owned(), SYSTEM.text),
+                (598, 12, "端末".to_owned(), WINDOW_TEXT),
             ]
         );
         // メニューのボタンの「≡」は、一辺 16 でボタンの真ん中に、薄い文字の色で。
@@ -1431,6 +1544,7 @@ mod tests {
         let tabs = [TabView {
             title: "a",
             bell: false,
+            icon: &ICON,
         }; 4];
         let layout = layout(METRICS, WIDTH, 4, 1);
         let colors = palette();
@@ -1477,6 +1591,7 @@ mod tests {
         let tabs = [TabView {
             title: "a",
             bell: false,
+            icon: &ICON,
         }; 3];
         let layout = layout(METRICS, WIDTH, 3, 0);
         let colors = palette();
@@ -1518,6 +1633,7 @@ mod tests {
         let tabs = [TabView {
             title: "a",
             bell: false,
+            icon: &ICON,
         }; 2];
         let layout = layout(METRICS, WIDTH, 2, 0);
         let colors = palette();

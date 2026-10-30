@@ -2,7 +2,7 @@
 //! リンクの下線・タイトル・背景画像に選んだファイルなど、端末ごとに持つ状態を添える。ウィンドウ・描画・
 //! 設定は持たない（背景画像のテクスチャは描画が持つ）。
 
-use std::io;
+use std::{io, path::Path};
 
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize, SpawnOptions, Wake},
@@ -15,6 +15,7 @@ use fantermo_core::{
 use crate::{
     bridge::{self, Bridge},
     conpty::ConPty,
+    tab_icon::TabIcon,
     version,
 };
 
@@ -39,26 +40,30 @@ pub struct Startup {
     pub cygwin_root: Option<String>,
     /// `wsl` のディストリビューション。`None` なら既定。
     pub distribution: Option<String>,
+    /// タブに出すアイコン。
+    pub tab_icon: TabIcon,
 }
 
 impl Startup {
-    /// `command_line` を ConPTY で起動する。
+    /// プロファイルなしで `command_line` を ConPTY で起動する。
     pub fn conpty(command_line: &str) -> Self {
         Self {
             backend: BackendKind::Conpty,
             command_line: command_line.to_owned(),
             cygwin_root: None,
             distribution: None,
+            tab_icon: TabIcon::without_profile(),
         }
     }
 
-    /// プロファイル `profile` のものを起動する。
-    pub fn from_profile(profile: &Profile) -> Self {
+    /// プロファイル `profile` のものを起動する。相対パスのアイコンは `config_dir` から辿る。
+    pub fn from_profile(profile: &Profile, config_dir: Option<&Path>) -> Self {
         Self {
             backend: profile.backend,
             command_line: profile.command.clone(),
             cygwin_root: profile.cygwin_root.clone(),
             distribution: profile.distribution.clone(),
+            tab_icon: TabIcon::for_profile(profile, config_dir),
         }
     }
 }
@@ -110,6 +115,8 @@ pub struct Session {
     pub bell_marked: bool,
     /// 背景画像に選んだファイルと、それを出した一覧の項目。敷かないなら `None`。
     pub background_image: Option<Candidate>,
+    /// タブに出すアイコン。開いたときのプロファイルで決まり、プロファイルを変えても消しても変わらない。
+    pub tab_icon: TabIcon,
 }
 
 /// 子プロセスの出力を流し込んだ結果。
@@ -144,7 +151,9 @@ impl Session {
             },
             wake,
         )?;
-        Ok(Self::with_backend(id, vt, backend))
+        let mut session = Self::with_backend(id, vt, backend);
+        session.tab_icon = startup.tab_icon.clone();
+        Ok(session)
     }
 
     /// 起動済みの `backend` を `vt` の端末につなぐ。
@@ -161,6 +170,7 @@ impl Session {
             pressed_link: None,
             bell_marked: false,
             background_image: None,
+            tab_icon: TabIcon::without_profile(),
         }
     }
 

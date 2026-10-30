@@ -17,11 +17,16 @@ use windows::{
     core::{HSTRING, Interface},
 };
 
+use crate::tab_icon;
+
 /// Direct3D 11 のテクスチャの一辺の上限（`D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION`）。
 pub const MAX_TEXTURE_SIDE: u32 = 16384;
 
 /// 1 ピクセルのバイト数（乗算済みアルファの BGRA）。
 const BYTES_PER_PIXEL: u32 = 4;
+
+/// タブのアイコンの画像で、大きさを見るコマの数の上限。
+const MAX_ICON_FRAMES: u32 = 32;
 
 /// 読んだ画像。乗算済みアルファの BGRA で、行の間は詰めてある。
 pub struct Decoded {
@@ -48,6 +53,70 @@ impl Decoder {
         let factory =
             unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)? };
         Ok(Self { factory })
+    }
+
+    /// WIC のファクトリ。
+    pub fn factory(&self) -> &IWICImagingFactory {
+        &self.factory
+    }
+
+    /// `path` の画像を、一辺 `side` のタブのアイコンとして読む。コマが複数あれば（ICO）大きさの合うものを
+    /// 使い（[`tab_icon::best_frame`]）、縦横比を保って縮め、正方形の真ん中に置く。余りは透明。
+    pub fn decode_icon(&self, path: &Path, side: u32) -> windows::core::Result<Decoded> {
+        let factory = &self.factory;
+        // SAFETY: どの呼び出しも、作ったばかりの WIC のオブジェクトに対するもので、文字列と出力先は
+        // 呼び出しの間は生きている。
+        unsafe {
+            let decoder = factory.CreateDecoderFromFilename(
+                &HSTRING::from(path.as_os_str()),
+                None,
+                GENERIC_READ,
+                WICDecodeMetadataCacheOnDemand,
+            )?;
+            let frames = decoder.GetFrameCount()?.min(MAX_ICON_FRAMES);
+            let mut sizes = Vec::new();
+            for index in 0..frames {
+                let (mut width, mut height) = (0, 0);
+                decoder.GetFrame(index)?.GetSize(&mut width, &mut height)?;
+                sizes.push((width, height));
+            }
+            let chosen = tab_icon::best_frame(&sizes, side);
+            let frame = decoder.GetFrame(chosen as u32)?;
+            let converter = factory.CreateFormatConverter()?;
+            converter.Initialize(
+                &frame,
+                &GUID_WICPixelFormat32bppPBGRA,
+                WICBitmapDitherTypeNone,
+                None,
+                0.0,
+                WICBitmapPaletteTypeMedianCut,
+            )?;
+            let (width, height) = sizes[chosen];
+            let (fitted_width, fitted_height, x, y) =
+                tab_icon::fit_in_square((width, height), side);
+            let scaler = factory.CreateBitmapScaler()?;
+            scaler.Initialize(
+                &converter,
+                fitted_width,
+                fitted_height,
+                WICBitmapInterpolationModeFant,
+            )?;
+            let mut decoded = Decoded {
+                width: side,
+                height: side,
+                pixels: Vec::new(),
+            };
+            decoded.pixels = vec![0; (decoded.stride() * side) as usize];
+            let stride = decoded.stride();
+            let start = (y * stride + x * BYTES_PER_PIXEL) as usize;
+            let length = ((fitted_height - 1) * stride + fitted_width * BYTES_PER_PIXEL) as usize;
+            scaler.CopyPixels(
+                std::ptr::null(),
+                stride,
+                &mut decoded.pixels[start..start + length],
+            )?;
+            Ok(decoded)
+        }
     }
 
     /// `path` の画像の最初のコマを読む。画面（すべてのモニタを合わせた範囲）を縦横比を保って覆える
