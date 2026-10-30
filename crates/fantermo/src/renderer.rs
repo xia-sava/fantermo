@@ -494,7 +494,8 @@ impl Renderer {
         }
     }
 
-    /// タブのアイコン `icon` の一辺 `side` のピクセル。画像が読めなければ、警告して自動で作る。
+    /// タブのアイコン `icon` の一辺 `side` のピクセル。画像が読めなければ、警告して自動で作る。自動で作るときは、
+    /// 本物のアイコンを読めればそれを背景の正方形に載せ、読めなければ自前の絵を描く。
     pub fn tab_icon_pixels(&mut self, icon: &TabIcon, side: u32) -> windows::core::Result<Decoded> {
         let decoder = match &self.decoder {
             Some(decoder) => decoder,
@@ -514,8 +515,25 @@ impl Renderer {
                 }
             }
         }
+        let picture_side = tab_icon::picture_side(side, icon.initial.is_some());
+        let picture = icon.real.as_ref().and_then(|real| {
+            decoder
+                .decode_real_icon(real, picture_side)
+                .inspect_err(|e| {
+                    tracing::warn!("failed to read the icon {real:?}, drawing one: {e}");
+                })
+                .ok()
+        });
         let (factory, dwrite, family) = self.atlas.tab_icon_resources();
-        tab_icon::draw_generated(decoder.factory(), factory, dwrite, family, icon, side)
+        let font = tab_icon::InitialFont { dwrite, family };
+        tab_icon::draw_generated(
+            decoder.factory(),
+            factory,
+            &font,
+            icon,
+            picture.as_ref(),
+            side,
+        )
     }
 
     /// 作ったタブのアイコンのうち、`keep` が偽のものを捨てる。

@@ -1,7 +1,8 @@
 //! タブのタイトルの左に出す、小さな正方形のアイコン。
 //!
-//! プロファイルに画像を書いていなければ、角を丸めた淡い色の正方形に、つなぎ方ごとの絵（Cygwin の C、WSL の
-//! ペンギン、ConPTY の `>_`）を描いて作る。同じ絵になるプロファイルが複数あるときだけ、絵を小さくして
+//! プロファイルに画像を書いていなければ、角を丸めた淡い色の正方形に、利用者の環境にある本物のアイコン
+//! （`Cygwin.ico`、`wsl.exe`、ConPTY の実行ファイル）を載せて作る。読めなければ、つなぎ方ごとの絵（Cygwin の
+//! C、WSL のペンギン、ConPTY の `>_`）を描く。同じ絵になるプロファイルが複数あるときだけ、絵を小さくして
 //! プロファイル名の頭文字を添える。色はプロファイル名から決まるので、起動のたびに同じになる。作った絵は
 //! 乗算済みアルファの BGRA（[`Decoded`]）で返す。
 
@@ -16,26 +17,35 @@ use fantermo_core::{
     vt,
 };
 use windows::{
-    Win32::Graphics::{
-        Direct2D::{
-            Common::{D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT},
-            D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_FEATURE_LEVEL_DEFAULT,
-            D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-            D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
-            ID2D1Factory1, ID2D1RenderTarget, ID2D1SolidColorBrush,
+    Win32::{
+        Graphics::{
+            Direct2D::{
+                Common::{
+                    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F,
+                    D2D1_PIXEL_FORMAT,
+                },
+                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_BITMAP_PROPERTIES,
+                D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_FEATURE_LEVEL_DEFAULT,
+                D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
+                D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, ID2D1Factory1, ID2D1RenderTarget,
+                ID2D1SolidColorBrush,
+            },
+            DirectWrite::{
+                DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD,
+                DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteFactory, IDWriteTextLayout,
+            },
+            Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+            Imaging::{GUID_WICPixelFormat32bppPBGRA, IWICImagingFactory, WICBitmapCacheOnDemand},
         },
-        DirectWrite::{
-            DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD,
-            DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteFactory, IDWriteTextLayout,
-        },
-        Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
-        Imaging::{GUID_WICPixelFormat32bppPBGRA, IWICImagingFactory, WICBitmapCacheOnDemand},
+        Storage::FileSystem::SearchPathW,
+        UI::Shell::ExtractIconExW,
     },
     core::{HSTRING, w},
 };
 use windows_numerics::{Matrix3x2, Vector2};
 
-use crate::{atlas, background::Decoded, boxdraw::Shape, paint::arc};
+use crate::{atlas, background::Decoded, boxdraw::Shape, bridge, paint::arc};
 
 /// プロファイル名から選ぶ背景の色。青・水色・青緑・緑・藍・紫の淡い色で、警告に使う赤・橙・黄は入れない。
 /// 濃い色の絵と頭文字が読め、明るいタブの白と灰色のどちらからも、暗いタブからも分かれる明るさの色だけを
@@ -92,6 +102,15 @@ const PIXEL_DPI: f32 = 96.0;
 /// 文字を組むときのロケール。和文の字形を選ばせる。
 const LOCALE: windows::core::PCWSTR = w!("ja-jp");
 
+/// Cygwin のフォルダにあるアイコンのファイル。
+const CYGWIN_ICON_FILE: &str = "Cygwin.ico";
+
+/// WSL のアイコンを読む実行ファイル。
+const WSL_EXECUTABLE: &str = "wsl.exe";
+
+/// 実行ファイルを探すときのパスの長さの上限（UTF-16 の単位の数）。
+const MAX_LONG_PATH: usize = 32768;
+
 const fn rgb(r: u8, g: u8, b: u8) -> Rgb {
     Rgb { r, g, b }
 }
@@ -101,6 +120,8 @@ const fn rgb(r: u8, g: u8, b: u8) -> Rgb {
 pub struct TabIcon {
     /// 画像のファイル。読めなければ下の値で作る。
     pub image: Option<PathBuf>,
+    /// 背景の正方形に載せる本物のアイコン。なければ、読めなければ `backend` の絵を描く。
+    pub real: Option<RealIcon>,
     pub backend: BackendKind,
     /// 絵に添える頭文字。同じ絵になるプロファイルが複数あるときだけ。
     pub initial: Option<String>,
@@ -108,20 +129,104 @@ pub struct TabIcon {
     pub color: Rgb,
 }
 
-/// プロファイルがタブに出す絵。同じ値なら見分けがつかない。
+/// 利用者の環境にある、本物のアイコンの読み先。
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum RealIcon {
+    /// アイコンのファイル（ICO）。
+    File(PathBuf),
+    /// アイコンを埋め込んだ実行ファイル。
+    Executable(PathBuf),
+}
+
+impl RealIcon {
+    fn path(&self) -> &Path {
+        match self {
+            Self::File(path) | Self::Executable(path) => path,
+        }
+    }
+}
+
+/// プロファイル `profile` の本物のアイコン。なければ `None`。
+fn real_icon(profile: &Profile) -> Option<RealIcon> {
+    real_icon_with(
+        profile,
+        |configured| bridge::cygwin_root(configured).ok(),
+        search_path,
+        has_icon,
+    )
+}
+
+/// プロファイル `profile` の本物のアイコン。`cygwin_root` は `cygwin_root` の設定から Cygwin のフォルダを、
+/// `search` はプログラムの名前から実行ファイルを探し、`has_icon` はファイルにアイコンがあるかを答える。
+fn real_icon_with(
+    profile: &Profile,
+    cygwin_root: impl Fn(Option<&str>) -> Option<PathBuf>,
+    search: impl Fn(&str) -> Option<PathBuf>,
+    has_icon: impl Fn(&Path) -> bool,
+) -> Option<RealIcon> {
+    let real = match profile.backend {
+        BackendKind::Cygwin => {
+            RealIcon::File(cygwin_root(profile.cygwin_root.as_deref())?.join(CYGWIN_ICON_FILE))
+        }
+        BackendKind::Wsl => RealIcon::Executable(search(WSL_EXECUTABLE)?),
+        BackendKind::Conpty => RealIcon::Executable(search(profile.command_program())?),
+    };
+    has_icon(real.path()).then_some(real)
+}
+
+/// プログラムの名前 `program` の実行ファイルを、起動するときと同じように `PATH` などから探す。拡張子がなければ
+/// `.exe` を足す。
+fn search_path(program: &str) -> Option<PathBuf> {
+    if program.is_empty() {
+        return None;
+    }
+    let mut buffer = vec![0; MAX_LONG_PATH];
+    // SAFETY: 文字列と出力先は呼び出しの間は生きている。
+    let length = unsafe {
+        SearchPathW(
+            None,
+            &HSTRING::from(program),
+            w!(".exe"),
+            Some(&mut buffer),
+            None,
+        )
+    } as usize;
+    // 0 は見つからない、出力先の長さ以上は入りきらない。
+    if length == 0 || length >= buffer.len() {
+        return None;
+    }
+    Some(PathBuf::from(String::from_utf16_lossy(&buffer[..length])))
+}
+
+/// ファイル `path` にアイコンがあるか。既定のアプリのアイコンは数えない。
+fn has_icon(path: &Path) -> bool {
+    /// アイコンを作らずに数だけを問い合わせる位置。
+    const COUNT_ICONS: i32 = -1;
+    // SAFETY: 文字列は呼び出しの間は生きている。出力先を渡さないので数を返すだけ。
+    let count =
+        unsafe { ExtractIconExW(&HSTRING::from(path.as_os_str()), COUNT_ICONS, None, None, 0) };
+    // 読めないファイルでは u32::MAX が返る。
+    count != 0 && count != u32::MAX
+}
+
+/// プロファイルがタブに出す絵。同じ値なら見分けがつかない。パスの大文字と小文字、`/` と `\` の違いは同じ
+/// ファイル。
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Picture {
-    /// `icon` に書いた画像のファイル。大文字と小文字、`/` と `\` の違いは同じファイル。
+    /// `icon` に書いた画像のファイル。
     Image(String),
+    /// 本物のアイコンのファイル。つなぎ方によらず、ファイルが同じなら同じ絵。
+    Real(String),
     /// つなぎ方ごとの絵。
     Drawn(BackendKind),
 }
 
 impl Picture {
     fn of(icon: &TabIcon) -> Self {
-        match &icon.image {
-            Some(path) => Self::Image(path_key(path)),
-            None => Self::Drawn(icon.backend),
+        match (&icon.image, &icon.real) {
+            (Some(path), _) => Self::Image(path_key(path)),
+            (None, Some(real)) => Self::Real(path_key(real.path())),
+            (None, None) => Self::Drawn(icon.backend),
         }
     }
 }
@@ -144,6 +249,7 @@ impl TabIcon {
     pub const fn without_profile() -> Self {
         Self {
             image: None,
+            real: None,
             backend: BackendKind::Conpty,
             initial: None,
             color: NO_PROFILE_COLOR,
@@ -153,9 +259,21 @@ impl TabIcon {
     /// 設定の `profiles` のそれぞれのアイコン。相対パスの画像は `config_dir` から辿る。頭文字は `profiles`
     /// 全体を見て、同じ絵になるプロファイルが複数あるものにだけ付ける。
     pub fn for_profiles(profiles: &[Profile], config_dir: Option<&Path>) -> Vec<Self> {
+        Self::for_profiles_with(profiles, config_dir, real_icon)
+    }
+
+    /// [`Self::for_profiles`] の本体。`real_of` はプロファイルの本物のアイコンを探す。
+    fn for_profiles_with(
+        profiles: &[Profile],
+        config_dir: Option<&Path>,
+        real_of: impl Fn(&Profile) -> Option<RealIcon>,
+    ) -> Vec<Self> {
         let mut icons: Vec<Self> = profiles
             .iter()
-            .map(|profile| Self::without_initial(profile, config_dir))
+            .map(|profile| Self {
+                real: real_of(profile),
+                ..Self::without_initial(profile, config_dir)
+            })
             .collect();
         let pictures: Vec<Picture> = icons.iter().map(Picture::of).collect();
         let shared = shared_pictures(&pictures);
@@ -167,7 +285,7 @@ impl TabIcon {
         icons
     }
 
-    /// プロファイル `profile` の、頭文字を決める前のアイコン。
+    /// プロファイル `profile` の、本物のアイコンと頭文字を決める前のアイコン。
     fn without_initial(profile: &Profile, config_dir: Option<&Path>) -> Self {
         let image = profile.icon.as_deref().map(|path| match config_dir {
             Some(folder) => folder.join(path),
@@ -175,6 +293,7 @@ impl TabIcon {
         });
         Self {
             image,
+            real: None,
             backend: profile.backend,
             initial: None,
             color: color_of(&profile.name),
@@ -246,6 +365,11 @@ fn picture_square(size: f32, has_initial: bool) -> Square {
         y: margin,
         side: size - 2.0 * margin,
     }
+}
+
+/// 一辺 `size` のアイコンの中の、絵の一辺。
+pub fn picture_side(size: u32, has_initial: bool) -> u32 {
+    picture_square(size as f32, has_initial).side as u32
 }
 
 /// 一辺 `size` のアイコンの中の、頭文字の範囲。右下の角に寄せ、ピクセルの境目に合わせる。
@@ -367,13 +491,20 @@ fn penguin_shapes(side: f32) -> Vec<(Ink, Shape)> {
     ]
 }
 
-/// `icon` の画像を使わない形の絵を、一辺 `size` ピクセルの乗算済みアルファの BGRA に描く。
+/// 頭文字を組む書体。
+pub struct InitialFont<'a> {
+    pub dwrite: &'a IDWriteFactory,
+    pub family: &'a str,
+}
+
+/// `icon` の画像を使わない形の絵を、一辺 `size` ピクセルの乗算済みアルファの BGRA に描く。`picture` は読んだ
+/// 本物のアイコン（一辺は [`picture_side`]）で、なければつなぎ方の絵を描く。
 pub fn draw_generated(
     wic: &IWICImagingFactory,
     factory: &ID2D1Factory1,
-    dwrite: &IDWriteFactory,
-    family: &str,
+    font: &InitialFont,
     icon: &TabIcon,
+    picture: Option<&Decoded>,
     size: u32,
 ) -> windows::core::Result<Decoded> {
     // SAFETY: 作ったばかりの WIC のビットマップを描画先にする。出力先は呼び出しの間は生きている。
@@ -404,7 +535,7 @@ pub fn draw_generated(
     let ended = unsafe {
         target.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
         target.BeginDraw();
-        let drawn = draw_parts(&target, factory, dwrite, family, &brush, icon, size as f32);
+        let drawn = draw_parts(&target, factory, font, &brush, icon, picture, size as f32);
         drawn.and(target.EndDraw(None, None))
     };
     ended?;
@@ -424,10 +555,10 @@ pub fn draw_generated(
 fn draw_parts(
     target: &ID2D1RenderTarget,
     factory: &ID2D1Factory1,
-    dwrite: &IDWriteFactory,
-    family: &str,
+    font: &InitialFont,
     brush: &ID2D1SolidColorBrush,
     icon: &TabIcon,
+    picture: Option<&Decoded>,
     size: f32,
 ) -> windows::core::Result<()> {
     let tile = Square {
@@ -436,20 +567,73 @@ fn draw_parts(
         side: size,
     };
     fill_rounded(target, brush, tile, icon.color);
-    let picture = picture_square(size, icon.initial.is_some());
+    let area = picture_square(size, icon.initial.is_some());
+    match picture {
+        Some(picture) => draw_picture(target, picture, area)?,
+        None => draw_backend_picture(target, factory, brush, icon.backend, area)?,
+    }
+    if let Some(initial) = &icon.initial {
+        let area = initial_square(size);
+        draw_initial(target, font, brush, initial, area)?;
+    }
+    Ok(())
+}
+
+/// 読んだアイコン `picture` を `area` に、透過を保って描く。
+fn draw_picture(
+    target: &ID2D1RenderTarget,
+    picture: &Decoded,
+    area: Square,
+) -> windows::core::Result<()> {
+    let properties = D2D1_BITMAP_PROPERTIES {
+        pixelFormat: D2D1_PIXEL_FORMAT {
+            format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+        },
+        dpiX: PIXEL_DPI,
+        dpiY: PIXEL_DPI,
+    };
+    let size = D2D_SIZE_U {
+        width: picture.width,
+        height: picture.height,
+    };
+    // SAFETY: 描画中の target で、ピクセルと properties は呼び出しの間は生きている。ピクセルは一行
+    // stride バイトで height 行ある。
+    unsafe {
+        let bitmap = target.CreateBitmap(
+            size,
+            Some(picture.pixels.as_ptr().cast()),
+            picture.stride(),
+            &properties,
+        )?;
+        target.DrawBitmap(
+            &bitmap,
+            Some(&area.rect()),
+            1.0,
+            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+            None,
+        );
+    }
+    Ok(())
+}
+
+/// つなぎ方 `backend` の絵を `area` に描く。
+fn draw_backend_picture(
+    target: &ID2D1RenderTarget,
+    factory: &ID2D1Factory1,
+    brush: &ID2D1SolidColorBrush,
+    backend: BackendKind,
+    area: Square,
+) -> windows::core::Result<()> {
     // SAFETY: 描画中の target に変換を設定するだけ。
-    unsafe { target.SetTransform(&Matrix3x2::translation(picture.x, picture.y)) };
-    for (ink, shape) in picture_shapes(icon.backend, picture.side) {
+    unsafe { target.SetTransform(&Matrix3x2::translation(area.x, area.y)) };
+    for (ink, shape) in picture_shapes(backend, area.side) {
         // SAFETY: brush は target が作ったブラシで、色は呼び出しの間は生きている。
         unsafe { brush.SetColor(&d2d_color(ink.color())) };
         atlas::draw_shape(target, factory, brush, &shape)?;
     }
     // SAFETY: 描画中の target の変換を戻すだけ。
     unsafe { target.SetTransform(&Matrix3x2::identity()) };
-    if let Some(initial) = &icon.initial {
-        let area = initial_square(size);
-        draw_initial(target, dwrite, family, brush, initial, area)?;
-    }
     Ok(())
 }
 
@@ -529,15 +713,14 @@ fn fitted_font_size(font_size: f32, ink: [f32; 4], side: f32) -> f32 {
 /// `text` を、インクが `area` の真ん中に来るように、`area` に収まる大きさで描く。
 fn draw_initial(
     target: &ID2D1RenderTarget,
-    dwrite: &IDWriteFactory,
-    family: &str,
+    font: &InitialFont,
     brush: &ID2D1SolidColorBrush,
     text: &str,
     area: Square,
 ) -> windows::core::Result<()> {
-    let trial = initial_layout(dwrite, family, text, area.side)?;
+    let trial = initial_layout(font.dwrite, font.family, text, area.side)?;
     let font_size = fitted_font_size(area.side, ink_bounds(&trial)?, area.side);
-    let layout = initial_layout(dwrite, family, text, font_size)?;
+    let layout = initial_layout(font.dwrite, font.family, text, font_size)?;
     let [left, top, right, bottom] = ink_bounds(&layout)?;
     let origin = Vector2 {
         X: (area.x + (area.side - (right - left)) / 2.0 - left).round(),
@@ -755,7 +938,7 @@ mod tests {
     #[test]
     fn the_same_picture_in_several_profiles_is_told_apart_by_the_initial() {
         let initials = |profiles: &[Profile]| -> Vec<Option<String>> {
-            TabIcon::for_profiles(profiles, None)
+            TabIcon::for_profiles_with(profiles, None, |_| None)
                 .into_iter()
                 .map(|icon| icon.initial)
                 .collect()
@@ -784,7 +967,7 @@ mod tests {
             ..Profile::new(name, "x", BackendKind::Conpty)
         };
         let shared = |profiles: &[Profile]| -> Vec<bool> {
-            TabIcon::for_profiles(profiles, None)
+            TabIcon::for_profiles_with(profiles, None, |_| None)
                 .iter()
                 .map(|icon| icon.initial.is_some())
                 .collect()
@@ -811,6 +994,121 @@ mod tests {
             ]),
             [false, false]
         );
+    }
+
+    /// `cygwin_root` を書かなければ `C:\found` を見つけ、`has_icon` がアイコンありと答えるファイルと、PATH に
+    /// ある `cmd.exe` と `wsl.exe` だけがある環境で、本物のアイコンを探す。
+    fn real_in_fake_environment(profile: &Profile, icons: &[&str]) -> Option<RealIcon> {
+        real_icon_with(
+            profile,
+            |configured| Some(PathBuf::from(configured.unwrap_or(r"C:\found"))),
+            |program| match program {
+                "cmd" | "cmd.exe" => Some(PathBuf::from(r"C:\w\cmd.exe")),
+                "wsl.exe" => Some(PathBuf::from(r"C:\w\wsl.exe")),
+                _ => None,
+            },
+            |path| icons.iter().any(|icon| path == Path::new(icon)),
+        )
+    }
+
+    #[test]
+    fn each_backend_reads_its_real_icon() {
+        let icons = [
+            r"C:\found\Cygwin.ico",
+            r"C:\mine\Cygwin.ico",
+            r"C:\w\cmd.exe",
+            r"C:\w\wsl.exe",
+        ];
+        let cygwin = Profile::new("zsh", "zsh -l", BackendKind::Cygwin);
+        assert_eq!(
+            real_in_fake_environment(&cygwin, &icons),
+            Some(RealIcon::File(PathBuf::from(r"C:\found\Cygwin.ico")))
+        );
+        let configured = Profile {
+            cygwin_root: Some(r"C:\mine".to_owned()),
+            ..cygwin.clone()
+        };
+        assert_eq!(
+            real_in_fake_environment(&configured, &icons),
+            Some(RealIcon::File(PathBuf::from(r"C:\mine\Cygwin.ico")))
+        );
+        // WSL は command によらず wsl.exe。
+        let wsl = Profile::new("Ubuntu", "zsh -l", BackendKind::Wsl);
+        assert_eq!(
+            real_in_fake_environment(&wsl, &icons),
+            Some(RealIcon::Executable(PathBuf::from(r"C:\w\wsl.exe")))
+        );
+        // ConPTY は command の最初の語。
+        let conpty = Profile::new("cmd", "cmd /k echo", BackendKind::Conpty);
+        assert_eq!(
+            real_in_fake_environment(&conpty, &icons),
+            Some(RealIcon::Executable(PathBuf::from(r"C:\w\cmd.exe")))
+        );
+    }
+
+    #[test]
+    fn profiles_without_a_real_icon_have_none() {
+        let cygwin = Profile::new("zsh", "zsh -l", BackendKind::Cygwin);
+        let wsl = Profile::new("Ubuntu", "", BackendKind::Wsl);
+        let conpty = Profile::new("cmd", "cmd.exe", BackendKind::Conpty);
+        // Cygwin.ico がない、wsl.exe とその実行ファイルにアイコンがない。
+        for profile in [&cygwin, &wsl, &conpty] {
+            assert_eq!(real_in_fake_environment(profile, &[]), None);
+        }
+        // Cygwin のフォルダが見つからない。
+        assert_eq!(real_icon_with(&cygwin, |_| None, |_| None, |_| true), None);
+        // PATH にない実行ファイル。
+        let missing = Profile::new("a", "no-such-program -x", BackendKind::Conpty);
+        assert_eq!(real_in_fake_environment(&missing, &[r"C:\w\cmd.exe"]), None);
+    }
+
+    #[test]
+    fn real_icons_decide_which_pictures_are_the_same() {
+        let initials = |profiles: &[Profile]| -> Vec<Option<String>> {
+            let real_of = |profile: &Profile| match profile.command_program() {
+                "cmd" => Some(RealIcon::Executable(PathBuf::from(
+                    r"C:\Windows\System32\cmd.exe",
+                ))),
+                r"c:/windows/system32/CMD.EXE" => Some(RealIcon::Executable(PathBuf::from(
+                    r"c:/windows/system32/CMD.EXE",
+                ))),
+                "pwsh" => Some(RealIcon::Executable(PathBuf::from(r"C:\p\pwsh.exe"))),
+                _ => None,
+            };
+            TabIcon::for_profiles_with(profiles, None, real_of)
+                .into_iter()
+                .map(|icon| icon.initial)
+                .collect()
+        };
+        let conpty = |name, command| Profile::new(name, command, BackendKind::Conpty);
+        // 違う実行ファイルは違う絵。
+        assert_eq!(
+            initials(&[conpty("a", "cmd"), conpty("b", "pwsh")]),
+            [None, None]
+        );
+        // 書き方が違っても、同じファイルなら同じ絵。
+        assert_eq!(
+            initials(&[
+                conpty("a", "cmd"),
+                conpty("b", r"c:/windows/system32/CMD.EXE")
+            ]),
+            [Some("A".to_owned()), Some("B".to_owned())]
+        );
+        // アイコンのない実行ファイルどうしは、自前の絵が同じ。本物のアイコンのものは別の絵。
+        assert_eq!(
+            initials(&[conpty("a", "foo"), conpty("b", "bar"), conpty("c", "cmd")]),
+            [Some("A".to_owned()), Some("B".to_owned()), None]
+        );
+    }
+
+    #[test]
+    fn programs_are_found_and_checked_for_icons() {
+        let cmd = search_path("cmd").expect("cmd.exe is on the system path");
+        assert_eq!(search_path("cmd.exe").as_ref(), Some(&cmd));
+        assert!(has_icon(&cmd));
+        assert_eq!(search_path("no-such-program-for-fantermo"), None);
+        assert_eq!(search_path(""), None);
+        assert!(!has_icon(Path::new(r"C:\no-such-folder\no-such.exe")));
     }
 
     #[test]

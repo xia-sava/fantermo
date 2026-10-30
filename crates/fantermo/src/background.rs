@@ -5,19 +5,24 @@ use std::path::{Path, PathBuf};
 use fantermo_core::background::{self, Files};
 use windows::{
     Win32::{
-        Foundation::GENERIC_READ,
+        Foundation::{E_FAIL, GENERIC_READ},
         Graphics::Imaging::{
             CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICBitmapSource,
             IWICImagingFactory, WICBitmapDitherTypeNone, WICBitmapInterpolationModeFant,
             WICBitmapPaletteTypeMedianCut, WICDecodeMetadataCacheOnDemand,
         },
         System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
-        UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN},
+        UI::{
+            Shell::SHDefExtractIconW,
+            WindowsAndMessaging::{
+                DestroyIcon, GetSystemMetrics, HICON, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+            },
+        },
     },
     core::{HSTRING, Interface},
 };
 
-use crate::tab_icon;
+use crate::tab_icon::{self, RealIcon};
 
 /// Direct3D 11 のテクスチャの一辺の上限（`D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION`）。
 pub const MAX_TEXTURE_SIDE: u32 = 16384;
@@ -83,18 +88,77 @@ impl Decoder {
             }
             let chosen = tab_icon::best_frame(&sizes, side);
             let frame = decoder.GetFrame(chosen as u32)?;
+            self.fit_in_square(&frame.cast()?, sizes[chosen], side)
+        }
+    }
+
+    /// プロファイルの本物のアイコン `real` を、一辺 `side` で読む。
+    pub fn decode_real_icon(&self, real: &RealIcon, side: u32) -> windows::core::Result<Decoded> {
+        match real {
+            RealIcon::File(path) => self.decode_icon(path, side),
+            RealIcon::Executable(path) => self.decode_executable_icon(path, side),
+        }
+    }
+
+    /// 実行ファイル `path` の最初のアイコンを、一辺 `side` で読む。アイコンがなければエラー。
+    fn decode_executable_icon(&self, path: &Path, side: u32) -> windows::core::Result<Decoded> {
+        let mut icon = HICON::default();
+        // SAFETY: 文字列と出力先は呼び出しの間は生きている。
+        let result = unsafe {
+            SHDefExtractIconW(
+                &HSTRING::from(path.as_os_str()),
+                0,
+                0,
+                Some(&mut icon),
+                None,
+                side,
+            )
+        };
+        result.ok()?;
+        // アイコンがないときは成功（S_FALSE）で、ハンドルは空のまま。
+        if icon.is_invalid() {
+            return Err(E_FAIL.into());
+        }
+        let decoded = self.decode_icon_handle(icon, side);
+        // SAFETY: SHDefExtractIconW が作ったアイコンで、ほかからは使っていない。
+        if let Err(e) = unsafe { DestroyIcon(icon) } {
+            tracing::warn!("failed to destroy an icon: {e}");
+        }
+        decoded
+    }
+
+    /// アイコンのハンドル `icon` を、透過を保って一辺 `side` で読む。
+    fn decode_icon_handle(&self, icon: HICON, side: u32) -> windows::core::Result<Decoded> {
+        // SAFETY: icon は呼び出す側が持っている有効なハンドル。出力先は呼び出しの間は生きている。
+        unsafe {
+            let bitmap = self.factory.CreateBitmapFromHICON(icon)?;
+            let (mut width, mut height) = (0, 0);
+            bitmap.GetSize(&mut width, &mut height)?;
+            self.fit_in_square(&bitmap.cast()?, (width, height), side)
+        }
+    }
+
+    /// 大きさ `size` の画像 `source` を縦横比を保って縮め、一辺 `side` の正方形の真ん中に置く。余りは透明。
+    fn fit_in_square(
+        &self,
+        source: &IWICBitmapSource,
+        size: (u32, u32),
+        side: u32,
+    ) -> windows::core::Result<Decoded> {
+        let factory = &self.factory;
+        // SAFETY: どの呼び出しも、作ったばかりの WIC のオブジェクトに対するもので、出力先は呼び出しの間は
+        // 生きている。
+        unsafe {
             let converter = factory.CreateFormatConverter()?;
             converter.Initialize(
-                &frame,
+                source,
                 &GUID_WICPixelFormat32bppPBGRA,
                 WICBitmapDitherTypeNone,
                 None,
                 0.0,
                 WICBitmapPaletteTypeMedianCut,
             )?;
-            let (width, height) = sizes[chosen];
-            let (fitted_width, fitted_height, x, y) =
-                tab_icon::fit_in_square((width, height), side);
+            let (fitted_width, fitted_height, x, y) = tab_icon::fit_in_square(size, side);
             let scaler = factory.CreateBitmapScaler()?;
             scaler.Initialize(
                 &converter,
@@ -198,5 +262,107 @@ impl Files for DiskFiles {
             .map(|entry| entry.path())
             .filter(|path| path.is_file())
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use windows::Win32::{
+        Graphics::Gdi::{CreateBitmap, DeleteObject},
+        System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx},
+        UI::WindowsAndMessaging::{CreateIconIndirect, ICONINFO},
+    };
+
+    use super::*;
+
+    /// 一辺のピクセル数。
+    const SIDE: i32 = 2;
+
+    /// COM を初期化したスレッドで作った [`Decoder`]。
+    fn decoder() -> Decoder {
+        // SAFETY: テストのスレッドで初期化する。二度目の初期化は S_FALSE が返るだけ。
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
+            .ok()
+            .expect("COM");
+        Decoder::new().expect("WIC")
+    }
+
+    /// 上の行が `first`、下の行が `second`（どちらも BGRA）の色で、`mask`（1 ビット、行は 16 ビット単位）の
+    /// アイコンを作る。
+    fn icon(first: [u8; 4], second: [u8; 4], mask: [u8; 4]) -> HICON {
+        let color = [first, first, second, second].concat();
+        // SAFETY: ピクセルは呼び出しの間は生きていて、大きさに足りる。作ったビットマップは
+        // CreateIconIndirect が写すので、そのあとに消してよい。
+        unsafe {
+            let color = CreateBitmap(SIDE, SIDE, 1, 32, Some(color.as_ptr().cast()));
+            let mask = CreateBitmap(SIDE, SIDE, 1, 1, Some(mask.as_ptr().cast()));
+            let info = ICONINFO {
+                fIcon: true.into(),
+                xHotspot: 0,
+                yHotspot: 0,
+                hbmMask: mask,
+                hbmColor: color,
+            };
+            let icon = CreateIconIndirect(&info).expect("icon");
+            assert!(DeleteObject(color.into()).as_bool());
+            assert!(DeleteObject(mask.into()).as_bool());
+            icon
+        }
+    }
+
+    fn decode(icon: HICON) -> Decoded {
+        let decoded = decoder()
+            .decode_icon_handle(icon, SIDE as u32)
+            .expect("decode");
+        // SAFETY: icon は作ったばかりで、ほかからは使っていない。
+        unsafe { DestroyIcon(icon) }.expect("destroy");
+        decoded
+    }
+
+    #[test]
+    fn icons_with_an_alpha_channel_keep_it_premultiplied() {
+        const OPAQUE: [u8; 4] = [0x10, 0x20, 0xc0, 0xff];
+        const HALF: [u8; 4] = [0x00, 0x00, 0xff, 0x80];
+        let decoded = decode(icon(OPAQUE, HALF, [0; 4]));
+        assert_eq!(&decoded.pixels[..4], OPAQUE);
+        // 半透明の赤は、色にアルファを掛けた値になる。
+        assert_eq!(&decoded.pixels[8..12], [0x00, 0x00, 0x80, 0x80]);
+    }
+
+    #[test]
+    fn icons_with_only_a_mask_keep_their_transparent_part() {
+        // アルファのない色で、マスクは上の行が不透明、下の行が透明。
+        const RED: [u8; 4] = [0x00, 0x00, 0xff, 0x00];
+        const TRANSPARENT: [u8; 4] = [0x00; 4];
+        let decoded = decode(icon(RED, TRANSPARENT, [0x00, 0x00, 0xc0, 0x00]));
+        assert_eq!(&decoded.pixels[..4], [0x00, 0x00, 0xff, 0xff]);
+        assert_eq!(&decoded.pixels[8..12], TRANSPARENT);
+    }
+
+    #[test]
+    fn real_icons_are_read_at_the_asked_size() {
+        const SIDE: u32 = 23;
+        let cmd = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .expect("SystemRoot")
+            .join(r"System32\cmd.exe");
+        let decoded = decoder()
+            .decode_real_icon(&RealIcon::Executable(cmd), SIDE)
+            .expect("the icon of cmd.exe");
+        assert_eq!((decoded.width, decoded.height), (SIDE, SIDE));
+        assert_eq!(decoded.pixels.len(), (SIDE * SIDE * 4) as usize);
+        assert!(decoded.pixels.chunks(4).any(|pixel| pixel[3] > 0));
+    }
+
+    #[test]
+    fn missing_real_icons_are_errors() {
+        const MISSING: &str = r"C:\no-such-folder\no-such.exe";
+        let decoder = decoder();
+        for real in [
+            RealIcon::Executable(PathBuf::from(MISSING)),
+            RealIcon::File(PathBuf::from(MISSING)),
+        ] {
+            assert!(decoder.decode_real_icon(&real, 16).is_err(), "{real:?}");
+        }
     }
 }

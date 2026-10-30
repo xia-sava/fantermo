@@ -416,7 +416,7 @@ fn wslenv_with<'a>(current: Option<&str>, names: impl IntoIterator<Item = &'a st
 
 /// Cygwin のフォルダ。`configured` を書いていればそれ、なければ [`find_cygwin_root`] で探したもの。
 /// 見つからなければその理由の文。
-fn cygwin_root(configured: Option<&str>) -> Result<PathBuf, String> {
+pub fn cygwin_root(configured: Option<&str>) -> Result<PathBuf, String> {
     if let Some(root) = configured {
         let root = PathBuf::from(root);
         if is_cygwin_root(&root) {

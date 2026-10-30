@@ -349,6 +349,11 @@ impl Profile {
         Self::new(&name, command, BackendKind::default())
     }
 
+    /// `command` の実行ファイル（`"` で囲んでいれば中身）。ConPTY のプロファイルで Windows のプログラムを指す。
+    pub fn command_program(&self) -> &str {
+        split_program(&self.command).0
+    }
+
     /// ブリッジのプロファイルの `command` が Windows のプログラムを起動するなら、そのファイルの名前
     /// （フォルダを除き、書いたままの形）。相手の側から起動した Windows のプログラムは ConPTY を通るので、
     /// ブリッジで届くもの（画像など）が届かない。
@@ -3214,6 +3219,21 @@ size = 10
                 "{command}"
             );
         }
+    }
+
+    #[test]
+    fn the_program_of_a_command_is_its_first_word() {
+        let program = |command: &str| {
+            Profile::new("a", command, BackendKind::Conpty)
+                .command_program()
+                .to_owned()
+        };
+        assert_eq!(program("powershell.exe -NoLogo"), "powershell.exe");
+        assert_eq!(program("  cmd  "), "cmd");
+        assert_eq!(
+            program(r#""C:\Program Files\a\b.exe" -x"#),
+            r"C:\Program Files\a\b.exe"
+        );
     }
 
     #[test]
