@@ -207,8 +207,8 @@ fn is_text_mime(mime: &[u8]) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with(b";"))
 }
 
-/// libghostty-vt のログを `tracing` に流す。どの処理の警告かをアプリの出力が決めるものはログを埋めるので、
-/// 端末の外への働きかけ（クリップボードへの書き込みなど）の警告とエラーだけを流す。
+/// libghostty-vt のログを `tracing` に流す。シーケンスの解釈の警告はアプリの出力しだいでログを埋めるので、
+/// クリップボードへの書き込みなどを受け持つ範囲の警告とエラーだけを流す。
 struct VtLogger;
 
 /// [`VtLogger`] が警告を流す、libghostty-vt のログの範囲。無効な base64 の OSC 52 を捨てたことなどが出る。
