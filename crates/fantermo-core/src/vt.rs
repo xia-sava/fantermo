@@ -12,6 +12,7 @@ use libghostty_vt::{
     fmt::{Format, Formatter, FormatterOptions},
     key,
     kitty::graphics::{self, ImageFormat, RustPngDecoder},
+    log::{Level as LogLevel, Logger, set_logger},
     mouse,
     paste::Options as PasteOptions,
     render::{
@@ -175,13 +176,35 @@ const INDEX: &[u8] = b"\x1bD";
 /// kitty graphics protocol の Unicode placeholder の文字。画像は描画の状態が一覧に載せるので、文字としては描かない。
 const KITTY_PLACEHOLDER: char = '\u{10EEEE}';
 
-/// PNG のデコーダをプロセスに一度だけ入れる。
-fn install_png_decoder() -> Result<(), VtError> {
+/// libghostty-vt のログを `tracing` に流す。どの処理の警告かをアプリの出力が決めるものはログを埋めるので、
+/// 端末の外への働きかけ（クリップボードへの書き込みなど）の警告とエラーだけを流す。
+struct VtLogger;
+
+/// [`VtLogger`] が警告を流す、libghostty-vt のログの範囲。無効な base64 の OSC 52 を捨てたことなどが出る。
+const LOGGED_WARNING_SCOPE: &str = "stream_terminal";
+
+impl Logger for VtLogger {
+    fn log(&self, level: LogLevel, scope: &str, message: &str) {
+        match level {
+            LogLevel::Error => tracing::warn!("libghostty-vt: {scope}: {message}"),
+            LogLevel::Warning if scope == LOGGED_WARNING_SCOPE => {
+                tracing::warn!("libghostty-vt: {message}");
+            }
+            _ => {}
+        }
+    }
+}
+
+/// PNG のデコーダとログの受け口をプロセスに一度だけ入れる。
+fn install_process_hooks() -> Result<(), VtError> {
     static INSTALLED: OnceLock<Result<(), VtError>> = OnceLock::new();
     *INSTALLED.get_or_init(|| {
         // SAFETY: 端末はどれも `Vt::new` で作り、最初の端末を作る前にここを通る。ここを通っている間、
         // ほかのスレッドの `Vt::new` は `get_or_init` で待つので、端末を使うスレッドはまだない。
-        unsafe { graphics::set_png_decoder(Some(Box::new(RustPngDecoder::new()))) }
+        unsafe {
+            set_logger(Some(Box::new(VtLogger)))?;
+            graphics::set_png_decoder(Some(Box::new(RustPngDecoder::new())))
+        }
     })
 }
 
@@ -225,7 +248,7 @@ impl Vt {
         let size_cell = Rc::new(Cell::new(size));
         let bell_rang = Rc::new(Cell::new(false));
 
-        install_png_decoder()?;
+        install_process_hooks()?;
         let mut terminal = Terminal::new(size.cols, size.rows)?;
         terminal
             .set_scrollback_max_lines(Some(SCROLLBACK_LINES))?
