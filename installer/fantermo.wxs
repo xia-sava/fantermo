@@ -8,7 +8,8 @@
 
   プリプロセッサの変数（wix build -d で渡す）:
     Version   製品のバージョン（MAJOR.MINOR.PATCH）
-    StageDir  zip と同じ中身（fantermo.exe、LICENSE、THIRD-PARTY-NOTICES.txt、README.md）を置いたフォルダ
+    StageDir  zip と同じ中身（fantermo.exe、fantermo-bridge.exe、fantermo-bridge、LICENSE、
+              THIRD-PARTY-NOTICES.txt、README.md）を置いたフォルダ
     IconFile  「プログラムと機能」に出すアイコン（assets/icon/fantermo.ico）
 
   画面は WiX の UI の拡張（WixToolset.UI.wixext）の標準の画面を並べ、文は ja-JP のローカライズと
@@ -162,6 +163,15 @@
       <Component Id="Readme" Guid="35866B00-C89E-4DE4-BC86-8203B2E4024D">
         <File Id="README.md" Source="$(var.StageDir)\README.md" KeyPath="no" />
         <RegistryValue Root="HKCU" Key="Software\fantermo\Installer" Name="Readme" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <!-- ブリッジ。fantermo は exe と同じフォルダから探す。Linux 向けのものは WSL が /mnt/c/... から実行する。 -->
+      <Component Id="CygwinBridge" Guid="0BC7E3AB-F750-459D-AF0B-9E33BAAEC2CF">
+        <File Id="fantermo_bridge.exe" Source="$(var.StageDir)\fantermo-bridge.exe" KeyPath="no" />
+        <RegistryValue Root="HKCU" Key="Software\fantermo\Installer" Name="CygwinBridge" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="LinuxBridge" Guid="15E13C4F-8EA8-4604-8131-E2B49EFD25AC">
+        <File Id="fantermo_bridge" Source="$(var.StageDir)\fantermo-bridge" KeyPath="no" />
+        <RegistryValue Root="HKCU" Key="Software\fantermo\Installer" Name="LinuxBridge" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>
