@@ -81,3 +81,108 @@ jobs:
         env:
           CYGWIN_ROOT: ${{ steps.toolchain.outputs.cygwin-root }}
         run: ./tools/bridge.sh build all
+
+  # 実際の fantermo を別デスクトップで起動して、制御の口（feature e2e）で確かめる。出力先は tools/dev.bat が決める
+  # target/e2e/。Smoke は別デスクトップと Direct3D がランナーで動くかだけを確かめ、ログをそのまま出す。
+  # TODO: GitHub Actions で 3 つの e2e のジョブ（e2e-conpty、e2e-cygwin、bridge-linux）が通ることを確かめたら
+  # continue-on-error を外す。配布のワークフローがこの CI を呼ぶので、付いている間は落ちても配布を止めない。
+  e2e-conpty:
+    runs-on: windows-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target/e2e
+
+      # run-hidden も作る（--test e2e だけでは作らない）。
+      - name: Build
+        shell: cmd
+        run: call tools\dev.bat build --locked --features e2e
+
+      - name: Smoke
+        shell: cmd
+        run: call tools\dev.bat test --locked --features e2e --test e2e smoke -- --nocapture
+
+      - name: E2E
+        shell: cmd
+        run: call tools\dev.bat test --locked --features e2e --test e2e
+
+      - name: Clippy
+        shell: cmd
+        run: call tools\dev.bat clippy --locked --features e2e --all-targets -- -D warnings
+
+  # Cygwin のブリッジの単体のテストと e2e。
+  e2e-cygwin:
+    runs-on: windows-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-toolchain
+
+      - id: toolchain
+        uses: ./.github/actions/setup-bridge-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target/e2e
+            crates/fantermo-bridge -> ../../target/bridge
+
+      - name: Bridge tests
+        shell: bash
+        env:
+          CYGWIN_ROOT: ${{ steps.toolchain.outputs.cygwin-root }}
+        run: ./tools/bridge.sh test cygwin
+
+      - name: Build the bridge
+        shell: bash
+        env:
+          CYGWIN_ROOT: ${{ steps.toolchain.outputs.cygwin-root }}
+        run: ./tools/bridge.sh build cygwin
+
+      - name: Build
+        shell: cmd
+        run: call tools\dev.bat build --locked --features e2e
+
+      - name: E2E
+        shell: cmd
+        env:
+          FANTERMO_E2E_CYGWIN_ROOT: ${{ steps.toolchain.outputs.cygwin-root }}
+        run: call tools\dev.bat test --locked --features e2e --test e2e cygwin
+
+  # Linux 向けのブリッジの単体のテスト。パイプでつないで名乗り・リサイズ・データ・終了をやり取りする。
+  bridge-linux:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup target add x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/fantermo-bridge -> ../../target/bridge
+
+      - name: Bridge tests
+        run: ./tools/bridge.sh test linux
