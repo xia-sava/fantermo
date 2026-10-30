@@ -133,14 +133,14 @@ jobs:
       # 手動実行の配布物は成果物としてしか残らないため、手元へダウンロードするまでの猶予を置く。
       # Actions のストレージ枠はアカウント全体で共有していて、既定の 90 日で抱え続けると
       # 他のリポジトリの CI まで止まる。
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: zip
           path: artifacts/*.zip
           if-no-files-found: error
           retention-days: ${{ github.ref_type == 'tag' && 1 || 3 }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: msi
           path: artifacts/*.msi
@@ -161,7 +161,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
@@ -199,7 +199,7 @@ jobs:
           ./tools/manifest.sh sign latest/latest.json "$key_file" assets/manifest-public-key.der
 
       # latest.json もリリースへ載るため、保持期間は release ジョブへ渡すまででよい。
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: manifest
           path: |
@@ -216,7 +216,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
