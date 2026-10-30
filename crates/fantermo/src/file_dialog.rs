@@ -29,6 +29,41 @@ pub fn open_files(
     filters: &[Filter],
 ) -> windows::core::Result<Vec<PathBuf>> {
     let dialog = create(title, FOS_ALLOWMULTISELECT | FOS_FILEMUSTEXIST)?;
+    set_filters(&dialog, filters)?;
+    if !show(&dialog, owner)? {
+        return Ok(Vec::new());
+    }
+    // SAFETY: Show が選んで閉じたので、結果を問い合わせられる。
+    let results = unsafe { dialog.GetResults()? };
+    // SAFETY: results は有効な一覧。
+    let count = unsafe { results.GetCount()? };
+    let mut paths = Vec::new();
+    for index in 0..count {
+        // SAFETY: index は一覧の数より小さい。
+        let item = unsafe { results.GetItemAt(index)? };
+        paths.push(file_system_path(&item)?);
+    }
+    Ok(paths)
+}
+
+/// ファイルを一つ選ぶダイアログを `owner` の上に開く。やめたら `None`。
+pub fn open_file(
+    owner: HWND,
+    title: &str,
+    filters: &[Filter],
+) -> windows::core::Result<Option<PathBuf>> {
+    let dialog = create(title, FOS_FILEMUSTEXIST)?;
+    set_filters(&dialog, filters)?;
+    if !show(&dialog, owner)? {
+        return Ok(None);
+    }
+    // SAFETY: Show が選んで閉じたので、結果を問い合わせられる。
+    let item = unsafe { dialog.GetResult()? };
+    file_system_path(&item).map(Some)
+}
+
+/// ダイアログのファイルの種類の絞り込みを `filters` にする。
+fn set_filters(dialog: &IFileOpenDialog, filters: &[Filter]) -> windows::core::Result<()> {
     let names: Vec<(HSTRING, HSTRING)> = filters
         .iter()
         .map(|filter| (HSTRING::from(&filter.name), HSTRING::from(&filter.spec)))
@@ -44,20 +79,7 @@ pub fn open_files(
         // SAFETY: specs が指す文字列は names が持ち、この呼び出しの間は生きている。
         unsafe { dialog.SetFileTypes(&specs)? };
     }
-    if !show(&dialog, owner)? {
-        return Ok(Vec::new());
-    }
-    // SAFETY: Show が選んで閉じたので、結果を問い合わせられる。
-    let results = unsafe { dialog.GetResults()? };
-    // SAFETY: results は有効な一覧。
-    let count = unsafe { results.GetCount()? };
-    let mut paths = Vec::new();
-    for index in 0..count {
-        // SAFETY: index は一覧の数より小さい。
-        let item = unsafe { results.GetItemAt(index)? };
-        paths.push(file_system_path(&item)?);
-    }
-    Ok(paths)
+    Ok(())
 }
 
 /// フォルダを一つ選ぶダイアログを `owner` の上に開く。やめたら `None`。

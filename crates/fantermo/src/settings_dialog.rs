@@ -102,6 +102,8 @@ const ID_PROFILE_BACKEND: i32 = 406;
 /// `cygwin_root` か `distribution` の入力欄。どちらかはつなぎ方で決まる。
 const ID_PROFILE_LOCATION: i32 = 407;
 const ID_PROFILE_COMMAND_WARNING: i32 = 408;
+const ID_PROFILE_ICON: i32 = 409;
+const ID_PROFILE_ICON_CHOOSE: i32 = 410;
 const ID_BACKGROUND_IMAGES: i32 = 450;
 const ID_BACKGROUND_ADD_FILES: i32 = 451;
 const ID_BACKGROUND_ADD_FOLDER: i32 = 452;
@@ -147,11 +149,11 @@ const VISIBLE_FONTS: usize = 16;
 const PAGES: [&str; 6] = ["外観", "背景", "動作", "プロファイル", "キー", "色"];
 
 /// プロファイルの一覧の高さ。
-const PROFILE_LIST_HEIGHT: i32 = 110;
+const PROFILE_LIST_HEIGHT: i32 = 98;
 /// コマンドラインの入力欄の下の警告の文の高さ（3 行）。文がないときも場所を空けておく。
 const PROFILE_COMMAND_WARNING_HEIGHT: i32 = 52;
 /// プロファイルのページの下の説明の文の高さ。
-const PROFILE_NOTE_HEIGHT: i32 = 4 * ROW_HEIGHT;
+const PROFILE_NOTE_HEIGHT: i32 = 3 * ROW_HEIGHT;
 /// プロファイルのつなぎ方の選択肢。[`BackendKind::ALL`] の順。
 const PROFILE_BACKEND_LABELS: [&str; 3] = [
     "ConPTY（Windows の疑似コンソール）",
@@ -710,6 +712,9 @@ struct Controls {
     profile_backend: HWND,
     profile_location_label: HWND,
     profile_location: HWND,
+    /// プロファイルのアイコンの画像のファイルの入力欄と、選ぶボタン。
+    profile_icon: HWND,
+    profile_icon_choose: HWND,
     /// 背景画像の一覧。
     background_images: HWND,
     /// 背景画像の一覧の「削除」のボタン。
@@ -1559,11 +1564,59 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         ]),
     )?;
     profiles_page.push(profile_location);
+    let profile_icon_row = profile_location_row + ROW_HEIGHT + MARGIN;
+    let (class, text, rect) = label("アイコン(&I):", label_rect(profile_icon_row));
+    profiles_page.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let profile_icon = child(
+        w!("EDIT"),
+        "",
+        edit_style,
+        WS_EX_CLIENTEDGE,
+        ID_PROFILE_ICON,
+        Some([
+            control_left,
+            profile_icon_row,
+            control_width - BUTTON_GAP - BUTTON_WIDTH,
+            ROW_HEIGHT,
+        ]),
+    )?;
+    profiles_page.push(profile_icon);
+    let profile_icon_cue = HSTRING::from("空なら自動で作る");
+    // SAFETY: profile_icon は有効な入力欄で、文字列はこの呼び出しの間は生きている。
+    unsafe {
+        SendMessageW(
+            profile_icon,
+            EM_SETCUEBANNER,
+            Some(WPARAM(CUE_BANNER_ALWAYS)),
+            Some(LPARAM(profile_icon_cue.as_ptr() as isize)),
+        )
+    };
+    let profile_icon_choose = child(
+        w!("BUTTON"),
+        "選ぶ(&E)…",
+        WS_GROUP | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+        none,
+        ID_PROFILE_ICON_CHOOSE,
+        Some([
+            control_left + control_width - BUTTON_WIDTH,
+            profile_icon_row,
+            BUTTON_WIDTH,
+            ROW_HEIGHT,
+        ]),
+    )?;
+    profiles_page.push(profile_icon_choose);
     let (class, text, rect) = label(
         "タブバーの「+」は既定のプロファイルを開き、「▾」か「+」の右クリックで一覧から選んで開く。fantermo を引数つきで起動したときは、「+」とキーも引数のコマンドラインを使う。Cygwin と WSL のコマンドラインは相手の側のもの（空ならログインシェル）。書き換えたら、次に開くタブから使う。",
         [
             page_left,
-            profile_location_row + ROW_HEIGHT + MARGIN,
+            profile_icon_row + ROW_HEIGHT + MARGIN,
             page_width,
             PROFILE_NOTE_HEIGHT,
         ],
@@ -1832,6 +1885,8 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             profile_backend,
             profile_location_label,
             profile_location,
+            profile_icon,
+            profile_icon_choose,
             background_images,
             background_remove: image_buttons[2],
             background_opacity,
@@ -2115,6 +2170,13 @@ impl State<'_> {
                 .or(profile.distribution.as_deref())
         });
         set_text(c.profile_location, location.unwrap_or(""));
+        set_text(
+            c.profile_icon,
+            profile
+                .as_ref()
+                .and_then(|profile| profile.icon.as_deref())
+                .unwrap_or(""),
+        );
         self.filling_profile.set(false);
         self.show_profile_backend(backend);
         self.show_profile_command_warning();
@@ -2132,6 +2194,8 @@ impl State<'_> {
                 c.profile_location,
                 selected.is_some() && backend.is_bridge(),
             ),
+            (c.profile_icon, selected.is_some()),
+            (c.profile_icon_choose, selected.is_some()),
         ] {
             // SAFETY: control はダイアログの子の有効なウィンドウ。
             unsafe { _ = EnableWindow(control, enabled) };
@@ -2202,6 +2266,22 @@ impl State<'_> {
         self.on_profile_edited();
     }
 
+    /// アイコンの「選ぶ…」が押された。選んだファイルの絶対パスを入力欄に入れる（入力欄の変更の知らせで
+    /// プロファイルに入る）。
+    fn on_profile_icon_choose(&self) {
+        let chosen = match file_dialog::open_file(self.hwnd, "アイコンを選ぶ", &icon_filters())
+        {
+            Ok(chosen) => chosen,
+            Err(e) => {
+                tracing::warn!("failed to choose a profile icon: {e}");
+                return;
+            }
+        };
+        if let Some(path) = chosen {
+            set_text(self.controls.profile_icon, &path.to_string_lossy());
+        }
+    }
+
     /// プロファイルの名前かコマンドラインの入力欄が変わった。選んでいるプロファイルに入れ、一覧の行を
     /// 書き直す。端末への反映は少し待つ（次に開くタブから使うので、反映しても見た目は変わらない）。
     fn on_profile_edited(&self) {
@@ -2214,12 +2294,14 @@ impl State<'_> {
         let name = get_text(self.controls.profile_name).trim().to_owned();
         let command = get_text(self.controls.profile_command).trim().to_owned();
         let location = get_text(self.controls.profile_location).trim().to_owned();
+        let icon = get_text(self.controls.profile_icon).trim().to_owned();
         let text = {
             let mut profiles = self.profiles.borrow_mut();
             let profile = &mut profiles[index];
             profile.name = name;
             profile.command = command;
             set_profile_location(profile, location);
+            profile.icon = (!icon.is_empty()).then_some(icon);
             profile_row_text(profile, index == self.default_profile.get())
         };
         let list = self.controls.profiles_list;
@@ -3152,8 +3234,17 @@ fn format_opacity(opacity: f32) -> String {
 
 /// 背景画像を選ぶダイアログの、ファイルの種類の絞り込み。
 fn image_filters() -> Vec<file_dialog::Filter> {
-    let spec = IMAGE_EXTENSIONS
-        .iter()
+    filters_for(IMAGE_EXTENSIONS.iter().copied())
+}
+
+/// プロファイルのアイコンを選ぶダイアログの、ファイルの種類の絞り込み。
+fn icon_filters() -> Vec<file_dialog::Filter> {
+    filters_for(std::iter::once("ico").chain(IMAGE_EXTENSIONS.iter().copied()))
+}
+
+/// 拡張子が `extensions` の画像と、すべてのファイルの絞り込み。
+fn filters_for<'a>(extensions: impl Iterator<Item = &'a str>) -> Vec<file_dialog::Filter> {
+    let spec = extensions
         .map(|extension| format!("*.{extension}"))
         .collect::<Vec<_>>()
         .join(";");
@@ -3244,9 +3335,13 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 (ID_PROFILE_ADD | ID_PROFILE_REMOVE | ID_PROFILE_DEFAULT, BN_CLICKED) => {
                     state.on_profile_button(id);
                 }
-                (ID_PROFILE_NAME | ID_PROFILE_COMMAND | ID_PROFILE_LOCATION, EN_CHANGE) => {
+                (
+                    ID_PROFILE_NAME | ID_PROFILE_COMMAND | ID_PROFILE_LOCATION | ID_PROFILE_ICON,
+                    EN_CHANGE,
+                ) => {
                     state.on_profile_edited();
                 }
+                (ID_PROFILE_ICON_CHOOSE, BN_CLICKED) => state.on_profile_icon_choose(),
                 (ID_PROFILE_BACKEND, CBN_SELCHANGE) => state.on_profile_backend_changed(),
                 (ID_BACKGROUND_IMAGES, LBN_SELCHANGE) => state.update_background_buttons(),
                 (
@@ -3688,7 +3783,8 @@ mod tests {
         let command_row = name_row + ROW_HEIGHT + MARGIN;
         let backend_row =
             command_row + ROW_HEIGHT + LABEL_OFFSET + PROFILE_COMMAND_WARNING_HEIGHT + LABEL_OFFSET;
-        let note_top = backend_row + 2 * (ROW_HEIGHT + MARGIN);
+        // つなぎ方、場所、アイコンの 3 行の下に説明の文。
+        let note_top = backend_row + 3 * (ROW_HEIGHT + MARGIN);
         let button_top = CLIENT_HEIGHT - MARGIN - BUTTON_HEIGHT;
         assert!(note_top + PROFILE_NOTE_HEIGHT <= button_top - MARGIN);
     }
