@@ -95,6 +95,8 @@ const ID_PADDING_SPIN: i32 = 231;
 const ID_PASTE_CONFIRM: i32 = 300;
 /// `clipboard.read` のラジオボタン。[`ClipboardRead::ALL`] の順に ID が続く。
 const ID_CLIPBOARD_READ: i32 = 310;
+const ID_PASTE_CONFIRM_SIZE: i32 = 320;
+const ID_PASTE_CONFIRM_SIZE_SPIN: i32 = 321;
 const ID_PROFILES: i32 = 400;
 const ID_PROFILE_ADD: i32 = 401;
 const ID_PROFILE_REMOVE: i32 = 402;
@@ -723,6 +725,8 @@ struct Controls {
     padding: HWND,
     padding_spin: HWND,
     paste_confirm: [HWND; 3],
+    paste_confirm_size: HWND,
+    paste_confirm_size_spin: HWND,
     clipboard_read: [HWND; 3],
     /// プロファイルの一覧。
     profiles_list: HWND,
@@ -1425,7 +1429,52 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         ID_LABEL,
         Some(rect),
     )?);
-    let clipboard_row = row(0) + 6 * ROW_HEIGHT + 2 * MARGIN;
+    let paste_size_row = row(0) + 6 * ROW_HEIGHT + 2 * MARGIN;
+    let (class, text, rect) = label("大きなテキストの確認(&Z):", label_rect(paste_size_row));
+    behavior.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let paste_confirm_size = child(
+        w!("EDIT"),
+        "",
+        edit_style,
+        WS_EX_CLIENTEDGE,
+        ID_PASTE_CONFIRM_SIZE,
+        Some([control_left, paste_size_row, NUMBER_WIDTH, ROW_HEIGHT]),
+    )?;
+    behavior.push(paste_confirm_size);
+    let paste_confirm_size_spin = child(
+        UPDOWN_CLASSW,
+        "",
+        spin_style,
+        none,
+        ID_PASTE_CONFIRM_SIZE_SPIN,
+        None,
+    )?;
+    behavior.push(paste_confirm_size_spin);
+    let (class, text, rect) = label(
+        "KiB 以上は常に確認する（0 で無効）",
+        [
+            control_left + NUMBER_WIDTH + BUTTON_GAP,
+            paste_size_row + LABEL_OFFSET,
+            control_width - NUMBER_WIDTH - BUTTON_GAP,
+            ROW_HEIGHT,
+        ],
+    );
+    behavior.push(child(
+        class,
+        &text,
+        WINDOW_STYLE(0),
+        none,
+        ID_LABEL,
+        Some(rect),
+    )?);
+    let clipboard_row = paste_size_row + ROW_HEIGHT + MARGIN;
     let (class, text, rect) = label("クリップボードの読み取り(&L):", label_rect(clipboard_row));
     behavior.push(child(
         class,
@@ -1930,6 +1979,8 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             padding,
             padding_spin,
             paste_confirm,
+            paste_confirm_size,
+            paste_confirm_size_spin,
             clipboard_read,
             profiles_list,
             profile_remove: profile_buttons[1],
@@ -2029,6 +2080,7 @@ impl State<'_> {
             .iter()
             .position(|&value| value == config.paste.confirm);
         check_one(&c.paste_confirm, paste_confirm);
+        set_text(c.paste_confirm_size, &config.paste.confirm_size.to_string());
         let clipboard_read = ClipboardRead::ALL
             .iter()
             .position(|&value| value == config.clipboard.read);
@@ -2967,6 +3019,7 @@ impl State<'_> {
             c.size_spin,
             c.scroll_bar_width_spin,
             c.padding_spin,
+            c.paste_confirm_size_spin,
             c.background_opacity_spin,
             c.background_item_opacity_spin,
         ]);
@@ -2999,6 +3052,7 @@ impl State<'_> {
             (c.size_spin, c.size),
             (c.scroll_bar_width_spin, c.scroll_bar_width),
             (c.padding_spin, c.padding),
+            (c.paste_confirm_size_spin, c.paste_confirm_size),
             (c.background_opacity_spin, c.background_opacity),
             (c.background_item_opacity_spin, c.background_item_opacity),
         ] {
@@ -3075,6 +3129,11 @@ impl State<'_> {
         if let Some(index) = checked(&c.paste_confirm) {
             config.paste.confirm = PasteConfirm::ALL[index];
         }
+        config.paste.confirm_size =
+            config::parse_paste_confirm_size(&get_text(c.paste_confirm_size)).ok_or((
+                "大きなテキストの確認の大きさは、0 から 1048576 までの整数を入力してください。",
+                c.paste_confirm_size,
+            ))?;
         if let Some(index) = checked(&c.clipboard_read) {
             config.clipboard.read = ClipboardRead::ALL[index];
         }
@@ -3246,14 +3305,21 @@ impl State<'_> {
                 .unwrap_or(self.base.borrow().scroll_bar.width);
             set_text(
                 c.scroll_bar_width,
-                &step_pixels(current, delta, &config::SCROLL_BAR_WIDTH_RANGE).to_string(),
+                &step_integer(current, delta, &config::SCROLL_BAR_WIDTH_RANGE).to_string(),
             );
         } else if spin == c.padding_spin {
             let current = config::parse_padding(&get_text(c.padding))
                 .unwrap_or(self.base.borrow().window.padding);
             set_text(
                 c.padding,
-                &step_pixels(current, delta, &config::PADDING_RANGE).to_string(),
+                &step_integer(current, delta, &config::PADDING_RANGE).to_string(),
+            );
+        } else if spin == c.paste_confirm_size_spin {
+            let current = config::parse_paste_confirm_size(&get_text(c.paste_confirm_size))
+                .unwrap_or(self.base.borrow().paste.confirm_size);
+            set_text(
+                c.paste_confirm_size,
+                &step_integer(current, delta, &config::PASTE_CONFIRM_SIZE_RANGE).to_string(),
             );
         } else if spin == c.background_opacity_spin {
             let text = get_text(c.background_opacity);
@@ -3312,8 +3378,8 @@ fn step_size(current: f32, delta: i32) -> f32 {
     )
 }
 
-/// スクロールバーの幅や余白のピクセルを、矢印で一つ動かした値。範囲 `range` の端で止める。
-fn step_pixels(current: u32, delta: i32, range: &RangeInclusive<u32>) -> u32 {
+/// スクロールバーの幅、余白、貼り付けの確認の大きさを、矢印で一つ動かした値。範囲 `range` の端で止める。
+fn step_integer(current: u32, delta: i32, range: &RangeInclusive<u32>) -> u32 {
     let next = if delta > 0 {
         current.saturating_add(1)
     } else {
@@ -3492,7 +3558,9 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 {
                     state.on_color_scheme();
                 }
-                (ID_SIZE | ID_SCROLL_BAR_WIDTH | ID_PADDING, EN_CHANGE) => state.schedule_preview(),
+                (ID_SIZE | ID_SCROLL_BAR_WIDTH | ID_PADDING | ID_PASTE_CONFIRM_SIZE, EN_CHANGE) => {
+                    state.schedule_preview()
+                }
                 (id, BN_CLICKED)
                     if (ID_WIDE_GLYPH..ID_WIDE_GLYPH + WideGlyph::ALL.len() as i32)
                         .contains(&id)
@@ -3622,13 +3690,13 @@ mod tests {
         assert_eq!(step_size(1.0, -1), 1.0);
         assert_eq!(step_size(128.0, 1), 128.0);
         let width = config::SCROLL_BAR_WIDTH_RANGE;
-        assert_eq!(step_pixels(12, 1, &width), 13);
-        assert_eq!(step_pixels(4, -1, &width), 4);
-        assert_eq!(step_pixels(64, 1, &width), 64);
+        assert_eq!(step_integer(12, 1, &width), 13);
+        assert_eq!(step_integer(4, -1, &width), 4);
+        assert_eq!(step_integer(64, 1, &width), 64);
         let padding = config::PADDING_RANGE;
-        assert_eq!(step_pixels(4, -1, &padding), 3);
-        assert_eq!(step_pixels(0, -1, &padding), 0);
-        assert_eq!(step_pixels(64, 1, &padding), 64);
+        assert_eq!(step_integer(4, -1, &padding), 3);
+        assert_eq!(step_integer(0, -1, &padding), 0);
+        assert_eq!(step_integer(64, 1, &padding), 64);
     }
 
     #[test]

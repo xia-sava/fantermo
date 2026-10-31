@@ -600,7 +600,12 @@ fn message_loop() -> u32 {
 /// 回すので、借用を持ったまま開くと、その間に届いたメッセージの処理が飛ばされる。
 enum Deferred {
     /// 改行を含む貼り付けの内容を、編集のダイアログで確かめる。
-    EditPaste { text: String, font: Font },
+    EditPaste {
+        text: String,
+        font: Font,
+        /// 大きなテキストであることをダイアログに添える。
+        large: bool,
+    },
     /// 「fantermo について」のダイアログを開く。`font` は端末のフォント。
     ShowAbout { font: Font },
     /// 設定ダイアログを開く。
@@ -659,7 +664,7 @@ struct App {
     /// `font` を探したときの設定。
     font_config: FontConfig,
     /// 貼り付ける前に、編集のダイアログで確かめるとき。
-    paste_confirm: PasteConfirm,
+    paste_config: PasteConfig,
     /// アプリがクリップボードの内容を読み取ろうとしたときにどうするか。
     clipboard_read: ClipboardRead,
     /// 確かめを待っているクリップボードの読み取りの依頼。
@@ -821,7 +826,7 @@ impl App {
             config_path,
             state_path: None,
             font_config,
-            paste_confirm: config.paste.confirm,
+            paste_config: config.paste,
             clipboard_read: config.clipboard.read,
             clipboard_prompts: ReadPrompts::default(),
             arguments,
@@ -1150,8 +1155,8 @@ impl App {
         self.invalidate();
     }
 
-    /// クリップボードの文字列を貼り付ける。設定の `paste.confirm` に従って確かめが要るときは、
-    /// 編集のダイアログを開くよう返す。
+    /// クリップボードの文字列を貼り付ける。設定の `paste.confirm` と `paste.confirm_size` に従って確かめが
+    /// 要るときは、編集のダイアログを開くよう返す。
     fn paste_clipboard(&mut self) -> Option<Deferred> {
         let text = match clipboard::text(self.hwnd) {
             Ok(Some(text)) => text_dialog::from_crlf(&text),
@@ -1161,15 +1166,17 @@ impl App {
                 return None;
             }
         };
-        let needs_confirmation = match paste_action(self.paste_confirm, &text) {
-            PasteAction::Confirm => true,
-            PasteAction::Paste { allow_unsafe } => {
-                self.paste(&text, allow_unsafe) == Some(PasteOutcome::Unsafe)
-            }
+        let (needs_confirmation, large) = match paste_action(&self.paste_config, &text) {
+            PasteAction::Confirm { large } => (true, large),
+            PasteAction::Paste { allow_unsafe } => (
+                self.paste(&text, allow_unsafe) == Some(PasteOutcome::Unsafe),
+                false,
+            ),
         };
         needs_confirmation.then(|| Deferred::EditPaste {
             text,
             font: self.font.clone(),
+            large,
         })
     }
 
@@ -2305,7 +2312,7 @@ impl App {
     /// 読み直した設定、または設定ダイアログで編集中の設定を入れ替える。作り直しが要れば、その DPI を
     /// 返す（[`App::reload_config`]）。
     fn apply_config(&mut self, config: Config) -> Option<u32> {
-        self.paste_confirm = config.paste.confirm;
+        self.paste_config = config.paste;
         self.clipboard_read = config.clipboard.read;
         self.profiles = config.profiles;
         self.default_profile = config.default_profile;
@@ -2365,9 +2372,7 @@ impl App {
             font: self.font_config.clone(),
             profiles: self.profiles.clone(),
             default_profile: self.default_profile.clone(),
-            paste: PasteConfig {
-                confirm: self.paste_confirm,
-            },
+            paste: self.paste_config.clone(),
             clipboard: ClipboardConfig {
                 read: self.clipboard_read,
             },
@@ -2758,8 +2763,8 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
     let mut next = deferred;
     while let Some(deferred) = next.take() {
         match deferred {
-            Deferred::EditPaste { text, font } => {
-                if let Some(edited) = paste_editor::edit(hwnd, &text, &font) {
+            Deferred::EditPaste { text, font, large } => {
+                if let Some(edited) = paste_editor::edit(hwnd, &text, &font, large) {
                     with_app(&mut |app| {
                         app.paste(&edited, true);
                     });
@@ -3031,19 +3036,25 @@ fn message_button(msg: u32) -> MouseButton {
 /// 貼り付けるときにすること。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PasteAction {
-    /// 送らずに、編集のダイアログで確かめる。
-    Confirm,
+    /// 送らずに、編集のダイアログで確かめる。`large` なら、大きさで確かめる。
+    Confirm { large: bool },
     /// 端末に渡す。`allow_unsafe` でなければ、コマンドとして実行される可能性がある文字列は端末が送らずに返す。
     Paste { allow_unsafe: bool },
 }
 
-/// 確かめ方の設定が `confirm` のときに、`text` を貼り付けるためにすること。
-fn paste_action(confirm: PasteConfirm, text: &str) -> PasteAction {
-    match confirm {
+/// 貼り付けの設定が `config` のときに、`text` を貼り付けるためにすること。大きさは改行を LF にしたあとの
+/// UTF-8 のバイト数で見る。
+fn paste_action(config: &PasteConfig, text: &str) -> PasteAction {
+    if config.is_large(text.len()) {
+        return PasteAction::Confirm { large: true };
+    }
+    match config.confirm {
         PasteConfirm::Unsafe => PasteAction::Paste {
             allow_unsafe: false,
         },
-        PasteConfirm::Multiline if !vt::is_safe_to_paste(text) => PasteAction::Confirm,
+        PasteConfirm::Multiline if !vt::is_safe_to_paste(text) => {
+            PasteAction::Confirm { large: false }
+        }
         PasteConfirm::Multiline => PasteAction::Paste {
             allow_unsafe: false,
         },
@@ -3524,19 +3535,60 @@ mod tests {
             allow_unsafe: false,
         };
         let unchecked = PasteAction::Paste { allow_unsafe: true };
+        let confirm = PasteAction::Confirm { large: false };
+        let config = |confirm| PasteConfig {
+            confirm,
+            ..PasteConfig::default()
+        };
         // 既定は、端末が bracketed paste のモードを見て断ったときだけ確かめる。
-        assert_eq!(paste_action(PasteConfirm::Unsafe, "a\nb"), as_is);
+        assert_eq!(paste_action(&config(PasteConfirm::Unsafe), "a\nb"), as_is);
         assert_eq!(
-            paste_action(PasteConfirm::Multiline, "a\nb"),
-            PasteAction::Confirm
+            paste_action(&config(PasteConfirm::Multiline), "a\nb"),
+            confirm
         );
         assert_eq!(
-            paste_action(PasteConfirm::Multiline, "a\rb"),
-            PasteAction::Confirm
+            paste_action(&config(PasteConfirm::Multiline), "a\rb"),
+            confirm
         );
-        assert_eq!(paste_action(PasteConfirm::Multiline, "echo hi"), as_is);
-        assert_eq!(paste_action(PasteConfirm::Never, "a\nb"), unchecked);
-        assert_eq!(paste_action(PasteConfirm::Never, "echo hi"), unchecked);
+        assert_eq!(
+            paste_action(&config(PasteConfirm::Multiline), "echo hi"),
+            as_is
+        );
+        assert_eq!(
+            paste_action(&config(PasteConfirm::Never), "a\nb"),
+            unchecked
+        );
+        assert_eq!(
+            paste_action(&config(PasteConfirm::Never), "echo hi"),
+            unchecked
+        );
+    }
+
+    #[test]
+    fn large_paste_is_confirmed_whatever_the_other_settings_say() {
+        const LIMIT: usize = 8 * 1024;
+        let large = PasteAction::Confirm { large: true };
+        let lines = "line\n".repeat(LIMIT / 5 + 1);
+        for confirm in PasteConfirm::ALL {
+            let config = PasteConfig {
+                confirm,
+                confirm_size: 8,
+            };
+            assert_eq!(paste_action(&config, &"x".repeat(LIMIT)), large);
+            assert_eq!(paste_action(&config, &lines), large);
+            assert_ne!(paste_action(&config, &"x".repeat(LIMIT - 1)), large);
+            let disabled = PasteConfig {
+                confirm,
+                confirm_size: 0,
+            };
+            assert_ne!(paste_action(&disabled, &"x".repeat(LIMIT)), large);
+        }
+        // 大きさは文字数ではなく UTF-8 のバイト数で見る。
+        let config = PasteConfig {
+            confirm: PasteConfirm::Never,
+            confirm_size: 8,
+        };
+        assert_eq!(paste_action(&config, &"あ".repeat(LIMIT / 3 + 1)), large);
     }
 
     #[test]

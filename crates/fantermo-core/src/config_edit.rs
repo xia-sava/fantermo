@@ -79,6 +79,7 @@ enum Setting {
     FontSize,
     WideGlyph,
     PasteConfirm,
+    PasteConfirmSize,
     ClipboardRead,
     ScrollBarWidth,
     WindowPadding,
@@ -88,12 +89,13 @@ enum Setting {
 }
 
 impl Setting {
-    const ALL: [Setting; 11] = [
+    const ALL: [Setting; 12] = [
         Setting::DefaultProfile,
         Setting::FontFamily,
         Setting::FontSize,
         Setting::WideGlyph,
         Setting::PasteConfirm,
+        Setting::PasteConfirmSize,
         Setting::ClipboardRead,
         Setting::ScrollBarWidth,
         Setting::WindowPadding,
@@ -107,7 +109,7 @@ impl Setting {
         match self {
             Setting::DefaultProfile => &[],
             Setting::FontFamily | Setting::FontSize | Setting::WideGlyph => &["font"],
-            Setting::PasteConfirm => &["paste"],
+            Setting::PasteConfirm | Setting::PasteConfirmSize => &["paste"],
             Setting::ClipboardRead => &["clipboard"],
             Setting::ScrollBarWidth => &["scroll_bar"],
             Setting::WindowPadding => &["window"],
@@ -123,6 +125,7 @@ impl Setting {
             Setting::FontSize => "size",
             Setting::WideGlyph => "wide_glyph",
             Setting::PasteConfirm => "confirm",
+            Setting::PasteConfirmSize => "confirm_size",
             Setting::ClipboardRead => "read",
             Setting::ScrollBarWidth => "width",
             Setting::WindowPadding => "padding",
@@ -140,6 +143,7 @@ impl Setting {
             Setting::FontSize => Some(number_value(config.font.size_pt)),
             Setting::WideGlyph => Some(Value::from(config.font.wide_glyph.name())),
             Setting::PasteConfirm => Some(Value::from(config.paste.confirm.name())),
+            Setting::PasteConfirmSize => Some(Value::from(i64::from(config.paste.confirm_size))),
             Setting::ClipboardRead => Some(Value::from(config.clipboard.read.name())),
             Setting::ScrollBarWidth => Some(Value::from(i64::from(config.scroll_bar.width))),
             Setting::WindowPadding => Some(Value::from(i64::from(config.window.padding))),
@@ -1471,6 +1475,7 @@ mod tests {
             default_profile: Some(config::DEFAULT_PROFILE_NAME.to_owned()),
             paste: PasteConfig {
                 confirm: PasteConfirm::Never,
+                confirm_size: 64,
             },
             clipboard: ClipboardConfig {
                 read: ClipboardRead::Deny,
@@ -1525,6 +1530,7 @@ mod tests {
             .replace("# size = 12", "size = 10.5")
             .replace(r#"# wide_glyph = "shrink""#, r#"wide_glyph = "overflow""#)
             .replace(r#"# confirm = "unsafe""#, r#"confirm = "never""#)
+            .replace("# confirm_size = 8", "confirm_size = 64")
             .replace(r#"# read = "ask""#, r#"read = "deny""#)
             .replace("# width = 12", "width = 20")
             .replace("# padding = 4", "padding = 0")

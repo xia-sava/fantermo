@@ -49,6 +49,12 @@ pub const DEFAULT_PADDING: u32 = 4;
 /// 余白として受け付ける範囲（96 DPI でのピクセル）。
 pub const PADDING_RANGE: RangeInclusive<u32> = 0..=64;
 
+/// 大きな貼り付けとして確かめる既定の大きさ（KiB）。
+pub const DEFAULT_PASTE_CONFIRM_SIZE: u32 = 8;
+
+/// 大きな貼り付けとして確かめる大きさとして受け付ける範囲（KiB）。`0` は確かめない。上限は 1 GiB。
+pub const PASTE_CONFIRM_SIZE_RANGE: RangeInclusive<u32> = 0..=1_048_576;
+
 /// 背景画像の既定の不透明度。
 pub const DEFAULT_IMAGE_OPACITY: f32 = 0.2;
 
@@ -121,6 +127,10 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # "unsafe" は改行を含む文字列がコマンドとして実行される可能性があるとき（アプリが bracketed paste を有効にして
 # いないときなど）、"multiline" は bracketed paste に関わらず改行を含むとき、"never" は確認せずに改行ごと送る。
 # confirm = "unsafe"
+
+# この大きさ（KiB）以上の文字列を貼り付ける前は、confirm の設定、改行の有無、bracketed paste に関わらず、
+# 同じダイアログで確認する。0 で確認しない。0 から 1048576 まで。
+# confirm_size = 8
 
 [clipboard]
 # アプリがクリップボードの内容を読み取ろうとしたとき（OSC 52）。
@@ -967,10 +977,29 @@ impl Default for WindowConfig {
 }
 
 /// `[paste]` の設定。
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PasteConfig {
     /// 貼り付ける前に、編集のダイアログで確かめるとき。
     pub confirm: PasteConfirm,
+    /// この大きさ（KiB）以上なら、`confirm` に関わらず編集のダイアログで確かめる。`0` は確かめない。
+    pub confirm_size: u32,
+}
+
+impl Default for PasteConfig {
+    fn default() -> Self {
+        Self {
+            confirm: PasteConfirm::default(),
+            confirm_size: DEFAULT_PASTE_CONFIRM_SIZE,
+        }
+    }
+}
+
+impl PasteConfig {
+    /// `bytes` バイトの文字列が、大きな貼り付けとして確かめる大きさか。
+    pub fn is_large(&self, bytes: usize) -> bool {
+        const BYTES_PER_KIB: u64 = 1024;
+        self.confirm_size != 0 && bytes as u64 >= u64::from(self.confirm_size) * BYTES_PER_KIB
+    }
 }
 
 /// 貼り付ける前に、内容を編集のダイアログで確かめるとき（`paste.confirm`）。
@@ -1121,6 +1150,13 @@ pub fn parse_padding(text: &str) -> Option<u32> {
     PADDING_RANGE.contains(&padding).then_some(padding)
 }
 
+/// 入力された文字列を、大きな貼り付けとして確かめる大きさ（KiB）として読む。前後の空白は除く。整数でないか、
+/// [`PASTE_CONFIRM_SIZE_RANGE`] の外なら `None`。
+pub fn parse_paste_confirm_size(text: &str) -> Option<u32> {
+    let size: u32 = text.trim().parse().ok()?;
+    PASTE_CONFIRM_SIZE_RANGE.contains(&size).then_some(size)
+}
+
 /// 入力された文字列を、背景画像の不透明度として読む。前後の空白は除く。数でないか、
 /// [`IMAGE_OPACITY_RANGE`] の外なら `None`。
 pub fn parse_image_opacity(text: &str) -> Option<f32> {
@@ -1269,6 +1305,18 @@ pub fn parse(text: &str, previous: &Config) -> Parsed {
             reader
                 .take::<PasteConfirm>(&mut paste, SECTION, "confirm")
                 .apply(&mut config.paste.confirm, PasteConfirm::default());
+            reader
+                .take::<u32>(&mut paste, SECTION, "confirm_size")
+                .check(&mut reader, "paste.confirm_size", |size| {
+                    (!PASTE_CONFIRM_SIZE_RANGE.contains(size)).then(|| {
+                        format!(
+                            "ignoring paste.confirm_size = {size}: must be between {} and {}",
+                            PASTE_CONFIRM_SIZE_RANGE.start(),
+                            PASTE_CONFIRM_SIZE_RANGE.end()
+                        )
+                    })
+                })
+                .apply(&mut config.paste.confirm_size, DEFAULT_PASTE_CONFIRM_SIZE);
             reader.warn_unknown(&paste, SECTION);
         }
     }
@@ -1940,6 +1988,7 @@ mod tests {
             default_profile: Some(DEFAULT_PROFILE_NAME.to_owned()),
             paste: PasteConfig {
                 confirm: PasteConfirm::Never,
+                confirm_size: 64,
             },
             clipboard: ClipboardConfig {
                 read: ClipboardRead::Deny,
@@ -2259,7 +2308,7 @@ mod tests {
             .lines()
             .filter(|line| !line.starts_with('#') && line.contains(" = "))
             .count();
-        assert_eq!(settings, 9 + 9 + 2 + 15, "{text}");
+        assert_eq!(settings, 10 + 9 + 2 + 15, "{text}");
         // 背景色と文字の色の例は、既定の配色の色。
         assert_eq!(
             parsed.config.colors.terminal_colors(),
@@ -2603,12 +2652,12 @@ mod tests {
     fn invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults() {
         let previous = customized();
         let parsed = super::parse(
-            "shell = ' '\ndefault_profile = 3\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\n[clipboard]\nread = 1\n[scroll_bar]\nwidth = 2\n[window]\npadding = 65\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors]\nscheme = 'sepia'\nforeground = 'blue'\n[colors.tab_bar]\nbar = 'red'\n[background]\nimages = ''\nimage_opacity = 2\nfit = 0\n",
+            "shell = ' '\ndefault_profile = 3\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\nconfirm_size = 'big'\n[clipboard]\nread = 1\n[scroll_bar]\nwidth = 2\n[window]\npadding = 65\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors]\nscheme = 'sepia'\nforeground = 'blue'\n[colors.tab_bar]\nbar = 'red'\n[background]\nimages = ''\nimage_opacity = 2\nfit = 0\n",
             &previous,
         );
         assert!(!parsed.syntax_error);
         assert_eq!(parsed.config, previous);
-        assert_eq!(parsed.warnings.len(), 17, "{:?}", parsed.warnings);
+        assert_eq!(parsed.warnings.len(), 18, "{:?}", parsed.warnings);
         // 配列でない profiles も、前のプロファイルのまま。
         let parsed = super::parse("profiles = 'zsh'\ndefault_profile = 'zsh'\n", &previous);
         assert_eq!(parsed.config.profiles, previous.profiles);
@@ -2632,6 +2681,58 @@ mod tests {
         assert_eq!(parsed.config.paste, previous.paste);
         assert_eq!(parsed.config.scroll_bar, previous.scroll_bar);
         assert_eq!(parsed.config.profiles, [Profile::builtin()]);
+    }
+
+    #[test]
+    fn paste_confirm_size_takes_integers_in_range() {
+        assert_eq!(parse("").config.paste.confirm_size, 8);
+        for size in [0, 64, 1_048_576] {
+            let parsed = parse(&format!("[paste]\nconfirm_size = {size}\n"));
+            assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+            assert_eq!(parsed.config.paste.confirm_size, size);
+        }
+        let parsed = parse("[paste]\nconfirm_size = 1048577\n");
+        assert_eq!(parsed.config.paste.confirm_size, 8);
+        assert_eq!(
+            parsed.warnings,
+            ["ignoring paste.confirm_size = 1048577: must be between 0 and 1048576"]
+        );
+        for text in [
+            "confirm_size = 1.5",
+            "confirm_size = -1",
+            "confirm_size = 'x'",
+        ] {
+            let parsed = parse(&format!("[paste]\n{text}\n"));
+            assert_eq!(parsed.config.paste.confirm_size, 8);
+            assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
+        }
+        // 読めない値は、前の値のまま。
+        let previous = customized();
+        let parsed = super::parse("[paste]\nconfirm_size = 'x'\n", &previous);
+        assert_eq!(parsed.config.paste.confirm_size, 64);
+
+        assert_eq!(parse_paste_confirm_size(" 0 "), Some(0));
+        assert_eq!(parse_paste_confirm_size("1048576"), Some(1_048_576));
+        for text in ["", "1048577", "1.5", "-1", "big"] {
+            assert_eq!(parse_paste_confirm_size(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn large_paste_is_decided_by_the_size_in_kib() {
+        let config = |confirm_size| PasteConfig {
+            confirm_size,
+            ..PasteConfig::default()
+        };
+        assert_eq!(PasteConfig::default().confirm_size, 8);
+        assert!(!config(8).is_large(8 * 1024 - 1));
+        assert!(config(8).is_large(8 * 1024));
+        assert!(config(1).is_large(1024));
+        // 0 は、どの大きさでも確かめない。
+        assert!(!config(0).is_large(usize::MAX));
+        // 上限でも桁があふれない。
+        assert!(!config(1_048_576).is_large(1024 * 1024 * 1024 - 1));
+        assert!(config(1_048_576).is_large(1024 * 1024 * 1024));
     }
 
     #[test]
@@ -2740,6 +2841,7 @@ mod tests {
             wide_glyph = "overflow"
             [paste]
             confirm = "never"
+            confirm_size = 0
             [scroll_bar]
             width = 8
             [window]
@@ -2762,6 +2864,7 @@ mod tests {
                 )],
                 paste: PasteConfig {
                     confirm: PasteConfirm::Never,
+                    confirm_size: 0,
                 },
                 scroll_bar: ScrollBarConfig { width: 8 },
                 window: WindowConfig { padding: 0 },
