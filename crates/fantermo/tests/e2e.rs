@@ -1,7 +1,7 @@
-//! 実際の fantermo を画面に出ないデスクトップで起動して、制御の口で確かめる（feature `e2e` のときだけ実行する）。
+//! 実際の fantermo を画面に出ないデスクトップで起動して、制御の口で確認する（feature `e2e` のときだけ実行する）。
 //!
 //! 実行は `./tools/dev.sh test --features e2e`。`smoke` で始まるテストは、その環境で別デスクトップと Direct3D が
-//! 動くかだけを確かめる。
+//! 動くかだけを確認する。
 //!
 //! ブリッジのテストは環境変数があるときだけ実行し、なければスキップしたと標準エラー出力に出す。
 //! - `FANTERMO_E2E_CYGWIN_ROOT`: Cygwin のフォルダ（`C:\cygwin64` など）。`./tools/bridge.sh build cygwin` で作っておく

@@ -325,7 +325,7 @@ mod tests {
                 .iter()
                 .any(|family| Some(family.index) == family_index(&factory, "Segoe UI")),
         );
-        // 日本語の名前を持つ書体は、日本語の名前で見せる。ＭＳ ゴシックの無い環境では確かめない。
+        // 日本語の名前を持つ書体は、日本語の名前で見せる。ＭＳ ゴシックの無い環境では確認しない。
         let Some(ms_gothic) = family_index(&factory, "MS Gothic") else {
             return;
         };

@@ -1,4 +1,4 @@
-//! ブリッジを標準入出力のパイプ付きで起動し、プロトコルの単位で話して確かめる。
+//! ブリッジを標準入出力のパイプ付きで起動し、プロトコルの単位で話して確認する。
 //!
 //! Linux と Cygwin のターゲットで実行する（`./tools/bridge.sh test <cygwin|linux|all>`）。子プロセスのシェルは
 //! `/bin/sh` を使う。
@@ -14,13 +14,13 @@ use fantermo_bridge_protocol::{self as protocol, ChildExit, FromBridge, ToBridge
 
 /// 単位が届くのを待つ上限。
 const RECEIVE_TIMEOUT: Duration = Duration::from_secs(30);
-/// リサイズのあと、子プロセスに大きさが届いたかを確かめ直す間隔。
+/// リサイズのあと、子プロセスに大きさが届いたかを確認し直す間隔。
 const RESIZE_RETRY_INTERVAL: Duration = Duration::from_millis(500);
-/// リサイズのあと、子プロセスに大きさが届いたかを確かめる回数。
+/// リサイズのあと、子プロセスに大きさが届いたかを確認する回数。
 const RESIZE_RETRIES: u32 = 20;
 /// ブリッジ自身が終わるのを待つ上限。
 const EXIT_TIMEOUT: Duration = Duration::from_secs(10);
-/// ブリッジ自身が終わったかを確かめる間隔。
+/// ブリッジ自身が終わったかを確認する間隔。
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// プロトコルの誤りでブリッジが終わるときの終了コード。
 const EXIT_PROTOCOL_ERROR: i32 = 3;

@@ -49,10 +49,10 @@ pub const DEFAULT_PADDING: u32 = 4;
 /// 余白として受け付ける範囲（96 DPI でのピクセル）。
 pub const PADDING_RANGE: RangeInclusive<u32> = 0..=64;
 
-/// 大きな貼り付けとして確かめる既定の大きさ（KiB）。
+/// 大きな貼り付けとして確認する既定の大きさ（KiB）。
 pub const DEFAULT_PASTE_CONFIRM_SIZE: u32 = 8;
 
-/// 大きな貼り付けとして確かめる大きさとして受け付ける範囲（KiB）。`0` は確かめない。上限は 1 GiB。
+/// 大きな貼り付けとして確認する大きさとして受け付ける範囲（KiB）。`0` は確認しない。上限は 1 GiB。
 pub const PASTE_CONFIRM_SIZE_RANGE: RangeInclusive<u32> = 0..=1_048_576;
 
 /// 背景画像の既定の不透明度。
@@ -979,9 +979,9 @@ impl Default for WindowConfig {
 /// `[paste]` の設定。
 #[derive(Clone, Debug, PartialEq)]
 pub struct PasteConfig {
-    /// 貼り付ける前に、編集のダイアログで確かめるとき。
+    /// 貼り付ける前に、編集のダイアログで確認するとき。
     pub confirm: PasteConfirm,
-    /// この大きさ（KiB）以上なら、`confirm` に関わらず編集のダイアログで確かめる。`0` は確かめない。
+    /// この大きさ（KiB）以上なら、`confirm` に関わらず編集のダイアログで確認する。`0` は確認しない。
     pub confirm_size: u32,
 }
 
@@ -995,14 +995,14 @@ impl Default for PasteConfig {
 }
 
 impl PasteConfig {
-    /// `bytes` バイトの文字列が、大きな貼り付けとして確かめる大きさか。
+    /// `bytes` バイトの文字列が、大きな貼り付けとして確認する大きさか。
     pub fn is_large(&self, bytes: usize) -> bool {
         const BYTES_PER_KIB: u64 = 1024;
         self.confirm_size != 0 && bytes as u64 >= u64::from(self.confirm_size) * BYTES_PER_KIB
     }
 }
 
-/// 貼り付ける前に、内容を編集のダイアログで確かめるとき（`paste.confirm`）。
+/// 貼り付ける前に、内容を編集のダイアログで確認するとき（`paste.confirm`）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PasteConfirm {
@@ -1012,7 +1012,7 @@ pub enum PasteConfirm {
     Unsafe,
     /// bracketed paste に関わらず、改行か bracketed paste の終わりの印を含むとき。
     Multiline,
-    /// 確かめない。bracketed paste でなければ、改行は CR にして送る。
+    /// 確認しない。bracketed paste でなければ、改行は CR にして送る。
     Never,
 }
 
@@ -1048,7 +1048,7 @@ pub enum ClipboardRead {
     /// 確認のダイアログを出す。
     #[default]
     Ask,
-    /// 確かめずに渡す。
+    /// 確認せずに渡す。
     Allow,
     /// 何も返さない。
     Deny,
@@ -1150,7 +1150,7 @@ pub fn parse_padding(text: &str) -> Option<u32> {
     PADDING_RANGE.contains(&padding).then_some(padding)
 }
 
-/// 入力された文字列を、大きな貼り付けとして確かめる大きさ（KiB）として読む。前後の空白は除く。整数でないか、
+/// 入力された文字列を、大きな貼り付けとして確認する大きさ（KiB）として読む。前後の空白は除く。整数でないか、
 /// [`PASTE_CONFIRM_SIZE_RANGE`] の外なら `None`。
 pub fn parse_paste_confirm_size(text: &str) -> Option<u32> {
     let size: u32 = text.trim().parse().ok()?;
@@ -1230,7 +1230,7 @@ impl<T> Item<T> {
         }
     }
 
-    /// 読めた値を `check` で確かめる。`check` が警告の文を返したら、警告を残して読めなかったことにする。
+    /// 読めた値を `check` でチェックする。`check` が警告の文を返したら、警告を残して読めなかったことにする。
     fn check(
         self,
         reader: &mut Reader,
@@ -2728,7 +2728,7 @@ mod tests {
         assert!(!config(8).is_large(8 * 1024 - 1));
         assert!(config(8).is_large(8 * 1024));
         assert!(config(1).is_large(1024));
-        // 0 は、どの大きさでも確かめない。
+        // 0 は、どの大きさでも確認しない。
         assert!(!config(0).is_large(usize::MAX));
         // 上限でも桁があふれない。
         assert!(!config(1_048_576).is_large(1024 * 1024 * 1024 - 1));

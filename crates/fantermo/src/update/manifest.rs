@@ -94,7 +94,7 @@ struct Asset {
     sha256: String,
 }
 
-/// 署名を確かめた更新の情報 `bytes` を読み、いまのバージョン `current` と比べる。
+/// 署名を検証した更新の情報 `bytes` を読み、いまのバージョン `current` と比べる。
 ///
 /// 新しくないときは `msi` の項目がなくてもよい（MSI を配る前のバージョンの情報でも、最新かは分かる）。
 pub fn compare(bytes: &[u8], current: Version) -> Result<Comparison, ManifestError> {

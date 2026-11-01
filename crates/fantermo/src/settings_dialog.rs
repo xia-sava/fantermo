@@ -275,7 +275,7 @@ enum ProfileField {
     Command,
 }
 
-/// 編集中のプロファイル `profiles` を設定ファイルと同じ決まりで確かめる。名前とコマンドライン（ブリッジ
+/// 編集中のプロファイル `profiles` を設定ファイルと同じ決まりでチェックする。名前とコマンドライン（ブリッジ
 /// では空でよい）が空でなく、名前がどれも違えば `Ok`。そうでなければ、最初のエラーの位置と入力欄と
 /// エラーメッセージ。
 fn check_profiles(profiles: &[Profile]) -> Result<(), (usize, ProfileField, &'static str)> {

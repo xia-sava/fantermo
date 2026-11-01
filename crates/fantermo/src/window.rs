@@ -119,7 +119,7 @@ const WM_APP_CONFIG_CHANGED: u32 = WM_APP + 2;
 /// 更新の確認かダウンロードをするスレッドが、結果を `App::update_events` に送ったと知らせるメッセージ。
 const WM_APP_UPDATE: u32 = WM_APP + 3;
 
-/// クリップボードの読み取りの依頼が確かめを待っているかもしれないことを、ウィンドウに知らせる。
+/// クリップボードの読み取りの依頼が確認を待っているかもしれないことを、ウィンドウに知らせる。
 const WM_APP_CLIPBOARD_PROMPT: u32 = WM_APP + 4;
 
 /// e2e テストの制御の口に要求が届いたと知らせるメッセージ。
@@ -164,7 +164,7 @@ const INITIAL_COLS: u16 = 100;
 const INITIAL_ROWS: u16 = 30;
 
 /// 開発用。起動したときのウィンドウの DPI を、この環境変数の値とみなす。倍率の違うモニタへ移したときの
-/// 作り直しを、モニタを使わずに確かめるために使う。
+/// 作り直しを、モニタを使わずに確認するために使う。
 const DPI_ENV: &str = "FANTERMO_DPI";
 
 /// 新しい端末で起動するもの。
@@ -599,7 +599,7 @@ fn message_loop() -> u32 {
 /// 入力の処理のあとで、ウィンドウの借用を手放してからすること。ダイアログやメニューは自分でメッセージを
 /// 回すので、借用を持ったまま開くと、その間に届いたメッセージの処理が飛ばされる。
 enum Deferred {
-    /// 改行を含む貼り付けの内容を、編集のダイアログで確かめる。
+    /// 改行を含む貼り付けの内容を、編集のダイアログで確認する。
     EditPaste {
         text: String,
         font: Font,
@@ -618,7 +618,7 @@ enum Deferred {
     Warn { topic: Topic, text: String },
     /// 更新のスレッドの結果を見せ、次にすることを決める。
     Update(update::Event),
-    /// クリップボードの読み取りの依頼を、本文 `text` のダイアログで確かめる。
+    /// クリップボードの読み取りの依頼を、本文 `text` のダイアログで確認する。
     AskClipboardRead { text: String },
 }
 
@@ -663,11 +663,11 @@ struct App {
     state_path: Option<PathBuf>,
     /// `font` を探したときの設定。
     font_config: FontConfig,
-    /// 貼り付ける前に、編集のダイアログで確かめるとき。
+    /// 貼り付ける前に、編集のダイアログで確認するとき。
     paste_config: PasteConfig,
     /// アプリがクリップボードの内容を読み取ろうとしたときにどうするか。
     clipboard_read: ClipboardRead,
-    /// 確かめを待っているクリップボードの読み取りの依頼。
+    /// 確認を待っているクリップボードの読み取りの依頼。
     clipboard_prompts: ReadPrompts<SessionId>,
     /// fantermo の引数（子プロセスのコマンドライン）。
     arguments: Option<String>,
@@ -1155,7 +1155,7 @@ impl App {
         self.invalidate();
     }
 
-    /// クリップボードの文字列を貼り付ける。設定の `paste.confirm` と `paste.confirm_size` に従って確かめが
+    /// クリップボードの文字列を貼り付ける。設定の `paste.confirm` と `paste.confirm_size` に従って確認が
     /// 要るときは、編集のダイアログを開くよう返す。
     fn paste_clipboard(&mut self) -> Option<Deferred> {
         let text = match clipboard::text(self.hwnd) {
@@ -1244,7 +1244,7 @@ impl App {
         }
     }
 
-    /// 確かめを待っている依頼を見るよう、ウィンドウに知らせる。
+    /// 確認を待っている依頼を見るよう、ウィンドウに知らせる。
     fn post_clipboard_prompt(&self) {
         poster(self.hwnd, WM_APP_CLIPBOARD_PROMPT, WPARAM(0))();
     }
@@ -1265,7 +1265,7 @@ impl App {
         }
     }
 
-    /// 次に確かめる依頼があれば、ダイアログを開くよう返す。ほかのダイアログを開いている間（ウィンドウが無効の
+    /// 次に確認する依頼があれば、ダイアログを開くよう返す。ほかのダイアログを開いている間（ウィンドウが無効の
     /// 間）は開かず、有効に戻ったときに見直す。待っている間に設定やタブの許可が変わったら、それに従って片づける。
     fn next_clipboard_prompt(&mut self) -> Option<Deferred> {
         // SAFETY: ウィンドウのハンドルを調べるだけ。
@@ -2797,7 +2797,7 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
     }
 }
 
-/// 「fantermo について」を開き、閉じるまで待つ。「更新を確認」を押したら、確かめる仕事を始め、届いた結果を
+/// 「fantermo について」を開き、閉じるまで待つ。「更新を確認」を押したら、確認する仕事を始め、届いた結果を
 /// 「fantermo について」の上に見せる。更新に進むと決めたら「fantermo について」を閉じ、続けてすることを返す。
 fn show_about(hwnd: HWND, font: &Font, with_app: &WithApp) -> Option<Deferred> {
     let mut busy = false;
@@ -3036,7 +3036,7 @@ fn message_button(msg: u32) -> MouseButton {
 /// 貼り付けるときにすること。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PasteAction {
-    /// 送らずに、編集のダイアログで確かめる。`large` なら、大きさで確かめる。
+    /// 送らずに、編集のダイアログで確認する。`large` なら、大きさで確認する。
     Confirm { large: bool },
     /// 端末に渡す。`allow_unsafe` でなければ、コマンドとして実行される可能性がある文字列は端末が送らずに返す。
     Paste { allow_unsafe: bool },
@@ -3215,7 +3215,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             run_deferred(hwnd, deferred, &with_app);
             LRESULT(0)
         }
-        // ダイアログを閉じてウィンドウが有効に戻ったら、待っていた確かめを始める。この場ではダイアログの片づけの
+        // ダイアログを閉じてウィンドウが有効に戻ったら、待っていた確認を始める。この場ではダイアログの片づけの
         // 途中なので、積んであとで見る。
         WM_ENABLE => {
             if wparam.0 != 0 {
@@ -3540,7 +3540,7 @@ mod tests {
             confirm,
             ..PasteConfig::default()
         };
-        // 既定は、端末が bracketed paste のモードを見て断ったときだけ確かめる。
+        // 既定は、端末が bracketed paste のモードを見て断ったときだけ確認する。
         assert_eq!(paste_action(&config(PasteConfirm::Unsafe), "a\nb"), as_is);
         assert_eq!(
             paste_action(&config(PasteConfirm::Multiline), "a\nb"),

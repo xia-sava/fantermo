@@ -1,6 +1,6 @@
 ---
 name: e2e-verify
-description: fantermo の e2e テストと、制御の口（feature e2e）での確かめ方。実際の fantermo を別デスクトップで起動して、HTTP で入力・タブ・ウィンドウの大きさを操作し、画面の文字と絵を読む。実行のしかた、テストの書き方、Cygwin と WSL のブリッジの e2e、落とし穴。「e2e を走らせて」「e2e を足して」「制御の口で確かめて」と言われたときに使う。
+description: fantermo の e2e テストと、制御の口（feature e2e）での確認のしかた。実際の fantermo を別デスクトップで起動して、HTTP で入力・タブ・ウィンドウの大きさを操作し、画面の文字と絵を読む。実行のしかた、テストの書き方、Cygwin と WSL のブリッジの e2e、落とし穴。「e2e を走らせて」「e2e を足して」「制御の口で確認して」と言われたときに使う。
 ---
 
 # fantermo の e2e

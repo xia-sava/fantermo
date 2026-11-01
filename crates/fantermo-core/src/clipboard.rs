@@ -1,8 +1,8 @@
 //! アプリからのクリップボードの読み書き（OSC 52 など）の決まり。Windows のクリップボードそのものは
 //! 触らない。
 //!
-//! 書き込みは常に受ける。読み取りは `clipboard.read` とタブごとの許可で決め、確かめが要る依頼は
-//! [`ReadPrompts`] で待たせて、一つずつ確かめる。
+//! 書き込みは常に受ける。読み取りは `clipboard.read` とタブごとの許可で決め、確認が要る依頼は
+//! [`ReadPrompts`] で待たせて、一つずつ確認する。
 
 use crate::{base64, config::ClipboardRead};
 
@@ -79,11 +79,11 @@ impl ReadRequest {
 /// 読み取りの依頼をどうするか。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadDecision {
-    /// 確かめずに答える。
+    /// 確認せずに答える。
     Answer,
     /// 答えない。
     Refuse,
-    /// 利用者に確かめる。
+    /// 利用者に確認する。
     Ask,
 }
 
@@ -98,15 +98,15 @@ pub fn read_decision(policy: ClipboardRead, allowed_for_tab: bool) -> ReadDecisi
     }
 }
 
-/// いま確かめている依頼。
+/// いま確認している依頼。
 #[derive(Debug)]
 struct Showing<K> {
     tab: K,
-    /// タブを閉じて取り下げたら `None`。ダイアログが閉じるまでは、確かめている状態のまま。
+    /// タブを閉じて取り下げたら `None`。ダイアログが閉じるまでは、確認している状態のまま。
     request: Option<ReadRequest>,
 }
 
-/// 確かめを待っている読み取りの依頼。確かめるのは一度に一つで、`K` はタブを見分けるもの。
+/// 確認を待っている読み取りの依頼。確認するのは一度に一つで、`K` はタブを見分けるもの。
 ///
 /// タブごとに待たせるのは一つだけにする（読み続けるアプリがいても増えない。答えは待っていた数によらず
 /// 一度で足りる）。
@@ -133,7 +133,7 @@ impl<K: Copy + PartialEq> ReadPrompts<K> {
         }
     }
 
-    /// 次に確かめる依頼を、確かめているものにして返す。確かめている途中か、待っているものがなければ `None`。
+    /// 次に確認する依頼を、確認しているものにして返す。確認している途中か、待っているものがなければ `None`。
     pub fn start_next(&mut self) -> Option<(K, ReadRequest)> {
         if self.showing.is_some() || self.waiting.is_empty() {
             return None;
@@ -146,13 +146,13 @@ impl<K: Copy + PartialEq> ReadPrompts<K> {
         Some((tab, request))
     }
 
-    /// 確かめ終えた。取り下げていなければ、その依頼を返す。
+    /// 確認を終えた。取り下げていなければ、その依頼を返す。
     pub fn finish(&mut self) -> Option<(K, ReadRequest)> {
         let showing = self.showing.take()?;
         Some((showing.tab, showing.request?))
     }
 
-    /// `tab` の依頼を捨てる。いま確かめている依頼も捨てたら `true` を返す（ダイアログを閉じさせる）。
+    /// `tab` の依頼を捨てる。いま確認している依頼も捨てたら `true` を返す（ダイアログを閉じさせる）。
     pub fn discard_tab(&mut self, tab: K) -> bool {
         self.waiting.retain(|(waiting, _)| *waiting != tab);
         let Some(showing) = &mut self.showing else {
@@ -262,7 +262,7 @@ mod tests {
         prompts.push(1, REQUEST);
         prompts.push(1, REQUEST);
         assert_eq!(prompts.start_next(), Some((1, REQUEST)));
-        // 確かめている間に届いたものは、一つ待たせる。
+        // 確認している間に届いたものは、一つ待たせる。
         prompts.push(1, REQUEST);
         prompts.push(1, REQUEST);
         assert!(prompts.has_waiting());

@@ -1136,7 +1136,7 @@ mod tests {
         assert!(!PALETTE.contains(&icon.color));
     }
 
-    /// 形の点が一辺 `side` の正方形の中にある。線の太さの分だけはみ出すものは含めて確かめる。
+    /// 形の点が一辺 `side` の正方形の中にある。線の太さの分だけはみ出すものは含めて確認する。
     fn assert_inside(shape: &Shape, side: f32) {
         const EPSILON: f32 = 1e-3;
         let check = |points: &[(f32, f32)], margin: f32| {

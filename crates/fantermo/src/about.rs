@@ -69,7 +69,7 @@ pub enum Received {
 /// 「fantermo について」のダイアログを開き、閉じるまで待つ。
 ///
 /// 「更新を確認」は、インストーラで入れたバージョン（[`update::can_update`]）でだけ押せる。押してもダイアログは
-/// 閉じず、確かめている間は押せなくする。結果は `hooks` がダイアログの上に見せる。
+/// 閉じず、確認している間は押せなくする。結果は `hooks` がダイアログの上に見せる。
 pub fn show(owner: HWND, font: &Font, hooks: &UpdateHooks) {
     let can_update = update::can_update();
     let version = format!("バージョン: {}", version::display());

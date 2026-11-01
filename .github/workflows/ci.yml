@@ -34,7 +34,7 @@ jobs:
       # 取ってきた crate と target/ を残しておき、依存が変わらなければ libghostty-vt を組み直さない。
       - uses: Swatinem/rust-cache@v2
 
-      # tools/dev.bat が vcvars64 を読み、Zig のバージョンを確かめてから cargo を呼ぶ（手元と同じ手順）。
+      # tools/dev.bat が vcvars64 を読み、Zig のバージョンを確認してから cargo を呼ぶ（手元と同じ手順）。
       - name: Check formatting
         shell: cmd
         run: call tools\dev.bat fmt --all --check
@@ -48,7 +48,7 @@ jobs:
         run: call tools\dev.bat test --locked
 
   # ブリッジ（crates/fantermo-bridge）は workspace の外にあり、上の fmt・clippy は見ない。Cygwin と Linux（musl）
-  # 向けに、手元と同じ tools/bridge.sh で確かめる。プロトコルの crate のテストは上の test で実行する。
+  # 向けに、手元と同じ tools/bridge.sh で確認する。プロトコルの crate のテストは上の test で実行する。
   bridge:
     runs-on: windows-latest
     permissions:
@@ -82,9 +82,9 @@ jobs:
           CYGWIN_ROOT: ${{ steps.toolchain.outputs.cygwin-root }}
         run: ./tools/bridge.sh build all
 
-  # 実際の fantermo を別デスクトップで起動して、制御の口（feature e2e）で確かめる。出力先は tools/dev.bat が決める
-  # target/e2e/。Smoke は別デスクトップと Direct3D がランナーで動くかだけを確かめ、ログをそのまま出す。
-  # TODO: GitHub Actions で 3 つの e2e のジョブ（e2e-conpty、e2e-cygwin、bridge-linux）が通ることを確かめたら
+  # 実際の fantermo を別デスクトップで起動して、制御の口（feature e2e）で確認する。出力先は tools/dev.bat が決める
+  # target/e2e/。Smoke は別デスクトップと Direct3D がランナーで動くかだけを確認し、ログをそのまま出す。
+  # TODO: GitHub Actions で 3 つの e2e のジョブ（e2e-conpty、e2e-cygwin、bridge-linux）が通ることを確認したら
   # continue-on-error を外す。配布のワークフローがこの CI を呼ぶので、付いている間は落ちても配布を止めない。
   e2e-conpty:
     runs-on: windows-latest

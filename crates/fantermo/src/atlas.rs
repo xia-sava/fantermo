@@ -1223,7 +1223,7 @@ mod tests {
                 overhangs.1 |= ink_right > cell_width;
             }
         }
-        // 確かめた文字のインクには、セルの左へも右へもはみ出すものがある。
+        // 確認した文字のインクには、セルの左へも右へもはみ出すものがある。
         assert_eq!(overhangs, (true, true));
     }
 }

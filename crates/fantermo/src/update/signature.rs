@@ -35,7 +35,7 @@ const DER_INTEGER: u8 = 0x02;
 /// DER の長さを 1 バイトで書ける上限。P-256 の署名はこれに収まる。
 const DER_SHORT_LENGTH_LIMIT: u8 = 0x80;
 
-/// 署名を確かめられなかったわけ。利用者には区別して見せず、ログに残す。
+/// 署名を検証できなかったわけ。利用者には区別して見せず、ログに残す。
 #[derive(Debug)]
 pub enum VerifyError {
     /// 公開鍵が P-256 の SubjectPublicKeyInfo として読めない。
@@ -57,7 +57,7 @@ impl std::fmt::Display for VerifyError {
 }
 
 /// `message` の署名 `signature`（DER の署名を base64 にした文字列。前後の空白は無視する）を、公開鍵
-/// `public_key`（SubjectPublicKeyInfo の DER）で確かめる。
+/// `public_key`（SubjectPublicKeyInfo の DER）で検証する。
 pub fn verify(message: &[u8], signature: &str, public_key: &[u8]) -> Result<(), VerifyError> {
     let point = public_point(public_key).ok_or(VerifyError::PublicKey)?;
     let der = decode_base64(signature.trim()).ok_or(VerifyError::Encoding)?;

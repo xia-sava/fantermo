@@ -21,7 +21,7 @@
 //! | 3 | 子プロセスの終了 | 0 なら終了コード、1 ならシグナルの番号（1 バイト）と、その値（`i32`） |
 //! | 4 | エラー | UTF-8 の文 |
 //!
-//! 流れ: 互いに最初の単位として開始の通知を送り、相手のバージョンを [`check_version`] で確かめる。合わなければ
+//! 流れ: 互いに最初の単位として開始の通知を送り、相手のバージョンを [`check_version`] で確認する。合わなければ
 //! ブリッジはエラーの単位を返して終わる。fantermo は開始の通知の次にリサイズを送り、ブリッジはそれを受け取って
 //! から子プロセスを起動する。子プロセスが終わると、ブリッジは子プロセスの終了の単位を送って終わる。
 
@@ -183,7 +183,7 @@ impl fmt::Display for VersionMismatch {
 
 impl std::error::Error for VersionMismatch {}
 
-/// 相手が開始の通知で伝えたバージョンが [`VERSION`] と同じかを確かめる。
+/// 相手が開始の通知で伝えたバージョンが [`VERSION`] と同じかを確認する。
 pub fn check_version(theirs: u32) -> Result<(), VersionMismatch> {
     if theirs == VERSION {
         Ok(())

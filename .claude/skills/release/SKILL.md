@@ -13,7 +13,7 @@ description: fantermo のバージョンを上げて配布する。Cargo のバ�
 各 crate はこれを継ぐ。**人が決める。** タグはこのバージョンの先頭に `v` を付けたもので、食い違えば
 ワークフローが止まる。新しいバージョンかどうかはバージョンの名前（`MAJOR.MINOR.PATCH`）をそのまま比べる。
 
-## 打つ前に確かめる
+## 打つ前の確認
 
 1. **作業ツリーがクリーンで、検証が通っていること。**
 
@@ -69,10 +69,10 @@ gh run list --workflow Release --limit 3
   署名した `latest.json`・`latest.json.sig` を置き換える
 
 `latest.json` の署名は secret `FANTERMO_SIGNING_KEY` の鍵で作り、リポジトリの
-`assets/manifest-public-key.der` で確かめてから公開する。合わなければ `manifest` ジョブで止まる。
+`assets/manifest-public-key.der` で検証してから公開する。合わなければ `manifest` ジョブで止まる。
 `latest.json` の `msi.sha256`・`zip.sha256` が latest に置く配布物と合わなければ `release` ジョブで止まる。
 アプリの「更新を確認」は `latest.json` を読み、`latest/fantermo.msi` をダウンロードして `msi.sha256` で
-確かめてから入れる。
+照合してから入れる。
 
 ## ブリッジ
 
@@ -109,8 +109,8 @@ Cygwin（`cygwin/cygwin-install-action` の `gcc-core`。PATH には足さず、
   上書きできず二つ並び、アプリの中からの更新も届かなくなる
 - 部品の GUID（`Component` の `Guid`）も変えない。変えるなら、部品を足すときに新しい GUID を作る
 - WiX のバージョンを上げるときは `.config/dotnet-tools.json` の `version` を変え、EULA の ID（`wix7`）が
-  変わっていないかを確かめる。UI の拡張も同じバージョンになるので、そのバージョンが NuGet にあることと、
-  `FantermoWelcomeDlg` の元にした拡張の `WelcomeEulaDlg` や、使っている文の Id が変わっていないかも確かめる
+  変わっていないかを確認する。UI の拡張も同じバージョンになるので、そのバージョンが NuGet にあることと、
+  `FantermoWelcomeDlg` の元にした拡張の `WelcomeEulaDlg` や、使っている文の Id が変わっていないかも確認する
 - アプリの中からの更新は `msiexec /qn` なので画面を出さず、完了の画面からの起動もしない（起動し直すのは
   更新のスクリプト）
 

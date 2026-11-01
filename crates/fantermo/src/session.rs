@@ -123,7 +123,7 @@ pub struct Session {
     pub tab_icon: TabIcon,
     /// 開いたときのプロファイルの名前。プロファイルなしで開いたなら `None`。
     pub profile_name: Option<String>,
-    /// このタブのアプリには、クリップボードの読み取りを確かめずに許可する。利用者がダイアログで決める。
+    /// このタブのアプリには、クリップボードの読み取りを確認せずに許可する。利用者がダイアログで決める。
     pub clipboard_read_allowed: bool,
 }
 

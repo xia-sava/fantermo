@@ -1482,7 +1482,7 @@ mod tests {
             },
             scroll_bar: ScrollBarConfig { width: 20 },
             window: WindowConfig { padding: 0 },
-            // 色は既定に戻すとひな形と違う行になるので、色の書き戻しは別に確かめる。
+            // 色は既定に戻すとひな形と違う行になるので、色の書き戻しは別に確認する。
             colors: ColorsConfig::default(),
             background: BackgroundConfig {
                 images: vec![

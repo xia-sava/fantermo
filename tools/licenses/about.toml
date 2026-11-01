@@ -16,7 +16,7 @@ private = { ignore = true }
 
 # 以下は、crate の中のライセンスの文を cargo-about が見つけられず、汎用の文（著作者の欄が空）に
 # なってしまうものに、使う文のファイルを指定する。checksum はそのファイルの SHA-256 で、バージョンを上げて
-# ファイルが変わると生成が失敗するので、中身を確かめてから書き換える。
+# ファイルが変わると生成が失敗するので、中身を確認してから書き換える。
 
 # libghostty-rs の crate は、リポジトリの直下にある LICENSE を使う（crate の中にはない）。
 [libghostty-vt.clarify]

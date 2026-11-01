@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-#  更新の情報 latest.json を作り、署名し、署名を確かめる
+#  更新の情報 latest.json を作り、署名し、署名を検証する
 #  配布物を作るワークフロー（.github/workflows/release.yml）が使う。手元の git-bash でも動く。
 #  jq、sha256sum、openssl、base64 が要る。
 #
@@ -14,13 +14,13 @@
 #         バージョンと、配布物ごとの URL（置き場の URL + 配布物のファイル名）と sha256 を書く:
 #           { "versionName": "0.0.1", "zip": { "url": "...", "sha256": "..." },
 #             "msi": { "url": "...", "sha256": "..." } }
-#         アプリは msi の sha256 で、ダウンロードした MSI を確かめる。
+#         アプリは msi の sha256 で、ダウンロードした MSI を照合する。
 #  sign   <latest.json> <秘密鍵> <公開鍵>
 #         latest.json の生バイトに ECDSA P-256（SHA256withECDSA）で署名し、DER の署名を base64 にした
-#         1 行を <latest.json>.sig に書く。書いたあと公開鍵で確かめる。秘密鍵は PKCS#8 の PEM、
+#         1 行を <latest.json>.sig に書く。書いたあと公開鍵で検証する。秘密鍵は PKCS#8 の PEM、
 #         公開鍵は X.509 SubjectPublicKeyInfo の DER。
 #  verify <latest.json> <署名> <公開鍵>
-#         署名を公開鍵で確かめる。合わなければ 0 以外で終わる。
+#         署名を公開鍵で検証する。合わなければ 0 以外で終わる。
 # ============================================================
 set -euo pipefail
 

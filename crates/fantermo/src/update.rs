@@ -4,7 +4,7 @@
 //! だけ。zip のものと開発中のビルドでは「fantermo について」の「更新を確認」を押せない。
 //!
 //! 「更新を確認」を押すと、GitHub の `latest` のリリースから更新の情報 `latest.json` と署名
-//! `latest.json.sig` を取得し、埋め込んだ公開鍵で署名を確かめてから読み、バージョンを比べる。新しい
+//! `latest.json.sig` を取得し、埋め込んだ公開鍵で署名を検証してから読み、バージョンを比べる。新しい
 //! バージョンを入れるときは、MSI を一時フォルダにダウンロードして SHA-256 を照合し、fantermo の外で動く
 //! スクリプト（`apply`）に引き渡してから fantermo を閉じる。取得とダウンロードはウィンドウを止めない
 //! よう別のスレッドで行い、終わったらウィンドウにメッセージで知らせる。
@@ -48,7 +48,7 @@ const MANIFEST_MAX_BYTES: usize = 64 * 1024;
 const SIGNATURE_MAX_BYTES: usize = 1024;
 const MSI_MAX_BYTES: usize = 200 * 1024 * 1024;
 
-/// 署名を確かめる公開鍵（X.509 の SubjectPublicKeyInfo の DER）。署名する秘密鍵と対になる。
+/// 署名を検証する公開鍵（X.509 の SubjectPublicKeyInfo の DER）。署名する秘密鍵と対になる。
 const PUBLIC_KEY: &[u8] = include_bytes!("../../../assets/manifest-public-key.der");
 
 /// ダウンロードした MSI を置く一時フォルダの名前の前半。後ろにプロセスの ID と時刻を付ける。
@@ -139,7 +139,7 @@ pub fn start(work: Work, events: Sender<Event>, notify: impl Fn() + Send + 'stat
 pub enum CheckError {
     /// 更新の情報を取得できなかった。
     Fetch(HttpError),
-    /// 署名を取得できなかったか、確かめられなかった。
+    /// 署名を取得できなかったか、検証できなかった。
     Signature(String),
     /// 更新の情報を読めなかった。
     Manifest(ManifestError),
@@ -179,7 +179,7 @@ impl fmt::Display for CheckError {
     }
 }
 
-/// 更新の情報と署名を取得し、署名を確かめてから、いまのバージョンと比べる。時間がかかるので、ウィンドウの
+/// 更新の情報と署名を取得し、署名を検証してから、いまのバージョンと比べる。時間がかかるので、ウィンドウの
 /// スレッドからは呼ばない。
 fn check() -> Result<Comparison, CheckError> {
     let current = current_version().ok_or(CheckError::CurrentVersion)?;
@@ -200,8 +200,8 @@ fn check() -> Result<Comparison, CheckError> {
     Ok(comparison)
 }
 
-/// 署名 `signature` を公開鍵 `public_key` で確かめてから、更新の情報 `manifest` を読み、いまの
-/// バージョン `current` と比べる。署名を確かめられなければ、更新の情報は読まない。
+/// 署名 `signature` を公開鍵 `public_key` で検証してから、更新の情報 `manifest` を読み、いまの
+/// バージョン `current` と比べる。署名を検証できなければ、更新の情報は読まない。
 fn compare_signed(
     manifest: &[u8],
     signature: &[u8],

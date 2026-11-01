@@ -3,7 +3,7 @@
 //! 変えずに渡す。チャンクの切れ目はどこにあってもよい。
 //!
 //! OSC 52 の読み取りの依頼を libghostty-vt に渡さないのは、そのコールバックの中で答えなければ空の答えを
-//! 書き込むので、ダイアログで確かめてから答えることも、拒否して何も返さないこともできないため。
+//! 書き込むので、ダイアログで確認してから答えることも、拒否して何も返さないこともできないため。
 
 use crate::{
     clipboard::{ReadRequest, Terminator},
@@ -548,7 +548,7 @@ mod tests {
         scan_chunks(&mut OutputScanner::new(), &[data])
     }
 
-    /// 1 バイトずつ読ませても同じ結果になることも確かめる。
+    /// 1 バイトずつ読ませても同じ結果になることも確認する。
     fn scan_checked(data: &[u8]) -> Vec<Owned> {
         let chunks: Vec<&[u8]> = data.chunks(1).collect();
         let by_byte = scan_chunks(&mut OutputScanner::new(), &chunks);

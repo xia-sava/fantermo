@@ -74,7 +74,7 @@ fn on_checked(owner: HWND, comparison: Comparison) -> Next {
     }
 }
 
-/// 確かめた結果 `comparison` を、いまのバージョン `current` とあわせて見せる文。新しいバージョンがあれば、
+/// 確認した結果 `comparison` を、いまのバージョン `current` とあわせて見せる文。新しいバージョンがあれば、
 /// 更新するかを「はい」「いいえ」で尋ねる。
 fn checked_prompt(comparison: &Comparison, current: &str) -> Prompt {
     match comparison {
@@ -94,7 +94,7 @@ fn checked_prompt(comparison: &Comparison, current: &str) -> Prompt {
     }
 }
 
-/// 確かめられなかったわけ `error` を見せる文。
+/// 確認できなかったわけ `error` を見せる文。
 fn check_failed_prompt(error: &CheckError) -> Prompt {
     Prompt {
         text: format!("更新を確認できませんでした。\n\n{}", error.message()),
@@ -102,7 +102,7 @@ fn check_failed_prompt(error: &CheckError) -> Prompt {
     }
 }
 
-/// ほかの fantermo が動いていれば知らせ、全部のタブを閉じることを確かめてから引き渡す。取りやめたら
+/// ほかの fantermo が動いていれば知らせ、全部のタブを閉じることを確認してから引き渡す。取りやめたら
 /// ダウンロードした MSI を消す。
 fn on_downloaded(owner: HWND, downloaded: Downloaded) -> Next {
     let others = downloaded.other_instances();

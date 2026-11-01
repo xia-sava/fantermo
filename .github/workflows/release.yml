@@ -240,7 +240,7 @@ jobs:
             latest/latest.json zip=latest/fantermo.zip msi=latest/fantermo.msi
           cat latest/latest.json
 
-      # latest.json の生バイトへ署名し、リポジトリの公開鍵で確かめる。アプリは署名を確かめてからで
+      # latest.json の生バイトへ署名し、リポジトリの公開鍵で検証する。アプリは署名を検証してからで
       # ないと latest.json を解釈しない。鍵は環境変数で受け取り、権限を絞った一時ファイルへ書いて使い、
       # ステップを抜けるときに消す。引数へ載せるとプロセス一覧から読める。
       - name: Sign latest.json
@@ -289,8 +289,8 @@ jobs:
           cp "artifacts/fantermo-${VERSION_NAME}-x64.zip" latest/fantermo.zip
           cp "artifacts/fantermo-${VERSION_NAME}-x64.msi" latest/fantermo.msi
           cp artifacts/latest.json artifacts/latest.json.sig latest/
-          # latest.json の照合値と、latest に置く配布物が同じものであることを確かめる。
-          # アプリは msi の照合値でダウンロードした MSI を確かめる。
+          # latest.json の照合値と、latest に置く配布物が同じものであることを確認する。
+          # アプリは msi の照合値でダウンロードした MSI を照合する。
           for kind in zip msi; do
             expected=$(jq -r ".${kind}.sha256" latest/latest.json)
             actual=$(sha256sum "latest/fantermo.${kind}" | cut -d' ' -f1)

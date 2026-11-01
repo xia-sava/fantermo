@@ -45,7 +45,7 @@ const LIFETIME_SECONDS: &str = "300";
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 /// 条件が成り立つまで待つ上限。並列で起動するとシェルの起動も遅くなるので、長めに取る。
 const WAIT_TIMEOUT: Duration = Duration::from_secs(60);
-/// 条件を確かめる間隔。
+/// 条件を確認する間隔。
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// 制御の口の接続を読み書きする上限。
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(45);

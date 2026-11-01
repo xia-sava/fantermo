@@ -2324,7 +2324,7 @@ mod tests {
         let mut vt = new_vt();
         graphics(&mut vt, "i=31,s=1,v=1,a=q,t=d,f=24", "AAAA");
         assert_eq!(vt.take_replies(), b"\x1b_Gi=31;OK\x1b\\");
-        // 確かめるだけで、保管も画面も変わらない。
+        // 確認するだけで、保管も画面も変わらない。
         assert!(vt.frame().unwrap().images.is_empty());
     }
 
