@@ -84,11 +84,8 @@ jobs:
 
   # 実際の fantermo を別デスクトップで起動して、制御の口（feature e2e）で確認する。出力先は tools/dev.bat が決める
   # target/e2e/。Smoke は別デスクトップと Direct3D がランナーで動くかだけを確認し、ログをそのまま出す。
-  # TODO: GitHub Actions で 3 つの e2e のジョブ（e2e-conpty、e2e-cygwin、bridge-linux）が通ることを確認したら
-  # continue-on-error を外す。配布のワークフローがこの CI を呼ぶので、付いている間は落ちても配布を止めない。
   e2e-conpty:
     runs-on: windows-latest
-    continue-on-error: true
     permissions:
       contents: read
     steps:
@@ -122,7 +119,6 @@ jobs:
   # Cygwin のブリッジの単体のテストと e2e。
   e2e-cygwin:
     runs-on: windows-latest
-    continue-on-error: true
     permissions:
       contents: read
     steps:
@@ -166,7 +162,6 @@ jobs:
   # Linux 向けのブリッジの単体のテスト。パイプで接続して開始の通知・リサイズ・データ・終了をやり取りする。
   bridge-linux:
     runs-on: ubuntu-latest
-    continue-on-error: true
     permissions:
       contents: read
     steps:
