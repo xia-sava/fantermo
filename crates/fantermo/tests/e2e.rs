@@ -147,12 +147,13 @@ fn resizing_the_window_changes_the_grid_and_reaches_the_shell() {
     server.type_line(print_size);
     server.wait_text("[87x23]");
 
-    server.resize(120, 40);
+    // GitHub Actions のランナーの画面は 1024×768 で、それより大きいウィンドウにはならない。
+    server.resize(96, 30);
     let state = server.state();
-    assert_eq!(state["cols"], 120, "{state:#}");
-    assert_eq!(state["rows"], 40, "{state:#}");
+    assert_eq!(state["cols"], 96, "{state:#}");
+    assert_eq!(state["rows"], 30, "{state:#}");
     server.type_line(print_size);
-    server.wait_text("[120x40]");
+    server.wait_text("[96x30]");
 }
 
 #[test]
