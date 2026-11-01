@@ -21,6 +21,7 @@ description: fantermo のバージョンを上げて配布する。Cargo のバ�
    ./tools/dev.sh fmt --check
    ./tools/dev.sh clippy --all-targets
    ./tools/dev.sh test
+   ./tools/bridge.sh build all
    ```
 
 2. **main が push 済みで、CI が通っていること。**
