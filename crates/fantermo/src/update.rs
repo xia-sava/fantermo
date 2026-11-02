@@ -16,8 +16,11 @@ mod http;
 mod manifest;
 pub mod prompt;
 mod signature;
+#[cfg(feature = "e2e")]
+mod stand_in;
 
 use std::{
+    borrow::Cow,
     fmt, io,
     path::{Path, PathBuf},
     sync::mpsc::Sender,
@@ -36,6 +39,7 @@ use crate::{known_folder, logging, version};
 const INSTALL_DIR_NAME: &str = "fantermo";
 
 /// 配布物を置くところ。`latest` のタグのリリースは、バージョンを出すたびに中身を置き換える。
+#[cfg(any(test, not(feature = "e2e")))]
 const RELEASE_HOST: &str = "github.com";
 const RELEASE_PATH: &str = "/xia-sava/fantermo/releases/download/latest/";
 /// 更新の情報、その署名、MSI のファイルの名前。
@@ -56,6 +60,10 @@ const DOWNLOAD_DIR_PREFIX: &str = "fantermo-update";
 
 /// この fantermo を更新できるか。インストーラで入れたリリースのビルドなら真。
 pub fn can_update() -> bool {
+    #[cfg(feature = "e2e")]
+    if stand_in::is_active() {
+        return true;
+    }
     if !version::RELEASE {
         return false;
     }
@@ -94,7 +102,35 @@ fn same_path(a: &Path, b: &Path) -> bool {
 
 /// いまのバージョン。
 pub fn current_version() -> Option<Version> {
+    #[cfg(feature = "e2e")]
+    if let Some(text) = stand_in::current_version() {
+        return Version::parse(&text);
+    }
     Version::parse(version::PACKAGE)
+}
+
+/// 配布物を置くところから `name` を取得する。
+#[cfg(not(feature = "e2e"))]
+fn fetch(name: &str, max_bytes: usize) -> Result<Vec<u8>, HttpError> {
+    http::get(RELEASE_HOST, &release_path(name), max_bytes)
+}
+
+/// テストの HTTP から `name` を取得する。
+#[cfg(feature = "e2e")]
+fn fetch(name: &str, max_bytes: usize) -> Result<Vec<u8>, HttpError> {
+    stand_in::get(&release_path(name), max_bytes)
+}
+
+/// 署名を検証する公開鍵。
+#[cfg(not(feature = "e2e"))]
+fn public_key() -> Cow<'static, [u8]> {
+    Cow::Borrowed(PUBLIC_KEY)
+}
+
+/// テストが指定した公開鍵。指定がなければ埋め込みの公開鍵。
+#[cfg(feature = "e2e")]
+fn public_key() -> Cow<'static, [u8]> {
+    stand_in::public_key().map_or(Cow::Borrowed(PUBLIC_KEY), Cow::Owned)
 }
 
 /// 別のスレッドでする仕事。
@@ -183,19 +219,10 @@ impl fmt::Display for CheckError {
 /// スレッドからは呼ばない。
 fn check() -> Result<Comparison, CheckError> {
     let current = current_version().ok_or(CheckError::CurrentVersion)?;
-    let manifest = http::get(
-        RELEASE_HOST,
-        &release_path(MANIFEST_NAME),
-        MANIFEST_MAX_BYTES,
-    )
-    .map_err(CheckError::Fetch)?;
-    let signature = http::get(
-        RELEASE_HOST,
-        &release_path(SIGNATURE_NAME),
-        SIGNATURE_MAX_BYTES,
-    )
-    .map_err(|e| CheckError::Signature(format!("failed to fetch {SIGNATURE_NAME}: {e}")))?;
-    let comparison = compare_signed(&manifest, &signature, PUBLIC_KEY, current)?;
+    let manifest = fetch(MANIFEST_NAME, MANIFEST_MAX_BYTES).map_err(CheckError::Fetch)?;
+    let signature = fetch(SIGNATURE_NAME, SIGNATURE_MAX_BYTES)
+        .map_err(|e| CheckError::Signature(format!("failed to fetch {SIGNATURE_NAME}: {e}")))?;
+    let comparison = compare_signed(&manifest, &signature, &public_key(), current)?;
     tracing::info!("checked for an update: {comparison:?}");
     Ok(comparison)
 }
@@ -283,8 +310,7 @@ impl Drop for Downloaded {
 /// `release` の MSI をダウンロードして SHA-256 を照合し、取得のたびに作る一時フォルダに置く。
 /// 時間がかかるので、ウィンドウのスレッドからは呼ばない。
 fn download(release: &Release) -> Result<Downloaded, DownloadError> {
-    let bytes = http::get(RELEASE_HOST, &release_path(MSI_NAME), MSI_MAX_BYTES)
-        .map_err(DownloadError::Fetch)?;
+    let bytes = fetch(MSI_NAME, MSI_MAX_BYTES).map_err(DownloadError::Fetch)?;
     let digest = signature::sha256(&bytes).map_err(|e| DownloadError::Save(io::Error::other(e)))?;
     if digest != release.msi_sha256 {
         tracing::warn!(
@@ -503,5 +529,31 @@ mod tests {
             handed_off: false,
         });
         assert!(!dir.exists());
+    }
+
+    /// 配布物のビルドでは、e2e テストの環境変数を付けても何も変わらない。
+    #[cfg(not(feature = "e2e"))]
+    #[test]
+    fn the_e2e_variables_change_nothing_without_the_feature() {
+        const VARIABLES: [(&str, &str); 4] = [
+            ("FANTERMO_E2E_UPDATE_PORT", "1"),
+            ("FANTERMO_E2E_UPDATE_PUBLIC_KEY", "00"),
+            ("FANTERMO_E2E_UPDATE_CURRENT_VERSION", "9.9.9"),
+            ("FANTERMO_E2E_UPDATE_HANDOFF_RECORD", "record.txt"),
+        ];
+        for (name, value) in VARIABLES {
+            // SAFETY: Windows の環境変数は OS が直列にする。ほかのテストはこの名前を読まない。
+            unsafe { std::env::set_var(name, value) };
+        }
+        let key = public_key();
+        let version = current_version();
+        let can = can_update();
+        for (name, _) in VARIABLES {
+            // SAFETY: 同上。
+            unsafe { std::env::remove_var(name) };
+        }
+        assert_eq!(key.as_ref(), PUBLIC_KEY);
+        assert_eq!(version, Version::parse(version::PACKAGE));
+        assert!(!can, "a test build is not an installed build");
     }
 }

@@ -1,10 +1,18 @@
 //! HTTPS で取得する（WinHTTP の同期の呼び出し）。ウィンドウのスレッドからは呼ばない。
+//!
+//! feature `e2e` のときは HTTPS の取得をコンパイルせず、`127.0.0.1` への HTTP の取得だけを持つ。
 
 use std::{ffi::c_void, fmt};
 
+#[cfg(feature = "e2e")]
+use windows::Win32::Networking::WinHttp::WINHTTP_ACCESS_TYPE_NO_PROXY;
+#[cfg(not(feature = "e2e"))]
+use windows::Win32::Networking::WinHttp::{
+    WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE,
+};
 use windows::{
     Win32::Networking::WinHttp::{
-        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE, WINHTTP_QUERY_FLAG_NUMBER,
+        WINHTTP_ACCESS_TYPE, WINHTTP_OPEN_REQUEST_FLAGS, WINHTTP_QUERY_FLAG_NUMBER,
         WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect, WinHttpOpen,
         WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
         WinHttpSendRequest, WinHttpSetTimeouts,
@@ -15,7 +23,11 @@ use windows::{
 use crate::version;
 
 /// HTTPS のポート。
+#[cfg(not(feature = "e2e"))]
 const HTTPS_PORT: u16 = 443;
+/// e2e テストの HTTP を受けるアドレス。
+#[cfg(feature = "e2e")]
+const LOOPBACK_HOST: &str = "127.0.0.1";
 /// 成功の応答のステータスコード。リダイレクトは WinHTTP が追う。
 const HTTP_OK: u32 = 200;
 /// 名前の解決・接続・送信・受信のそれぞれを待つ上限（ミリ秒）。受信は 1 回の読み取りごと。
@@ -47,18 +59,44 @@ impl fmt::Display for HttpError {
     }
 }
 
+/// 接続先と接続のしかた。
+struct Endpoint<'a> {
+    host: &'a str,
+    port: u16,
+    access: WINHTTP_ACCESS_TYPE,
+    flags: WINHTTP_OPEN_REQUEST_FLAGS,
+}
+
 /// `https://<host><path>` を GET し、本体を返す。本体が `max_bytes` を超えたら読むのをやめて失敗する。
+/// プロキシは Windows の設定に従う。
+#[cfg(not(feature = "e2e"))]
 pub fn get(host: &str, path: &str, max_bytes: usize) -> Result<Vec<u8>, HttpError> {
+    let endpoint = Endpoint {
+        host,
+        port: HTTPS_PORT,
+        access: WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+        flags: WINHTTP_FLAG_SECURE,
+    };
+    get_from(&endpoint, path, max_bytes)
+}
+
+/// `http://127.0.0.1:<port><path>` を GET し、本体を返す。本体が `max_bytes` を超えたら読むのをやめて失敗する。
+#[cfg(feature = "e2e")]
+pub fn get_loopback(port: u16, path: &str, max_bytes: usize) -> Result<Vec<u8>, HttpError> {
+    let endpoint = Endpoint {
+        host: LOOPBACK_HOST,
+        port,
+        access: WINHTTP_ACCESS_TYPE_NO_PROXY,
+        flags: WINHTTP_OPEN_REQUEST_FLAGS(0),
+    };
+    get_from(&endpoint, path, max_bytes)
+}
+
+fn get_from(endpoint: &Endpoint, path: &str, max_bytes: usize) -> Result<Vec<u8>, HttpError> {
     let agent = HSTRING::from(format!("fantermo/{}", version::display()));
-    // SAFETY: 文字列はこの呼び出しの間は生きている。プロキシは Windows の設定に従う。
+    // SAFETY: 文字列はこの呼び出しの間は生きている。
     let session = Handle::new(unsafe {
-        WinHttpOpen(
-            &agent,
-            WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-            PCWSTR::null(),
-            PCWSTR::null(),
-            0,
-        )
+        WinHttpOpen(&agent, endpoint.access, PCWSTR::null(), PCWSTR::null(), 0)
     })?;
     // SAFETY: session は開いたハンドル。
     unsafe {
@@ -72,8 +110,9 @@ pub fn get(host: &str, path: &str, max_bytes: usize) -> Result<Vec<u8>, HttpErro
     }
     .map_err(HttpError::Request)?;
     // SAFETY: session は開いたハンドルで、文字列はこの呼び出しの間は生きている。
-    let connection =
-        Handle::new(unsafe { WinHttpConnect(session.0, &HSTRING::from(host), HTTPS_PORT, 0) })?;
+    let connection = Handle::new(unsafe {
+        WinHttpConnect(session.0, &HSTRING::from(endpoint.host), endpoint.port, 0)
+    })?;
     // SAFETY: connection は開いたハンドルで、文字列はこの呼び出しの間は生きている。受け付ける種類は
     // 指定しない。
     let request = Handle::new(unsafe {
@@ -84,7 +123,7 @@ pub fn get(host: &str, path: &str, max_bytes: usize) -> Result<Vec<u8>, HttpErro
             PCWSTR::null(),
             PCWSTR::null(),
             std::ptr::null(),
-            WINHTTP_FLAG_SECURE,
+            endpoint.flags,
         )
     })?;
     // SAFETY: request は開いたハンドル。足すヘッダーも本体もない。

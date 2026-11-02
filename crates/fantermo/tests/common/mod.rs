@@ -11,9 +11,12 @@
 #![allow(dead_code)]
 
 pub mod processes;
+pub mod release_host;
+pub mod signing;
 
 use std::{
     collections::HashSet,
+    ffi::OsString,
     fs::File,
     io::{Cursor, Read, Write},
     net::{Ipv4Addr, TcpStream},
@@ -104,7 +107,7 @@ impl Server {
         config: &str,
         command: &[&str],
     ) -> Self {
-        Self::launch(config, command, &[], true, |_| {})
+        Self::launch(config, command, &[], true, |_| Vec::new())
     }
 
     /// [`Server::start`] と同じだが、起動する前に `prepare` を一時フォルダで呼ぶ。`state.toml` の初期値や、設定から
@@ -114,11 +117,23 @@ impl Server {
         command: &[&str],
         prepare: impl FnOnce(&Path),
     ) -> Self {
-        Self::launch(config_toml, command, &[], false, prepare)
+        Self::launch(config_toml, command, &[], false, |dir| {
+            prepare(dir);
+            Vec::new()
+        })
+    }
+
+    /// [`Server::start`] と同じだが、起動する前に `environment` を一時フォルダで呼び、返した環境変数を付けて起動する。
+    pub fn start_with_environment(
+        config_toml: &str,
+        command: &[&str],
+        environment: impl FnOnce(&Path) -> Vec<(&'static str, OsString)>,
+    ) -> Self {
+        Self::launch(config_toml, command, &[], false, environment)
     }
 
     fn start_with(config_toml: &str, command: &[&str], run_hidden_args: &[&str]) -> Self {
-        Self::launch(config_toml, command, run_hidden_args, false, |_| {})
+        Self::launch(config_toml, command, run_hidden_args, false, |_| Vec::new())
     }
 
     fn launch(
@@ -126,7 +141,7 @@ impl Server {
         command: &[&str],
         run_hidden_args: &[&str],
         os_clipboard: bool,
-        prepare: impl FnOnce(&Path),
+        prepare: impl FnOnce(&Path) -> Vec<(&'static str, OsString)>,
     ) -> Self {
         let exe = fantermo_exe();
         let run_hidden = sibling_of_fantermo("run-hidden.exe");
@@ -144,7 +159,7 @@ impl Server {
         std::fs::create_dir_all(&dir).expect("failed to create the temporary folder");
         let config = dir.join("config.toml");
         std::fs::write(&config, config_toml).expect("failed to write the settings");
-        prepare(&dir);
+        let environment = prepare(&dir);
         let log = File::create(log_path(&dir)).expect("failed to create the log");
         let log_for_stderr = log.try_clone().expect("failed to duplicate the log");
         let mut launcher = Command::new(&run_hidden);
@@ -152,6 +167,7 @@ impl Server {
             launcher.env(CLIPBOARD_FILE_ENV, dir.join("clipboard.txt"));
         }
         let child = launcher
+            .envs(environment)
             .args(["--seconds", LIFETIME_SECONDS])
             .args(run_hidden_args)
             .arg("--")

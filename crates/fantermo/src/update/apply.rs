@@ -7,9 +7,7 @@
 
 use std::{
     io,
-    os::windows::process::CommandExt,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
 };
 
 use windows::{
@@ -21,8 +19,8 @@ use windows::{
                 TH32CS_SNAPPROCESS,
             },
             Threading::{
-                CREATE_NO_WINDOW, OpenProcess, PROCESS_NAME_WIN32,
-                PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+                OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+                QueryFullProcessImageNameW,
             },
         },
     },
@@ -38,8 +36,7 @@ pub const MSIEXEC_LOG_NAME: &str = "update-msiexec.log";
 /// スクリプトが、待つプロセスの終了を待つ上限（秒）。過ぎたら待たずに入れる。
 pub const WAIT_SECONDS: u32 = 300;
 
-/// `%SystemRoot%` からの PowerShell と msiexec の場所。PATH から探さない。
-const POWERSHELL_UNDER_SYSTEM_ROOT: &str = r"System32\WindowsPowerShell\v1.0\powershell.exe";
+/// `%SystemRoot%` からの msiexec の場所。PATH から探さない。
 const MSIEXEC_UNDER_SYSTEM_ROOT: &str = r"System32\msiexec.exe";
 
 /// 実行ファイルの名前を読む領域の長さ（UTF-16 の数）。
@@ -144,34 +141,55 @@ pub fn write_script(dir: &Path, script: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// スクリプト `path` を、ウィンドウを出さない PowerShell で起動する。終わるのは待たない。
-pub fn launch(path: &Path) -> io::Result<()> {
-    let powershell = system_root()?.join(POWERSHELL_UNDER_SYSTEM_ROOT);
-    Command::new(powershell)
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-WindowStyle",
-            "Hidden",
-            "-File",
-        ])
-        .arg(path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW.0)
-        .spawn()
-        .map(drop)
-}
+#[cfg(not(feature = "e2e"))]
+pub use self::launcher::launch;
+#[cfg(feature = "e2e")]
+pub use super::stand_in::launch;
 
-/// `%SystemRoot%`。
-fn system_root() -> io::Result<PathBuf> {
-    std::env::var_os("SystemRoot")
-        .map(PathBuf::from)
-        .filter(|root| root.is_absolute())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "SystemRoot is not set"))
+/// スクリプトの起動。feature `e2e` のときはコンパイルしない。
+#[cfg(not(feature = "e2e"))]
+mod launcher {
+    use std::{
+        io,
+        os::windows::process::CommandExt,
+        path::{Path, PathBuf},
+        process::{Command, Stdio},
+    };
+
+    use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+
+    /// `%SystemRoot%` からの PowerShell の場所。PATH から探さない。
+    const POWERSHELL_UNDER_SYSTEM_ROOT: &str = r"System32\WindowsPowerShell\v1.0\powershell.exe";
+
+    /// スクリプト `path` を、ウィンドウを出さない PowerShell で起動する。終わるのは待たない。
+    pub fn launch(path: &Path) -> io::Result<()> {
+        let powershell = system_root()?.join(POWERSHELL_UNDER_SYSTEM_ROOT);
+        Command::new(powershell)
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-File",
+            ])
+            .arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW.0)
+            .spawn()
+            .map(drop)
+    }
+
+    /// `%SystemRoot%`。
+    fn system_root() -> io::Result<PathBuf> {
+        std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .filter(|root| root.is_absolute())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "SystemRoot is not set"))
+    }
 }
 
 /// 実行ファイルが `exe` と同じ、ほかのプロセスの ID。自分（`own`）は除く。

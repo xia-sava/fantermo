@@ -98,6 +98,12 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
   - マウスの報告: アプリ側は `start_report_reader`（`stty -icanon -echo -isig -icrnl` と `cat -v`）で読み、`reports_of` が操作ごとの受け取った分を返す。モードごとに `start_report_reader_in_new_tab`。ConPTY では PowerShell で `SetConsoleMode` に `ENABLE_VIRTUAL_TERMINAL_INPUT` を渡して読む（`mouse_reports_reach_an_application_through_conpty`）。
   - 別デスクトップでは本物のカーソルがウィンドウの上にないので、`TrackMouseEvent` の `WM_MOUSELEAVE` がすぐ届く。マウスを載せている間の絵は見られない。リンクの Ctrl+クリックは既定のブラウザを開くので通さない。
 - メッセージを足す: `WindowMessage` に足し、`send_window_message` で `lParam` を決める。`SendMessageW` はこの場でウィンドウプロシージャを動かすので、借用の外（`window/e2e.rs` の `run`）から送る。借用の中だと状態を書く処理などが黙って飛ばされる。
+- 更新の確認: `ReleaseSource`（`common/release_host.rs` の `ReleaseHost` と `common/signing.rs` の `SigningKey`）がテストの配布元で、`start_fantermo(いまのバージョン)` で起動する。`ReleaseHost` は `127.0.0.1` の HTTP で、`publish` で `latest.json`・署名・配布物のダミーを置き、`host.set` で答え（`Reply`。ステータス、切れた本体、大きな本体、答えない、`Gate` が開くまで止める）を変える。一つの fantermo で答えを変えて順に確認する。署名は `tools/manifest.sh` と同じ形（SHA256withECDSA の DER を base64 にした 1 行）で、鍵はテストの実行中に CNG で作り、ファイルに書かない。リポジトリの署名の鍵は使わない。
+  - feature `e2e` のときだけ効く環境変数（`crates/fantermo/src/update/stand_in.rs`）: `FANTERMO_E2E_UPDATE_PORT`（`127.0.0.1` の取得先のポート。あれば「更新を確認」を押せる）、`FANTERMO_E2E_UPDATE_PUBLIC_KEY`（公開鍵の DER を 16 進で。なければ埋め込みの公開鍵）、`FANTERMO_E2E_UPDATE_CURRENT_VERSION`（いまのバージョン）、`FANTERMO_E2E_UPDATE_HANDOFF_RECORD`（スクリプトのパスを書くファイル）。feature `e2e` のビルドは HTTPS の取得とスクリプトの起動をコンパイルしないので、GitHub へ接続せず、PowerShell も `msiexec` も起動しない。「OK」を押しても、書いたスクリプトのパスを記録して閉じるだけ。中身は `handed_off_script` で読む。feature なしのビルドは逆に `stand_in` をコンパイルしない。
+  - 配布物は fantermo の `TMP`（一時フォルダの `tmp`）に置かれるので、`download_folders` で見える。
+  - テストは並列に動き、実行ファイルが同じなので、ダウンロードのあとに「ほかに fantermo が…」が出ることがある。`wait_confirm_apply` が続けて、最後の確認まで進む。数を固定しない。
+  - 「更新を確認」を押して結果を閉じたあと、押せるようになるのは閉じたあとなので、`dismiss_result`・`decline_offer` で待ってから次を押す。
+  - 署名や読み取りの文は `CheckError::message` の文で見る。読めない・ハッシュが合わない場合を確認するには、読めない更新の情報にもテストの鍵で署名する（`publish_manifest`）。署名しないと署名のエラーで止まる。
 - ブリッジの単体のテストで中身を比べるときは、子プロセスに `/tmp` のファイルへ書かせて読む（テストと子プロセスは同じ環境で動く）。
 - 読み取りの依頼のように答えがないことがあるものは、時間で待たず、依頼と同じ出力の後ろの印を待ってから、区切りの入力を送る（`start_clipboard_read`）。
 
