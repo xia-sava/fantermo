@@ -1364,10 +1364,11 @@ fn assert_layout_fits_the_client(state: &Value) {
         "{state:#}"
     );
     assert_eq!(number(&state["scroll_bar"]["height"]), height, "{state:#}");
+    // 背景画像の範囲はタブバーの下の全体で、スクロールバーの列も含む。
     assert_eq!(number(&state["background"]["x"]), 0, "{state:#}");
     assert_eq!(
         number(&state["background"]["width"]),
-        client_width - bar_width,
+        client_width,
         "{state:#}"
     );
     assert_eq!(
@@ -1534,12 +1535,14 @@ fn color_is_close(actual: [u8; 3], expected: [u8; 3]) -> bool {
 
 /// 不透明度 `image_opacity` の画像の色 `image` が、[`TERMINAL_BACKGROUND`] の上に見える色。
 fn over_terminal_background(image: [u8; 3], image_opacity: f64) -> [u8; 3] {
+    blend(image, TERMINAL_BACKGROUND, image_opacity)
+}
+
+/// `top` が不透明度 `opacity` で `bottom` の上に重なって見える色。
+fn blend(top: [u8; 3], bottom: [u8; 3], opacity: f64) -> [u8; 3] {
     let mut mixed = [0; 3];
-    for ((out, &foreground), &background) in mixed.iter_mut().zip(&image).zip(&TERMINAL_BACKGROUND)
-    {
-        let value =
-            f64::from(foreground) * image_opacity + f64::from(background) * (1.0 - image_opacity);
-        *out = value.round() as u8;
+    for ((out, &over), &under) in mixed.iter_mut().zip(&top).zip(&bottom) {
+        *out = (f64::from(over) * opacity + f64::from(under) * (1.0 - opacity)).round() as u8;
     }
     mixed
 }
@@ -1613,12 +1616,22 @@ fn a_stretched_background_image_shows_all_of_it_and_only_in_its_area() {
             (area.at(0.75, 0.97), BAND_BOTTOM),
         ],
     );
-    // タブバーとスクロールバーには敷かない。
+    // スクロールバーの列にも敷き、タブバーには敷かない。
+    wait_pixels(&server, &[(scroll_bar_edge(&server.state()), MIDDLE_RIGHT)]);
     let picture = server.picture();
     let (tab_x, tab_y) = area.at(0.75, 0.0);
     assert_ne!(picture.rgb(tab_x, tab_y - 1), BAND_TOP);
-    let (bar_x, bar_y) = area.at(1.0, 0.5);
-    assert!(!color_is_close(picture.rgb(bar_x, bar_y), MIDDLE_RIGHT));
+}
+
+/// スクロールバーの列の右端の、縦の真ん中の画素の位置。つまみは列の真ん中に描くので、右端には掛からない。
+fn scroll_bar_edge(state: &Value) -> (u32, u32) {
+    let bar = &state["scroll_bar"];
+    let right = number(&bar["x"]) + number(&bar["width"]) - 1;
+    assert_eq!(right + 1, number(&state["client_width"]), "{state:#}");
+    (
+        u32::try_from(right).expect("the position fits"),
+        u32::try_from(scroll_bar_middle(state)).expect("the position fits"),
+    )
 }
 
 /// 範囲を覆うように広げ、はみ出した上下を切るので、上下の帯は見えない。
@@ -1734,6 +1747,35 @@ fn tiled_edge_pixels(area: BackdropArea, image_opacity: f64) -> Vec<((u32, u32),
     pixels
 }
 
+/// 範囲の左上から敷き詰めた [`BANDS_IMAGE`] の、スクロールバーの列の最初と最後の列の画素と、不透明度
+/// `image_opacity` で見える色。敷き詰めはスクロールバーの列まで続く。つまみがないときに見る（つまみは列の真ん中に
+/// 描く）。
+fn tiled_scroll_bar_pixels(state: &Value, image_opacity: f64) -> Vec<((u32, u32), [u8; 3])> {
+    let area = BackdropArea::of(state);
+    assert!(state["scroll_bar"]["thumb"].is_null(), "{state:#}");
+    let bar_x = u32::try_from(number(&state["scroll_bar"]["x"])).expect("the position fits");
+    let right = area.x + area.width;
+    assert_eq!(
+        u64::from(right),
+        number(&state["client_width"]),
+        "{state:#}"
+    );
+    assert!(area.x < bar_x && bar_x < right, "{state:#}");
+    let side = BANDS_SIDE;
+    let rows = [side + BAND_HEIGHT / 2, side + side / 2, area.height - 1];
+    let mut pixels = Vec::new();
+    for x in [bar_x, right - 1] {
+        for &y in &rows {
+            let color = bands_color((x - area.x) % side, y % side);
+            pixels.push((
+                (x, area.y + y),
+                over_terminal_background(color, image_opacity),
+            ));
+        }
+    }
+    pixels
+}
+
 /// 長さ `length` の範囲に [`BANDS_IMAGE`] を敷き詰めたときの、丸ごとは入らない最後の 1 枚の最初・真ん中・最後の位置。
 /// 割り切れれば空。
 fn partial_tile(length: u32) -> Vec<u32> {
@@ -1765,19 +1807,23 @@ fn start_uneven_with_background(background: &str) -> (Server, BackdropArea) {
     (server, area)
 }
 
-/// 敷き詰めは範囲の右端と下端まで描き、丸ごとは入らない最後の 1 枚もはみ出す分を切って描く。DPI を変えたあとの
-/// 新しい範囲でも同じ。
+/// 敷き詰めは範囲の右端と下端まで描き、丸ごとは入らない最後の 1 枚もはみ出す分を切って描く。右端はスクロールバーの
+/// 列の右端。DPI を変えたあとの新しい範囲でも同じ。
 #[test]
 fn a_tiled_background_image_reaches_the_right_and_bottom_edges() {
     let (server, area) = start_uneven_with_background(&format!(
         "[background]\nimage_opacity = 1.0\nfit = \"tile\"\n\n[[background.images]]\npath = '{BANDS_IMAGE}'\n"
     ));
-    wait_pixels(&server, &tiled_edge_pixels(area, 1.0));
+    let mut expected = tiled_edge_pixels(area, 1.0);
+    expected.extend(tiled_scroll_bar_pixels(&server.state(), 1.0));
+    wait_pixels(&server, &expected);
 
     for dpi in [DPI_150_PERCENT, DPI_200_PERCENT, DPI_100_PERCENT] {
         let state = change_dpi(&server, dpi);
         assert_eq!(state["background"]["image"], BANDS_IMAGE, "{state:#}");
-        wait_pixels(&server, &tiled_edge_pixels(BackdropArea::of(&state), 1.0));
+        let mut expected = tiled_edge_pixels(BackdropArea::of(&state), 1.0);
+        expected.extend(tiled_scroll_bar_pixels(&state, 1.0));
+        wait_pixels(&server, &expected);
     }
 }
 
@@ -1787,7 +1833,9 @@ fn a_tiled_image_entry_reaches_the_right_and_bottom_edges_with_its_opacity() {
     let (server, area) = start_uneven_with_background(&format!(
         "[background]\nimage_opacity = 1.0\nfit = \"stretch\"\n\n[[background.images]]\npath = '{BANDS_IMAGE}'\nfit = \"tile\"\nimage_opacity = 0.5\n"
     ));
-    wait_pixels(&server, &tiled_edge_pixels(area, 0.5));
+    let mut expected = tiled_edge_pixels(area, 0.5);
+    expected.extend(tiled_scroll_bar_pixels(&server.state(), 0.5));
+    wait_pixels(&server, &expected);
 }
 
 #[test]
@@ -7591,7 +7639,7 @@ fn check_tab_bar_at_the_current_dpi(server: &Server) {
     assert_eq!(state["active"], 0, "{state:#}");
 }
 
-/// 背景画像は、DPI を変えたあとの新しい範囲いっぱいに広がり、タブバーとスクロールバーには出ない。
+/// 背景画像は、DPI を変えたあとの新しい範囲（スクロールバーの列も含む）いっぱいに広がり、タブバーには出ない。
 #[test]
 fn a_stretched_background_image_fills_its_new_area_after_a_dpi_change() {
     let server = start_with_background(
@@ -7617,17 +7665,168 @@ fn a_stretched_background_image_fills_its_new_area_after_a_dpi_change() {
                 ((x, area.y + area.height - 1), BAND_BOTTOM),
             ],
         );
+        wait_pixels(&server, &[(scroll_bar_edge(&state), MIDDLE_RIGHT)]);
         let picture = server.picture();
         assert!(
             !color_is_close(picture.rgb(x, area.y - 1), BAND_TOP),
             "at {dpi} DPI"
         );
-        let (bar_x, bar_y) = area.at(1.0, 0.5);
-        assert!(
-            !color_is_close(picture.rgb(bar_x, bar_y), MIDDLE_RIGHT),
-            "at {dpi} DPI"
-        );
     }
+}
+
+/// スクロールバーの色を固定する設定（`[colors]` の後ろに置く）と、その色。
+const SCROLL_BAR_COLORS_SETTING: &str = "[colors.scroll_bar]\ntrack = \"#f0f0f0\"\nthumb = \"#c0c000\"\nhovered_thumb = \"#00c0c0\"\ndragged_thumb = \"#c000c0\"\n\n";
+const SCROLL_BAR_TRACK: [u8; 3] = [240, 240, 240];
+const SCROLL_BAR_THUMB: [u8; 3] = [192, 192, 0];
+const SCROLL_BAR_HOVERED_THUMB: [u8; 3] = [0, 192, 192];
+const SCROLL_BAR_DRAGGED_THUMB: [u8; 3] = [192, 0, 192];
+/// 背景画像があるときのトラックの不透明度（`scroll_bar.rs` の `TRACK_OPACITY_OVER_IMAGE`）。
+const TRACK_OPACITY_OVER_IMAGE: f64 = 0.5;
+/// スクロールバーの下に敷く単色の画像の名前と色。
+const SOLID_IMAGE: &str = "solid.png";
+const SOLID_IMAGE_COLOR: [u8; 3] = [200, 120, 0];
+
+/// 画素の位置にする。
+fn pixel_at((x, y): Point) -> (u32, u32) {
+    (
+        u32::try_from(x).expect("the position fits"),
+        u32::try_from(y).expect("the position fits"),
+    )
+}
+
+/// スクロールバーの中で、つまみから離れた高さ。つまみの上と下のうち、広いほうの真ん中。
+fn away_from_the_thumb(state: &Value) -> u64 {
+    let bar_top = number(&state["scroll_bar"]["y"]);
+    let bar_bottom = bar_top + number(&state["scroll_bar"]["height"]);
+    let (top, bottom) = (thumb_top(state), thumb_top(state) + thumb_length(state));
+    if top - bar_top >= bar_bottom - bottom {
+        bar_top + (top - bar_top) / 2
+    } else {
+        bottom + (bar_bottom - bottom) / 2
+    }
+}
+
+/// スクロールバックのあるスクロールバーの見え方を確認する。`under` は何も塗らないときにスクロールバーの列に見える色、
+/// `track` はつまみを押している間のトラックに見える色。マウスを載せていないつまみ、ドラッグしているつまみ、
+/// つまみの外を押し続けているときのつまみ（マウスを載せているときの色）を見て、離す。
+#[track_caller]
+fn assert_scroll_bar_colors(server: &Server, under: [u8; 3], track: [u8; 3]) {
+    let state = server.state();
+    let away = on_scroll_bar(&state, away_from_the_thumb(&state));
+    // スクロールバーの列の右端。太いつまみも列の真ん中に描くので、右端には掛からない。
+    let right = u32::try_from(number(&state["client_width"]) - 1).expect("the position fits");
+    let edge = |y: u64| (right, u32::try_from(y).expect("the position fits"));
+    let thumb_middle = |state: &Value| thumb_top(state) + thumb_length(state) / 2;
+    wait_pixels(
+        server,
+        &[
+            (pixel_at(on_thumb(&state)), SCROLL_BAR_THUMB),
+            (pixel_at(away), under),
+            (edge(thumb_middle(&state)), under),
+        ],
+    );
+
+    // つまみを押してドラッグを始める（動かさない）。トラックを塗り、つまみは太く不透明に描く。
+    let grabbed = on_thumb(&state);
+    server.mouse(&format!(
+        "{}{}",
+        step("move", grabbed, ""),
+        step("left-down", grabbed, "")
+    ));
+    let dragged = server.state();
+    assert_eq!(dragged["scroll_bar"]["pressed"], true, "{dragged:#}");
+    wait_pixels(
+        server,
+        &[
+            (pixel_at(grabbed), SCROLL_BAR_DRAGGED_THUMB),
+            (pixel_at(away), track),
+            (edge(thumb_middle(&dragged)), track),
+        ],
+    );
+    server.mouse(&step("left-up", grabbed, ""));
+    assert_eq!(server.state()["scroll_bar"]["pressed"], false);
+
+    // つまみの外を押し続けると、つまみがマウスの位置まで来て止まる。押している間はマウスを載せているときの形。
+    server.mouse(&format!(
+        "{}{}",
+        step("move", away, ""),
+        step("left-down", away, "")
+    ));
+    let reached = server.wait_until("the thumb to reach the pointer", |state| {
+        let y = u64::try_from(away.1).expect("fits");
+        !state["scroll_bar"]["thumb"].is_null()
+            && thumb_top(state) <= y
+            && y < thumb_top(state) + thumb_length(state)
+    });
+    assert_eq!(reached["scroll_bar"]["pressed"], true, "{reached:#}");
+    wait_pixels(
+        server,
+        &[
+            (
+                on_scroll_bar_pixel(&reached, thumb_middle(&reached)),
+                SCROLL_BAR_HOVERED_THUMB,
+            ),
+            (edge(thumb_middle(&reached)), track),
+        ],
+    );
+    server.mouse(&step("left-up", away, ""));
+    assert_eq!(server.state()["scroll_bar"]["pressed"], false);
+}
+
+/// スクロールバーの横の真ん中の、高さ `y` の画素の位置。
+fn on_scroll_bar_pixel(state: &Value, y: u64) -> (u32, u32) {
+    pixel_at(on_scroll_bar(state, y))
+}
+
+/// 背景色 `background`（`[colors]` の後ろ）と背景画像の設定で起動し、スクロールバックのない（つまみのない）
+/// スクロールバーの列に `under` が見えることを確認してから、スクロールバックを作って [`assert_scroll_bar_colors`] で
+/// 見る。DPI を変えたあとも同じ。
+fn check_the_scroll_bar_over(background: &str, under: [u8; 3], track: [u8; 3]) {
+    let server =
+        start_with_background(&format!("{SCROLL_BAR_COLORS_SETTING}{background}"), |dir| {
+            std::fs::write(dir.join(SOLID_IMAGE), solid_image(SOLID_IMAGE_COLOR))
+                .expect("failed to write the image");
+        });
+    server.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
+    let state = server.state();
+    assert!(state["scroll_bar"]["thumb"].is_null(), "{state:#}");
+    wait_pixels(
+        &server,
+        &[
+            (
+                on_scroll_bar_pixel(&state, scroll_bar_middle(&state)),
+                under,
+            ),
+            (scroll_bar_edge(&state), under),
+        ],
+    );
+
+    fill_scrollback(&server);
+    assert_scroll_bar_colors(&server, under, track);
+    for dpi in [DPI_150_PERCENT, DPI_200_PERCENT, DPI_100_PERCENT] {
+        change_dpi(&server, dpi);
+        assert_scroll_bar_colors(&server, under, track);
+    }
+}
+
+/// 背景画像はスクロールバーの列にも敷き、トラックは半透明に塗って画像を透かす。つまみは不透明。
+#[test]
+fn the_scroll_bar_track_lets_the_background_image_show_through() {
+    const IMAGE_OPACITY: f64 = 0.5;
+    let under = over_terminal_background(SOLID_IMAGE_COLOR, IMAGE_OPACITY);
+    check_the_scroll_bar_over(
+        &format!(
+            "[background]\nimage_opacity = {IMAGE_OPACITY:?}\nfit = \"stretch\"\n\n[[background.images]]\npath = '{SOLID_IMAGE}'\n"
+        ),
+        under,
+        blend(SCROLL_BAR_TRACK, under, TRACK_OPACITY_OVER_IMAGE),
+    );
+}
+
+/// 背景画像がなければ、スクロールバーの列は端末の背景色で、トラックは設定の色のまま不透明に塗る。
+#[test]
+fn without_a_background_image_the_scroll_bar_track_keeps_its_color() {
+    check_the_scroll_bar_over("", TERMINAL_BACKGROUND, SCROLL_BAR_TRACK);
 }
 
 /// 元の大きさの背景画像は、DPI を変えても画素の数が変わらず、新しい範囲の真ん中に出る。

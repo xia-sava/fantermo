@@ -531,14 +531,14 @@ fn scroll_bar_area_in_client(width: u32, terminal: Area, insets: Insets) -> Area
     }
 }
 
-/// 大きさが `width` × `height` のクライアント領域のうち、背景画像を敷く領域。上端のタブバーと右端の
-/// スクロールバーを除いた残りの全体（端末を描く領域と、その周りの余白）。
+/// 大きさが `width` × `height` のクライアント領域のうち、背景画像を敷く領域。上端のタブバーを除いた
+/// 残りの全体（端末を描く領域、その周りの余白、右端のスクロールバーの列）。
 fn backdrop_area_in_client(width: u32, height: u32, insets: Insets) -> Area {
     let top = insets.tab_bar_height.min(height);
     Area {
         x: 0,
         y: top,
-        width: width.saturating_sub(insets.scroll_bar_width),
+        width,
         height: height - top,
     }
 }
@@ -2653,7 +2653,8 @@ impl App {
         let scroll_bar_colors =
             scroll_bar::Palette::from_terminal(frame.background, frame.foreground)
                 .with_colors(&self.colors.scroll_bar);
-        paints.extend(self.scroll_bar_paints(&scroll_bar_colors));
+        let over_image = self.session().background_image.is_some();
+        paints.extend(self.scroll_bar_paints(&scroll_bar_colors, over_image));
         let backdrop = self.sessions[self.active]
             .background_image
             .as_ref()
@@ -2707,8 +2708,8 @@ impl App {
         )
     }
 
-    /// スクロールバーに描くもの。色は `colors`。
-    fn scroll_bar_paints(&self, colors: &scroll_bar::Palette) -> Vec<Paint> {
+    /// スクロールバーに描くもの。色は `colors`。`over_image` なら、背景画像の上に描く。
+    fn scroll_bar_paints(&self, colors: &scroll_bar::Palette, over_image: bool) -> Vec<Paint> {
         let Some(position) = self.scroll_position else {
             return Vec::new();
         };
@@ -2725,6 +2726,7 @@ impl App {
                 dragging,
             },
             colors,
+            over_image,
         )
     }
 
@@ -3993,13 +3995,13 @@ mod tests {
             assert_eq!(client_to_area(area, left - 1, top - 1), (-1, -1));
             assert_eq!(client_to_area(area, left + 800, top + 480), (800, 480));
             assert_eq!(area_to_client(area, 16, 32), (left + 16, top + 32));
-            // 背景画像は端末と余白に敷く。
+            // 背景画像は端末と余白とスクロールバーの列に敷く。
             assert_eq!(
                 backdrop_area_in_client(client.cx as u32, client.cy as u32, insets),
                 Area {
                     x: 0,
                     y: bar,
-                    width: 800 + 2 * padding,
+                    width: 800 + 2 * padding + scroll_bar,
                     height: 480 + 2 * padding
                 }
             );

@@ -2,7 +2,8 @@
 //! 場所を常に取っておく（スクロールバックの有無で端末の桁数が変わらないように）。
 //!
 //! つまみの位置と長さで、スクロールバックを含む全体の中の、表示している範囲を示す。つまみは両端の
-//! 丸い細い形で、マウスを載せている間とドラッグしている間は太く描き、トラックも薄く塗る。スクロールバックが
+//! 丸い細い形で、マウスを載せている間とドラッグしている間は太く描き、トラックも薄く塗る。背景画像があれば
+//! スクロールバーの列にも敷くので、トラックは半透明に塗って画像を透かす。スクロールバックが
 //! ない（代替画面も）ときはつまみを描かない。寸法は DPI に比例させ、色は [`Palette`] にまとめる。
 //! つまみの位置と長さの計算と、描くもの（[`Paint`]）の組み立ては、ウィンドウや描画に依存しない関数に
 //! してある。
@@ -37,6 +38,9 @@ const DRAGGED_THUMB_TINT: f32 = 0.65;
 
 /// マウスを載せている間に塗るトラックの色を、端末の背景色から文字の色へ寄せる割合。
 const TRACK_TINT: f32 = 0.06;
+
+/// 背景画像の上に塗るトラックの不透明度。マウスを載せていることが分かり、下の画像も見える中間の値。
+const TRACK_OPACITY_OVER_IMAGE: f32 = 0.5;
 
 /// スクロールバーの寸法を決めるもの。寸法はウィンドウの DPI に比例させる。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,7 +184,8 @@ pub fn part_at(thumb: Thumb, y: i32) -> Part {
 /// スクロールバーの色。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Palette {
-    /// マウスを載せている間とドラッグしている間のトラック。それ以外は塗らず、端末の背景色のまま。
+    /// マウスを載せている間とドラッグしている間のトラック。それ以外は塗らず、端末の背景色（背景画像があれば
+    /// 画像）のまま。
     pub track: Rgb,
     /// マウスを載せていないつまみ。
     pub thumb: Rgb,
@@ -253,19 +258,30 @@ pub fn thumb_in(bar: Area, metrics: Metrics, position: ScrollPosition) -> Option
 }
 
 /// 領域 `bar` に描くスクロールバーの、表示している範囲の位置が `position` のときに描くもの。
+/// `over_image` なら、トラックを不透明度 [`TRACK_OPACITY_OVER_IMAGE`] で塗り、下の背景画像を透かす。つまみは
+/// 不透明に描く。
 pub fn paints(
     bar: Area,
     metrics: Metrics,
     position: ScrollPosition,
     highlight: Highlight,
     colors: &Palette,
+    over_image: bool,
 ) -> Vec<Paint> {
     let mut paints = Vec::new();
     let expanded = highlight.expanded();
     if expanded {
-        paints.push(Paint::Fill {
-            area: bar,
-            color: colors.track,
+        paints.push(if over_image {
+            Paint::Translucent {
+                area: bar,
+                color: colors.track,
+                opacity: TRACK_OPACITY_OVER_IMAGE,
+            }
+        } else {
+            Paint::Fill {
+                area: bar,
+                color: colors.track,
+            }
         });
     }
     let Some(thumb) = thumb_in(bar, metrics, position) else {
@@ -494,6 +510,7 @@ mod tests {
             .iter()
             .map(|paint| match paint {
                 Paint::Fill { area, color } | Paint::Icon { area, color, .. } => (*area, *color),
+                Paint::Translucent { .. } => panic!("unexpected translucent fill"),
                 Paint::Label { .. } => panic!("unexpected label"),
                 Paint::TabIcon { .. } => panic!("unexpected tab icon"),
             })
@@ -508,6 +525,7 @@ mod tests {
             position(100, 70, 30),
             Highlight::default(),
             &COLORS,
+            false,
         );
         // トラックは塗らない。幅 3 のつまみを真ん中に、上下の端に直径 3 の円。
         let thumb = Thumb {
@@ -548,6 +566,7 @@ mod tests {
                 dragging: false,
             },
             &COLORS,
+            false,
         );
         let areas = areas(&hovered);
         assert_eq!(areas[0], (BAR, COLORS.track));
@@ -572,6 +591,7 @@ mod tests {
                 dragging: true,
             },
             &COLORS,
+            false,
         );
         assert_eq!(dragged[1..].len(), 3);
         assert!(
@@ -585,14 +605,65 @@ mod tests {
     fn without_scrollback_only_the_hovered_track_is_drawn() {
         let metrics = metrics(96);
         let full = position(30, 0, 30);
-        assert!(paints(BAR, metrics, full, Highlight::default(), &COLORS).is_empty());
+        assert!(paints(BAR, metrics, full, Highlight::default(), &COLORS, false).is_empty());
+        assert!(paints(BAR, metrics, full, Highlight::default(), &COLORS, true).is_empty());
         let hovered = Highlight {
             hovered: true,
             dragging: false,
         };
         assert_eq!(
-            areas(&paints(BAR, metrics, full, hovered, &COLORS)),
+            areas(&paints(BAR, metrics, full, hovered, &COLORS, false)),
             vec![(BAR, COLORS.track)]
+        );
+    }
+
+    /// 背景画像の上では、トラックだけを半透明に塗り、つまみは画像がないときと同じ形と色で不透明に描く。
+    #[test]
+    fn over_an_image_only_the_track_is_translucent() {
+        let expanded = [
+            Highlight {
+                hovered: true,
+                dragging: false,
+            },
+            Highlight {
+                hovered: false,
+                dragging: true,
+            },
+        ];
+        for highlight in expanded {
+            for position in [position(100, 0, 30), position(30, 0, 30)] {
+                let opaque = paints(BAR, metrics(96), position, highlight, &COLORS, false);
+                let over_image = paints(BAR, metrics(96), position, highlight, &COLORS, true);
+                assert_eq!(
+                    over_image[0],
+                    Paint::Translucent {
+                        area: BAR,
+                        color: COLORS.track,
+                        opacity: TRACK_OPACITY_OVER_IMAGE,
+                    }
+                );
+                assert_eq!(over_image[1..], opaque[1..]);
+            }
+        }
+        // マウスを載せていなければトラックは塗らないので、画像の有無で変わらない。
+        let idle = paints(
+            BAR,
+            metrics(96),
+            position(100, 70, 30),
+            Highlight::default(),
+            &COLORS,
+            true,
+        );
+        assert_eq!(
+            idle,
+            paints(
+                BAR,
+                metrics(96),
+                position(100, 70, 30),
+                Highlight::default(),
+                &COLORS,
+                false,
+            )
         );
     }
 

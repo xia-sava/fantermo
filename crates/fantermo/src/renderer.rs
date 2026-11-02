@@ -93,7 +93,7 @@ struct ImageTexture {
 pub struct Backdrop<'a> {
     /// 画像のファイル。[`Renderer::load_image`] で読んであること（なければ画像を描かない）。
     pub image: &'a Path,
-    /// 画像を敷く範囲（端末の画面と余白）。
+    /// 画像を敷く範囲（端末の画面、余白、スクロールバーの列）。
     pub region: Area,
     pub fit: BackgroundFit,
     /// 画像の不透明度（0〜1。1 で画像をそのまま見せる）。
@@ -572,6 +572,11 @@ impl Renderer {
     fn push_paint(&mut self, list: &mut DrawList, paint: &Paint) -> Result<(), AtlasFull> {
         match paint {
             Paint::Fill { area, color } => list.push(solid(area_rect(*area), *color)),
+            Paint::Translucent {
+                area,
+                color,
+                opacity,
+            } => list.push(translucent(area_rect(*area), *color, *opacity)),
             Paint::Icon { icon, area, color } => {
                 let slot = self.atlas.icon_slot(*icon, area.width, area.height)?;
                 list.push(glyph(

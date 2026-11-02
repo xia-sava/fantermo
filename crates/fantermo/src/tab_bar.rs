@@ -1511,7 +1511,10 @@ mod tests {
         assert!(last_border < first_window);
         // どれもタブバーの中に描く。
         assert!(paints.iter().all(|paint| match paint {
-            Paint::Fill { area, .. } | Paint::Icon { area, .. } | Paint::TabIcon { area, .. } => {
+            Paint::Fill { area, .. }
+            | Paint::Translucent { area, .. }
+            | Paint::Icon { area, .. }
+            | Paint::TabIcon { area, .. } => {
                 area.bottom() <= 52
             }
             Paint::Label { y, .. } => y + FixedWidth.height() <= 52,

@@ -63,6 +63,12 @@ impl Area {
 pub enum Paint {
     /// `area` を `color` で塗る。
     Fill { area: Area, color: Rgb },
+    /// `area` を `color` で、不透明度 `opacity`（0〜1）で塗る。下に描いたものが透けて見える。
+    Translucent {
+        area: Area,
+        color: Rgb,
+        opacity: f32,
+    },
     /// `area` に `icon` を `color` で描く。形は `area` の大きさで組み立てる。
     Icon { icon: Icon, area: Area, color: Rgb },
     /// 左上が (`x`, `y`) のところに、Windows の UI のフォントで `text` を 1 行に描く。
