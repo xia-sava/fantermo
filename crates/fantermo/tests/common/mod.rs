@@ -10,15 +10,17 @@
 // 使う関数はテストの実行ファイルごとに違う。
 #![allow(dead_code)]
 
+pub mod processes;
+
 use std::{
     collections::HashSet,
     fs::File,
-    io::{Read, Write},
+    io::{Cursor, Read, Write},
     net::{Ipv4Addr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        Condvar, Mutex,
+        Condvar, Mutex, MutexGuard,
         atomic::{AtomicU32, Ordering},
     },
     thread,
@@ -36,11 +38,24 @@ static RUNNING: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
 /// 同時に起動する fantermo の上限。
 const MAX_RUNNING: usize = 4;
 
+/// OS のクリップボードはテスト全体で一つなので、使うテストを直列にする。
+static OS_CLIPBOARD: Mutex<()> = Mutex::new(());
+
+/// fantermo が OS のクリップボードの代わりに使うファイルを指定する環境変数。
+const CLIPBOARD_FILE_ENV: &str = "FANTERMO_E2E_CLIPBOARD_FILE";
+/// OS のクリップボードを実際に変えるテストを実行する環境変数。
+const OS_CLIPBOARD_ENV: &str = "FANTERMO_E2E_OS_CLIPBOARD";
+
 /// 隣へ写したブリッジ。テストの実行ファイルの中で一度だけ写す。
 static COPIED_BRIDGES: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
 
 /// run-hidden が止めるまでの秒数。テストの実行ファイルが落ちて破棄が走らなくても、これで終わる。
 const LIFETIME_SECONDS: &str = "300";
+/// fantermo が終わったあと、run-hidden が子孫のプロセスの終わりを待つ秒数。タブを閉じるときに子プロセスを
+/// 終わらせるまで待つ 5 秒より長くする。
+const WAIT_CHILDREN_SECONDS: &str = "20";
+/// 子孫のプロセスが残らなかったときに run-hidden が出す行。
+const NO_CHILDREN_REMAINED: &str = "run-hidden: no processes remained";
 /// 起動してポートの番号が書かれるまで待つ上限。
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 /// 条件が成り立つまで待つ上限。並列で起動するとシェルの起動も遅くなるので、長めに取る。
@@ -66,6 +81,39 @@ pub struct Server {
 impl Server {
     /// 設定 `config_toml` で fantermo を起動する。`command` は fantermo の引数（端末で起動するコマンドライン）。
     pub fn start(config_toml: &str, command: &[&str]) -> Self {
+        Self::start_with(config_toml, command, &[])
+    }
+
+    /// [`Server::start`] に加えて、fantermo が終わったあとに子孫のプロセスが残ったかを
+    /// [`Server::assert_no_children_remained`] で確認できるようにする。
+    pub fn start_watching_children(config_toml: &str, command: &[&str]) -> Self {
+        Self::start_with(
+            config_toml,
+            command,
+            &["--wait-children", WAIT_CHILDREN_SECONDS],
+        )
+    }
+
+    /// [`Server::start`] と同じだが、一時フォルダのファイルではなく OS のクリップボードを使う。
+    /// [`OsClipboard`] を持っているあいだに使う。
+    pub fn start_with_os_clipboard(
+        _clipboard: &OsClipboard,
+        config: &str,
+        command: &[&str],
+    ) -> Self {
+        Self::launch(config, command, &[], true)
+    }
+
+    fn start_with(config_toml: &str, command: &[&str], run_hidden_args: &[&str]) -> Self {
+        Self::launch(config_toml, command, run_hidden_args, false)
+    }
+
+    fn launch(
+        config_toml: &str,
+        command: &[&str],
+        run_hidden_args: &[&str],
+        os_clipboard: bool,
+    ) -> Self {
         let exe = fantermo_exe();
         let run_hidden = sibling_of_fantermo("run-hidden.exe");
         assert!(
@@ -84,8 +132,14 @@ impl Server {
         std::fs::write(&config, config_toml).expect("failed to write the settings");
         let log = File::create(log_path(&dir)).expect("failed to create the log");
         let log_for_stderr = log.try_clone().expect("failed to duplicate the log");
-        let child = Command::new(&run_hidden)
-            .args(["--seconds", LIFETIME_SECONDS, "--"])
+        let mut launcher = Command::new(&run_hidden);
+        if !os_clipboard {
+            launcher.env(CLIPBOARD_FILE_ENV, dir.join("clipboard.txt"));
+        }
+        let child = launcher
+            .args(["--seconds", LIFETIME_SECONDS])
+            .args(run_hidden_args)
+            .arg("--")
             .arg(&exe)
             .args(command)
             .current_dir(&dir)
@@ -202,6 +256,12 @@ impl Server {
         self.press("enter");
     }
 
+    /// 一行を Enter までまとめてバックエンドへ送る。[`Server::type_line`] は一文字ずつ送るので、Cygwin の pty では
+    /// 一文字に 30 ms ほどかかる。長い行はこちらで送る。
+    pub fn send_line(&self, line: &str) {
+        self.post("/e2e/input", format!("{line}\r").as_bytes());
+    }
+
     /// 端末が `cols` × `rows` になるようにウィンドウの大きさを変える。
     pub fn resize(&self, cols: u16, rows: u16) {
         self.post(&format!("/e2e/window/size/{cols}/{rows}"), b"");
@@ -211,6 +271,90 @@ impl Server {
         let (status, body) = self.request("GET", "/e2e/state", b"");
         assert_eq!(status, STATUS_OK, "{}", String::from_utf8_lossy(&body));
         serde_json::from_slice(&body).expect("the state is not JSON")
+    }
+
+    /// 一時フォルダ。設定ファイル（`config.toml`）もここにある。
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// fantermo のプロセスの番号。
+    pub fn pid(&self) -> u32 {
+        let pid = self.state()["pid"].as_u64().expect("the state has no pid");
+        u32::try_from(pid).expect("the pid does not fit")
+    }
+
+    /// `body` を、クリップボードから読んだものとして貼り付ける。
+    pub fn paste(&self, body: &str) {
+        self.post("/e2e/paste", body.as_bytes());
+    }
+
+    /// 開いているダイアログが `count` 個になるまで待つ。
+    #[track_caller]
+    pub fn wait_dialogs(&self, count: usize) -> Value {
+        self.wait_until(&format!("{count} dialogs"), |state| {
+            state["dialogs"].as_array().map_or(0, Vec::len) == count
+        })
+    }
+
+    /// 開いているダイアログのボタンを押す。
+    pub fn press_dialog_button(&self, id: i32) {
+        self.post(&format!("/e2e/dialog/button/{id}"), b"");
+    }
+
+    /// OS のクリップボードを `text` で置き換える。ほかのプログラムが開いている間は失敗するので、やり直す。
+    #[track_caller]
+    pub fn set_clipboard(&self, text: &str) {
+        let deadline = Instant::now() + WAIT_TIMEOUT;
+        loop {
+            let (status, answer) = self.request("POST", "/e2e/clipboard", text.as_bytes());
+            if status == STATUS_OK {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "cannot write the clipboard: {}",
+                String::from_utf8_lossy(&answer)
+            );
+            thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    /// OS のクリップボードの文字列が `expected` になるまで待つ。
+    #[track_caller]
+    pub fn wait_clipboard(&self, expected: &str) {
+        let deadline = Instant::now() + WAIT_TIMEOUT;
+        loop {
+            let (status, answer) = self.request("GET", "/e2e/clipboard", b"");
+            let text = String::from_utf8_lossy(&answer).into_owned();
+            if status == STATUS_OK {
+                let value: Value = serde_json::from_str(&text).expect("the answer is not JSON");
+                if value["text"] == expected {
+                    return;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the clipboard did not become {expected:?}: {text}"
+            );
+            thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    /// `wait_exit` のあとで、fantermo の子孫のプロセスが自分で終わっていたことを確認する。
+    /// [`Server::start_watching_children`] で起動したときに使う。
+    #[track_caller]
+    pub fn assert_no_children_remained(&self) {
+        let log = self.log();
+        assert!(
+            log.contains(NO_CHILDREN_REMAINED),
+            "child processes remained after fantermo ended\n{log}"
+        );
+    }
+
+    /// いまの画面の絵を読む。
+    pub fn picture(&self) -> Picture {
+        Picture::decode(&self.frame())
     }
 
     /// いまの画面の PNG。
@@ -300,6 +444,125 @@ impl Drop for Server {
         remove_folder(&self.dir);
         release_slot();
     }
+}
+
+/// OS のクリップボードを使うテストのあいだ持つもの。テストを直列にし、終わると文字列を元に戻す。文字列のほかの
+/// 形式は戻らないので、環境変数 [`OS_CLIPBOARD_ENV`] があるときだけ使う。
+pub struct OsClipboard {
+    _serial: MutexGuard<'static, ()>,
+}
+
+impl OsClipboard {
+    /// 環境変数がなければ、スキップしたと知らせて `None`。
+    pub fn take(test: &str) -> Option<Self> {
+        if std::env::var_os(OS_CLIPBOARD_ENV).is_none() {
+            report_skip(test, OS_CLIPBOARD_ENV);
+            return None;
+        }
+        Some(Self {
+            _serial: OS_CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner()),
+        })
+    }
+}
+
+/// 破棄すると OS のクリップボードの文字列を、作ったときのものに戻す。
+pub struct RestoreClipboard<'a> {
+    server: &'a Server,
+    saved: String,
+}
+
+impl<'a> RestoreClipboard<'a> {
+    pub fn new(server: &'a Server) -> Self {
+        let (status, answer) = server.request("GET", "/e2e/clipboard", b"");
+        assert_eq!(status, STATUS_OK, "{}", String::from_utf8_lossy(&answer));
+        let value: Value = serde_json::from_slice(&answer).expect("the answer is not JSON");
+        Self {
+            server,
+            saved: value["text"].as_str().unwrap_or_default().to_owned(),
+        }
+    }
+}
+
+impl Drop for RestoreClipboard<'_> {
+    fn drop(&mut self) {
+        let (status, answer) = self
+            .server
+            .request("POST", "/e2e/clipboard", self.saved.as_bytes());
+        if status != STATUS_OK {
+            eprintln!(
+                "failed to restore the clipboard: {}",
+                String::from_utf8_lossy(&answer)
+            );
+        }
+    }
+}
+
+/// `/e2e/frame` の絵。
+pub struct Picture {
+    width: u32,
+    height: u32,
+    channels: usize,
+    bytes: Vec<u8>,
+}
+
+impl Picture {
+    fn decode(png_bytes: &[u8]) -> Self {
+        let mut reader = png::Decoder::new(Cursor::new(png_bytes))
+            .read_info()
+            .expect("the frame is not a PNG");
+        let mut bytes = vec![0; reader.output_buffer_size().expect("the frame is too large")];
+        let info = reader
+            .next_frame(&mut bytes)
+            .expect("cannot decode the frame");
+        assert_eq!(info.bit_depth, png::BitDepth::Eight);
+        bytes.truncate(info.buffer_size());
+        Self {
+            width: info.width,
+            height: info.height,
+            channels: info.color_type.samples(),
+            bytes,
+        }
+    }
+
+    /// `(x, y)` の画素の赤・緑・青。
+    #[track_caller]
+    pub fn rgb(&self, x: u32, y: u32) -> [u8; 3] {
+        assert!(
+            x < self.width && y < self.height,
+            "({x}, {y}) is outside of {}x{}",
+            self.width,
+            self.height
+        );
+        let at = (y as usize * self.width as usize + x as usize) * self.channels;
+        [self.bytes[at], self.bytes[at + 1], self.bytes[at + 2]]
+    }
+}
+
+/// RFC 4648 の base64。
+pub fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for group in bytes.chunks(3) {
+        let [a, b, c] = [
+            group[0],
+            group.get(1).copied().unwrap_or(0),
+            group.get(2).copied().unwrap_or(0),
+        ];
+        let sextets = [
+            a >> 2,
+            (a << 4 | b >> 4) & 63,
+            (b << 2 | c >> 6) & 63,
+            c & 63,
+        ];
+        for (index, &sextet) in sextets.iter().enumerate() {
+            out.push(if index <= group.len() {
+                char::from(ALPHABET[usize::from(sextet)])
+            } else {
+                '='
+            });
+        }
+    }
+    out
 }
 
 /// 起動している数が上限を超えないよう、空くまで待つ。
