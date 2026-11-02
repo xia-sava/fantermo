@@ -17,3 +17,13 @@ fn missing_program_is_a_usage_error() {
         .status;
     assert_eq!(status.code(), Some(EXIT_USAGE));
 }
+
+#[test]
+fn a_desktop_option_without_a_name_is_a_usage_error() {
+    let status = Command::new(env!("CARGO_BIN_EXE_run-hidden"))
+        .arg("--desktop")
+        .output()
+        .expect("failed to start run-hidden")
+        .status;
+    assert_eq!(status.code(), Some(EXIT_USAGE));
+}

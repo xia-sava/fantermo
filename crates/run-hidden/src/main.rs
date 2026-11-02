@@ -3,9 +3,12 @@
 //! 画面を撮らずに GUI の動作を確認するための道具。描画の結果は、起動したプログラム自身に
 //! ファイルへ書き出させて確認する（fantermo なら環境変数 `FANTERMO_DUMP`）。
 //!
-//! 使い方: `run-hidden [--seconds N] [--wait-children N] [--env NAME=VALUE]... -- <プログラム> [引数]...`
+//! 使い方: `run-hidden [--seconds N] [--wait-children N] [--desktop NAME] [--env NAME=VALUE]... -- <プログラム> [引数]...`
 //!
 //! プログラムは `CreateProcessW` のコマンドラインとして渡すので、パスは Windows 形式（`\` 区切り）で書く。
+//!
+//! デスクトップの名前は `run-hidden-<この道具のプロセスの番号>`。`--desktop NAME` を付けると、すでにある別の
+//! run-hidden のデスクトップ `NAME` で起動する。
 //!
 //! 起動したプロセスは Job に入れるので、この道具がどう終わっても一緒に終わる。
 //! プログラムが先に終われば、その終了コードを返す。時間切れなら終わらせて 0 を返す。
@@ -66,6 +69,7 @@ const IMAGE_PATH_CAPACITY: usize = 1024;
 struct Args {
     seconds: u64,
     wait_children: Option<u64>,
+    desktop: Option<String>,
     env: Vec<(String, String)>,
     command: Vec<OsString>,
 }
@@ -76,7 +80,7 @@ fn main() {
         Err(message) => {
             eprintln!("run-hidden: {message}");
             eprintln!(
-                "usage: run-hidden [--seconds N] [--wait-children N] [--env NAME=VALUE]... -- <program> [args]..."
+                "usage: run-hidden [--seconds N] [--wait-children N] [--desktop NAME] [--env NAME=VALUE]... -- <program> [args]..."
             );
             std::process::exit(2);
         }
@@ -93,6 +97,7 @@ fn main() {
 fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Args, String> {
     let mut seconds = DEFAULT_SECONDS;
     let mut wait_children = None;
+    let mut desktop = None;
     let mut env = Vec::new();
     while let Some(arg) = args.next() {
         match arg.to_str() {
@@ -104,9 +109,15 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Args, String> 
                 return Ok(Args {
                     seconds,
                     wait_children,
+                    desktop,
                     env,
                     command,
                 });
+            }
+            Some("--desktop") => {
+                let value = args.next().ok_or("--desktop needs a name")?;
+                let value = value.to_str().ok_or("--desktop must be valid Unicode")?;
+                desktop = Some(value.to_owned());
             }
             Some("--wait-children") => {
                 let value = args.next().ok_or("--wait-children needs a value")?;
@@ -143,7 +154,10 @@ fn run(args: &Args) -> windows::core::Result<u32> {
         unsafe { std::env::set_var(name, value) };
     }
 
-    let desktop_name = format!("run-hidden-{}", std::process::id());
+    let desktop_name = args
+        .desktop
+        .clone()
+        .unwrap_or_else(|| format!("run-hidden-{}", std::process::id()));
     let desktop = HiddenDesktop::create(&desktop_name)?;
     let job = kill_on_close_job()?;
 
@@ -314,6 +328,7 @@ fn kill_on_close_job() -> windows::core::Result<OwnedHandle> {
 struct HiddenDesktop(HDESK);
 
 impl HiddenDesktop {
+    /// デスクトップ `name` を作る。すでにあれば、それを開く（`CreateDesktopW` の決まり）。
     fn create(name: &str) -> windows::core::Result<Self> {
         let name = to_wide_nul(OsStr::new(name));
         // SAFETY: name は終端付きの UTF-16 で、この呼び出しの間は生きている。
