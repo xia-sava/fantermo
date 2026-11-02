@@ -285,7 +285,8 @@ impl App {
     /// いまの状態。`text` は表示している端末の、スクロールバックを含む全体の文字。`images` は表示している端末の
     /// 画面に出ている画像の数。`dialogs` はこのウィンドウの上に開いているダイアログ。`controls` はその
     /// コントロールの文字で、`TaskDialogIndirect` の本文は入らない。`window` は状態ファイルに書くのと同じ、
-    /// ウィンドウの位置・大きさ・最大化。
+    /// ウィンドウの位置・大きさ・最大化。`background` は背景画像を敷く範囲（クライアント領域の座標）と、表示している
+    /// タブが選んだ画像のファイルの名前。
     fn e2e_state(&mut self) -> serde_json::Value {
         let size = self.session().vt.size();
         let text = self.session().vt.plain_text().unwrap_or_else(|e| {
@@ -329,7 +330,20 @@ impl App {
             .iter()
             .map(|profile| profile.name.as_str())
             .collect();
+        let background_image = self
+            .session()
+            .background_image
+            .as_ref()
+            .and_then(|image| image.path.file_name())
+            .map(|name| name.to_string_lossy().into_owned());
         json!({
+            "background": {
+                "x": self.backdrop_area.x,
+                "y": self.backdrop_area.y,
+                "width": self.backdrop_area.width,
+                "height": self.backdrop_area.height,
+                "image": background_image,
+            },
             "pid": std::process::id(),
             "cols": size.cols,
             "rows": size.rows,

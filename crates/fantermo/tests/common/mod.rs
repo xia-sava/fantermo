@@ -558,6 +558,20 @@ impl Picture {
     }
 }
 
+/// 赤・緑・青の 3 バイトずつで上の行から並べた `pixels` を、PNG にする。
+pub fn encode_png(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, width, height);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().expect("cannot write the PNG header");
+    writer
+        .write_image_data(pixels)
+        .expect("cannot write the PNG pixels");
+    writer.finish().expect("cannot finish the PNG");
+    bytes
+}
+
 /// RFC 4648 の base64。
 pub fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

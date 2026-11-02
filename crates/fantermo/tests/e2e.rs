@@ -1127,3 +1127,456 @@ fn a_state_file_with_an_unusable_size_is_ignored() {
     assert_default_grid(&state);
     assert!(!server.dir().join(BROKEN_STATE_FILE).exists());
 }
+
+/// 背景画像のテストで固定する端末の背景色。
+const TERMINAL_BACKGROUND: [u8; 3] = [16, 32, 48];
+const TERMINAL_BACKGROUND_SETTING: &str = "[colors]\nbackground = \"#102030\"\n";
+/// 色の許容の差。半透明の重ね合わせの丸めと、ソフトウェアの描画との差の分。
+const BACKGROUND_COLOR_TOLERANCE: u8 = 6;
+/// 画素が期待の色になるのを待つ上限。読み直しが描画に届くまでの分。
+const PICTURE_TIMEOUT: Duration = Duration::from_secs(30);
+/// 画素を読み直す間隔。
+const PICTURE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// 背景画像のファイルの名前。設定には設定ファイルのフォルダからの相対パスで書く。
+const BANDS_IMAGE: &str = "bands.png";
+/// [`bands_image`] の一辺と、上下の帯の高さ。
+const BANDS_SIDE: u32 = 64;
+const BAND_HEIGHT: u32 = 8;
+const BAND_TOP: [u8; 3] = [255, 0, 255];
+const BAND_BOTTOM: [u8; 3] = [0, 255, 255];
+const MIDDLE_LEFT: [u8; 3] = [255, 0, 0];
+const MIDDLE_RIGHT: [u8; 3] = [0, 255, 0];
+
+/// 上と下に帯があり、間を左右に分けた正方形の画像。表示方法ごとに、見える部分と位置が変わる。
+fn bands_image() -> Vec<u8> {
+    let mut pixels = Vec::new();
+    for y in 0..BANDS_SIDE {
+        for x in 0..BANDS_SIDE {
+            let color = if y < BAND_HEIGHT {
+                BAND_TOP
+            } else if y >= BANDS_SIDE - BAND_HEIGHT {
+                BAND_BOTTOM
+            } else if x < BANDS_SIDE / 2 {
+                MIDDLE_LEFT
+            } else {
+                MIDDLE_RIGHT
+            };
+            pixels.extend_from_slice(&color);
+        }
+    }
+    common::encode_png(BANDS_SIDE, BANDS_SIDE, &pixels)
+}
+
+/// 単色の画像。
+fn solid_image(color: [u8; 3]) -> Vec<u8> {
+    const SIDE: u32 = 16;
+    common::encode_png(SIDE, SIDE, &color.repeat((SIDE * SIDE) as usize))
+}
+
+/// 背景画像を敷く範囲（絵の中のピクセル）。
+#[derive(Clone, Copy, Debug)]
+struct BackdropArea {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+impl BackdropArea {
+    fn of(state: &Value) -> Self {
+        let field = |name: &str| {
+            u32::try_from(number(&state["background"][name])).expect("the area does not fit")
+        };
+        Self {
+            x: field("x"),
+            y: field("y"),
+            width: field("width"),
+            height: field("height"),
+        }
+    }
+
+    /// 範囲の幅と高さを 1 とした位置 `(fx, fy)`。
+    fn at(self, fx: f64, fy: f64) -> (u32, u32) {
+        (
+            self.x + (f64::from(self.width) * fx) as u32,
+            self.y + (f64::from(self.height) * fy) as u32,
+        )
+    }
+}
+
+fn color_is_close(actual: [u8; 3], expected: [u8; 3]) -> bool {
+    actual
+        .iter()
+        .zip(expected)
+        .all(|(&a, e)| a.abs_diff(e) <= BACKGROUND_COLOR_TOLERANCE)
+}
+
+/// 不透明度 `image_opacity` の画像の色 `image` が、[`TERMINAL_BACKGROUND`] の上に見える色。
+fn over_terminal_background(image: [u8; 3], image_opacity: f64) -> [u8; 3] {
+    let mut mixed = [0; 3];
+    for ((out, &foreground), &background) in mixed.iter_mut().zip(&image).zip(&TERMINAL_BACKGROUND)
+    {
+        let value =
+            f64::from(foreground) * image_opacity + f64::from(background) * (1.0 - image_opacity);
+        *out = value.round() as u8;
+    }
+    mixed
+}
+
+/// `expected` の位置がすべて期待の色になるまで絵を読み直す。
+#[track_caller]
+fn wait_pixels(server: &Server, expected: &[((u32, u32), [u8; 3])]) {
+    let deadline = Instant::now() + PICTURE_TIMEOUT;
+    loop {
+        let picture = server.picture();
+        let wrong: Vec<String> = expected
+            .iter()
+            .filter_map(|&((x, y), color)| {
+                let actual = picture.rgb(x, y);
+                (!color_is_close(actual, color))
+                    .then(|| format!("({x}, {y}) is {actual:?}, not {color:?}"))
+            })
+            .collect();
+        if wrong.is_empty() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{}\n{}",
+            wrong.join("\n"),
+            server.log()
+        );
+        std::thread::sleep(PICTURE_POLL_INTERVAL);
+    }
+}
+
+/// 端末の背景色を固定し、設定に `background` を足して起動し、シェルのプロンプトまで待つ。[`BANDS_IMAGE`] を置く。
+fn start_with_background(background: &str, prepare: impl FnOnce(&std::path::Path)) -> Server {
+    let config = format!("{TERMINAL_BACKGROUND_SETTING}{background}");
+    let server = Server::start_with_setup(&config, &CMD_COMMAND, |dir| {
+        std::fs::write(dir.join(BANDS_IMAGE), bands_image()).expect("failed to write the image");
+        prepare(dir);
+    });
+    server.wait_text(CMD_PROMPT);
+    server
+}
+
+/// `image_opacity = 1` で表示方法 `fit` の [`BANDS_IMAGE`] を背景にして起動する。
+fn start_with_fit(fit: &str) -> (Server, BackdropArea) {
+    let server = start_with_background(
+        &format!(
+            "[background]\nimage_opacity = 1.0\nfit = \"{fit}\"\n\n[[background.images]]\npath = '{BANDS_IMAGE}'\n"
+        ),
+        |_| {},
+    );
+    let state = server.state();
+    assert_eq!(state["background"]["image"], BANDS_IMAGE, "{state:#}");
+    let area = BackdropArea::of(&state);
+    // 表示方法を見分ける位置は、横に長い範囲を前提にしている。
+    assert!(
+        f64::from(area.width) > 1.4 * f64::from(area.height),
+        "{area:?}"
+    );
+    (server, area)
+}
+
+#[test]
+fn a_stretched_background_image_shows_all_of_it_and_only_in_its_area() {
+    let (server, area) = start_with_fit("stretch");
+    wait_pixels(
+        &server,
+        &[
+            (area.at(0.25, 0.03), BAND_TOP),
+            (area.at(0.25, 0.5), MIDDLE_LEFT),
+            (area.at(0.75, 0.5), MIDDLE_RIGHT),
+            (area.at(0.75, 0.97), BAND_BOTTOM),
+        ],
+    );
+    // タブバーとスクロールバーには敷かない。
+    let picture = server.picture();
+    let (tab_x, tab_y) = area.at(0.75, 0.0);
+    assert_ne!(picture.rgb(tab_x, tab_y - 1), BAND_TOP);
+    let (bar_x, bar_y) = area.at(1.0, 0.5);
+    assert!(!color_is_close(picture.rgb(bar_x, bar_y), MIDDLE_RIGHT));
+}
+
+/// 範囲を覆うように広げ、はみ出した上下を切るので、上下の帯は見えない。
+#[test]
+fn a_filling_background_image_cuts_what_overflows() {
+    let (server, area) = start_with_fit("fill");
+    wait_pixels(
+        &server,
+        &[
+            (area.at(0.25, 0.03), MIDDLE_LEFT),
+            (area.at(0.25, 0.97), MIDDLE_LEFT),
+            (area.at(0.75, 0.03), MIDDLE_RIGHT),
+            (area.at(0.75, 0.97), MIDDLE_RIGHT),
+        ],
+    );
+}
+
+/// 全体が入る大きさで真ん中に置き、左右の余りは背景色になる。
+#[test]
+fn a_fitted_background_image_is_whole_in_the_middle() {
+    let (server, area) = start_with_fit("fit");
+    let side = area.height;
+    let left = area.x + (area.width - side) / 2;
+    let quarter = left + side / 4;
+    let three_quarters = left + side * 3 / 4;
+    let middle = area.y + side / 2;
+    wait_pixels(
+        &server,
+        &[
+            ((quarter, middle), MIDDLE_LEFT),
+            ((three_quarters, middle), MIDDLE_RIGHT),
+            ((quarter, area.y + side * 3 / 100), BAND_TOP),
+            ((quarter, area.y + side * 97 / 100), BAND_BOTTOM),
+            ((area.x + (left - area.x) / 2, middle), TERMINAL_BACKGROUND),
+            (
+                (area.x + area.width - (left - area.x) / 2, middle),
+                TERMINAL_BACKGROUND,
+            ),
+        ],
+    );
+}
+
+/// 元の大きさで真ん中に置き、周りは背景色になる。
+#[test]
+fn a_centered_background_image_keeps_its_size() {
+    let (server, area) = start_with_fit("center");
+    let (x, y) = area.at(0.5, 0.5);
+    let side = BANDS_SIDE;
+    wait_pixels(
+        &server,
+        &[
+            ((x - side / 4, y), MIDDLE_LEFT),
+            ((x + side / 4, y), MIDDLE_RIGHT),
+            ((x - side / 4, y - side / 2 + BAND_HEIGHT / 2), BAND_TOP),
+            ((x - side / 4, y + side / 2 - BAND_HEIGHT / 2), BAND_BOTTOM),
+            ((x - side * 3 / 4, y), TERMINAL_BACKGROUND),
+            ((x + side * 3 / 4, y), TERMINAL_BACKGROUND),
+            ((x - side / 4, y - side * 3 / 4), TERMINAL_BACKGROUND),
+            ((x - side / 4, y + side * 3 / 4), TERMINAL_BACKGROUND),
+        ],
+    );
+}
+
+/// 元の大きさで範囲の左上から敷き詰める。プロンプトの文字を避けて、右下へ離れたところを見る。
+#[test]
+fn a_tiled_background_image_repeats_from_the_top_left() {
+    let (server, area) = start_with_fit("tile");
+    let side = BANDS_SIDE;
+    let (left, top) = (area.x + 2 * side, area.y + side);
+    wait_pixels(
+        &server,
+        &[
+            ((left + side / 4, top + side / 2), MIDDLE_LEFT),
+            ((left + side * 3 / 4, top + side / 2), MIDDLE_RIGHT),
+            ((left + side / 4, top + BAND_HEIGHT / 2), BAND_TOP),
+            ((left + side / 4, top + side - BAND_HEIGHT / 2), BAND_BOTTOM),
+            ((left + side + side / 4, top + side / 2), MIDDLE_LEFT),
+            ((left + side / 4, top + side + side / 2), MIDDLE_LEFT),
+        ],
+    );
+}
+
+#[test]
+fn the_opacity_of_the_background_image_sets_how_much_of_it_shows() {
+    let settings = [
+        ("image_opacity = 0.0\n", 0.0),
+        ("image_opacity = 0.5\n", 0.5),
+        ("image_opacity = 1.0\n", 1.0),
+        // 既定の値。
+        ("", 0.2),
+    ];
+    for (opacity, expected) in settings {
+        let server = start_with_background(
+            &format!(
+                "[background]\nfit = \"stretch\"\n{opacity}\n[[background.images]]\npath = '{BANDS_IMAGE}'\n"
+            ),
+            |_| {},
+        );
+        let area = BackdropArea::of(&server.state());
+        wait_pixels(
+            &server,
+            &[
+                (
+                    area.at(0.25, 0.5),
+                    over_terminal_background(MIDDLE_LEFT, expected),
+                ),
+                (
+                    area.at(0.75, 0.5),
+                    over_terminal_background(MIDDLE_RIGHT, expected),
+                ),
+            ],
+        );
+    }
+}
+
+/// 項目に書いた表示方法と不透明度は `[background]` の値より優先し、書かなかったものは `[background]` の値に従う。
+#[test]
+fn an_image_entry_overrides_the_fit_and_the_opacity_it_writes() {
+    const WHOLE: &str = "[background]\nfit = \"stretch\"\nimage_opacity = 1.0\n\n";
+    let image = format!("[[background.images]]\npath = '{BANDS_IMAGE}'\n");
+
+    // どちらも項目の値: 敷き詰めて半透明。
+    let server = start_with_background(
+        &format!("{WHOLE}{image}fit = \"tile\"\nimage_opacity = 0.5\n"),
+        |_| {},
+    );
+    let area = BackdropArea::of(&server.state());
+    let (left, top) = (area.x + 2 * BANDS_SIDE, area.y + BANDS_SIDE);
+    let half_left = over_terminal_background(MIDDLE_LEFT, 0.5);
+    wait_pixels(
+        &server,
+        &[
+            ((left + BANDS_SIDE / 4, top + BANDS_SIDE / 2), half_left),
+            (
+                (left + BANDS_SIDE + BANDS_SIDE / 4, top + BANDS_SIDE / 2),
+                half_left,
+            ),
+        ],
+    );
+    drop(server);
+
+    // 不透明度だけ項目の値: 全体の表示方法で半透明。
+    let server = start_with_background(&format!("{WHOLE}{image}image_opacity = 0.5\n"), |_| {});
+    let area = BackdropArea::of(&server.state());
+    wait_pixels(
+        &server,
+        &[
+            (area.at(0.25, 0.03), over_terminal_background(BAND_TOP, 0.5)),
+            (area.at(0.25, 0.5), half_left),
+        ],
+    );
+    drop(server);
+
+    // 表示方法だけ項目の値: 全体の不透明度で敷き詰める。
+    let server = start_with_background(&format!("{WHOLE}{image}fit = \"tile\"\n"), |_| {});
+    let area = BackdropArea::of(&server.state());
+    let (left, top) = (area.x + 2 * BANDS_SIDE, area.y + BANDS_SIDE);
+    wait_pixels(
+        &server,
+        &[
+            ((left + BANDS_SIDE / 4, top + BANDS_SIDE / 2), MIDDLE_LEFT),
+            (
+                (left + BANDS_SIDE + BANDS_SIDE / 4, top + BANDS_SIDE / 2),
+                MIDDLE_LEFT,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn the_background_image_follows_the_settings_file() {
+    let server = start_with_background("", |_| {});
+    let state = server.state();
+    assert_eq!(state["background"]["image"], Value::Null, "{state:#}");
+    let area = BackdropArea::of(&state);
+    wait_pixels(&server, &[(area.at(0.25, 0.5), TERMINAL_BACKGROUND)]);
+
+    let write = |background: String| {
+        std::fs::write(
+            server.dir().join("config.toml"),
+            format!("{TERMINAL_BACKGROUND_SETTING}{background}"),
+        )
+        .expect("failed to write the settings");
+    };
+    write(format!(
+        "[background]\nfit = \"stretch\"\nimage_opacity = 1.0\n\n[[background.images]]\npath = '{BANDS_IMAGE}'\n"
+    ));
+    wait_pixels(&server, &[(area.at(0.25, 0.5), MIDDLE_LEFT)]);
+
+    write(format!(
+        "[background]\nfit = \"fill\"\nimage_opacity = 0.5\n\n[[background.images]]\npath = '{BANDS_IMAGE}'\n"
+    ));
+    wait_pixels(
+        &server,
+        &[(
+            area.at(0.25, 0.03),
+            over_terminal_background(MIDDLE_LEFT, 0.5),
+        )],
+    );
+
+    write(String::new());
+    wait_pixels(&server, &[(area.at(0.25, 0.5), TERMINAL_BACKGROUND)]);
+}
+
+/// 読めない画像は外して別の候補を選び、全部読めなければ画像なしで動く。
+#[test]
+fn unreadable_background_images_are_skipped() {
+    const BROKEN_IMAGE: &str = "broken.png";
+    let write_broken = |dir: &std::path::Path| {
+        std::fs::write(dir.join(BROKEN_IMAGE), b"not an image").expect("failed to write");
+    };
+    let entries = |paths: &[&str]| {
+        let tables: Vec<String> = paths
+            .iter()
+            .map(|path| format!("[[background.images]]\npath = '{path}'\n"))
+            .collect();
+        format!(
+            "[background]\nfit = \"stretch\"\nimage_opacity = 1.0\n\n{}",
+            tables.join("")
+        )
+    };
+
+    let server = start_with_background(
+        &entries(&[BROKEN_IMAGE, "no-such-file.png", BANDS_IMAGE]),
+        write_broken,
+    );
+    let state = server.state();
+    assert_eq!(state["background"]["image"], BANDS_IMAGE, "{state:#}");
+    let area = BackdropArea::of(&state);
+    wait_pixels(&server, &[(area.at(0.25, 0.5), MIDDLE_LEFT)]);
+    drop(server);
+
+    let server = start_with_background(&entries(&[BROKEN_IMAGE, "no-such-file.png"]), write_broken);
+    let state = server.state();
+    assert_eq!(state["background"]["image"], Value::Null, "{state:#}");
+    let area = BackdropArea::of(&state);
+    wait_pixels(&server, &[(area.at(0.25, 0.5), TERMINAL_BACKGROUND)]);
+}
+
+/// タブごとにフォルダの中から選び、切り替えても選んだ画像のまま。選ぶのはランダムなので、タブの選んだ名前と絵を
+/// 比べる。
+#[test]
+fn each_tab_keeps_the_background_image_it_chose() {
+    const IMAGES: [(&str, [u8; 3]); 2] = [("red.png", [255, 0, 0]), ("blue.png", [0, 0, 255])];
+    const TABS: usize = 4;
+    let color_of = |state: &Value| {
+        IMAGES
+            .iter()
+            .find(|(name, _)| state["background"]["image"] == *name)
+            .unwrap_or_else(|| panic!("an unknown image: {state:#}"))
+            .1
+    };
+    let server = start_with_background(
+        "[background]\nfit = \"stretch\"\nimage_opacity = 1.0\n\n[[background.images]]\npath = 'images'\n",
+        |dir| {
+            let images = dir.join("images");
+            std::fs::create_dir(&images).expect("failed to create the folder");
+            for (name, color) in IMAGES {
+                std::fs::write(images.join(name), solid_image(color))
+                    .expect("failed to write the image");
+            }
+            // 拡張子が画像でないファイルは候補にしない。
+            std::fs::write(images.join("notes.txt"), b"x").expect("failed to write");
+        },
+    );
+    for count in 2..=TABS {
+        server.post("/e2e/tab/new", b"");
+        server.wait_until("a new tab", |state| tab_count(state) == count);
+        server.wait_text(CMD_PROMPT);
+    }
+    for tab in 0..TABS {
+        server.post(&format!("/e2e/tab/select/{tab}"), b"");
+        let first = server.wait_until("the tab to be shown", |state| state["active"] == tab);
+        let area = BackdropArea::of(&first);
+        wait_pixels(&server, &[(area.at(0.25, 0.5), color_of(&first))]);
+        server.post(&format!("/e2e/tab/select/{}", (tab + 1) % TABS), b"");
+        server.post(&format!("/e2e/tab/select/{tab}"), b"");
+        let again = server.wait_until("the tab to be shown", |state| state["active"] == tab);
+        assert_eq!(again["background"]["image"], first["background"]["image"]);
+        wait_pixels(&server, &[(area.at(0.25, 0.5), color_of(&again))]);
+    }
+}
