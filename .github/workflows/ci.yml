@@ -112,8 +112,11 @@ jobs:
         shell: cmd
         run: call tools\dev.bat test --locked --features e2e --test e2e smoke -- --nocapture
 
+      # OS のクリップボードを実際に変えるテストも実行する（ランナーのクリップボードは誰も使っていない）。
       - name: E2E
         shell: cmd
+        env:
+          FANTERMO_E2E_OS_CLIPBOARD: "1"
         run: call tools\dev.bat test --locked --features e2e --test e2e
 
   # Cygwin のブリッジの単体のテストと e2e。
@@ -157,6 +160,7 @@ jobs:
         shell: cmd
         env:
           FANTERMO_E2E_CYGWIN_ROOT: ${{ steps.toolchain.outputs.cygwin-root }}
+          FANTERMO_E2E_OS_CLIPBOARD: "1"
         run: call tools\dev.bat test --locked --features e2e --test e2e cygwin
 
   # Linux 向けのブリッジの単体のテスト。パイプで接続して開始の通知・リサイズ・データ・終了をやり取りする。
