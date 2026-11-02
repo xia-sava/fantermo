@@ -420,6 +420,23 @@ impl Server {
         }
     }
 
+    /// `duration` のあいだ状態を読み続け、`condition` が成り立ち続けることを確認する。時間の窓の中で何かが起きないことを
+    /// 見るときに使う。
+    #[track_caller]
+    pub fn assert_holds_for(
+        &self,
+        duration: Duration,
+        description: &str,
+        condition: impl Fn(&Value) -> bool,
+    ) {
+        let deadline = Instant::now() + duration;
+        while Instant::now() < deadline {
+            let state = self.state();
+            assert!(condition(&state), "{description} did not hold: {state:#}");
+            thread::sleep(POLL_INTERVAL);
+        }
+    }
+
     /// 表示している端末の文字に `needle` が出るまで待つ。
     #[track_caller]
     pub fn wait_text(&self, needle: &str) -> Value {

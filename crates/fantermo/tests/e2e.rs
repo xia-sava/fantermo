@@ -1792,6 +1792,30 @@ type Point = (i64, i64);
 /// メニューのウィンドウのクラス。
 const MENU_CLASS: &str = "#32768";
 
+/// ホイールの 1 ノッチの回転量。
+const NOTCH: i32 = 120;
+/// 表示している範囲のどこからでもいちばん古い行に届く、ノッチの数。
+const NOTCHES_TO_THE_OLDEST: i32 = 200;
+/// 文字のない桁。テストの行はここまで届かない。
+const EMPTY_COL: u32 = 40;
+/// 文字のない行が続く位置を選ぶときの、行からの距離。
+const EMPTY_ROWS_BELOW: u32 = 3;
+/// ホイールを回すセルの桁と行。
+const WHEEL_COL: u32 = 5;
+const WHEEL_ROW: u32 = 5;
+/// スクロールバーをドラッグするピクセル数。
+const DRAG_PIXELS: i64 = 100;
+/// バーの外へ出すときの、横のピクセル数。
+const BESIDE_THE_BAR: i64 = 200;
+/// ウィンドウの上の外の高さ。
+const ABOVE_THE_WINDOW: i64 = -100;
+/// ウィンドウの下の外の高さ。
+const BELOW_THE_WINDOW: i64 = 10_000;
+/// タブの左端からタブの本体の位置までのピクセル数。閉じるボタンより左。
+const TAB_BODY_OFFSET: i64 = 8;
+/// つまみがマウスの位置で止まったあと、繰り返しの間隔の数回分として見る長さ。
+const REPEAT_STOPPED_CHECK: Duration = Duration::from_millis(300);
+
 /// `(col, row)` のセルの真ん中。
 fn cell_center(state: &Value, col: u32, row: u32) -> Point {
     let half = |size: &str| u32::try_from(number(&state[size]) / 2).expect("the size fits");
@@ -1999,7 +2023,11 @@ fn alt_drag_selects_a_rectangle() {
     assert_eq!(selection(&server.state()), Some("bc\nhi"));
 
     // 同じ位置をすぐ押すとダブルクリックになるので、間に別の位置を押す。
-    server.mouse(&left_click(cell_center(&state, 40, row + 3)));
+    server.mouse(&left_click(cell_center(
+        &state,
+        EMPTY_COL,
+        row + EMPTY_ROWS_BELOW,
+    )));
     server.mouse(&left_drag(from, to, ""));
     assert_eq!(selection(&server.state()), Some("bcdef-0-end\nghi"));
 }
@@ -2018,7 +2046,11 @@ fn a_click_and_input_clear_the_selection() {
 
     server.mouse(&select);
     assert_eq!(selection(&server.state()), Some("alpha"));
-    server.mouse(&left_click(cell_center(&state, 40, row + 2)));
+    server.mouse(&left_click(cell_center(
+        &state,
+        EMPTY_COL,
+        row + EMPTY_ROWS_BELOW,
+    )));
     assert_eq!(selection(&server.state()), None);
 
     server.mouse(&select);
@@ -2141,6 +2173,11 @@ fn on_scroll_bar(state: &Value, y: u64) -> Point {
     )
 }
 
+/// スクロールバーの縦の真ん中の高さ。
+fn scroll_bar_middle(state: &Value) -> u64 {
+    number(&state["scroll_bar"]["y"]) + number(&state["scroll_bar"]["height"]) / 2
+}
+
 /// つまみの真ん中。
 fn on_thumb(state: &Value) -> Point {
     on_scroll_bar(state, thumb_top(state) + thumb_length(state) / 2)
@@ -2148,15 +2185,12 @@ fn on_thumb(state: &Value) -> Point {
 
 #[test]
 fn the_wheel_scrolls_the_scrollback() {
-    /// 1 ノッチの回転量。
-    const NOTCH: i32 = 120;
-
     let server = Server::start_cmd();
     server.wait_text(CMD_PROMPT);
     let state = fill_scrollback(&server);
     let newest = newest_offset(&state);
     let lines = number(&state["scroll"]["lines_per_notch"]);
-    let at = cell_center(&state, 5, 5);
+    let at = cell_center(&state, WHEEL_COL, WHEEL_ROW);
     let top_of_thumb = thumb_top(&state);
 
     server.mouse(&wheel(NOTCH, at));
@@ -2172,11 +2206,11 @@ fn the_wheel_scrolls_the_scrollback() {
     assert_eq!(scroll_offset(&server.state()), newest - lines);
 
     // タブバーの上では動かない。
-    server.mouse(&wheel(NOTCH, (40, 5)));
+    server.mouse(&wheel(NOTCH, on_tab(&state, 0)));
     assert_eq!(scroll_offset(&server.state()), newest - lines);
 
     // いちばん古い行で止まる。
-    server.mouse(&wheel(NOTCH * 200, at));
+    server.mouse(&wheel(NOTCH * NOTCHES_TO_THE_OLDEST, at));
     assert_eq!(scroll_offset(&server.state()), 0);
 
     // 打つと、いちばん新しい行に戻る。
@@ -2190,8 +2224,6 @@ fn the_wheel_scrolls_the_scrollback() {
 fn dragging_the_thumb_moves_the_view_and_keeps_the_grabbed_position() {
     /// つまみの動きがマウスの動きからずれてよいピクセル数。行の単位に丸める分。
     const THUMB_TOLERANCE: u64 = 3;
-    /// ドラッグで動かすピクセル数。
-    const DRAG_PIXELS: i64 = 100;
 
     let server = Server::start_cmd();
     server.wait_text(CMD_PROMPT);
@@ -2221,10 +2253,14 @@ fn dragging_the_thumb_moves_the_view_and_keeps_the_grabbed_position() {
     assert_ne!(idle_color, dragged_color);
 
     // バーの外へ出ても高さだけを見て、トラックの端で止まる。
-    server.mouse(&step("move", (x - 200, -100), "left"));
+    server.mouse(&step(
+        "move",
+        (x - BESIDE_THE_BAR, ABOVE_THE_WINDOW),
+        "left",
+    ));
     let at_top = server.state();
     assert_eq!(scroll_offset(&at_top), 0, "{at_top:#}");
-    server.mouse(&step("move", (x, 10_000), "left"));
+    server.mouse(&step("move", (x, BELOW_THE_WINDOW), "left"));
     assert_eq!(scroll_offset(&server.state()), newest);
 
     // 離すと、動かしてもついてこない。
@@ -2264,7 +2300,7 @@ fn holding_the_scroll_bar_track_repeats_until_the_thumb_reaches_the_pointer() {
     let server = Server::start_cmd();
     server.wait_text(CMD_PROMPT);
     let state = fill_scrollback(&server);
-    let target = number(&state["scroll_bar"]["y"]) + number(&state["scroll_bar"]["height"]) / 2;
+    let target = scroll_bar_middle(&state);
     assert!(target < thumb_top(&state), "{state:#}");
 
     let at = on_scroll_bar(&state, target);
@@ -2280,11 +2316,11 @@ fn holding_the_scroll_bar_track_repeats_until_the_thumb_reaches_the_pointer() {
         target < thumb_top(&reached) + thumb_length(&reached),
         "{reached:#}"
     );
-    // 押したままでも、つまみはマウスの位置を通り越さない。繰り返しの間隔の数回分、状態を読み直す。
-    let deadline = Instant::now() + Duration::from_millis(300);
-    while Instant::now() < deadline {
-        assert_eq!(scroll_offset(&server.state()), scroll_offset(&reached));
-    }
+    // 押したままでも、つまみはマウスの位置を通り越さない。
+    let stopped_at = scroll_offset(&reached);
+    server.assert_holds_for(REPEAT_STOPPED_CHECK, "the stopped view", |state| {
+        scroll_offset(state) == stopped_at
+    });
     server.mouse(&step("left-up", at, ""));
     assert_eq!(server.state()["scroll_bar"]["pressed"], false);
 }
@@ -2296,7 +2332,7 @@ fn the_scroll_bar_press_ends_when_the_capture_is_lost_or_the_tab_changes() {
     let state = fill_scrollback(&server);
     let (x, y) = on_thumb(&state);
 
-    server.mouse(&left_press_and_move((x, y), (x, y - 50), ""));
+    server.mouse(&left_press_and_move((x, y), (x, y - DRAG_PIXELS), ""));
     let dragged = server.state();
     assert_eq!(dragged["scroll_bar"]["pressed"], true, "{dragged:#}");
     server.send_message("capturechanged", 0);
@@ -2312,7 +2348,7 @@ fn the_scroll_bar_press_ends_when_the_capture_is_lost_or_the_tab_changes() {
     server.post("/e2e/tab/select/0", b"");
     let state = server.wait_text("filled-0-end");
     let (x, y) = on_thumb(&state);
-    server.mouse(&left_press_and_move((x, y), (x, y - 50), ""));
+    server.mouse(&left_press_and_move((x, y), (x, y - DRAG_PIXELS), ""));
     assert_eq!(server.state()["scroll_bar"]["pressed"], true);
     server.post("/e2e/tab/select/1", b"");
     let switched = server.state();
@@ -2327,14 +2363,13 @@ fn the_scroll_bar_without_scrollback_does_nothing() {
     let server = Server::start_cmd();
     let state = server.wait_text(CMD_PROMPT);
     assert!(state["scroll_bar"]["thumb"].is_null(), "{state:#}");
-    let middle = number(&state["scroll_bar"]["y"]) + number(&state["scroll_bar"]["height"]) / 2;
-    let at = on_scroll_bar(&state, middle);
+    let at = on_scroll_bar(&state, scroll_bar_middle(&state));
 
     server.mouse(&format!(
         "{}{}{}",
         step("left-down", at, ""),
-        step("move", (at.0, at.1 + 50), "left"),
-        step("left-up", (at.0, at.1 + 50), "")
+        step("move", (at.0, at.1 + DRAG_PIXELS), "left"),
+        step("left-up", (at.0, at.1 + DRAG_PIXELS), "")
     ));
     server.mouse(&button_click("right", at, ""));
     server.mouse(&button_click("middle", at, ""));
@@ -2361,7 +2396,7 @@ fn area_center(area: &Value) -> Point {
 fn on_tab(state: &Value, index: usize) -> Point {
     let area = &state["tab_bar"]["tabs"][index]["area"];
     (
-        i64::try_from(number(&area["x"])).expect("the position fits") + 8,
+        i64::try_from(number(&area["x"])).expect("the position fits") + TAB_BODY_OFFSET,
         area_center(area).1,
     )
 }
@@ -2414,7 +2449,7 @@ fn the_tab_bar_switches_and_opens_tabs() {
 
     // タブバーの何もないところは何もしない。
     let right = i64::try_from(number(&state["client_width"])).expect("the width fits") - 2;
-    server.mouse(&left_click((right, 5)));
+    server.mouse(&left_click((right, on_tab(&state, 0).1)));
     let state = server.state();
     assert_eq!(tab_count(&state), 2, "{state:#}");
     assert_eq!(state["active"], 1, "{state:#}");
@@ -2617,16 +2652,13 @@ fn exercise_clicks_reach_the_application(server: &Server) {
     assert_eq!(reports_of(server, ""), "");
 
     // スクロールバーとタブバーの上の操作は送らない。
-    let on_bar = on_scroll_bar(&state, number(&state["scroll_bar"]["y"]) + 5);
+    let on_bar = on_scroll_bar(&state, scroll_bar_middle(&state));
     assert_eq!(reports_of(server, &button_click("left", on_bar, "")), "");
     assert_eq!(
-        reports_of(server, &button_click("left", (on_tab(&state, 0).0, 5), "")),
+        reports_of(server, &button_click("left", on_tab(&state, 0), "")),
         ""
     );
-    assert_eq!(
-        reports_of(server, &step("move", (on_tab(&state, 0).0, 5), "")),
-        ""
-    );
+    assert_eq!(reports_of(server, &step("move", on_tab(&state, 0), "")), "");
 }
 
 /// ConPTY のタブでも、コンソールの入力を VT にしたアプリへマウスの報告が届く。PowerShell で読み手を動かす。読んだ
@@ -2657,7 +2689,7 @@ fn mouse_reports_reach_an_application_through_conpty() {
     server.mouse(&button_click("left", at, ""));
     server.wait_text(&sgr(SGR_LEFT, REPORT_COL, REPORT_ROW, 'M'));
     server.wait_text(&sgr(SGR_LEFT, REPORT_COL, REPORT_ROW, 'm'));
-    server.mouse(&wheel(120, at));
+    server.mouse(&wheel(NOTCH, at));
     server.wait_text(&sgr(SGR_WHEEL_UP, REPORT_COL, REPORT_ROW, 'M'));
 }
 
@@ -2737,9 +2769,6 @@ fn wsl_motion_reaches_the_application() {
 
 /// アプリがマウスを求めているときと代替画面の、ホイールの振る舞い。
 fn exercise_wheel_with_applications(server: &Server) {
-    /// 1 ノッチの回転量。
-    const NOTCH: i32 = 120;
-
     wait_sh_ready(server);
     start_report_reader(server, SGR_CLICKS);
     let state = server.wait_until("the mouse mode", |state| state["mouse_tracking"] == true);
@@ -2765,7 +2794,7 @@ fn exercise_wheel_with_applications(server: &Server) {
     assert_eq!(reports_of(server, &wheel(NOTCH / 2, at)), "");
     assert_eq!(reports_of(server, &wheel(NOTCH / 2, at)), up);
     // タブバーの上では送らない。
-    assert_eq!(reports_of(server, &wheel(NOTCH, (40, 5))), "");
+    assert_eq!(reports_of(server, &wheel(NOTCH, on_tab(&state, 0))), "");
 
     // 代替画面にはスクロールバックがなく、つまみを描かない。アプリが求めていれば送る。
     let state = start_report_reader_in_new_tab(server, &format!(r"{ALTERNATE_SCREEN}{SGR_CLICKS}"));
