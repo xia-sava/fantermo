@@ -693,9 +693,14 @@ fn paste_commands(bytes: usize, tail: &str) -> String {
 /// 編集のダイアログが一つ開くのを待ち、そのコントロールの文字を返す。
 #[track_caller]
 fn wait_text_dialog(server: &Server) -> Vec<String> {
-    let state = server.wait_dialogs(1);
+    // メニューから開いたときは、閉じかけのメニューのウィンドウ（`#32768`）がしばらく並ぶので、文字のダイアログ
+    // だけになるまで待つ。
+    let state = server.wait_until("the text dialog", |state| {
+        state["dialogs"]
+            .as_array()
+            .is_some_and(|dialogs| dialogs.len() == 1 && dialogs[0]["class"] == TEXT_DIALOG_CLASS)
+    });
     let dialog = &state["dialogs"][0];
-    assert_eq!(dialog["class"], TEXT_DIALOG_CLASS, "{dialog:#}");
     dialog["controls"]
         .as_array()
         .expect("the dialog has no controls")
