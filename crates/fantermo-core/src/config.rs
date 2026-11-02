@@ -279,8 +279,14 @@ impl Config {
 /// なければ先頭。
 pub fn default_profile_index(profiles: &[Profile], default: Option<&str>) -> usize {
     default
-        .and_then(|name| profiles.iter().position(|profile| profile.name == name))
+        .and_then(|name| profile_position(profiles, name))
         .unwrap_or(0)
+}
+
+/// プロファイルの並び `profiles` のうち、名前が `name` のものの位置。名前は完全に一致するものを探す（設定
+/// ダイアログの重複の判定と同じ）。
+pub fn profile_position(profiles: &[Profile], name: &str) -> Option<usize> {
+    profiles.iter().position(|profile| profile.name == name)
 }
 
 /// 新しいタブで起動するもの（`[[profiles]]` のテーブル一つ）。

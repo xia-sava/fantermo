@@ -1,7 +1,8 @@
 //! fantermo — libghostty-vt を端末エミュレーションに使う Windows 用の端末。
 //!
 //! 引数があれば、それを子プロセスのコマンドラインにする（例: `fantermo.exe C:\app\cygwin\bin\zsh.exe -l`）。
-//! 引数がなければ設定ファイルの既定のプロファイルを、プロファイルを書いていなければ PowerShell を起動する。
+//! 引数の先頭の `--profile <名前>` でプロファイルを指定できる（`command_line`）。
+//! どちらもなければ設定ファイルの既定のプロファイルを、プロファイルを書いていなければ PowerShell を起動する。
 //! 新しいタブも同じ決め方で起動する。設定ファイルは `%APPDATA%\fantermo\config.toml`（`config_file`）。
 //! ウィンドウの位置・大きさ・最大化は、閉じるときに同じフォルダの `state.toml` に書き、次に起動した
 //! ときに戻す（`window_state`）。
@@ -18,6 +19,7 @@ mod boxdraw;
 mod bridge;
 mod clipboard;
 mod clipboard_prompt;
+mod command_line;
 mod config_file;
 mod conpty;
 mod context_menu;
@@ -56,10 +58,7 @@ mod window_state;
 use std::path::Path;
 
 use windows::Win32::{
-    System::{
-        Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx},
-        Environment::GetCommandLineW,
-    },
+    System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx},
     UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
 };
 
@@ -85,7 +84,13 @@ fn main() {
     let loaded = config_file::load(config_path.as_deref());
     let state_path = window_state::path();
     let state = window_state::load(state_path.as_deref());
-    match window::run(child_command_line(), config_path, loaded, state_path, state) {
+    match window::run(
+        command_line::Options::of_process(),
+        config_path,
+        loaded,
+        state_path,
+        state,
+    ) {
         Ok(code) => {
             conpty::wait_for_closing_consoles();
             std::process::exit(code as i32)
@@ -109,30 +114,11 @@ fn startup_error_text(error: &str, log_dir: Option<&Path>) -> String {
     text
 }
 
-/// このプロセスのコマンドラインから、プログラム名を除いた残り。引用符はそのまま子プロセスに渡す。
-fn child_command_line() -> Option<String> {
-    // SAFETY: プロセスが持つコマンドラインを指すポインタが返り、プロセスが終わるまで有効。
-    let raw = unsafe { GetCommandLineW().to_string() }.ok()?;
-    let rest = skip_program_name(&raw).trim_start();
-    (!rest.is_empty()).then(|| rest.to_owned())
-}
-
-/// コマンドラインの先頭のプログラム名を飛ばす。プログラム名は引用符で囲まれていれば次の引用符まで、
-/// そうでなければ最初の空白までで、中の `\` は特別扱いしない（`CommandLineToArgvW` と同じ）。
-fn skip_program_name(command_line: &str) -> &str {
-    if let Some(quoted) = command_line.strip_prefix('"') {
-        return quoted.find('"').map_or("", |end| &quoted[end + 1..]);
-    }
-    command_line
-        .find([' ', '\t'])
-        .map_or("", |end| &command_line[end..])
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
-    use super::{skip_program_name, startup_error_text};
+    use super::startup_error_text;
 
     #[test]
     fn startup_error_names_log_dir_when_logging_to_file() {
@@ -143,16 +129,6 @@ mod tests {
         assert_eq!(
             startup_error_text("no font", Some(Path::new(r"C:\logs"))),
             "fantermo を起動できませんでした。\n\nno font\n\nログ: C:\\logs"
-        );
-    }
-
-    #[test]
-    fn program_name_is_skipped() {
-        assert_eq!(skip_program_name("fantermo.exe"), "");
-        assert_eq!(skip_program_name("fantermo.exe zsh -l"), " zsh -l");
-        assert_eq!(
-            skip_program_name(r#""C:\Program Files\fantermo.exe" "a b" c"#),
-            r#" "a b" c"#
         );
     }
 }

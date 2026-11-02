@@ -27,6 +27,8 @@ use windows::{
 pub enum Topic {
     /// 設定ファイルのエラー。
     Settings,
+    /// コマンドラインの指定のエラー。
+    CommandLine,
     /// 話題が二つ以上あるときの決まりを確認するための話題。
     #[cfg(test)]
     Other,

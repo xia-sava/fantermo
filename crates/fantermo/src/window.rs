@@ -79,6 +79,7 @@ use crate::{
     background::DiskFiles,
     clipboard,
     clipboard_prompt::{self, Choice},
+    command_line::{Options, TabRequest},
     config_file::{self, Loaded},
     context_menu::{self, Chosen, Menu, MenuCommand, MenuRequest},
     dump::{DUMP_INTERVAL, ScreenDump},
@@ -170,36 +171,57 @@ const DPI_ENV: &str = "FANTERMO_DPI";
 /// 新しい端末で起動するもの。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Launch {
-    /// fantermo の引数があればそれ、なければ既定のプロファイル。「+」・キー・メニューの「新しいタブ」。
+    /// fantermo の引数の指定があればそれ、なければ既定のプロファイル。「+」・キー・メニューの「新しいタブ」。
     Default,
     /// 一覧から選んだ、プロファイルの並びの中の位置がこの値のプロファイル。
     Profile(usize),
 }
 
-/// 端末を開くときに起動するもの。`launch` が [`Launch::Default`] なら、fantermo の引数
-/// `arguments` があればそのコマンドラインを既定のバックエンドで、なければ既定のプロファイル
-/// （`profiles` の `default` 番目）のもの。一覧から選んだプロファイルなら、引数があってもその
-/// プロファイルのもの。並びの外なら先頭のもの。プロファイルの相対パスのアイコンは `config_dir` から辿る。
+/// 端末を開くときに起動するもの。`launch` が [`Launch::Default`] なら `request` に従う。
+/// - 名前の合うプロファイルがあればそのプロファイル。コマンドもあれば、そのプロファイルの `command` の代わりに
+///   そのコマンドラインを同じ接続先で起動する。
+/// - なければ、コマンドがあればそのコマンドラインを既定のバックエンドで、それもなければ既定のプロファイル
+///   （`profiles` の `default` 番目）のもの。
+///
+/// 一覧から選んだプロファイルなら `request` があってもそのプロファイルのもの。並びの外なら先頭のもの。
+/// プロファイルの相対パスのアイコンは `config_dir` から辿る。
 fn startup_for(
-    arguments: Option<&str>,
+    request: &TabRequest,
     profiles: &[Profile],
     default: usize,
     launch: Launch,
     config_dir: Option<&Path>,
 ) -> Startup {
-    let index = match (launch, arguments) {
-        (Launch::Default, Some(arguments)) => return Startup::conpty(arguments),
-        (Launch::Default, None) => default,
-        (Launch::Profile(index), _) => index,
+    let mut command = None;
+    let index = match launch {
+        Launch::Profile(index) => index,
+        Launch::Default => {
+            let named = request
+                .profile
+                .as_deref()
+                .and_then(|name| config::profile_position(profiles, name));
+            match (named, request.command.as_deref()) {
+                (Some(index), requested) => {
+                    command = requested;
+                    index
+                }
+                (None, Some(requested)) => return Startup::conpty(requested),
+                (None, None) => default,
+            }
+        }
     };
     let index = if index < profiles.len() { index } else { 0 };
-    match profiles.get(index) {
-        Some(profile) => Startup::from_profile(
-            profile,
-            TabIcon::for_profiles(profiles, config_dir).swap_remove(index),
-        ),
-        None => Startup::conpty(config::DEFAULT_COMMAND_LINE),
+    let Some(profile) = profiles.get(index) else {
+        return Startup::conpty(config::DEFAULT_COMMAND_LINE);
+    };
+    let mut startup = Startup::from_profile(
+        profile,
+        TabIcon::for_profiles(profiles, config_dir).swap_remove(index),
+    );
+    if let Some(command) = command {
+        command.clone_into(&mut startup.command_line);
     }
+    startup
 }
 
 /// 背景画像を選ぶ乱数の種。起動するたびに変わる。
@@ -213,12 +235,12 @@ fn random_seed() -> u64 {
 
 /// ウィンドウを開き、子プロセスを起動して、ウィンドウが閉じるまでメッセージを処理する。最後の端末の
 /// 子プロセスが終わってウィンドウを閉じたときはその終了コードを、利用者が最後の端末を閉じたときは 0 を
-/// 返す。`arguments` は fantermo の引数（子プロセスのコマンドライン）。`config_path` は設定ファイルの
-/// 場所で、`loaded` はそこから読んだ設定。読んだときの警告は、ウィンドウを出してから見せる。
+/// 返す。`options` は fantermo の引数。`config_path` は設定ファイルの
+/// 場所で、`loaded` はそこから読んだ設定。読んだときの警告と引数の指定の誤りは、ウィンドウを出してから見せる。
 /// `state_path` はウィンドウの状態ファイルの場所で、`state` はそこから読んだ状態。ウィンドウを見せる前に、
 /// 覚えていた位置・大きさに戻し（DPI が違えば桁数と行数が保たれるように換算する）、閉じるときに書く。
 pub fn run(
-    arguments: Option<String>,
+    options: Options,
     config_path: Option<PathBuf>,
     loaded: Loaded,
     state_path: Option<PathBuf>,
@@ -229,6 +251,7 @@ pub fn run(
         notice,
         notice_key,
     } = loaded;
+    let options_notice = options.notice(&config.profiles);
     let dwrite = font::create_factory()?;
     // SAFETY: 引数のない問い合わせ。
     let system_dpi = unsafe { GetDpiForSystem() };
@@ -265,7 +288,7 @@ pub fn run(
         system_dpi,
         config_path,
         config,
-        arguments,
+        options.tab,
     )?;
     app.state_path = state_path;
     app.settings_notice_key = notice_key;
@@ -297,6 +320,10 @@ pub fn run(
     // メッセージループの外なので、App の借用はない。
     if let Some(text) = notice {
         notice::warn(hwnd, Topic::Settings, text);
+    }
+    if let Some(text) = options_notice {
+        tracing::warn!("{text}");
+        notice::warn(hwnd, Topic::CommandLine, text);
     }
     Ok(message_loop())
 }
@@ -751,8 +778,8 @@ struct App {
     clipboard_read: ClipboardRead,
     /// 確認を待っているクリップボードの読み取りの依頼。
     clipboard_prompts: ReadPrompts<SessionId>,
-    /// fantermo の引数（子プロセスのコマンドライン）。
-    arguments: Option<String>,
+    /// fantermo の引数の、タブで起動するものの指定。
+    arguments: TabRequest,
     /// 設定のプロファイル。少なくとも一つある。
     profiles: Vec<Profile>,
     /// 設定の既定のプロファイルの名前。`None` なら先頭。
@@ -844,7 +871,7 @@ impl App {
         dpi: u32,
         config_path: Option<PathBuf>,
         config: Config,
-        arguments: Option<String>,
+        arguments: TabRequest,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let font_config = config.font;
         let (width, height) = client_size(hwnd);
@@ -870,7 +897,7 @@ impl App {
         let session = Session::spawn(
             first_id,
             &startup_for(
-                arguments.as_deref(),
+                &arguments,
                 &config.profiles,
                 config::default_profile_index(&config.profiles, config.default_profile.as_deref()),
                 Launch::Default,
@@ -1137,7 +1164,7 @@ impl App {
     fn open_session(&mut self, launch: Launch) {
         let id = SessionId(self.next_session_id);
         let startup = startup_for(
-            self.arguments.as_deref(),
+            &self.arguments,
             &self.profiles,
             self.default_profile_index(),
             launch,
@@ -3596,6 +3623,14 @@ mod tests {
 
     const NOTCH: i32 = WHEEL_DELTA as i32;
 
+    /// コマンドだけを指定した [`TabRequest`]。
+    fn command(line: Option<&str>) -> TabRequest {
+        TabRequest {
+            profile: None,
+            command: line.map(str::to_owned),
+        }
+    }
+
     #[test]
     fn window_titles_end_with_the_version() {
         assert_eq!(
@@ -3721,8 +3756,8 @@ mod tests {
     #[test]
     fn command_line_prefers_arguments_then_the_default_profile() {
         let profiles = [Profile::builtin(), Profile::from_shell("zsh -l")];
-        let line = |arguments, default, launch| {
-            let startup = startup_for(arguments, &profiles, default, launch, None);
+        let line = |arguments: Option<&str>, default, launch| {
+            let startup = startup_for(&command(arguments), &profiles, default, launch, None);
             assert_eq!(startup.backend, BackendKind::Conpty);
             startup.command_line
         };
@@ -3735,7 +3770,7 @@ mod tests {
         assert_eq!(line(None, 5, Launch::Default), "powershell.exe -NoLogo");
         assert_eq!(line(None, 0, Launch::Profile(7)), "powershell.exe -NoLogo");
         assert_eq!(
-            startup_for(None, &[], 0, Launch::Default, None),
+            startup_for(&TabRequest::default(), &[], 0, Launch::Default, None),
             Startup::conpty(config::DEFAULT_COMMAND_LINE)
         );
         // ブリッジのプロファイルは、接続先も渡す。
@@ -3745,7 +3780,7 @@ mod tests {
         };
         assert_eq!(
             startup_for(
-                Some("cmd.exe"),
+                &command(Some("cmd.exe")),
                 std::slice::from_ref(&wsl),
                 0,
                 Launch::Profile(0),
@@ -3763,14 +3798,54 @@ mod tests {
     }
 
     #[test]
+    fn a_named_profile_is_opened_with_the_requested_command() {
+        let wsl = Profile {
+            distribution: Some("Ubuntu".to_owned()),
+            ..Profile::new("u", "/bin/zsh", BackendKind::Wsl)
+        };
+        let profiles = [Profile::builtin(), wsl.clone()];
+        let startup = |profile: &str, requested: Option<&str>, launch| {
+            let request = TabRequest {
+                profile: Some(profile.to_owned()),
+                command: requested.map(str::to_owned),
+            };
+            startup_for(&request, &profiles, 0, launch, None)
+        };
+
+        let plain = startup("u", None, Launch::Default);
+        assert_eq!(plain.command_line, "/bin/zsh");
+        assert_eq!(plain.profile_name.as_deref(), Some("u"));
+
+        let with_command = startup("u", Some("vim"), Launch::Default);
+        assert_eq!(with_command.command_line, "vim");
+        assert_eq!(with_command.backend, BackendKind::Wsl);
+        assert_eq!(with_command.distribution.as_deref(), Some("Ubuntu"));
+        assert_eq!(with_command.profile_name.as_deref(), Some("u"));
+        assert_eq!(with_command.tab_icon, plain.tab_icon);
+
+        // 一覧から選んだプロファイルは、指定があってもそのプロファイルの `command`。
+        let chosen = startup("u", Some("vim"), Launch::Profile(0));
+        assert_eq!(chosen.command_line, config::DEFAULT_COMMAND_LINE);
+
+        // 名前の合うものがなければ、指定がなかったものとして決める。比較は完全一致。
+        let unknown = startup("U", None, Launch::Default);
+        assert_eq!(unknown.command_line, config::DEFAULT_COMMAND_LINE);
+        assert_eq!(
+            startup("U", Some("vim"), Launch::Default),
+            Startup::conpty("vim")
+        );
+    }
+
+    #[test]
     fn tabs_get_the_icon_of_their_profile() {
         let profiles = [Profile {
             icon: Some("zsh.png".to_owned()),
             ..Profile::new("zsh", "zsh -l", BackendKind::Cygwin)
         }];
         let folder = Path::new(r"C:\conf");
-        let icon =
-            |arguments, launch| startup_for(arguments, &profiles, 0, launch, Some(folder)).tab_icon;
+        let icon = |arguments: Option<&str>, launch| {
+            startup_for(&command(arguments), &profiles, 0, launch, Some(folder)).tab_icon
+        };
         let from_profile = TabIcon::for_profiles(&profiles, Some(folder)).remove(0);
         assert_eq!(icon(None, Launch::Default), from_profile);
         assert_eq!(from_profile.image, Some(folder.join("zsh.png")));
