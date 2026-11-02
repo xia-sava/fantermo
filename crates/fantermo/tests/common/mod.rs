@@ -124,6 +124,7 @@ impl Server {
     }
 
     /// [`Server::start`] と同じだが、起動する前に `environment` を一時フォルダで呼び、返した環境変数を付けて起動する。
+    /// 土台が付ける環境変数（`FANTERMO_DPI` など）も、これで上書きできる。
     pub fn start_with_environment(
         config_toml: &str,
         command: &[&str],
@@ -167,7 +168,6 @@ impl Server {
             launcher.env(CLIPBOARD_FILE_ENV, dir.join("clipboard.txt"));
         }
         let child = launcher
-            .envs(environment)
             .args(["--seconds", LIFETIME_SECONDS])
             .args(run_hidden_args)
             .arg("--")
@@ -183,6 +183,7 @@ impl Server {
             // git bash から実行したときの値を、端末の中のシェルへ渡さない。
             .env_remove("HOME")
             .env_remove("SHELL")
+            .envs(environment)
             .stdin(Stdio::null())
             .stdout(log)
             .stderr(log_for_stderr)
@@ -588,6 +589,11 @@ impl Picture {
             channels: info.color_type.samples(),
             bytes,
         }
+    }
+
+    /// 絵の幅と高さ。
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
     }
 
     /// `(x, y)` の画素の赤・緑・青。

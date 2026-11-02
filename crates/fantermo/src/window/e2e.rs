@@ -39,9 +39,9 @@ use windows::{
                 MFS_GRAYED, MFS_HILITE, MFT_SEPARATOR, MIIM_BITMAP, MIIM_FTYPE, MIIM_STATE,
                 MIIM_STRING, MIIM_SUBMENU, MN_GETHMENU, PostMessageW, SWP_NOACTIVATE, SWP_NOMOVE,
                 SWP_NOZORDER, SendMessageW, SetWindowPos, SetWindowTextW, WM_CAPTURECHANGED,
-                WM_CLOSE, WM_COMMAND, WM_ENDSESSION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-                WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NOTIFY,
-                WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP,
+                WM_CLOSE, WM_COMMAND, WM_ENDSESSION, WM_GETDPISCALEDSIZE, WM_KEYDOWN, WM_KEYUP,
+                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
+                WM_MOUSEWHEEL, WM_NOTIFY, WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP,
             },
         },
     },
@@ -49,8 +49,8 @@ use windows::{
 };
 
 use super::{
-    App, Deferred, Launch, SIZE, TabCommand, WithApp, client_size, client_size_for_terminal,
-    destroy_window, grid_pixels, run_deferred, tab_title,
+    App, Deferred, Launch, SIZE, TabCommand, WithApp, change_dpi_in_place, client_size,
+    client_size_for_terminal, destroy_window, grid_pixels, run_deferred, tab_title,
 };
 use crate::{
     clipboard,
@@ -236,10 +236,32 @@ fn send_window_message(hwnd: HWND, message: WindowMessage, wparam: usize) -> Res
         WindowMessage::EndSession => (WM_ENDSESSION, ENDSESSION_LOGOFF as isize),
         // lParam はキャプチャしたウィンドウ。このウィンドウではないことだけが意味を持つ。
         WindowMessage::CaptureChanged => (WM_CAPTURECHANGED, 0),
+        // 推奨の矩形は、桁数と行数が収まる大きさで左上を動かさない。枠はいまのウィンドウから取る。枠は別の DPI の
+        // メッセージでは変わらず、OS が決めるモニターの DPI のまま付くため。
+        WindowMessage::DpiChanged => {
+            change_dpi_in_place(hwnd, wparam as u32);
+            return Response::json(&json!({ "result": 0 }));
+        }
+        WindowMessage::GetDpiScaledSize => return get_dpi_scaled_size(hwnd, wparam),
     };
     // SAFETY: hwnd は有効なウィンドウ。ウィンドウプロシージャがこの場で動くが、借用は持っていない。
     let result = unsafe { SendMessageW(hwnd, id, Some(WPARAM(wparam)), Some(LPARAM(lparam))) };
     Response::json(&json!({ "result": result.0 }))
+}
+
+/// `WM_GETDPISCALEDSIZE` を DPI `dpi` で送り、戻り値と、ウィンドウプロシージャが書いた大きさを返す。
+fn get_dpi_scaled_size(hwnd: HWND, dpi: usize) -> Response {
+    let mut size = SIZE::default();
+    // SAFETY: hwnd は有効なウィンドウ。size は処理が終わるまで生きている。借用は持っていない。
+    let result = unsafe {
+        SendMessageW(
+            hwnd,
+            WM_GETDPISCALEDSIZE,
+            Some(WPARAM(dpi)),
+            Some(LPARAM(&raw mut size as isize)),
+        )
+    };
+    Response::json(&json!({ "result": result.0, "width": size.cx, "height": size.cy }))
 }
 
 /// `SetKeyboardState` の配列で、キーを押していることを示すビット。
@@ -1231,6 +1253,11 @@ impl App {
                 "image": background_image,
             },
             "pid": std::process::id(),
+            "dpi": self.dpi,
+            // SAFETY: self.hwnd は有効なウィンドウ。
+            "monitor_dpi": unsafe { GetDpiForWindow(self.hwnd) },
+            "font_size_px": self.font.size_px,
+            "ui_font_size_px": self.ui_font.size_px,
             "cols": size.cols,
             "rows": size.rows,
             "client_width": client_width,

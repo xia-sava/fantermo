@@ -63,6 +63,9 @@ const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
 /// 受け取る本文の上限。
 const MAX_BODY_LEN: usize = 16 << 20;
 
+/// `POST /e2e/message/dpichanged/<DPI>` で受ける DPI の上限。Windows の表示の倍率の上限（500%）より少し大きい値。
+const MAX_DPI: usize = 576;
+
 const STATUS_OK: u16 = 200;
 const STATUS_BAD_REQUEST: u16 = 400;
 const STATUS_FORBIDDEN: u16 = 403;
@@ -78,6 +81,11 @@ pub enum WindowMessage {
     EndSession,
     /// ほかのウィンドウがマウスをキャプチャした。
     CaptureChanged,
+    /// DPI が変わった。`<wParam>` の位置に新しい DPI を書く。推奨の矩形はウィンドウの側で作る。
+    DpiChanged,
+    /// DPI が変わる前に、変わったあとのウィンドウの大きさを問う。`<wParam>` の位置に新しい DPI を書く。答えの JSON に
+    /// `width` と `height` が入る。ウィンドウは変えない。
+    GetDpiScaledSize,
 }
 
 impl WindowMessage {
@@ -86,8 +94,15 @@ impl WindowMessage {
             "queryendsession" => Some(Self::QueryEndSession),
             "endsession" => Some(Self::EndSession),
             "capturechanged" => Some(Self::CaptureChanged),
+            "dpichanged" => Some(Self::DpiChanged),
+            "getdpiscaledsize" => Some(Self::GetDpiScaledSize),
             _ => None,
         }
+    }
+
+    /// `<wParam>` の位置に DPI を書くメッセージか。
+    fn takes_dpi(self) -> bool {
+        matches!(self, Self::DpiChanged | Self::GetDpiScaledSize)
     }
 }
 
@@ -505,6 +520,11 @@ fn parse_number<T: std::str::FromStr>(text: &str) -> Result<T, Response> {
 fn parse_message(name: &str, wparam: usize) -> Result<Request, Response> {
     let message = WindowMessage::from_name(name)
         .ok_or_else(|| Response::bad_request(format!("no such message: {name}")))?;
+    if message.takes_dpi() && !(1..=MAX_DPI).contains(&wparam) {
+        return Err(Response::bad_request(format!(
+            "{name} takes a DPI from 1 to {MAX_DPI}: {wparam}"
+        )));
+    }
     Ok(Request::SendMessage { message, wparam })
 }
 
@@ -636,9 +656,27 @@ mod tests {
                 wparam: 1,
             })
         );
+        assert_eq!(
+            parse("POST /e2e/message/dpichanged/144 HTTP/1.1\r\n\r\n"),
+            Ok(Request::SendMessage {
+                message: WindowMessage::DpiChanged,
+                wparam: 144,
+            })
+        );
+        assert_eq!(
+            parse("POST /e2e/message/getdpiscaledsize/192 HTTP/1.1\r\n\r\n"),
+            Ok(Request::SendMessage {
+                message: WindowMessage::GetDpiScaledSize,
+                wparam: 192,
+            })
+        );
         for request in [
             "POST /e2e/message/close HTTP/1.1\r\n\r\n",
             "POST /e2e/message/endsession/x HTTP/1.1\r\n\r\n",
+            "POST /e2e/message/dpichanged HTTP/1.1\r\n\r\n",
+            "POST /e2e/message/dpichanged/0 HTTP/1.1\r\n\r\n",
+            "POST /e2e/message/dpichanged/577 HTTP/1.1\r\n\r\n",
+            "POST /e2e/message/getdpiscaledsize HTTP/1.1\r\n\r\n",
         ] {
             assert_eq!(parse(request).unwrap_err().status, STATUS_BAD_REQUEST);
         }
