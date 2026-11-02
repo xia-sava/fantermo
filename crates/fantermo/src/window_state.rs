@@ -127,9 +127,8 @@ pub fn write_replacing(path: &Path, text: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// ウィンドウのいまの位置・大きさ・最大化と、ウィンドウが使っている DPI `dpi`。最小化していれば、最大化して
-/// いないものとする。
-pub fn current(hwnd: HWND, dpi: u32) -> Option<WindowState> {
+/// ウィンドウのいまの位置・大きさ・最大化。最小化していれば、最大化していないものとする。
+pub fn current(hwnd: HWND) -> Option<WindowState> {
     let mut placement = WINDOWPLACEMENT {
         length: size_of::<WINDOWPLACEMENT>() as u32,
         ..Default::default()
@@ -139,10 +138,10 @@ pub fn current(hwnd: HWND, dpi: u32) -> Option<WindowState> {
         tracing::warn!("failed to get the window placement: {e}");
         return None;
     }
-    Some(from_placement(&placement, dpi))
+    Some(from_placement(&placement))
 }
 
-fn from_placement(placement: &WINDOWPLACEMENT, dpi: u32) -> WindowState {
+fn from_placement(placement: &WINDOWPLACEMENT) -> WindowState {
     let rect = placement.rcNormalPosition;
     WindowState {
         left: rect.left,
@@ -150,7 +149,6 @@ fn from_placement(placement: &WINDOWPLACEMENT, dpi: u32) -> WindowState {
         width: rect.right - rect.left,
         height: rect.bottom - rect.top,
         maximized: placement.showCmd == SW_SHOWMAXIMIZED.0 as u32,
-        dpi: Some(dpi),
     }
 }
 
@@ -203,7 +201,6 @@ mod tests {
         width: 300,
         height: 200,
         maximized: true,
-        dpi: Some(144),
     };
 
     #[test]
@@ -273,14 +270,14 @@ mod tests {
             showCmd: SW_SHOWMAXIMIZED.0 as u32,
             ..placement
         };
-        assert_eq!(from_placement(&maximized, 144), WINDOW);
+        assert_eq!(from_placement(&maximized), WINDOW);
         for show in [SW_SHOWNORMAL, SW_SHOWMINIMIZED] {
             let placement = WINDOWPLACEMENT {
                 showCmd: show.0 as u32,
                 ..placement
             };
             assert_eq!(
-                from_placement(&placement, 144),
+                from_placement(&placement),
                 WindowState {
                     maximized: false,
                     ..WINDOW

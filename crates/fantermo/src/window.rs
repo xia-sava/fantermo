@@ -22,7 +22,7 @@ use fantermo_core::{
     frame::Rgb,
     keymap::{self, Keymap},
     link::Link,
-    state::{State, WindowState},
+    state::State,
     vt::{
         self, Key, KeyAction, KeyInput, Mods, MouseAction, MouseButton, MouseInput, PasteOutcome,
         PointerPosition, ScrollPosition,
@@ -65,12 +65,12 @@ use windows::{
                 SystemParametersInfoW, TranslateMessage, WA_INACTIVE, WHEEL_DELTA, WINDOW_EX_STYLE,
                 WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE,
                 WM_CONTEXTMENU, WM_COPYDATA, WM_DEADCHAR, WM_DESTROY, WM_DPICHANGED, WM_ENABLE,
-                WM_ENDSESSION, WM_EXITMENULOOP, WM_GETDPISCALEDSIZE, WM_IME_COMPOSITION,
-                WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN,
-                WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-                WM_NCDESTROY, WM_PAINT, WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP,
-                WM_SETCURSOR, WM_SIZE, WM_SYSCHAR, WM_SYSCOLORCHANGE, WM_SYSDEADCHAR,
-                WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+                WM_ENDSESSION, WM_EXITMENULOOP, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION,
+                WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+                WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT,
+                WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE,
+                WM_SYSCHAR, WM_SYSCOLORCHANGE, WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP,
+                WM_TIMER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -249,7 +249,7 @@ fn random_seed() -> u64 {
 /// 返す。`options` は fantermo の引数。`config_path` は設定ファイルの
 /// 場所で、`loaded` はそこから読んだ設定。読んだときの警告と引数の指定の誤りは、ウィンドウを出してから見せる。
 /// `state_path` はウィンドウの状態ファイルの場所で、`state` はそこから読んだ状態。ウィンドウを見せる前に、
-/// 覚えていた位置・大きさに戻し（DPI が違えば桁数と行数が保たれるように換算する）、閉じるときに書く。
+/// 覚えていた位置・大きさ（ピクセル）に戻し、閉じるときに書く。
 pub fn run(
     options: Options,
     config_path: Option<PathBuf>,
@@ -276,20 +276,8 @@ pub fn run(
         config.window.padding,
     )?;
     // 端末の桁数と行数を、戻した大きさから決めさせるため、App を作る前に戻す。
-    let saved = state.window;
-    if let Some(window) = &saved {
-        window_state::restore_hidden(hwnd, window);
-    }
-    // 戻した位置のモニタの DPI。戻すとモニタの作業領域に収められるので、換算は状態ファイルの値から行い、
-    // 換算したものを改めて戻す。
-    let window_dpi = dpi_from_env().unwrap_or_else(|| {
-        // SAFETY: hwnd は有効なウィンドウ。
-        unsafe { GetDpiForWindow(hwnd) }
-    });
-    let restored = saved.map(|window| window_at_dpi(hwnd, &dwrite, &config, window, window_dpi));
-    if let Some(window) = &restored
-        && restored != saved
-    {
+    let restored = state.window;
+    if let Some(window) = &restored {
         window_state::restore_hidden(hwnd, window);
     }
     let mut app = App::new(
@@ -312,12 +300,17 @@ pub fn run(
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, app as isize) };
 
     // ウィンドウを置いたモニタの DPI がシステムの DPI と違えば、DPI が変わったときと同じように作り直す。
+    // 覚えていた大きさがあればそのままにして、桁数と行数をその DPI のセルで決め直す。なければ、既定の
+    // 桁数と行数がその DPI でちょうど入る大きさにする。
+    let window_dpi = dpi_from_env().unwrap_or_else(|| {
+        // SAFETY: hwnd は有効なウィンドウ。
+        unsafe { GetDpiForWindow(hwnd) }
+    });
     if window_dpi != system_dpi {
-        change_dpi_in_place(hwnd, window_dpi);
-        // 作り直しは桁数と行数を保ってウィンドウの大きさを変えるので、覚えていた大きさに戻し直す。桁数と
-        // 行数は、届く WM_SIZE で新しいセルの寸法から決め直す。
-        if let Some(window) = &restored {
-            window_state::restore_hidden(hwnd, window);
+        if restored.is_some() {
+            change_dpi_keeping_window(hwnd, window_dpi);
+        } else {
+            change_dpi_keeping_grid(hwnd, window_dpi);
         }
     }
 
@@ -387,75 +380,19 @@ fn dpi_from_env() -> Option<u32> {
     }
 }
 
-/// 状態ファイルのウィンドウ `window` を、DPI が `dpi` のウィンドウに戻すものにする。書いたときと DPI が違えば、
-/// 桁数と行数が保たれる大きさに換算する。DPI が書かれていなければ、ピクセルのまま使う。
-fn window_at_dpi(
-    hwnd: HWND,
-    dwrite: &IDWriteFactory,
-    config: &Config,
-    window: WindowState,
-    dpi: u32,
-) -> WindowState {
-    let Some(saved_dpi) = window.dpi.filter(|&saved_dpi| saved_dpi != dpi) else {
-        return window;
-    };
-    match size_keeping_grid(hwnd, dwrite, config, &window, saved_dpi, dpi) {
-        Ok(size) => WindowState {
-            width: size.cx,
-            height: size.cy,
-            dpi: Some(dpi),
-            ..window
-        },
-        Err(e) => {
-            tracing::warn!(
-                "failed to convert the saved window size from {saved_dpi} DPI to {dpi} DPI: {e}"
-            );
-            window
-        }
-    }
-}
-
-/// DPI が `saved_dpi` のときの大きさ `window` に入る桁数と行数が、DPI が `dpi` のウィンドウにちょうど入る
-/// 大きさ（枠を含む）。
-fn size_keeping_grid(
-    hwnd: HWND,
-    dwrite: &IDWriteFactory,
-    config: &Config,
-    window: &WindowState,
-    saved_dpi: u32,
-    dpi: u32,
-) -> windows::core::Result<SIZE> {
-    let insets_at = |dpi: u32| Insets::new(dpi, config.scroll_bar.width, config.window.padding);
-    let frame = window_frame(hwnd);
-    // DPI_ENV で DPI を差し替えて書いたものなら、枠はそのときもウィンドウの実際の DPI で付いていた。
-    let saved_frame = if dpi_from_env().is_some() {
-        frame
-    } else {
-        window_size(SIZE::default(), saved_dpi)?
-    };
-    let area = terminal_area_in_client(
-        (window.width - saved_frame.cx).max(0) as u32,
-        (window.height - saved_frame.cy).max(0) as u32,
-        insets_at(saved_dpi),
-    );
-    let grid = grid_size(&load_font(dwrite, &config.font, saved_dpi)?, area);
-    let client = client_size_for_terminal(
-        grid_pixels(&load_font(dwrite, &config.font, dpi)?, grid.cols, grid.rows),
-        insets_at(dpi),
-    );
-    Ok(SIZE {
-        cx: client.cx + frame.cx,
-        cy: client.cy + frame.cy,
-    })
-}
-
-/// ウィンドウの枠の大きさ（ウィンドウの大きさとクライアント領域の大きさの差）。
-fn window_frame(hwnd: HWND) -> SIZE {
+/// ウィンドウの位置と大きさ（枠を含む、画面の座標）。
+fn window_rect(hwnd: HWND) -> RECT {
     let mut rect = RECT::default();
     // SAFETY: hwnd は有効なウィンドウで、rect は書き込める。
     if let Err(e) = unsafe { GetWindowRect(hwnd, &mut rect) } {
         tracing::warn!("failed to get the window position: {e}");
     }
+    rect
+}
+
+/// ウィンドウの枠の大きさ（ウィンドウの大きさとクライアント領域の大きさの差）。
+fn window_frame(hwnd: HWND) -> SIZE {
+    let rect = window_rect(hwnd);
     let (width, height) = client_size(hwnd);
     SIZE {
         cx: (rect.right - rect.left) - width as i32,
@@ -463,9 +400,31 @@ fn window_frame(hwnd: HWND) -> SIZE {
     }
 }
 
-/// ウィンドウの左上を動かさずに、DPI が `dpi` に変わったときの処理（フォントとアトラスの作り直し）を
-/// させる。桁数と行数は保つ。DPI が変わらず、フォントの設定が変わったときにも使う。
-fn change_dpi_in_place(hwnd: HWND, dpi: u32) {
+/// `WM_DPICHANGED` を推奨の矩形 `rect` を添えて送り、DPI が `dpi` に変わったときの処理（フォントと
+/// アトラスの作り直しと、`rect` への移動）をさせる。借用を持っていないときに呼ぶ。
+fn send_dpi_changed(hwnd: HWND, dpi: u32, rect: &RECT) {
+    // WM_DPICHANGED の wparam は、下位に横の DPI、上位に縦の DPI。
+    let wparam = WPARAM((dpi | (dpi << 16)) as usize);
+    // SAFETY: hwnd は有効なウィンドウ。rect は処理が終わるまで生きている。借用は持っていない。
+    unsafe {
+        SendMessageW(
+            hwnd,
+            WM_DPICHANGED,
+            Some(wparam),
+            Some(LPARAM(std::ptr::from_ref(rect) as isize)),
+        )
+    };
+}
+
+/// ウィンドウの位置と大きさを変えずに、DPI が `dpi` に変わったときの処理をさせる。桁数と行数は、いまの
+/// クライアント領域にその DPI のセルで入る数になる。
+fn change_dpi_keeping_window(hwnd: HWND, dpi: u32) {
+    send_dpi_changed(hwnd, dpi, &window_rect(hwnd));
+}
+
+/// ウィンドウの左上を動かさずに、DPI が `dpi` に変わったときの処理をさせる。大きさは、いまの桁数と行数が
+/// その DPI でちょうど入る大きさにする。覚えていた大きさがないときの起動に使う。
+fn change_dpi_keeping_grid(hwnd: HWND, dpi: u32) {
     let Some(app) = app_of(hwnd) else {
         return;
     };
@@ -477,27 +436,13 @@ fn change_dpi_in_place(hwnd: HWND, dpi: u32) {
             return;
         }
     };
-    let mut rect = RECT::default();
-    // SAFETY: hwnd は有効なウィンドウで、rect は書き込める。
-    if let Err(e) = unsafe { GetWindowRect(hwnd, &mut rect) } {
-        tracing::warn!("failed to get the window position: {e}");
-    }
+    let mut rect = window_rect(hwnd);
     // 枠の大きさは、いまのウィンドウの枠から取る。DPI_ENV で DPI を差し替えたときも、枠はウィンドウの実際の
     // DPI で付くため。
     let frame = window_frame(hwnd);
     rect.right = rect.left + client.cx + frame.cx;
     rect.bottom = rect.top + client.cy + frame.cy;
-    // WM_DPICHANGED の wparam は、下位に横の DPI、上位に縦の DPI。
-    let wparam = WPARAM((dpi | (dpi << 16)) as usize);
-    // SAFETY: hwnd は有効なウィンドウ。rect は処理が終わるまで生きている。借用は持っていない。
-    unsafe {
-        SendMessageW(
-            hwnd,
-            WM_DPICHANGED,
-            Some(wparam),
-            Some(LPARAM(&raw const rect as isize)),
-        )
-    };
+    send_dpi_changed(hwnd, dpi, &rect);
 }
 
 /// Windows のシステムの色。描くたびに問い合わせるので、システムの色が変わればそのまま従う。
@@ -2447,8 +2392,9 @@ impl App {
     }
 
     /// DPI が `dpi` に変わった。端末のフォントと UI のフォントを測り直し、グリフアトラスを作り直す。
-    /// 端末の大きさは、このあと届く WM_SIZE（[`App::on_resize`]）で合わせる。失敗したら前のフォントの
-    /// まま描く（UI のフォントだけを作れなければ、UI のフォントだけ前のまま）。
+    /// 端末の大きさは呼び出し元が合わせる（DPI の変更ではこのあと届く WM_SIZE の [`App::on_resize`]、
+    /// 設定の変更では [`App::apply_config`]）。失敗したら前のフォントのまま描く（UI のフォントだけを
+    /// 作れなければ、UI のフォントだけ前のまま）。
     fn apply_dpi(&mut self, dpi: u32) {
         self.dpi = dpi;
         let font = match load_font(&self.dwrite, &self.font_config, dpi) {
@@ -2481,21 +2427,16 @@ impl App {
         self.invalidate();
     }
 
-    /// 設定ファイルを読み直す。フォントの設定が変わっていて、そのフォントを測れたら設定を入れ替え、
-    /// 作り直しに使う DPI を返す。作り直しは借用を手放してから [`change_dpi_in_place`] で行う。
-    /// スクロールバーの幅や余白が変わったときも、端末の桁数と行数を保ってウィンドウの大きさを変えるので、
-    /// 同じく返す。
-    /// グリフの描き方だけが変わったときは、セルの寸法は変わらないので、この場でアトラスだけを作り直す。
-    /// 貼り付けの設定はすぐに入れ替える。プロファイルは次に開く端末から使う。
+    /// 設定ファイルを読み直し、[`App::apply_config`] で入れ替える。
     /// エラーがあれば、それを見せることを返す（借用を手放してから [`run_deferred`] で見せる）。前に読んだ
     /// ときと同じエラーなら見せない。エラーがなければ、設定の警告を取り下げる（開いているメッセージボックス
     /// も閉じさせる）。
     ///
     /// 設定ダイアログを開いている間は読まず、閉じてから読む。
-    fn reload_config(&mut self) -> (Option<u32>, Option<Deferred>) {
+    fn reload_config(&mut self) -> Option<Deferred> {
         if self.settings_dialog_open {
             self.reload_pending = true;
-            return (None, None);
+            return None;
         }
         let Loaded {
             config,
@@ -2514,12 +2455,17 @@ impl App {
             }
         };
         self.settings_notice_key = notice_key;
-        (self.apply_config(config), warn)
+        self.apply_config(config);
+        warn
     }
 
-    /// 読み直した設定、または設定ダイアログで編集中の設定を入れ替える。作り直しが要れば、その DPI を
-    /// 返す（[`App::reload_config`]）。
-    fn apply_config(&mut self, config: Config) -> Option<u32> {
+    /// 読み直した設定、または設定ダイアログで編集中の設定を入れ替える。
+    ///
+    /// フォントの設定が変わっていて、そのフォントを測れたら、フォントとアトラスを作り直す。フォント、
+    /// スクロールバーの幅、余白が変わったら、ウィンドウの位置と大きさは変えず、いまのクライアント領域で
+    /// 端末の桁数と行数を決め直す。グリフの描き方だけが変わったときは、セルの寸法は変わらないので、
+    /// アトラスだけを作り直す。貼り付けの設定はすぐに入れ替える。プロファイルは次に開く端末から使う。
+    fn apply_config(&mut self, config: Config) {
         self.paste_config = config.paste;
         self.clipboard_read = config.clipboard.read;
         self.profiles = config.profiles;
@@ -2552,10 +2498,18 @@ impl App {
         self.scroll_bar_width = config.scroll_bar.width;
         self.padding = config.window.padding;
         let font_changed = self.apply_font_config(config.font);
-        (font_changed || insets_changed).then_some(self.dpi)
+        if font_changed {
+            self.apply_dpi(self.dpi);
+        }
+        if font_changed || insets_changed {
+            let (width, height) = client_size(self.hwnd);
+            self.layout(width, height);
+            self.invalidate();
+        }
     }
 
-    /// 読み直したフォントの設定を入れ替える。フォントを測り直す作り直しが要れば `true`。
+    /// 読み直したフォントの設定を入れ替える。フォントを測り直す作り直しが要れば `true`（作り直しは
+    /// 呼び出し元が行う）。
     fn apply_font_config(&mut self, font: FontConfig) -> bool {
         if font == self.font_config {
             return false;
@@ -2653,11 +2607,6 @@ impl App {
             grid_pixels(&font, size.cols, size.rows),
             self.insets(dpi),
         ))
-    }
-
-    /// DPI が `dpi` に変わったときに、いまの桁数と行数がそのまま収まるウィンドウの大きさ（枠を含む）。
-    fn scaled_window_size(&self, dpi: u32) -> windows::core::Result<SIZE> {
-        window_size(self.scaled_client_size(dpi)?, dpi)
     }
 
     fn render(&mut self) {
@@ -3094,21 +3043,15 @@ fn run_menu_command(command: MenuCommand, with_app: &WithApp) -> Option<Deferred
     next
 }
 
-/// 設定ファイルを読み直し、フォントやスクロールバーの幅が変わっていれば作り直す。エラーがあれば見せる。
+/// 設定ファイルを読み直して入れ替える。エラーがあれば見せる。
 fn reload_settings(hwnd: HWND, with_app: &WithApp) {
-    let mut reloaded = (None, None);
-    with_app(&mut |app| reloaded = app.reload_config());
-    let (rebuild_dpi, deferred) = reloaded;
-    // WM_DPICHANGED をこの場で送るので、借用を手放してから呼ぶ。
-    if let Some(dpi) = rebuild_dpi {
-        change_dpi_in_place(hwnd, dpi);
-    }
+    let mut deferred = None;
+    with_app(&mut |app| deferred = app.reload_config());
     run_deferred(hwnd, deferred, with_app);
 }
 
 /// 設定ダイアログの編集を端末と設定ファイルにつなぐもの。
 struct SettingsHost<'a, 'b> {
-    hwnd: HWND,
     with_app: &'a WithApp<'b>,
     config_path: PathBuf,
     /// 「OK」か「適用」で保存した。
@@ -3117,12 +3060,7 @@ struct SettingsHost<'a, 'b> {
 
 impl settings_dialog::Host for SettingsHost<'_, '_> {
     fn preview(&mut self, config: &Config) {
-        let mut rebuild_dpi = None;
-        (self.with_app)(&mut |app| rebuild_dpi = app.apply_config(config.clone()));
-        // WM_DPICHANGED をこの場で送るので、借用を手放してから呼ぶ。
-        if let Some(dpi) = rebuild_dpi {
-            change_dpi_in_place(self.hwnd, dpi);
-        }
+        (self.with_app)(&mut |app| app.apply_config(config.clone()));
     }
 
     fn save(&mut self, base: &Config, edited: &Config) -> Result<(), String> {
@@ -3149,7 +3087,6 @@ fn edit_settings(hwnd: HWND, with_app: &WithApp) {
         return;
     };
     let mut host = SettingsHost {
-        hwnd,
         with_app,
         config_path,
         saved: false,
@@ -3183,8 +3120,8 @@ fn save_window_state(hwnd: HWND) {
     let Some(app) = app_of(hwnd) else {
         return;
     };
-    let (path, dpi) = match app.try_borrow() {
-        Ok(app) => (app.state_path.clone(), app.dpi),
+    let path = match app.try_borrow() {
+        Ok(app) => app.state_path.clone(),
         Err(e) => {
             tracing::warn!("not saving the window state: {e}");
             return;
@@ -3193,7 +3130,7 @@ fn save_window_state(hwnd: HWND) {
     let Some(path) = path else {
         return;
     };
-    let Some(window) = window_state::current(hwnd, dpi) else {
+    let Some(window) = window_state::current(hwnd) else {
         return;
     };
     window_state::save(
@@ -3657,23 +3594,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
-        // DPI が変わる前に、変わった後のウィンドウの大きさを問われる。いまの桁数と行数が収まる大きさを
-        // 返す。
-        WM_GETDPISCALEDSIZE => {
-            let dpi = wparam.0 as u32;
-            let mut scaled = None;
-            with_app(&mut |app| match app.scaled_window_size(dpi) {
-                Ok(size) => scaled = Some(size),
-                Err(e) => tracing::warn!("failed to compute the window size for {dpi} DPI: {e}"),
-            });
-            let Some(scaled) = scaled else {
-                // 0 を返すと、Windows がウィンドウの大きさを DPI の比で拡大する。
-                return LRESULT(0);
-            };
-            // SAFETY: WM_GETDPISCALEDSIZE の lparam は、新しい大きさを書き込む SIZE を指す。
-            unsafe { *(lparam.0 as *mut SIZE) = scaled };
-            LRESULT(1)
-        }
+        // 変わった後のウィンドウの大きさ（WM_GETDPISCALEDSIZE）は既定の処理に任せ、Windows が DPI の比で
+        // 拡大・縮小した大きさを推奨の矩形として受け取る。
         WM_DPICHANGED => {
             // フォントとアトラスを作り直してから、推奨された位置と大きさに移す。移すとこの場で
             // WM_SIZE が届き、新しいセルの寸法で桁数と行数を計算し直す。

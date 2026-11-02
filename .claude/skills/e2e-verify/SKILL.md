@@ -36,7 +36,7 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
 
 | 要求 | すること |
 |---|---|
-| `GET /e2e/state` | JSON: `pid` `hwnd`（同じデスクトップからしか使えない）`dpi`（ウィンドウが使っている DPI）`monitor_dpi`（`GetDpiForWindow`。OS が決める）`font_size_px` `ui_font_size_px` `cols` `rows` `client_width` `client_height` `terminal_x` `terminal_y` `cell_width` `cell_height` `active` `tabs`（`title` `profile` `cols` `rows` `bell`）`profiles`（名前）`dialogs`（`class` `title` `controls`）`images`（画面に出ている画像の数）`window`（`state.toml` と同じ `left` `top` `width` `height` `maximized` `dpi`）`background`（背景画像を敷く範囲の `x` `y` `width` `height` と、表示しているタブが選んだ画像の名前 `image`）`selection`（選択範囲の文字列。なければ `null`）`mouse_tracking`（アプリがマウスを求めているか）`scroll`（`total` `offset` `len` と、ホイール 1 ノッチの行数 `lines_per_notch`）`scroll_bar`（`x` `y` `width` `height`、つまみ `thumb` の `top` `length`（なければ `null`）、押している間だけ真の `pressed`）`tab_bar`（`menu` `new_tab` `profiles` の範囲と、描いているタブ `tabs` の `index` `area` `close`）`window_enabled`（ウィンドウが入力を受けるか。ダイアログの間は偽）`window_title` `version` `text`（スクロールバックを含む全体の文字） |
+| `GET /e2e/state` | JSON: `pid` `hwnd`（同じデスクトップからしか使えない）`dpi`（ウィンドウが使っている DPI）`monitor_dpi`（`GetDpiForWindow`。OS が決める）`font_size_px` `ui_font_size_px` `cols` `rows` `client_width` `client_height` `terminal_x` `terminal_y` `cell_width` `cell_height` `active` `tabs`（`title` `profile` `cols` `rows` `bell`）`profiles`（名前）`dialogs`（`class` `title` `controls`）`images`（画面に出ている画像の数）`window`（`state.toml` と同じ `left` `top` `width` `height` `maximized`）`background`（背景画像を敷く範囲の `x` `y` `width` `height` と、表示しているタブが選んだ画像の名前 `image`）`selection`（選択範囲の文字列。なければ `null`）`mouse_tracking`（アプリがマウスを求めているか）`scroll`（`total` `offset` `len` と、ホイール 1 ノッチの行数 `lines_per_notch`）`scroll_bar`（`x` `y` `width` `height`、つまみ `thumb` の `top` `length`（なければ `null`）、押している間だけ真の `pressed`）`tab_bar`（`menu` `new_tab` `profiles` の範囲と、描いているタブ `tabs` の `index` `area` `close`）`window_enabled`（ウィンドウが入力を受けるか。ダイアログの間は偽）`window_title` `version` `text`（スクロールバックを含む全体の文字） |
 | `GET /e2e/frame` | いまの画面の PNG |
 | `POST /e2e/input` | 本文のバイト列をそのままバックエンドへ |
 | `POST /e2e/text` | 本文の文字を `WM_CHAR` と同じ経路で（制御文字は送らない。Enter は `key`） |
@@ -56,7 +56,7 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
 | `POST /e2e/dialog/key/<組み合わせ>` | ダイアログのループへキーを積む（フォーカスのあるコントロール宛ての `WM_KEYDOWN`）。キーを読み取るダイアログ、Esc、Enter |
 | `POST /e2e/dialog/close` | ダイアログの × を押す（`WM_CLOSE`を積む）。OK だけのメッセージボックスも閉じる |
 | `GET /e2e/clipboard`、`POST /e2e/clipboard` | クリップボードの文字列を読む（JSON の `text`）・置き換える |
-| `POST /e2e/message/<名前>`、`/e2e/message/<名前>/<wParam>` | ウィンドウにメッセージを `SendMessageW` で送り、戻り値を JSON の `result` で返す。名前は `queryendsession`、`endsession`、`capturechanged`（`WM_` を除いた小文字。`lParam` はメッセージごとに決まっている）。`dpichanged/<DPI>` は `<wParam>` の位置に DPI を書く（1〜576。推奨の矩形はウィンドウの側で作る）。`getdpiscaledsize/<DPI>` は `WM_GETDPISCALEDSIZE` を送り、答えに `width` `height` が入る |
+| `POST /e2e/message/<名前>`、`/e2e/message/<名前>/<wParam>` | ウィンドウにメッセージを `SendMessageW` で送り、戻り値を JSON の `result` で返す。名前は `queryendsession`、`endsession`、`capturechanged`（`WM_` を除いた小文字。`lParam` はメッセージごとに決まっている）。`dpichanged/<DPI>` は `<wParam>` の位置に DPI を書く（1〜576。推奨の矩形はウィンドウの側で、Windows と同じく左上を動かさずにクライアント領域を DPI の比で拡大・縮小して作る。枠はいまの大きさのまま）。`getdpiscaledsize/<DPI>` は `WM_GETDPISCALEDSIZE` を送り、答えに `width` `height`（書かれなければ 0）が入る |
 | `POST /e2e/mouse` | 本文の各行のマウスの操作を、続けて `SendMessageW` で送る。行の形は `<操作> <x> <y> [押しているもの…]`。操作は `move`、`left-down`、`left-up`、`middle-down`、`middle-up`、`right-down`、`right-up`、`wheel:<回転量>`（1 ノッチが 120、奥が正）。座標はクライアント座標（ウィンドウの外を指す負の値も書ける）。押しているものは `left` `middle` `right` `shift` `ctrl` `alt` |
 | `GET /e2e/menu` | JSON: 開いているメニューの `items`（`text`（`&` とキーの組み合わせの前のタブを含む）`separator` `enabled` `checked` `highlighted` `submenu` `icon`）。開いていなければ 400 |
 | `POST /e2e/menu/highlight/<位置>` | メニューのループへ上下の矢印のキーを送って、その項目へ移る。区切りと並びの外は 400 |
@@ -105,7 +105,8 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
   - モニターの DPI で起動するのは、`start_with_environment` で `FANTERMO_DPI` を空にする（読めない値は無視する）。
   - モニターの DPI は変えられない。変わるのは `WM_DPICHANGED` に反応する部分（セル、フォント、余白、タブバー、スクロールバー、アイコン）だけで、ウィンドウの枠と、`GetDpiForWindow` を読むダイアログ（設定、文字のダイアログ）はモニターの DPI のまま。`monitor_dpi` と `dpi` の両方を見る。手元は 192、ランナーは 96 なので、`monitor_dpi` と同じ DPI のときだけ成り立つことは、それで分ける。
   - 寸法は固定せず、状態の値から求める（タブバーの高さは `background` の `y`、余白は `terminal_x`）。比べるときの基準は 96 DPI で読んだ値。フォントの測り直しは `at <DPI> DPI: cell` のログの行で分かる。
-  - 192 DPI でも 1024×768 に収まるよう、先に `resize(DPI_TEST_GRID)` で小さくする。`change_dpi` が収まることを確認する。既定の 100×30 のままだと手元で通ってランナーで桁数が減る。
+  - 192 DPI でも 1024×768 に収まるよう、先に `resize(DPI_TEST_GRID)` で小さくする。`change_dpi` が収まることを確認する。既定の 100×30 のままだと手元で通ってランナーで OS がウィンドウを切り詰める。
+  - DPI を変えるとウィンドウは DPI の比で拡大・縮小し、桁数と行数はその中に入る数になる（セルの丸め方はフォントで違うので、変わる数は固定しない）。設定でフォント・スクロールバーの幅・余白を変えてもウィンドウは動かない。どちらも `assert_layout_fits_the_client`（桁数と行数がクライアント領域から求めた数）で見る。セルで割り切れない大きさは `start_uneven`（`state.toml` に `UNEVEN_WINDOW`）で起動する。
   - 描画は背景色のセルの四隅と外側（`assert_painted_cells_are_where_the_state_says`）で見る。文字の画素は、ヒンティングで DPI の比ちょうどにならないので、インクの範囲に許容の幅を持たせる。
 - メッセージを足す: `WindowMessage` に足し、`send_window_message` で `lParam` を決める。`SendMessageW` はこの場でウィンドウプロシージャを動かすので、借用の外（`window/e2e.rs` の `run`）から送る。借用の中だと状態を書く処理などが黙って飛ばされる。
 - 更新の確認: `ReleaseSource`（`common/release_host.rs` の `ReleaseHost` と `common/signing.rs` の `SigningKey`）がテストの配布元で、`start_fantermo(いまのバージョン)` で起動する。`ReleaseHost` は `127.0.0.1` の HTTP で、`publish` で `latest.json`・署名・配布物のダミーを置き、`host.set` で答え（`Reply`。ステータス、切れた本体、大きな本体、答えない、`Gate` が開くまで止める）を変える。一つの fantermo で答えを変えて順に確認する。署名は `tools/manifest.sh` と同じ形（SHA256withECDSA の DER を base64 にした 1 行）で、鍵はテストの実行中に CNG で作り、ファイルに書かない。リポジトリの署名の鍵は使わない。

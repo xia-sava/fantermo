@@ -45,15 +45,9 @@ use fantermo_core::{
 };
 use serde_json::Value;
 use windows::Win32::{
-    Foundation::{HWND, LPARAM, RECT, WPARAM},
+    Foundation::{HWND, LPARAM, WPARAM},
     System::DataExchange::COPYDATASTRUCT,
-    UI::{
-        HiDpi::AdjustWindowRectExForDpi,
-        WindowsAndMessaging::{
-            SMTO_ABORTIFHUNG, SendMessageTimeoutW, WINDOW_EX_STYLE, WM_COPYDATA,
-            WS_OVERLAPPEDWINDOW,
-        },
-    },
+    UI::WindowsAndMessaging::{SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_COPYDATA},
 };
 
 /// `Server::start_cmd` のプロンプト。
@@ -1180,8 +1174,6 @@ const CMD_COMMAND: [&str; 4] = ["cmd.exe", "/k", "prompt", "e2e$G"];
 const DEFAULT_GRID: (u64, u64) = (100, 30);
 /// 読めなかった状態のファイルを写す先の名前。
 const BROKEN_STATE_FILE: &str = "state.toml.broken";
-/// [`Server`] が既定で付ける `FANTERMO_DPI` の値。これを書いた状態のファイルは換算しない。
-const STATE_TEST_DPI: u32 = 96;
 
 /// 状態のファイルの `[window]`。ファイルがなかったり読めなければ失敗にする。
 #[track_caller]
@@ -1256,7 +1248,6 @@ fn the_window_position_comes_back_and_is_written_again() {
         width: 700,
         height: 480,
         maximized: false,
-        dpi: Some(STATE_TEST_DPI),
     };
     let (mut server, state) = start_with_state(state::to_toml(&seeded_state(WINDOW)).as_bytes());
     assert_eq!(current_window(&state), WINDOW);
@@ -1273,7 +1264,6 @@ fn a_maximized_window_comes_back_maximized_and_keeps_its_normal_size() {
         width: 700,
         height: 480,
         maximized: true,
-        dpi: Some(STATE_TEST_DPI),
     };
     let (mut server, state) = start_with_state(state::to_toml(&seeded_state(WINDOW)).as_bytes());
     assert_eq!(current_window(&state), WINDOW);
@@ -1290,6 +1280,103 @@ fn seeded_state(window: WindowState) -> State {
     State {
         window: Some(window),
     }
+}
+
+/// セルで割り切れない大きさのウィンドウ（枠を含むピクセル）。
+const UNEVEN_WINDOW: WindowState = WindowState {
+    left: 10,
+    top: 20,
+    width: 411,
+    height: 291,
+    maximized: false,
+};
+
+/// 設定 `config` と `state.toml` の [`UNEVEN_WINDOW`] で `command` を起動し、プロンプト `prompt` が出るのを待つ。端末を
+/// 描く領域がセルで割り切れないことを確認する。
+fn start_uneven(config: &str, command: &[&str], prompt: &str) -> (Server, Value) {
+    let saved = state::to_toml(&seeded_state(UNEVEN_WINDOW));
+    let server = Server::start_with_setup(config, command, |dir| {
+        std::fs::write(dir.join(common::STATE_FILE), &saved).expect("failed to write the state");
+    });
+    let state = server.wait_text(prompt);
+    assert_eq!(current_window(&state), UNEVEN_WINDOW, "{state:#}");
+    let (width, height) = terminal_pixels(&state);
+    assert!(
+        width % number(&state["cell_width"]) != 0 || height % number(&state["cell_height"]) != 0,
+        "the window fits the cells: {state:#}"
+    );
+    (server, state)
+}
+
+/// 端末を描く領域の大きさ（ピクセル）。クライアント領域からタブバー・スクロールバー・余白を除いたもの。
+fn terminal_pixels(state: &Value) -> (u64, u64) {
+    let padding = number(&state["terminal_x"]);
+    (
+        number(&state["client_width"]) - number(&state["scroll_bar"]["width"]) - 2 * padding,
+        number(&state["client_height"]) - number(&state["background"]["y"]) - 2 * padding,
+    )
+}
+
+/// 桁数と行数が、いまのクライアント領域の端末を描く領域にセルで入る数で、タブバー・スクロールバー・背景画像の範囲が
+/// クライアント領域に合っていることを確認する。どのタブも同じ桁数と行数。
+#[track_caller]
+fn assert_layout_fits_the_client(state: &Value) {
+    let padding = number(&state["terminal_x"]);
+    let tab_bar = number(&state["background"]["y"]);
+    let bar_width = number(&state["scroll_bar"]["width"]);
+    let client_width = number(&state["client_width"]);
+    let client_height = number(&state["client_height"]);
+    let (width, height) = terminal_pixels(state);
+    assert_eq!(
+        number(&state["cols"]),
+        width / number(&state["cell_width"]),
+        "{state:#}"
+    );
+    assert_eq!(
+        number(&state["rows"]),
+        height / number(&state["cell_height"]),
+        "{state:#}"
+    );
+    for tab in state["tabs"].as_array().expect("no tabs") {
+        assert_eq!(tab["cols"], state["cols"], "{state:#}");
+        assert_eq!(tab["rows"], state["rows"], "{state:#}");
+    }
+    assert_eq!(number(&state["terminal_y"]), tab_bar + padding, "{state:#}");
+    assert_eq!(
+        number(&state["scroll_bar"]["x"]),
+        client_width - bar_width,
+        "{state:#}"
+    );
+    assert_eq!(
+        number(&state["scroll_bar"]["y"]),
+        tab_bar + padding,
+        "{state:#}"
+    );
+    assert_eq!(number(&state["scroll_bar"]["height"]), height, "{state:#}");
+    assert_eq!(number(&state["background"]["x"]), 0, "{state:#}");
+    assert_eq!(
+        number(&state["background"]["width"]),
+        client_width - bar_width,
+        "{state:#}"
+    );
+    assert_eq!(
+        number(&state["background"]["height"]),
+        client_height - tab_bar,
+        "{state:#}"
+    );
+}
+
+/// PowerShell に端末の大きさを `tag` を添えて出させ、`state` の桁数と行数が届いていることを確認する。
+#[track_caller]
+fn assert_the_shell_sees_the_grid(server: &Server, state: &Value, tag: &str) {
+    server.type_line(&format!(
+        "\"{tag}-[$($Host.UI.RawUI.WindowSize.Width)x$($Host.UI.RawUI.WindowSize.Height)]\""
+    ));
+    server.wait_text(&format!(
+        "{tag}-[{}x{}]",
+        number(&state["cols"]),
+        number(&state["rows"])
+    ));
 }
 
 #[test]
@@ -4490,15 +4577,16 @@ fn start_settings_test_with_images(config: &str, images: &[&str]) -> Server {
 }
 
 /// 外観のページを変えると端末にすぐ反映するが、設定ファイルは「OK」まで変わらない。「OK」で変えた項目が入る。
+/// ウィンドウの位置と大きさは変わらず、桁数と行数がいまのクライアント領域に合わせて変わる。
 #[test]
 fn the_appearance_page_previews_at_once_and_ok_writes_it() {
     let original = format!(
         "{ONE_PROFILE}[font]\nfamily = [\"Consolas\"]\nsize = 11\n\n[scroll_bar]\nwidth = 12\n\n[window]\npadding = 4\n"
     );
     let server = start_settings_test(&original);
-    // フォントを大きくしてもランナーの画面（1024×768）に収まる大きさから始める。
     server.resize(50, 15);
     let before = server.state();
+    let window = current_window(&before);
     let dialog = open_settings(&server);
     assert_eq!(server.state()["window_enabled"], false);
 
@@ -4508,19 +4596,27 @@ fn the_appearance_page_previews_at_once_and_ok_writes_it() {
     let taller = server.wait_until("taller cells", |state| {
         number(&state["cell_height"]) > number(&before["cell_height"])
     });
-    // 桁数と行数を保ってウィンドウの大きさが変わる。
-    assert_eq!(taller["cols"], before["cols"], "{taller:#}");
-    assert_eq!(taller["rows"], before["rows"], "{taller:#}");
+    assert_eq!(current_window(&taller), window, "{taller:#}");
+    assert!(
+        number(&taller["cols"]) < number(&before["cols"])
+            && number(&taller["rows"]) < number(&before["rows"]),
+        "{taller:#}"
+    );
+    assert_layout_fits_the_client(&taller);
 
     set_text(&server, ID_SCROLL_BAR_WIDTH, "30");
-    server.wait_until("the wider scroll bar", |state| {
+    let wider = server.wait_until("the wider scroll bar", |state| {
         state["scroll_bar"]["width"] == 30
     });
+    assert_eq!(current_window(&wider), window, "{wider:#}");
+    assert_layout_fits_the_client(&wider);
     set_text(&server, ID_PADDING, "16");
     let padding_grew = number(&before["terminal_x"]) + 12;
-    server.wait_until("the wider padding", |state| {
+    let padded = server.wait_until("the wider padding", |state| {
         number(&state["terminal_x"]) == padding_grew
     });
+    assert_eq!(current_window(&padded), window, "{padded:#}");
+    assert_layout_fits_the_client(&padded);
     choose_radio(&server, ID_WIDE_GLYPH + 2);
 
     // 一覧の別のフォントを選ぶ。ランナーに一つしかなければ選ばない。
@@ -4554,7 +4650,38 @@ fn the_appearance_page_previews_at_once_and_ok_writes_it() {
         state["window_enabled"] == true
     });
     assert_eq!(state["scroll_bar"]["width"], 30, "{state:#}");
+    assert_eq!(current_window(&state), window, "{state:#}");
     check_terminal_still_works(&server, "after-ok");
+}
+
+/// 試し表示のあいだも「キャンセル」で戻したあとも、ウィンドウの位置と大きさは 1 ピクセルも変わらない。桁数と行数は
+/// 元に戻る。セルで割り切れない大きさのウィンドウで確認する。
+#[test]
+fn the_preview_and_cancel_keep_the_window_rect() {
+    let (server, before) = start_uneven(
+        &format!("{ONE_PROFILE}[font]\nfamily = [\"Consolas\"]\nsize = 11\n"),
+        &[],
+        CMD_PROMPT,
+    );
+    let window = current_window(&before);
+    open_settings(&server);
+
+    set_text(&server, ID_SIZE, "20");
+    let previewed = server.wait_until("taller cells", |state| {
+        number(&state["cell_height"]) > number(&before["cell_height"])
+    });
+    assert_eq!(current_window(&previewed), window, "{previewed:#}");
+    assert_ne!(previewed["rows"], before["rows"], "{previewed:#}");
+    assert_layout_fits_the_client(&previewed);
+
+    press_cancel(&server);
+    let state = server.wait_until("the cells back", |state| {
+        state["cell_height"] == before["cell_height"] && state["window_enabled"] == true
+    });
+    assert_eq!(current_window(&state), window, "{state:#}");
+    assert_eq!(state["cols"], before["cols"], "{state:#}");
+    assert_eq!(state["rows"], before["rows"], "{state:#}");
+    assert_layout_fits_the_client(&state);
 }
 
 /// 「適用」は書いて開いたまま。そのあとの「キャンセル」は適用したときへ戻す。
@@ -6825,53 +6952,27 @@ fn tab_bar_height(state: &Value) -> u64 {
     number(&state["background"]["y"])
 }
 
-/// `state` の余白・タブバー・スクロールバー・背景画像の範囲が、桁数と行数のセルにちょうど合うことを確認する。
+/// `state` のクライアント領域が、`previous` のクライアント領域を DPI の比で拡大・縮小した大きさで（丸めの分の差は
+/// 許す）、ウィンドウの左上と枠の大きさは変わらないことを確認する。
 #[track_caller]
-fn assert_layout_fits_the_grid(state: &Value) {
-    let padding = number(&state["terminal_x"]);
-    let tab_bar = tab_bar_height(state);
-    let bar_width = number(&state["scroll_bar"]["width"]);
-    let grid_width = number(&state["cols"]) * number(&state["cell_width"]);
-    let grid_height = number(&state["rows"]) * number(&state["cell_height"]);
-    let client_width = number(&state["client_width"]);
-    let client_height = number(&state["client_height"]);
-    assert_eq!(number(&state["terminal_y"]), tab_bar + padding, "{state:#}");
-    assert_eq!(
-        client_width,
-        grid_width + 2 * padding + bar_width,
-        "{state:#}"
-    );
-    assert_eq!(
-        client_height,
-        tab_bar + grid_height + 2 * padding,
-        "{state:#}"
-    );
-    assert_eq!(
-        number(&state["scroll_bar"]["x"]),
-        client_width - bar_width,
-        "{state:#}"
-    );
-    assert_eq!(
-        number(&state["scroll_bar"]["y"]),
-        tab_bar + padding,
-        "{state:#}"
-    );
-    assert_eq!(
-        number(&state["scroll_bar"]["height"]),
-        grid_height,
-        "{state:#}"
-    );
-    assert_eq!(number(&state["background"]["x"]), 0, "{state:#}");
-    assert_eq!(
-        number(&state["background"]["width"]),
-        client_width - bar_width,
-        "{state:#}"
-    );
-    assert_eq!(
-        number(&state["background"]["height"]),
-        client_height - tab_bar,
-        "{state:#}"
-    );
+fn assert_window_scaled(state: &Value, previous: &Value) {
+    let (from, to) = (number(&previous["dpi"]), number(&state["dpi"]));
+    for name in ["client_width", "client_height"] {
+        let (value, base) = (number(&state[name]), number(&previous[name]));
+        assert!(
+            (value * from).abs_diff(base * to) <= SCALE_TOLERANCE * from,
+            "{name}: {value} at {to} DPI, {base} at {from} DPI"
+        );
+    }
+    let (window, before) = (current_window(state), current_window(previous));
+    assert_eq!((window.left, window.top), (before.left, before.top));
+    let frame = |window: &WindowState, state: &Value| {
+        (
+            i64::from(window.width) - i64::try_from(number(&state["client_width"])).unwrap(),
+            i64::from(window.height) - i64::try_from(number(&state["client_height"])).unwrap(),
+        )
+    };
+    assert_eq!(frame(&window, state), frame(&before, previous), "{state:#}");
 }
 
 /// `value` が、96 DPI のときの `base` を `dpi` に比例させた値と `tolerance` ピクセルの差の中にあることを確認する。
@@ -6936,10 +7037,10 @@ fn start_at_dpi(dpi: u64, saved: &[u8]) -> (Server, Value) {
     (server, state)
 }
 
-/// DPI を変えると、セル・フォント・余白・タブバー・スクロールバーが比例して大きくなり、どのタブの桁数と行数も変わらず、
-/// シェルに届く大きさも変わらない。窓の左上も動かない。
+/// DPI を変えると、セル・フォント・余白・タブバー・スクロールバーが比例して大きくなり、ウィンドウの大きさも DPI の比で
+/// 変わる。ウィンドウの左上は動かない。桁数と行数は新しいクライアント領域に入る数になり、どのタブも同じで、シェルにも届く。
 #[test]
-fn a_dpi_change_scales_the_window_parts_and_keeps_the_grid() {
+fn a_dpi_change_scales_the_window_and_its_parts() {
     let server = Server::start_powershell();
     server.wait_text("PS ");
     server.post("/e2e/tab/new", b"");
@@ -6949,20 +7050,13 @@ fn a_dpi_change_scales_the_window_parts_and_keeps_the_grid() {
     let base = server.state();
     assert_eq!(base["dpi"], DPI_100_PERCENT, "{base:#}");
     let monitor_dpi = base["monitor_dpi"].clone();
-    let position = (current_window(&base).left, current_window(&base).top);
+    let mut previous = base.clone();
 
     for dpi in [DPI_150_PERCENT, DPI_200_PERCENT, DPI_100_PERCENT] {
         let state = change_dpi(&server, dpi);
         assert_sizes_follow_the_dpi(&state, &base, dpi);
-        assert_layout_fits_the_grid(&state);
-        assert_eq!(state["cols"], base["cols"], "{state:#}");
-        assert_eq!(state["rows"], base["rows"], "{state:#}");
-        for tab in state["tabs"].as_array().expect("no tabs") {
-            assert_eq!(tab["cols"], base["cols"], "{state:#}");
-            assert_eq!(tab["rows"], base["rows"], "{state:#}");
-        }
-        let window = current_window(&state);
-        assert_eq!((window.left, window.top), position, "{state:#}");
+        assert_window_scaled(&state, &previous);
+        assert_layout_fits_the_client(&state);
         // メッセージはモニターの DPI を変えない。
         assert_eq!(state["monitor_dpi"], monitor_dpi, "{state:#}");
         assert!(
@@ -6970,54 +7064,63 @@ fn a_dpi_change_scales_the_window_parts_and_keeps_the_grid() {
             "the font was not measured for {dpi} DPI\n{}",
             server.log()
         );
+        assert_the_shell_sees_the_grid(&server, &state, &format!("at{dpi}"));
+        previous = state;
     }
-
-    server
-        .type_line("\"[$($Host.UI.RawUI.WindowSize.Width)x$($Host.UI.RawUI.WindowSize.Height)]\"");
-    server.wait_text(&format!("[{}x{}]", DPI_TEST_GRID.0, DPI_TEST_GRID.1));
 }
 
-/// 変わる前に問われる大きさは、その DPI のセルと枠で桁数と行数が収まる大きさで、問われただけではウィンドウは変わらない。
-/// モニターの DPI と同じ DPI なら、枠を含めて実際のウィンドウの大きさと一致する。
+/// DPI が変わる前に問われる大きさ（`WM_GETDPISCALEDSIZE`）には答えず、Windows に任せる。問われただけではウィンドウは
+/// 変わらない。
 #[test]
-fn the_size_asked_before_a_dpi_change_holds_the_grid() {
+fn the_size_asked_before_a_dpi_change_is_left_to_windows() {
     let server = Server::start_cmd();
     server.wait_text(CMD_PROMPT);
     server.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
 
-    for dpi in [DPI_100_PERCENT, DPI_150_PERCENT, DPI_200_PERCENT] {
-        let state = change_dpi(&server, dpi);
+    for dpi in [DPI_150_PERCENT, DPI_200_PERCENT, DPI_100_PERCENT] {
+        let before = server.state();
         let answer = server.post(&format!("/e2e/message/{GET_DPI_SCALED_SIZE}/{dpi}"), b"");
         let answer: Value = serde_json::from_slice(&answer).expect("the answer is not JSON");
-        assert_eq!(answer["result"], 1, "{answer:#}");
-        assert_eq!(dpi_layout(&server.state()), dpi_layout(&state));
-        let window = current_window(&state);
-        let width = u64::try_from(window.width).expect("the width fits");
-        let height = u64::try_from(window.height).expect("the height fits");
-        if state["monitor_dpi"] == dpi {
-            assert_eq!(
-                (number(&answer["width"]), number(&answer["height"])),
-                (width, height)
-            );
-        } else {
-            assert!(
-                number(&answer["width"]) >= number(&state["client_width"])
-                    && number(&answer["height"]) >= number(&state["client_height"]),
-                "{answer:#} {state:#}"
-            );
-        }
+        assert_eq!(answer["result"], 0, "{answer:#}");
+        assert_eq!(answer["width"], 0, "{answer:#}");
+        assert_eq!(answer["height"], 0, "{answer:#}");
+        assert_eq!(dpi_layout(&server.state()), dpi_layout(&before));
+        change_dpi(&server, dpi);
     }
 }
 
-/// 96、144、192 の間を行き来しても、同じ DPI に戻ると寸法が一つも違わない（誤差が積もらない）。
+/// DPI で決まる寸法。ウィンドウの大きさによらない。
+fn dpi_parts(state: &Value) -> Value {
+    serde_json::json!({
+        "dpi": state["dpi"],
+        "font_size_px": state["font_size_px"],
+        "ui_font_size_px": state["ui_font_size_px"],
+        "cell_width": state["cell_width"],
+        "cell_height": state["cell_height"],
+        "terminal_x": state["terminal_x"],
+        "terminal_y": state["terminal_y"],
+        "scroll_bar_width": state["scroll_bar"]["width"],
+        "tab_bar_height": tab_bar_height(state),
+    })
+}
+
+/// 96、144、192 の間を行き来しても、同じ DPI に戻るとセル・フォント・余白・タブバー・スクロールバーの寸法が一つも違わない
+/// （誤差が積もらない）。ウィンドウはそのたびに DPI の比で変わる。
 #[test]
-fn going_between_dpis_returns_to_the_same_sizes() {
+fn going_between_dpis_returns_to_the_same_parts() {
     let server = Server::start_cmd();
     server.wait_text(CMD_PROMPT);
     server.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
-    let at_100 = dpi_layout(&server.state());
-    let at_150 = dpi_layout(&change_dpi(&server, DPI_150_PERCENT));
-    let at_200 = dpi_layout(&change_dpi(&server, DPI_200_PERCENT));
+    let mut previous = server.state();
+    let at_100 = dpi_parts(&previous);
+    let state = change_dpi(&server, DPI_150_PERCENT);
+    assert_window_scaled(&state, &previous);
+    let at_150 = dpi_parts(&state);
+    previous = state;
+    let state = change_dpi(&server, DPI_200_PERCENT);
+    assert_window_scaled(&state, &previous);
+    let at_200 = dpi_parts(&state);
+    previous = state;
 
     for (dpi, expected) in [
         (DPI_100_PERCENT, &at_100),
@@ -7028,35 +7131,26 @@ fn going_between_dpis_returns_to_the_same_sizes() {
         (DPI_200_PERCENT, &at_200),
         (DPI_100_PERCENT, &at_100),
     ] {
-        assert_eq!(
-            &dpi_layout(&change_dpi(&server, dpi)),
-            expected,
-            "at {dpi} DPI"
-        );
+        let state = change_dpi(&server, dpi);
+        assert_eq!(&dpi_parts(&state), expected, "at {dpi} DPI");
+        assert_window_scaled(&state, &previous);
+        assert_layout_fits_the_client(&state);
+        previous = state;
     }
 }
 
-/// セルに割り切れない大きさのウィンドウは、DPI が変わるとセルにちょうど合う大きさになる。桁数と行数は保つ。
+/// セルに割り切れない大きさのウィンドウも、DPI が変わると DPI の比で変わり、桁数と行数はその中に入る数になる。元の DPI に
+/// 戻すと元の大きさに戻る。
 #[test]
-fn a_window_between_grid_sizes_fits_the_grid_after_a_dpi_change() {
-    const WIDTH: i32 = 411;
-    const HEIGHT: i32 = 291;
-    let saved = state::to_toml(&seeded_state(WindowState {
-        left: 10,
-        top: 20,
-        width: WIDTH,
-        height: HEIGHT,
-        maximized: false,
-        dpi: Some(STATE_TEST_DPI),
-    }));
-    let (server, state) = start_with_state(saved.as_bytes());
-    let window = current_window(&state);
-    assert_eq!((window.width, window.height), (WIDTH, HEIGHT), "{state:#}");
+fn an_uneven_window_scales_by_the_dpi_ratio() {
+    let (server, state) = start_uneven("", &CMD_COMMAND, CMD_PROMPT);
 
     let changed = change_dpi(&server, DPI_200_PERCENT);
-    assert_eq!(changed["cols"], state["cols"], "{changed:#}");
-    assert_eq!(changed["rows"], state["rows"], "{changed:#}");
-    assert_layout_fits_the_grid(&changed);
+    assert_window_scaled(&changed, &state);
+    assert_layout_fits_the_client(&changed);
+    let back = change_dpi(&server, DPI_100_PERCENT);
+    assert_eq!(current_window(&back), UNEVEN_WINDOW, "{back:#}");
+    assert_eq!(dpi_layout(&back), dpi_layout(&state));
 }
 
 /// 起動のときの DPI（`FANTERMO_DPI`）でも、起動のあとに変えても、同じ寸法になる。
@@ -7407,7 +7501,7 @@ fn a_stretched_background_image_fills_its_new_area_after_a_dpi_change() {
     for dpi in [DPI_150_PERCENT, DPI_200_PERCENT, DPI_100_PERCENT] {
         let state = change_dpi(&server, dpi);
         assert_eq!(state["background"]["image"], BANDS_IMAGE, "{state:#}");
-        assert_layout_fits_the_grid(&state);
+        assert_layout_fits_the_client(&state);
         let area = BackdropArea::of(&state);
         let (x, _) = area.at(0.75, 0.0);
         wait_pixels(
@@ -7459,19 +7553,22 @@ fn a_centered_background_image_keeps_its_pixels_after_a_dpi_change() {
     );
 }
 
-/// DPI を変えたあとに書く `state.toml` は、そのときのウィンドウの大きさ（ピクセル）と DPI。同じ DPI で起動すると同じ
-/// 大きさに戻り、違う DPI で起動すると同じ桁数と行数が入る大きさになる。
+/// DPI を変えたあとに書く `state.toml` は、そのときのウィンドウの大きさ（ピクセル）で、DPI は書かない。同じ DPI で起動
+/// すると同じ寸法に戻り、違う DPI で起動してもピクセルのまま開いて、桁数と行数はその DPI のセルで入る数になる。
 #[test]
-fn the_size_saved_after_a_dpi_change_keeps_the_grid() {
+fn the_size_saved_after_a_dpi_change_opens_in_pixels() {
     let mut first = Server::start("", &CMD_COMMAND);
     first.wait_text(CMD_PROMPT);
     first.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
-    let before = first.state();
     let changed = change_dpi(&first, DPI_200_PERCENT);
     quit(&mut first);
     assert_eq!(saved_window(&first), current_window(&changed));
-    assert_eq!(saved_window(&first).dpi, Some(192));
     let saved = std::fs::read(first.state_file()).expect("failed to read the state");
+    assert!(
+        !String::from_utf8_lossy(&saved).contains("dpi"),
+        "{}",
+        String::from_utf8_lossy(&saved)
+    );
     drop(first);
 
     let (mut same, state) = start_at_dpi(DPI_200_PERCENT, &saved);
@@ -7481,122 +7578,40 @@ fn the_size_saved_after_a_dpi_change_keeps_the_grid() {
     drop(same);
 
     let (mut other, state) = start_at_dpi(DPI_100_PERCENT, &saved);
-    assert_eq!(state["cols"], changed["cols"], "{state:#}");
-    assert_eq!(state["rows"], changed["rows"], "{state:#}");
-    assert_eq!(current_window(&state), current_window(&before));
-    assert_layout_fits_the_grid(&state);
-    quit(&mut other);
-    assert_eq!(saved_window(&other), current_window(&before));
-    let saved_at_100_percent = std::fs::read(other.state_file()).expect("failed to read the state");
-    drop(other);
-
-    // 低い DPI で書いたものを高い DPI で起動しても、桁数と行数が同じ。
-    let (back, state) = start_at_dpi(DPI_200_PERCENT, &saved_at_100_percent);
-    assert_eq!(state["cols"], changed["cols"], "{state:#}");
-    assert_eq!(state["rows"], changed["rows"], "{state:#}");
     assert_eq!(current_window(&state), current_window(&changed));
-    drop(back);
-}
-
-/// DPI の書かれていない `state.toml` は、ピクセルのまま読み、そのセルで入る桁数と行数になる。
-#[test]
-fn a_saved_size_without_a_dpi_is_read_in_pixels() {
-    let mut first = Server::start("", &CMD_COMMAND);
-    first.wait_text(CMD_PROMPT);
-    first.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
-    let changed = change_dpi(&first, DPI_200_PERCENT);
-    quit(&mut first);
-    let saved = state::to_toml(&seeded_state(WindowState {
-        dpi: None,
-        ..saved_window(&first)
-    }));
-    drop(first);
-
-    let (mut other, state) = start_at_dpi(DPI_100_PERCENT, saved.as_bytes());
-    let in_pixels = WindowState {
-        dpi: Some(STATE_TEST_DPI),
-        ..current_window(&changed)
-    };
-    assert_eq!(current_window(&state), in_pixels);
     assert_eq!(state["client_width"], changed["client_width"]);
     assert_eq!(state["client_height"], changed["client_height"]);
     assert!(
-        number(&state["cols"]) > number(&changed["cols"]),
+        number(&state["cols"]) > number(&changed["cols"])
+            && number(&state["rows"]) > number(&changed["rows"]),
         "{state:#}"
     );
-    assert!(
-        number(&state["rows"]) > number(&changed["rows"]),
-        "{state:#}"
-    );
-    let padding = number(&state["terminal_x"]);
-    let bar = number(&state["scroll_bar"]["width"]);
-    assert_eq!(
-        number(&state["cols"]),
-        (number(&state["client_width"]) - bar - 2 * padding) / number(&state["cell_width"]),
-        "{state:#}"
-    );
-    assert_eq!(
-        number(&state["rows"]),
-        (number(&state["client_height"]) - tab_bar_height(&state) - 2 * padding)
-            / number(&state["cell_height"]),
-        "{state:#}"
-    );
+    assert_layout_fits_the_client(&state);
     quit(&mut other);
-    assert_eq!(saved_window(&other), in_pixels);
+    assert_eq!(saved_window(&other), current_window(&changed));
 }
 
-/// 作業領域に収めるより先に換算する。画面に入らない大きさでも、書いたときの桁数と行数から決まる。
+/// `[window]` の `dpi` を書いた `state.toml`（`dpi` を書いていたバージョンのもの）も読め、`dpi` は無視してピクセルのまま
+/// 開く。閉じるときに書き直すと `dpi` はなくなる。
 #[test]
-fn a_saved_size_larger_than_the_screen_is_converted_before_it_is_fitted() {
-    /// どの画面にも入らない大きさと、それを書いたときの DPI。96 DPI ではその 10 分の 1 ほどになる。
-    const SAVED_DPI: u32 = 960;
-    const WIDTH: i32 = 6000;
-    const HEIGHT: i32 = 4000;
-    let saved = state::to_toml(&seeded_state(WindowState {
-        left: 20,
-        top: 20,
-        width: WIDTH,
-        height: HEIGHT,
-        maximized: false,
-        dpi: Some(SAVED_DPI),
-    }));
+fn a_saved_size_with_a_dpi_is_read_in_pixels() {
+    let saved = format!(
+        "{}dpi = {DPI_200_PERCENT}\n",
+        state::to_toml(&seeded_state(UNEVEN_WINDOW))
+    );
     let (mut server, state) = start_at_dpi(DPI_100_PERCENT, saved.as_bytes());
-    let window = current_window(&state);
-    assert_eq!((window.left, window.top), (20, 20), "{state:#}");
-    // 枠と丸めの分があるので、10 分の 1 の前後を見る。
-    assert!(
-        (WIDTH / 14..=WIDTH / 7).contains(&window.width),
-        "{state:#}"
-    );
-    assert!(
-        (HEIGHT / 14..=HEIGHT / 7).contains(&window.height),
-        "{state:#}"
-    );
-    assert_layout_fits_the_grid(&state);
+    assert_eq!(state["dpi"], DPI_100_PERCENT, "{state:#}");
+    assert_eq!(current_window(&state), UNEVEN_WINDOW, "{state:#}");
+    assert_layout_fits_the_client(&state);
     quit(&mut server);
-    assert_eq!(saved_window(&server), window);
+    assert_eq!(saved_window(&server), UNEVEN_WINDOW);
+    let written = std::fs::read_to_string(server.state_file()).expect("failed to read the state");
+    assert!(!written.contains("dpi"), "{written}");
 }
 
-/// `FANTERMO_DPI` を使わず、モニターの DPI で起動する。書いたときの枠はそのときの DPI の枠として換算する。
+/// `FANTERMO_DPI` を使わず、モニターの DPI で起動する。別の DPI を書いた `state.toml` もピクセルのまま開く。
 #[test]
-fn a_size_saved_at_another_monitor_dpi_keeps_the_grid() {
-    /// DPI が `dpi` のウィンドウの枠の大きさ。
-    fn frame_at(dpi: u32) -> (i32, i32) {
-        let mut rect = RECT::default();
-        // SAFETY: rect は書き込める。
-        unsafe {
-            AdjustWindowRectExForDpi(
-                &mut rect,
-                WS_OVERLAPPEDWINDOW,
-                false,
-                WINDOW_EX_STYLE(0),
-                dpi,
-            )
-        }
-        .expect("failed to compute the frame");
-        (rect.right - rect.left, rect.bottom - rect.top)
-    }
-
+fn a_size_saved_at_another_monitor_dpi_opens_in_pixels() {
     let probe = Server::start_cmd();
     let monitor_dpi = number(&probe.wait_text(CMD_PROMPT)["monitor_dpi"]);
     drop(probe);
@@ -7605,23 +7620,10 @@ fn a_size_saved_at_another_monitor_dpi_keeps_the_grid() {
     } else {
         DPI_200_PERCENT
     };
-
-    let reference = Server::start_with_environment("", &CMD_COMMAND, |_| {
-        vec![(DPI_ENV, other_dpi.to_string().into())]
-    });
-    reference.wait_text(CMD_PROMPT);
-    reference.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
-    let written = reference.state();
-    let (frame_width, frame_height) = frame_at(other_dpi as u32);
-    let saved = state::to_toml(&seeded_state(WindowState {
-        left: 20,
-        top: 20,
-        width: number(&written["client_width"]) as i32 + frame_width,
-        height: number(&written["client_height"]) as i32 + frame_height,
-        maximized: false,
-        dpi: Some(other_dpi as u32),
-    }));
-    drop(reference);
+    let saved = format!(
+        "{}dpi = {other_dpi}\n",
+        state::to_toml(&seeded_state(UNEVEN_WINDOW))
+    );
 
     // `FANTERMO_DPI` を読めない値にすると、モニターの DPI を使う。
     let server = Server::start_with_environment("", &CMD_COMMAND, |dir| {
@@ -7630,34 +7632,26 @@ fn a_size_saved_at_another_monitor_dpi_keeps_the_grid() {
     });
     let state = server.wait_text(CMD_PROMPT);
     assert_eq!(state["dpi"], monitor_dpi, "{state:#}");
-    assert_eq!(state["cols"], written["cols"], "{state:#}");
-    assert_eq!(state["rows"], written["rows"], "{state:#}");
-    assert_layout_fits_the_grid(&state);
+    assert_eq!(current_window(&state), UNEVEN_WINDOW, "{state:#}");
+    assert_layout_fits_the_client(&state);
 }
 
-/// 最大化して書いたものは、最大化を戻す前の大きさを換算し、最大化して開く。
+/// 最大化して、別の DPI を書いた `state.toml` は、最大化を戻す前の大きさをピクセルのまま使い、最大化して開く。
 #[test]
-fn a_maximized_window_saved_at_another_dpi_converts_its_normal_size() {
-    let mut first = Server::start("", &CMD_COMMAND);
-    first.wait_text(CMD_PROMPT);
-    first.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
-    let before = first.state();
-    change_dpi(&first, DPI_200_PERCENT);
-    quit(&mut first);
-    let saved = state::to_toml(&seeded_state(WindowState {
-        maximized: true,
-        ..saved_window(&first)
-    }));
-    drop(first);
-
-    let (mut other, state) = start_at_dpi(DPI_100_PERCENT, saved.as_bytes());
+fn a_maximized_window_saved_at_another_dpi_keeps_its_normal_size() {
     let expected = WindowState {
         maximized: true,
-        ..current_window(&before)
+        ..UNEVEN_WINDOW
     };
+    let saved = format!(
+        "{}dpi = {DPI_200_PERCENT}\n",
+        state::to_toml(&seeded_state(expected))
+    );
+
+    let (mut server, state) = start_at_dpi(DPI_100_PERCENT, saved.as_bytes());
     assert_eq!(current_window(&state), expected);
-    quit(&mut other);
-    assert_eq!(saved_window(&other), expected);
+    quit(&mut server);
+    assert_eq!(saved_window(&server), expected);
 }
 
 /// 設定ダイアログは、メッセージの DPI ではなくモニターの DPI で開く。開いている間に端末の DPI が変わっても、ダイアログの
@@ -7673,7 +7667,7 @@ fn the_settings_dialog_keeps_the_monitor_dpi_after_a_dpi_change() {
     assert_controls_fit(&dialog, PAGE_APPEARANCE);
 
     let changed = change_dpi(&server, DPI_200_PERCENT);
-    assert_layout_fits_the_grid(&changed);
+    assert_layout_fits_the_client(&changed);
     let after = read_controls(&server);
     assert_eq!(after["dpi"], dialog["dpi"], "{after:#}");
     assert_eq!(after["width"], dialog["width"], "{after:#}");
@@ -7682,11 +7676,11 @@ fn the_settings_dialog_keeps_the_monitor_dpi_after_a_dpi_change() {
     press_cancel(&server);
     let state = server.state();
     assert_eq!(state["dpi"], DPI_200_PERCENT, "{state:#}");
-    assert_layout_fits_the_grid(&state);
+    assert_layout_fits_the_client(&state);
     check_terminal_still_works(&server, "after-dialog-and-dpi");
 }
 
-/// DPI を変えたあとに設定を読み直しても、変えたあとの DPI で測り直し、桁数と行数を保つ。
+/// DPI を変えたあとに設定を読み直しても、変えたあとの DPI で測り直す。ウィンドウの位置と大きさは変わらない。
 #[test]
 fn a_settings_change_after_a_dpi_change_uses_the_changed_dpi() {
     const PADDING: u64 = 8;
@@ -7695,20 +7689,105 @@ fn a_settings_change_after_a_dpi_change_uses_the_changed_dpi() {
     server.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
     let state = change_dpi(&server, DPI_200_PERCENT);
 
-    std::fs::write(
-        server.dir().join("config.toml"),
-        format!("[window]\npadding = {PADDING}\n"),
-    )
-    .expect("failed to write the settings");
+    write_settings(&server, &format!("[window]\npadding = {PADDING}\n"));
     let padding = PADDING * DPI_200_PERCENT / DPI_100_PERCENT;
     let read = server.wait_until("the new padding", |state| {
         number(&state["terminal_x"]) == padding
     });
     assert_eq!(read["dpi"], DPI_200_PERCENT, "{read:#}");
     assert_eq!(read["cell_width"], state["cell_width"], "{read:#}");
-    assert_eq!(read["cols"], state["cols"], "{read:#}");
-    assert_eq!(read["rows"], state["rows"], "{read:#}");
-    assert_layout_fits_the_grid(&read);
+    assert_eq!(current_window(&read), current_window(&state), "{read:#}");
+    assert_eq!(read["client_width"], state["client_width"], "{read:#}");
+    assert_layout_fits_the_client(&read);
+}
+
+/// 設定ファイルを `text` に書き換える。fantermo は書き換えを見張って読み直す。
+fn write_settings(server: &Server, text: &str) {
+    std::fs::write(server.dir().join("config.toml"), text).expect("failed to write the settings");
+}
+
+/// 設定ファイルでフォントの大きさ、スクロールバーの幅、余白を変えても、ウィンドウの位置と大きさは 1 ピクセルも変わらない。
+/// 桁数と行数がいまのクライアント領域に合わせて変わり、シェルにも届く。
+#[test]
+fn a_settings_change_keeps_the_window_rect_and_changes_the_grid() {
+    let server = Server::start_powershell();
+    let before = server.wait_text("PS ");
+    let window = current_window(&before);
+    type Applied = fn(&Value) -> bool;
+    let changes: [(&str, &str, Applied); 3] = [
+        ("font", "[font]\nsize = 16\n", |state| {
+            state["font_size_px"]
+                .as_f64()
+                .is_some_and(|size| size > 20.0)
+        }),
+        (
+            "scroll-bar",
+            "[font]\nsize = 16\n[scroll_bar]\nwidth = 40\n",
+            |state| state["scroll_bar"]["width"] == 40,
+        ),
+        (
+            "padding",
+            "[font]\nsize = 16\n[scroll_bar]\nwidth = 40\n[window]\npadding = 40\n",
+            |state| state["terminal_x"] == 40,
+        ),
+    ];
+    let mut previous = before;
+    for (name, settings, changed) in changes {
+        write_settings(&server, settings);
+        let state = server.wait_until(name, changed);
+        assert_eq!(current_window(&state), window, "{name}: {state:#}");
+        assert_eq!(state["client_width"], previous["client_width"], "{name}");
+        assert_eq!(state["client_height"], previous["client_height"], "{name}");
+        assert_layout_fits_the_client(&state);
+        assert!(
+            number(&state["cols"]) < number(&previous["cols"]),
+            "{name}: {state:#}"
+        );
+        if name != "scroll-bar" {
+            assert!(
+                number(&state["rows"]) < number(&previous["rows"]),
+                "{name}: {state:#}"
+            );
+        }
+        assert_the_shell_sees_the_grid(&server, &state, name);
+        previous = state;
+    }
+}
+
+/// セルで割り切れない大きさのウィンドウでも、フォントを変えて戻したあとに位置と大きさが変わらず、桁数と行数は元に戻る。
+#[test]
+fn a_settings_change_keeps_an_uneven_window_rect() {
+    let (server, before) = start_uneven("", &CMD_COMMAND, CMD_PROMPT);
+    write_settings(&server, "[font]\nsize = 16\n");
+    let larger = server.wait_until("larger cells", |state| {
+        number(&state["cell_height"]) > number(&before["cell_height"])
+    });
+    assert_eq!(current_window(&larger), UNEVEN_WINDOW, "{larger:#}");
+    assert_layout_fits_the_client(&larger);
+
+    write_settings(&server, "");
+    let back = server.wait_until("the cells back", |state| {
+        state["cell_height"] == before["cell_height"]
+    });
+    assert_eq!(current_window(&back), UNEVEN_WINDOW, "{back:#}");
+    assert_eq!(dpi_layout(&back), dpi_layout(&before));
+}
+
+/// 最大化しているときに余白を変えても、最大化したままで、クライアント領域の大きさも変わらない。
+#[test]
+fn a_settings_change_keeps_a_maximized_window_maximized() {
+    let window = WindowState {
+        maximized: true,
+        ..UNEVEN_WINDOW
+    };
+    let (server, before) = start_with_state(state::to_toml(&seeded_state(window)).as_bytes());
+    assert_eq!(current_window(&before), window, "{before:#}");
+    write_settings(&server, "[window]\npadding = 20\n");
+    let state = server.wait_until("the new padding", |state| state["terminal_x"] == 20);
+    assert_eq!(current_window(&state), window, "{state:#}");
+    assert_eq!(state["client_width"], before["client_width"], "{state:#}");
+    assert_eq!(state["client_height"], before["client_height"], "{state:#}");
+    assert_layout_fits_the_client(&state);
 }
 
 /// プロファイルのテストの設定。プロンプトでどのプロファイルかが分かる。

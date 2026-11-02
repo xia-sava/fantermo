@@ -50,8 +50,9 @@ use windows::{
 };
 
 use super::{
-    App, Deferred, Launch, SIZE, TabCommand, WithApp, change_dpi_in_place, client_size,
-    client_size_for_terminal, destroy_window, grid_pixels, run_deferred, tab_title,
+    App, Deferred, Launch, SIZE, TabCommand, WithApp, client_size, client_size_for_terminal,
+    destroy_window, grid_pixels, run_deferred, send_dpi_changed, tab_title, window_frame,
+    window_rect,
 };
 use crate::{
     clipboard,
@@ -150,7 +151,7 @@ fn run(hwnd: HWND, Pending { request, reply }: Pending, with_app: &WithApp) {
             std::thread::sleep(std::time::Duration::from_millis(milliseconds));
         }
         Request::SendMessage { message, wparam } => {
-            answer(send_window_message(hwnd, message, wparam));
+            answer(send_window_message(hwnd, message, wparam, with_app));
         }
         // 操作がメニューを開くと、閉じるまで送った先から戻らない。答えを先に返す。続く要求はこのあと（メニューが
         // 開いているあいだはそのループの中で）処理されるので、順番は保たれる。
@@ -258,16 +259,25 @@ fn lower_window(hwnd: HWND) -> Response {
 }
 
 /// ウィンドウにメッセージを送り、ウィンドウプロシージャの戻り値を返す。
-fn send_window_message(hwnd: HWND, message: WindowMessage, wparam: usize) -> Response {
+fn send_window_message(
+    hwnd: HWND,
+    message: WindowMessage,
+    wparam: usize,
+    with_app: &WithApp,
+) -> Response {
     let (id, lparam) = match message {
         WindowMessage::QueryEndSession => (WM_QUERYENDSESSION, ENDSESSION_LOGOFF as isize),
         WindowMessage::EndSession => (WM_ENDSESSION, ENDSESSION_LOGOFF as isize),
         // lParam はキャプチャしたウィンドウ。このウィンドウではないことだけが意味を持つ。
         WindowMessage::CaptureChanged => (WM_CAPTURECHANGED, 0),
-        // 推奨の矩形は、桁数と行数が収まる大きさで左上を動かさない。枠はいまのウィンドウから取る。枠は別の DPI の
-        // メッセージでは変わらず、OS が決めるモニターの DPI のまま付くため。
         WindowMessage::DpiChanged => {
-            change_dpi_in_place(hwnd, wparam as u32);
+            let mut from = None;
+            with_app(&mut |app| from = Some(app.dpi));
+            let Some(from) = from else {
+                return Response::internal_error("the window is busy with another message");
+            };
+            let to = wparam as u32;
+            send_dpi_changed(hwnd, to, &dpi_scaled_rect(hwnd, from, to));
             return Response::json(&json!({ "result": 0 }));
         }
         WindowMessage::GetDpiScaledSize => return get_dpi_scaled_size(hwnd, wparam),
@@ -275,6 +285,23 @@ fn send_window_message(hwnd: HWND, message: WindowMessage, wparam: usize) -> Res
     // SAFETY: hwnd は有効なウィンドウ。ウィンドウプロシージャがこの場で動くが、借用は持っていない。
     let result = unsafe { SendMessageW(hwnd, id, Some(WPARAM(wparam)), Some(LPARAM(lparam))) };
     Response::json(&json!({ "result": result.0 }))
+}
+
+/// DPI が `from` から `to` に変わるときの推奨の矩形。`WM_GETDPISCALEDSIZE` を既定の処理に任せたときの
+/// Windows と同じく大きさを DPI の比で拡大・縮小し、左上は動かさない。比をかけるのはクライアント領域だけで、
+/// 枠はいまのウィンドウから取る。枠はこのメッセージでは変わらず、OS が決めるモニターの DPI のまま付くため。
+fn dpi_scaled_rect(hwnd: HWND, from: u32, to: u32) -> RECT {
+    // 整数の比をかけて四捨五入する（`MulDiv` と同じ）。
+    let scale = |value: u32| {
+        let scaled = (u64::from(value) * u64::from(to) + u64::from(from) / 2) / u64::from(from);
+        i32::try_from(scaled).unwrap_or(i32::MAX)
+    };
+    let mut rect = window_rect(hwnd);
+    let frame = window_frame(hwnd);
+    let (width, height) = client_size(hwnd);
+    rect.right = rect.left + scale(width) + frame.cx;
+    rect.bottom = rect.top + scale(height) + frame.cy;
+    rect
 }
 
 /// `WM_GETDPISCALEDSIZE` を DPI `dpi` で送り、戻り値と、ウィンドウプロシージャが書いた大きさを返す。
@@ -1302,7 +1329,7 @@ impl App {
             "profiles": profiles,
             "dialogs": dialogs,
             "images": images,
-            "window": window_state::current(self.hwnd, self.dpi),
+            "window": window_state::current(self.hwnd),
             // SAFETY: self.hwnd は有効なウィンドウ。
             "window_enabled": unsafe { IsWindowEnabled(self.hwnd) }.as_bool(),
             "window_title": real_window_title(self.hwnd),

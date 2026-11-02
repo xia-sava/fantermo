@@ -83,10 +83,12 @@ pub enum WindowMessage {
     EndSession,
     /// ほかのウィンドウがマウスをキャプチャした。
     CaptureChanged,
-    /// DPI が変わった。`<wParam>` の位置に新しい DPI を書く。推奨の矩形はウィンドウの側で作る。
+    /// DPI が変わった。`<wParam>` の位置に新しい DPI を書く。推奨の矩形はウィンドウの側で、Windows と同じく
+    /// いまの大きさを DPI の比で拡大・縮小して作る。
     DpiChanged,
     /// DPI が変わる前に、変わったあとのウィンドウの大きさを問う。`<wParam>` の位置に新しい DPI を書く。答えの JSON に
-    /// `width` と `height` が入る。ウィンドウは変えない。
+    /// 戻り値の `result` と、ウィンドウプロシージャが書いた `width` と `height`（書かなければ 0）が入る。ウィンドウは
+    /// 変えない。
     GetDpiScaledSize,
 }
 
