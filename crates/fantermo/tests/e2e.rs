@@ -382,10 +382,8 @@ fn closing_a_tab_ends_its_child_processes_only() {
     server.wait_until("two tabs", |state| tab_count(state) == 2);
     wait_cmd_ready(&server);
     server.type_line(CMD_LONG_COMMAND);
-    let second: Vec<Process> = processes::wait_descendants_named(pid, CMD_LONG_PROCESS, 1)
-        .into_iter()
-        .filter(|process| !first.contains(process))
-        .collect();
+    // プロセスができたらすぐ閉じる。間を空けて見ると、接続を終えたあとに閉じることが多くなる。
+    let second = wait_new_descendant(pid, CMD_LONG_PROCESS, &first);
 
     server.post("/e2e/tab/close", b"");
     server.wait_until("one tab", |state| tab_count(state) == 1);

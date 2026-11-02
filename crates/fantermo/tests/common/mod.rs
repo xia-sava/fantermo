@@ -879,6 +879,12 @@ pub fn install_bridge(triple: &str, file_name: &'static str) {
         source.display()
     );
     let destination = sibling_of_fantermo(file_name);
+    // 別のテストの実行ファイルが同じブリッジを動かしていると書き込めないので、同じ中身なら写さない。
+    let same = std::fs::read(&destination)
+        .is_ok_and(|copied| std::fs::read(&source).is_ok_and(|built| built == copied));
+    if same {
+        return;
+    }
     std::fs::copy(&source, &destination)
         .unwrap_or_else(|e| panic!("cannot copy to {}: {e}", destination.display()));
 }
