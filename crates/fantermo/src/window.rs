@@ -3260,9 +3260,12 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             LRESULT(0)
         }
         // ほかのウィンドウにマウスのキャプチャが移ったら（Alt+Tab など）、離したことが届かないので、
-        // スクロールバーの操作を終える。lparam はマウスをキャプチャするウィンドウ。
+        // スクロールバーの操作と選択のドラッグを終える（選択範囲は残す）。lparam はマウスをキャプチャするウィンドウ。
         WM_CAPTURECHANGED if lparam.0 != hwnd.0 as isize => {
-            with_app(&mut |app| app.end_scroll_bar_press());
+            with_app(&mut |app| {
+                app.end_scroll_bar_press();
+                app.session_mut().selecting = false;
+            });
             LRESULT(0)
         }
         // 下位の語が WA_INACTIVE なら、アクティブでなくなった。
