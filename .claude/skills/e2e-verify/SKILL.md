@@ -71,7 +71,8 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
 
 - 起動中の起動: `server.launch_again(引数)`・`launch_again_with(引数, &LaunchAgain { .. })` が、同じ別デスクトップで fantermo をもう一度起動する（`run-hidden --desktop`）。既存のウィンドウへ渡して終わるのは `wait_exit` が 0 で `opened_a_window` が偽（`assert_handed_over`）、ウィンドウを開くなら `wait_for_window` のあとで `Server` として操作する。ウィンドウが表示される前に起動すると見つからないので、先に `wait_text` で待つ。作業フォルダの既定は元の `Server` の一時フォルダ。足されたタブがそこにとどまるので、起動したものの一時フォルダにしない（消せなくなる）。fantermo のウィンドウへメッセージを送るのは `server.on_its_desktop` の中で（ウィンドウのハンドルは別のデスクトップからは無効で、`ERROR_INVALID_WINDOW_HANDLE` になる）。`state` の `hwnd` だけを使い、ウィンドウを探さない。
 - 長い行: `type_line` は一文字ずつ送り、Cygwin の pty では一文字に 30 ms ほどかかる。長い行は `send_line`（`/e2e/input` でまとめて送る）で。
-- 閉じる確認の前に、動かしたコマンドが動き出したのをタブごとに確認する。Cygwin では起動の途中で閉じるとコマンドが残ることがある。
+- 起動直後に閉じる確認もできる（`closing_a_tab_ends_its_child_processes_only` はプロセスができたらすぐ閉じる）。ConPTY では閉じたあと 5 秒の猶予ののちに残りを終わらせるので、残らないことは 60 秒の `wait_ended` で待つ。起動直後に閉じるテストと、新しいコンソールを作るテストは、利用者の画面に窓が出うるので、手元では利用者に声を掛けてから流す。
+- 新しいコンソールを作るプロセス（cmd の `start ""`、`CREATE_NEW_CONSOLE`）をテストから起動しない。別デスクトップでも既定の端末（Windows Terminal）に渡って利用者の画面に出る。別のコンソールを持つプロセスが要るときは、PowerShell の `ProcessStartInfo` の `CreateNoWindow` で起動する。WMI など、別のプロセスに起動を頼む方法も別デスクトップの外に出るので使わない。
 - 画像: ConPTY は APC と DCS を落とすので、ブリッジのタブで `printf` する。`images` を待ってから `picture()` で画素を読む。位置は `terminal_x` などから計算する（`cell_pixel`）。
 - ダイアログ: 編集のダイアログや確認のダイアログの間も要求は処理される（ダイアログのループが届ける）。`wait_dialogs` で待ち、`press_dialog_button` で押す。
 - 設定ダイアログ: `open_settings` で開き、`show_page` でページを移し、`set_text`・`select`・`choose_radio`・`spin`・`click` で操作する。`read_controls` と `control` で値を読み、値は文言ではなくコントロールの ID と `saved_config`（`config.toml` を `fantermo_core::config::parse` で読んだもの）で見る。
