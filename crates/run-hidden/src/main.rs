@@ -3,12 +3,15 @@
 //! 画面を撮らずに GUI の動作を確認するための道具。描画の結果は、起動したプログラム自身に
 //! ファイルへ書き出させて確認する（fantermo なら環境変数 `FANTERMO_DUMP`）。
 //!
-//! 使い方: `run-hidden [--seconds N] [--env NAME=VALUE]... -- <プログラム> [引数]...`
+//! 使い方: `run-hidden [--seconds N] [--wait-children N] [--env NAME=VALUE]... -- <プログラム> [引数]...`
 //!
 //! プログラムは `CreateProcessW` のコマンドラインとして渡すので、パスは Windows 形式（`\` 区切り）で書く。
 //!
 //! 起動したプロセスは Job に入れるので、この道具がどう終わっても一緒に終わる。
 //! プログラムが先に終われば、その終了コードを返す。時間切れなら終わらせて 0 を返す。
+//!
+//! `--wait-children N` を付けると、プログラムが自分で終わったあと、子孫のプロセスが終わるのを N 秒まで待ち、
+//! 結果を標準エラー出力に出してから Job を閉じる。Job が終わらせる前に残っていたものが分かる。
 
 use std::{
     ffi::{OsStr, OsString},
@@ -16,7 +19,8 @@ use std::{
         ffi::OsStrExt,
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
-    time::Duration,
+    thread,
+    time::{Duration, Instant},
 };
 
 use windows::{
@@ -25,13 +29,16 @@ use windows::{
         System::{
             JobObjects::{
                 AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-                SetInformationJobObject,
+                JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation,
+                QueryInformationJobObject, SetInformationJobObject,
             },
             StationsAndDesktops::{CloseDesktop, CreateDesktopW, DESKTOP_CONTROL_FLAGS, HDESK},
             Threading::{
-                CREATE_SUSPENDED, CreateProcessW, GetExitCodeProcess, PROCESS_INFORMATION,
-                ResumeThread, STARTUPINFOW, TerminateProcess, WaitForSingleObject,
+                CREATE_SUSPENDED, CreateProcessW, GetExitCodeProcess, OpenProcess,
+                PROCESS_INFORMATION, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+                QueryFullProcessImageNameW, ResumeThread, STARTUPINFOW, TerminateProcess,
+                WaitForSingleObject,
             },
         },
     },
@@ -47,8 +54,18 @@ const TERMINATED_EXIT_CODE: u32 = 0;
 /// デスクトップに許す操作（`GENERIC_ALL`）。
 const DESKTOP_ACCESS: u32 = 0x1000_0000;
 
+/// Job の中のプロセスの一覧を読む数の上限。
+const MAX_LISTED_PROCESSES: usize = 256;
+
+/// Job の中のプロセスが終わったかを確認する間隔。
+const CHILDREN_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// プロセスの実行ファイルのパスを読むバッファの長さ。
+const IMAGE_PATH_CAPACITY: usize = 1024;
+
 struct Args {
     seconds: u64,
+    wait_children: Option<u64>,
     env: Vec<(String, String)>,
     command: Vec<OsString>,
 }
@@ -59,7 +76,7 @@ fn main() {
         Err(message) => {
             eprintln!("run-hidden: {message}");
             eprintln!(
-                "usage: run-hidden [--seconds N] [--env NAME=VALUE]... -- <program> [args]..."
+                "usage: run-hidden [--seconds N] [--wait-children N] [--env NAME=VALUE]... -- <program> [args]..."
             );
             std::process::exit(2);
         }
@@ -75,6 +92,7 @@ fn main() {
 
 fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Args, String> {
     let mut seconds = DEFAULT_SECONDS;
+    let mut wait_children = None;
     let mut env = Vec::new();
     while let Some(arg) = args.next() {
         match arg.to_str() {
@@ -85,9 +103,19 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Args, String> 
                 }
                 return Ok(Args {
                     seconds,
+                    wait_children,
                     env,
                     command,
                 });
+            }
+            Some("--wait-children") => {
+                let value = args.next().ok_or("--wait-children needs a value")?;
+                wait_children = Some(
+                    value
+                        .to_str()
+                        .and_then(|v| v.parse().ok())
+                        .ok_or("--wait-children needs a number")?,
+                );
             }
             Some("--seconds") => {
                 let value = args.next().ok_or("--seconds needs a value")?;
@@ -163,6 +191,9 @@ fn run(args: &Args) -> windows::core::Result<u32> {
         // SAFETY: process は終了済みのプロセスの有効なハンドル。
         unsafe { GetExitCodeProcess(process_handle, &mut code)? };
         eprintln!("run-hidden: exited with code {code}");
+        if let Some(seconds) = args.wait_children {
+            report_children(HANDLE(job.as_raw_handle()), Duration::from_secs(seconds));
+        }
         code
     } else {
         if waited != WAIT_TIMEOUT {
@@ -177,6 +208,86 @@ fn run(args: &Args) -> windows::core::Result<u32> {
     drop(job);
     drop(desktop);
     Ok(code)
+}
+
+/// `job` の中のプロセスがなくなるのを `limit` まで待ち、結果を標準エラー出力に出す。
+fn report_children(job: HANDLE, limit: Duration) {
+    let deadline = Instant::now() + limit;
+    loop {
+        let remaining = match processes_in_job(job) {
+            Ok(remaining) => remaining,
+            Err(e) => {
+                eprintln!("run-hidden: failed to list the remaining processes: {e}");
+                return;
+            }
+        };
+        if remaining.is_empty() {
+            eprintln!("run-hidden: no processes remained");
+            return;
+        }
+        if Instant::now() >= deadline {
+            let names: Vec<String> = remaining
+                .iter()
+                .map(|&pid| format!("{pid} {}", process_image(pid)))
+                .collect();
+            eprintln!("run-hidden: processes remained: {}", names.join(", "));
+            return;
+        }
+        thread::sleep(CHILDREN_POLL_INTERVAL);
+    }
+}
+
+/// `job` の中で動いているプロセスの番号。
+fn processes_in_job(job: HANDLE) -> windows::core::Result<Vec<u32>> {
+    // 構造体の末尾が可変長の配列なので、並びの合う `usize` の配列で確保する。
+    let words = (size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>()
+        + MAX_LISTED_PROCESSES * size_of::<usize>())
+    .div_ceil(size_of::<usize>());
+    let mut buffer = vec![0usize; words];
+    let list = buffer
+        .as_mut_ptr()
+        .cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+    // SAFETY: buffer は指定した長さの分だけ書き込め、構造体の並びを満たす。
+    unsafe {
+        QueryInformationJobObject(
+            Some(job),
+            JobObjectBasicProcessIdList,
+            list.cast(),
+            (words * size_of::<usize>()) as u32,
+            None,
+        )?;
+    }
+    // SAFETY: QueryInformationJobObject が先頭の構造体と、ProcessIdList の NumberOfProcessIdsInList 個を書いた。
+    let pids = unsafe {
+        std::slice::from_raw_parts(
+            (&raw const (*list).ProcessIdList).cast::<usize>(),
+            (*list).NumberOfProcessIdsInList as usize,
+        )
+    };
+    Ok(pids.iter().map(|&pid| pid as u32).collect())
+}
+
+/// プロセス `pid` の実行ファイルのパス。読めなければその旨の文。
+fn process_image(pid: u32) -> String {
+    let read = || -> windows::core::Result<String> {
+        // SAFETY: 読み取りの権限で開くだけ。
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)? };
+        // SAFETY: OpenProcess が成功したので、ハンドルは有効で、ほかに持ち主はいない。
+        let process = unsafe { OwnedHandle::from_raw_handle(process.0) };
+        let mut path = vec![0u16; IMAGE_PATH_CAPACITY];
+        let mut len = path.len() as u32;
+        // SAFETY: path は len 文字の分だけ書き込める。
+        unsafe {
+            QueryFullProcessImageNameW(
+                HANDLE(process.as_raw_handle()),
+                PROCESS_NAME_WIN32,
+                PWSTR(path.as_mut_ptr()),
+                &mut len,
+            )?;
+        }
+        Ok(String::from_utf16_lossy(&path[..len as usize]))
+    };
+    read().unwrap_or_else(|e| format!("(unknown: {e})"))
 }
 
 /// 閉じると中のプロセスをすべて終わらせる Job。
