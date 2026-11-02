@@ -2,7 +2,7 @@
 //!
 //! 受ける側は `e2e_server`。答えを返してから借用の外ですること（ウィンドウを閉じる、メニューを開くなど）は
 //! `Deferred` と同じく [`run_deferred`] に渡す。ウィンドウの大きさの変更はこの場で `WM_SIZE` が届くので、借用の
-//! 外でしてから答える。
+//! 外でしてから答える。ウィンドウへ送るメッセージも、この場でウィンドウプロシージャが動くので同じ。
 
 use serde_json::json;
 use windows::{
@@ -14,7 +14,8 @@ use windows::{
             WindowsAndMessaging::{
                 EnumChildWindows, EnumThreadWindows, GetClassNameW, GetWindowRect,
                 GetWindowTextLengthW, GetWindowTextW, IsWindow, IsWindowVisible, PostMessageW,
-                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetWindowPos, WM_COMMAND,
+                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SendMessageW, SetWindowPos, WM_COMMAND,
+                WM_ENDSESSION, WM_QUERYENDSESSION,
             },
         },
     },
@@ -27,7 +28,7 @@ use super::{
 };
 use crate::{
     clipboard,
-    e2e_server::{Pending, Request, Response},
+    e2e_server::{Pending, Request, Response, WindowMessage},
     version, window_state,
 };
 use fantermo_core::vt::KeyAction;
@@ -40,6 +41,9 @@ const SYSTEM_DIALOG_CLASS: &str = "#32770";
 
 /// ウィンドウのクラスの名前の長さの上限（Windows の決まり）。
 const MAX_CLASS_NAME: usize = 256;
+
+/// `WM_QUERYENDSESSION` と `WM_ENDSESSION` の `lParam` の、ログオフを表す値。
+const ENDSESSION_LOGOFF: isize = 0x8000_0000;
 
 /// 届いている要求をすべて処理する。ウィンドウが閉じたら残りは処理しない（`Control` と一緒に捨てられ、
 /// 待っている側には閉じたと分かる）。
@@ -76,6 +80,9 @@ fn run(hwnd: HWND, Pending { request, reply }: Pending, with_app: &WithApp) {
         }
         Request::ResizeWindow { cols, rows } => {
             answer(resize_window(hwnd, cols, rows, with_app));
+        }
+        Request::SendMessage { message, wparam } => {
+            answer(send_window_message(hwnd, message, wparam));
         }
         other => {
             let mut response = None;
@@ -130,6 +137,17 @@ fn resize_window(hwnd: HWND, cols: u16, rows: u16, with_app: &WithApp) -> Respon
     let mut response = None;
     with_app(&mut |app| response = Some(Response::json(&app.e2e_state())));
     response.unwrap_or_else(|| Response::internal_error("the window is busy with another message"))
+}
+
+/// ウィンドウにメッセージを送り、ウィンドウプロシージャの戻り値を返す。
+fn send_window_message(hwnd: HWND, message: WindowMessage, wparam: usize) -> Response {
+    let (id, lparam) = match message {
+        WindowMessage::QueryEndSession => (WM_QUERYENDSESSION, ENDSESSION_LOGOFF),
+        WindowMessage::EndSession => (WM_ENDSESSION, ENDSESSION_LOGOFF),
+    };
+    // SAFETY: hwnd は有効なウィンドウ。ウィンドウプロシージャがこの場で動くが、借用は持っていない。
+    let result = unsafe { SendMessageW(hwnd, id, Some(WPARAM(wparam)), Some(LPARAM(lparam))) };
+    Response::json(&json!({ "result": result.0 }))
 }
 
 /// ウィンドウの大きさとクライアント領域の大きさの差。枠の分。
@@ -275,7 +293,7 @@ impl App {
                 self.activate(index);
                 (done(), None)
             }
-            Request::Quit | Request::ResizeWindow { .. } => (
+            Request::Quit | Request::ResizeWindow { .. } | Request::SendMessage { .. } => (
                 Response::internal_error("handled outside of the borrow"),
                 None,
             ),

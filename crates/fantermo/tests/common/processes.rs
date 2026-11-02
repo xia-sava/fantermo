@@ -13,7 +13,10 @@ use windows::Win32::{
             CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
             TH32CS_SNAPPROCESS,
         },
-        Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+        Threading::{
+            GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+            TerminateProcess,
+        },
     },
 };
 
@@ -109,6 +112,18 @@ pub fn descendants(root: u32) -> Vec<Process> {
         }
     }
     found
+}
+
+/// プロセス `pid` を終了コード `code` で終わらせる。
+pub fn terminate(pid: u32, code: u32) {
+    // SAFETY: 終わらせる権限で開くだけ。
+    let process = unsafe { OpenProcess(PROCESS_TERMINATE, false, pid) }
+        .unwrap_or_else(|e| panic!("cannot open the process {pid}: {e}"));
+    // SAFETY: 成功したので、ハンドルは有効で、ほかに持ち主はいない。
+    let process = unsafe { OwnedHandle::from_raw_handle(process.0) };
+    // SAFETY: ハンドルは有効で、終わらせる権限がある。
+    unsafe { TerminateProcess(HANDLE(process.as_raw_handle()), code) }
+        .unwrap_or_else(|e| panic!("cannot terminate the process {pid}: {e}"));
 }
 
 /// `process` がまだ動いている。

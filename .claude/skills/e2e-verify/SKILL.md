@@ -44,6 +44,7 @@ OS のクリップボードを実際に変えるテスト（`os_clipboard` を�
 | `POST /e2e/paste` | 本文の文字を、クリップボードから読んだものとして貼り付ける（`paste.confirm` と `paste.confirm_size` に従う） |
 | `POST /e2e/dialog/button/<ID>` | 開いているダイアログのボタンを押す（`TaskDialogIndirect` は `TDM_CLICK_BUTTON`、ほかは `WM_COMMAND`。メッセージボックスは押せない） |
 | `GET /e2e/clipboard`、`POST /e2e/clipboard` | クリップボードの文字列を読む（JSON の `text`）・置き換える |
+| `POST /e2e/message/<名前>`、`/e2e/message/<名前>/<wParam>` | ウィンドウにメッセージを `SendMessageW` で送り、戻り値を JSON の `result` で返す。名前は `queryendsession`、`endsession`（`WM_` を除いた小文字。`lParam` はメッセージごとに決まっている） |
 | `POST /e2e/quit` | ウィンドウを閉じる |
 
 ## テストの書き方
@@ -58,6 +59,8 @@ OS のクリップボードを実際に変えるテスト（`os_clipboard` を�
 - クリップボード: `Server` は既定で `FANTERMO_E2E_CLIPBOARD_FILE`（一時フォルダのファイル）を渡し、fantermo はそのファイルをクリップボードの代わりに使う。OS のものを使うのは `Server::start_with_os_clipboard` だけで、`OsClipboard` が直列にする。
 - 起動の前に置くファイル: `Server::start_with_setup` の `prepare` が一時フォルダで呼ばれる。`state.toml` の初期値（`common::STATE_FILE`）はここで置く。閉じたあとの中身は `state_file()` で、`Server` を破棄する前に読む。
 - 背景画像: `common::encode_png` で作った PNG を `prepare` で置き、設定には相対パスで書く（設定ファイルのフォルダから辿る）。候補が一枚なら選び方はランダムにならない。位置は状態の `background` の範囲から決め、文字のないところを見る。画素は `wait_pixels` で待ち、背景色を `[colors] background` で固定して比べる。合成の丸めとソフトウェアの描画の差の分、許容の幅を持たせる（`BACKGROUND_COLOR_TOLERANCE`）。
+- ログオフ: `send_message` で `queryendsession`・`endsession` を送り、`state_file()` を読む。書かれたかどうかは、送る前にファイルを消して見る。OS がプロセスごと終わらせるところは `processes::terminate` で fantermo だけを終わらせて真似る。fantermo のほかのプロセスは OS に終わらされないので、残らないことの確認は実際のログオフより厳しい。
+- メッセージを足す: `WindowMessage` に足し、`send_window_message` で `lParam` を決める。`SendMessageW` はこの場でウィンドウプロシージャを動かすので、借用の外（`window/e2e.rs` の `run`）から送る。借用の中だと状態を書く処理などが黙って飛ばされる。
 - ブリッジの単体のテストで中身を比べるときは、子プロセスに `/tmp` のファイルへ書かせて読む（テストと子プロセスは同じ環境で動く）。
 - 読み取りの依頼のように答えがないことがあるものは、時間で待たず、依頼と同じ出力の後ろの印を待ってから、区切りの入力を送る（`start_clipboard_read`）。
 

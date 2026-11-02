@@ -17,6 +17,7 @@
 //! | `POST /e2e/dialog/button/<ID>` | 開いているダイアログのそのボタンを押す |
 //! | `GET /e2e/clipboard` | OS のクリップボードの文字列の JSON |
 //! | `POST /e2e/clipboard` | OS のクリップボードを本文の文字で置き換える |
+//! | `POST /e2e/message/<名前>`、`/e2e/message/<名前>/<wParam>` | ウィンドウにメッセージを送り、戻り値の JSON を返す（[`WindowMessage`]） |
 //! | `POST /e2e/quit` | ウィンドウを閉じる |
 
 use std::{
@@ -52,6 +53,24 @@ const STATUS_NOT_FOUND: u16 = 404;
 const STATUS_INTERNAL_ERROR: u16 = 500;
 const STATUS_UNAVAILABLE: u16 = 503;
 
+/// `POST /e2e/message/<名前>` で送れるメッセージ。名前は `WM_` を除いた小文字。`lParam` はウィンドウのスレッドの側で
+/// メッセージごとに決める。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowMessage {
+    QueryEndSession,
+    EndSession,
+}
+
+impl WindowMessage {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "queryendsession" => Some(Self::QueryEndSession),
+            "endsession" => Some(Self::EndSession),
+            _ => None,
+        }
+    }
+}
+
 /// ウィンドウのスレッドでする操作。
 #[derive(Debug, PartialEq, Eq)]
 pub enum Request {
@@ -77,6 +96,10 @@ pub enum Request {
     PressDialogButton(i32),
     ReadClipboard,
     WriteClipboard(String),
+    SendMessage {
+        message: WindowMessage,
+        wparam: usize,
+    },
     Quit,
 }
 
@@ -277,6 +300,8 @@ fn parse_request(method: &str, path: &str, body: Vec<u8>) -> Result<Request, Res
             cols: parse_number(cols)?,
             rows: parse_number(rows)?,
         }),
+        ("POST", ["e2e", "message", name]) => parse_message(name, 0),
+        ("POST", ["e2e", "message", name, wparam]) => parse_message(name, parse_number(wparam)?),
         ("POST", ["e2e", "quit"]) => Ok(Request::Quit),
         _ => Err(Response::text(
             STATUS_NOT_FOUND,
@@ -292,6 +317,12 @@ fn parse_text(body: Vec<u8>) -> Result<String, Response> {
 fn parse_number<T: std::str::FromStr>(text: &str) -> Result<T, Response> {
     text.parse()
         .map_err(|_| Response::bad_request(format!("not a number: {text}")))
+}
+
+fn parse_message(name: &str, wparam: usize) -> Result<Request, Response> {
+    let message = WindowMessage::from_name(name)
+        .ok_or_else(|| Response::bad_request(format!("no such message: {name}")))?;
+    Ok(Request::SendMessage { message, wparam })
 }
 
 fn parse_key(text: &str) -> Result<Request, Response> {
@@ -396,6 +427,30 @@ mod tests {
             parse("POST /e2e/clipboard HTTP/1.1\r\nContent-Length: 1\r\n\r\nx"),
             Ok(Request::WriteClipboard("x".to_owned()))
         );
+    }
+
+    #[test]
+    fn window_messages_take_a_name_and_an_optional_wparam() {
+        assert_eq!(
+            parse("POST /e2e/message/queryendsession HTTP/1.1\r\n\r\n"),
+            Ok(Request::SendMessage {
+                message: WindowMessage::QueryEndSession,
+                wparam: 0,
+            })
+        );
+        assert_eq!(
+            parse("POST /e2e/message/endsession/1 HTTP/1.1\r\n\r\n"),
+            Ok(Request::SendMessage {
+                message: WindowMessage::EndSession,
+                wparam: 1,
+            })
+        );
+        for request in [
+            "POST /e2e/message/close HTTP/1.1\r\n\r\n",
+            "POST /e2e/message/endsession/x HTTP/1.1\r\n\r\n",
+        ] {
+            assert_eq!(parse(request).unwrap_err().status, STATUS_BAD_REQUEST);
+        }
     }
 
     #[test]

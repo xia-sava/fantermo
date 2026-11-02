@@ -304,6 +304,13 @@ impl Server {
         u32::try_from(pid).expect("the pid does not fit")
     }
 
+    /// ウィンドウにメッセージ `name`（`queryendsession` など）を `wparam` で送り、戻り値を返す。
+    pub fn send_message(&self, name: &str, wparam: usize) -> i64 {
+        let answer = self.post(&format!("/e2e/message/{name}/{wparam}"), b"");
+        let value: Value = serde_json::from_slice(&answer).expect("the answer is not JSON");
+        value["result"].as_i64().expect("the answer has no result")
+    }
+
     /// `body` を、クリップボードから読んだものとして貼り付ける。
     pub fn paste(&self, body: &str) {
         self.post("/e2e/paste", body.as_bytes());
