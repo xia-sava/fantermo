@@ -46,6 +46,10 @@ struct Bridge {
 
 impl Bridge {
     fn start(args: &[&str]) -> Self {
+        Self::start_with_stderr(args, Stdio::inherit())
+    }
+
+    fn start_with_stderr(args: &[&str], stderr: Stdio) -> Self {
         let mut child = Command::new(bridge_path())
             .args(args)
             .env("TERM", "xterm-256color")
@@ -53,7 +57,7 @@ impl Bridge {
             .env_remove("SHELL")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(stderr)
             .spawn()
             .expect("failed to start the bridge");
         let stdin = child.stdin.take();
@@ -77,12 +81,16 @@ impl Bridge {
     /// 起動して開始の通知を交わし、大きさを伝えたブリッジ。
     fn start_with_size(args: &[&str]) -> Self {
         let mut bridge = Self::start(args);
-        bridge.expect_hello();
-        bridge.send(&ToBridge::Hello {
+        bridge.exchange_hello_and_size();
+        bridge
+    }
+
+    fn exchange_hello_and_size(&mut self) {
+        self.expect_hello();
+        self.send(&ToBridge::Hello {
             version: protocol::VERSION,
         });
-        bridge.send(&ToBridge::Resize(SIZE));
-        bridge
+        self.send(&ToBridge::Resize(SIZE));
     }
 
     fn send(&mut self, message: &ToBridge) {
@@ -501,6 +509,28 @@ fn closing_stdin_ends_a_child_that_does_not_read() {
     let seconds = unique_sleep_seconds();
     let mut bridge = start_child_that_does_not_read("-echo", &seconds);
     bridge.send(&ToBridge::Data(numbered_lines(STALLED_BIG_INPUT_BYTES)));
+    bridge.stdin = None;
+    assert!(bridge.wait_bridge_exit().success());
+    wait_sleep_gone(&seconds);
+}
+
+/// fantermo が終わると標準入力と標準エラー出力が同時に閉じる。ログを書けなくても、子プロセスを終わらせて普通に終わる。
+#[test]
+fn closing_stdin_and_stderr_together_ends_the_child() {
+    let seconds = unique_sleep_seconds();
+    let script = format!("echo stderr-ready-$((1+1)); exec sleep {seconds}");
+    let mut bridge = Bridge::start_with_stderr(&["--", "/bin/sh", "-c", &script], Stdio::piped());
+    bridge.exchange_hello_and_size();
+    bridge.wait_output("stderr-ready-2");
+    let deadline = Instant::now() + CHILD_GONE_TIMEOUT;
+    while !sleep_is_running(&seconds) {
+        assert!(
+            Instant::now() < deadline,
+            "the child `sleep {seconds}` did not start"
+        );
+        thread::sleep(CHILD_GONE_POLL_INTERVAL);
+    }
+    drop(bridge.child.stderr.take());
     bridge.stdin = None;
     assert!(bridge.wait_bridge_exit().success());
     wait_sleep_gone(&seconds);

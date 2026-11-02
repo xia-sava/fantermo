@@ -9,7 +9,7 @@
 //! 環境変数（`TERM` など）は fantermo が渡したものをそのまま子プロセスに引き継ぐ。
 
 use std::ffi::{CStr, CString, OsString};
-use std::io;
+use std::io::{self, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
 use std::ptr;
@@ -39,6 +39,8 @@ const POLL_INTERVAL_MS: c_int = 200;
 const HANGUP_WAIT_MS: u32 = 2000;
 /// 上の待ちの一回の長さ。
 const HANGUP_WAIT_STEP_MS: u32 = 50;
+/// シェルが終わったあと、前面のプロセスグループへ SIGHUP を送り直す間隔。
+const FOREGROUND_HANGUP_INTERVAL_MS: u32 = 200;
 /// `$SHELL` がないときのシェル。
 const DEFAULT_SHELL: &str = "/bin/sh";
 /// 子プロセスで `exec` できなかったときの終了コード（シェルと同じ）。
@@ -55,8 +57,14 @@ const USAGE: &str = "usage: fantermo-bridge [--cwd <path>] [--] [<command> [args
 
 macro_rules! log {
     ($($arg:tt)*) => {
-        eprintln!("fantermo-bridge: {}", format_args!($($arg)*))
+        write_log(format_args!($($arg)*))
     };
+}
+
+/// ログを標準エラー出力へ書く。fantermo が先に終わると閉じているので、書けなくても続ける（子プロセスを終わらせる
+/// 処理の前にも書く）。
+fn write_log(message: std::fmt::Arguments<'_>) {
+    _ = writeln!(io::stderr(), "fantermo-bridge: {message}");
 }
 
 fn main() {
@@ -325,6 +333,20 @@ impl Child {
         if unsafe { libc::kill(-self.pid, libc::SIGHUP) } < 0 {
             log!("SIGHUP を送れません: {}", io::Error::last_os_error());
         }
+    }
+
+    /// pty の前面のプロセスグループが子プロセスのものでなければ、SIGHUP を送る。送れたら真。
+    ///
+    /// シェルが SIGHUP を受け取ったときに起動の途中だったコマンドには、Cygwin ではシェルからの SIGHUP が届かないことが
+    /// あり、シェルが終わったあとも前面のまま動き続ける。背景のジョブ（`nohup`、`disown` など）は前面ではないので送らない。
+    fn hang_up_foreground(&self) -> bool {
+        // SAFETY: `master` は pty の master。
+        let foreground = unsafe { libc::tcgetpgrp(self.master) };
+        if foreground <= 0 || foreground == self.pid {
+            return false;
+        }
+        // SAFETY: 引数は数だけ。
+        unsafe { libc::kill(-foreground, libc::SIGHUP) == 0 }
     }
 
     /// 終わっていれば終わり方を返す。`block` なら終わるまで待つ。
@@ -761,17 +783,30 @@ impl Relay {
     }
 }
 
-/// SIGHUP を送った子プロセスが終わるのを、[`HANGUP_WAIT_MS`] まで待つ。
+/// SIGHUP を送った子プロセスと、残った前面のプロセスグループが終わるのを、合わせて [`HANGUP_WAIT_MS`] まで待つ。
 fn hang_up_wait(child: &Child) {
     let mut waited = 0;
     while waited < HANGUP_WAIT_MS {
         if child.wait(false).is_some() {
+            hang_up_foreground_wait(child, HANGUP_WAIT_MS - waited);
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(HANGUP_WAIT_STEP_MS.into()));
         waited += HANGUP_WAIT_STEP_MS;
     }
     log!("子プロセスが終わらないまま終わります（pid {}）", child.pid);
+}
+
+/// 前面のプロセスグループがなくなるまで、`limit_ms` を上限に SIGHUP を送り直す。起動の途中のプロセスには届かない
+/// ことがあるので、間を空けて繰り返す。
+fn hang_up_foreground_wait(child: &Child, limit_ms: u32) {
+    let mut waited = 0;
+    while waited < limit_ms && child.hang_up_foreground() {
+        std::thread::sleep(std::time::Duration::from_millis(
+            FOREGROUND_HANGUP_INTERVAL_MS.into(),
+        ));
+        waited += FOREGROUND_HANGUP_INTERVAL_MS;
+    }
 }
 
 /// 標準入力から単位を一つ受け取るまで待つ。標準入力が単位の切れ目で閉じたら `None`。
