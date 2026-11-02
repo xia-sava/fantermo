@@ -4985,6 +4985,48 @@ fn profiles_with_empty_or_repeated_values_are_not_saved() {
     assert_eq!(config_text(&server), original);
 }
 
+/// 不正な入力が見えていないページにあれば、「適用」でも「OK」でも、そのページへ移ってフォーカスする。
+#[test]
+fn an_invalid_input_on_a_hidden_page_is_shown_and_focused() {
+    let original = format!(
+        "{ONE_PROFILE}[paste]\nconfirm_size = 8\n\n[background]\nimage_opacity = 0.5\n\n[[background.images]]\npath = 'a.png'\n"
+    );
+    let server = start_settings_test_with_images(&original, &["a.png"]);
+    open_settings(&server);
+
+    let cases = [
+        (PAGE_APPEARANCE, ID_SIZE, "12"),
+        (PAGE_APPEARANCE, ID_PADDING, "4"),
+        (PAGE_BACKGROUND, ID_BACKGROUND_OPACITY, "0.5"),
+        (PAGE_BEHAVIOR, ID_PASTE_CONFIRM_SIZE, "8"),
+        (PAGE_PROFILES, ID_PROFILE_COMMAND, "cmd.exe /k prompt e2e$G"),
+    ];
+    for (page, id, good) in cases {
+        show_page(&server, page);
+        let shown = |server: &Server, how: &str| {
+            let dialog = read_controls(server);
+            assert_ne!(control(&dialog, ID_ERROR)["text"], "", "{id} {how}");
+            assert_eq!(control(&dialog, ID_PAGES)["selected"], page, "{id} {how}");
+            assert_eq!(control(&dialog, id)["visible"], true, "{id} {how}");
+            assert_eq!(dialog["focus"], id, "{id} {how}");
+        };
+        set_text(&server, id, "");
+        show_page(&server, PAGE_COLORS);
+        press_apply(&server);
+        shown(&server, "applying");
+
+        show_page(&server, PAGE_COLORS);
+        click(&server, ID_OK);
+        shown(&server, "pressing OK");
+        assert_eq!(open_dialog_count(&server), 1, "{id}");
+
+        set_text(&server, id, good);
+        press_apply(&server);
+        assert_eq!(control_text(&server, ID_ERROR), "", "{id}");
+    }
+    press_cancel(&server);
+}
+
 /// 接続方式を切り替えると、場所の入力欄が替わり、ブリッジの `command` に Windows のプログラムを書くと警告を出す。警告が
 /// あっても保存できる。
 #[test]

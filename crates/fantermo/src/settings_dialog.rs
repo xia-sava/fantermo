@@ -3244,8 +3244,16 @@ impl State<'_> {
     /// 編集中の設定を反映して設定ファイルに書く。書けたら `true`。
     fn apply(&self) -> bool {
         let Some(edited) = self.preview() else {
-            // 読めない入力欄へ移る。エラーメッセージは preview が見せている。
+            // 読めない入力欄のページを見せて、その入力欄へ移る。エラーメッセージは preview が見せている。
             if let Err((_, control)) = self.read() {
+                if let Some(page) = self
+                    .controls
+                    .page_controls
+                    .iter()
+                    .position(|controls| controls.contains(&control))
+                {
+                    self.show_page(page);
+                }
                 // SAFETY: control はダイアログの子の有効なウィンドウ。
                 unsafe { _ = SetFocus(Some(control)) };
             }
