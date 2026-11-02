@@ -3107,6 +3107,7 @@ fn menu_requests_are_refused_without_a_menu_or_an_item() {
         ("POST", "/e2e/menu/highlight/0"),
         ("POST", "/e2e/menu/select/0"),
         ("POST", "/e2e/menu/key/escape"),
+        ("POST", "/e2e/menu/close"),
     ] {
         let (status, _) = server.request(method, path, b"");
         assert_eq!(status, 400, "{path}");

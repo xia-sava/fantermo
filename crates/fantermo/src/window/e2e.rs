@@ -119,13 +119,7 @@ fn run(hwnd: HWND, Pending { request, reply }: Pending, with_app: &WithApp) {
         Request::HighlightMenuItem(position) => answer(highlight_menu_item(hwnd, position)),
         Request::SelectMenuItem(position) => answer(select_menu_item(hwnd, position)),
         Request::MenuKey(key) => answer(press_menu_key(hwnd, key)),
-        Request::CloseMenu => {
-            // SAFETY: このスレッドが開いているメニューを閉じる。
-            answer(match unsafe { EndMenu() } {
-                Ok(()) => Response::json(&json!({})),
-                Err(e) => Response::bad_request(format!("no menu is open: {e}")),
-            });
-        }
+        Request::CloseMenu => answer(close_menu(hwnd)),
         other => {
             let mut response = None;
             let mut deferred = None;
@@ -523,6 +517,18 @@ fn press_menu_key(main: HWND, key: MenuKey) -> Response {
     match open_menu(main).and_then(|(window, _)| post_menu_key(window, key)) {
         Ok(()) => Response::json(&json!({})),
         Err(response) => response,
+    }
+}
+
+/// 開いているメニューを閉じる。`EndMenu` はメニューがなくても成功を返すので、先に調べる。
+fn close_menu(main: HWND) -> Response {
+    if let Err(response) = open_menu(main) {
+        return response;
+    }
+    // SAFETY: このスレッドが開いているメニューを閉じる。
+    match unsafe { EndMenu() } {
+        Ok(()) => Response::json(&json!({})),
+        Err(e) => Response::internal_error(format!("cannot close the menu: {e}")),
     }
 }
 
