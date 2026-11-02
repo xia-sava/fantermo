@@ -19,6 +19,7 @@ use libghostty_vt::{
         CellIterator, ImageIterator, ImageLayer as VtImageLayer, ImageProtocol, RenderState,
         RowIterator, Snapshot,
     },
+    screen::Screen,
     screen::{CellWide, GridRef},
     selection::{
         FormatOptions as SelectionFormatOptions,
@@ -27,8 +28,9 @@ use libghostty_vt::{
     style::{Palette, PaletteIndex, RgbColor, Style, StyleColor, Underline as StyleUnderline},
     terminal::{
         ClipboardMime, ClipboardWrite, ClipboardWriteError, ConformanceLevel,
-        DeviceAttributeFeature, DeviceAttributes, DeviceType, Point, PointCoordinate, PointSpace,
-        PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes, SizeReportSize,
+        DeviceAttributeFeature, DeviceAttributes, DeviceType, Mode, Point, PointCoordinate,
+        PointSpace, PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes,
+        SizeReportSize,
     },
 };
 use std::time::Duration;
@@ -478,6 +480,36 @@ impl Vt {
     /// アプリがマウスの報告を求めている（vim の `mouse=a` など）。
     pub fn is_mouse_tracking(&self) -> Result<bool, VtError> {
         self.terminal.is_mouse_tracking()
+    }
+
+    /// ホイールをカーソルキーに変えて送るか。代替画面で、アプリがマウスを求めておらず、Alternate Scroll
+    /// （DECSET 1007）を切っていないとき。
+    pub fn wheel_sends_cursor_keys(&self) -> Result<bool, VtError> {
+        Ok(self.terminal.active_screen()? == Screen::Alternate
+            && !self.terminal.is_mouse_tracking()?
+            && self.terminal.mode(Mode::ALT_SCROLL)?)
+    }
+
+    /// ホイールで `lines` 行動かす分のカーソルキーを、シェルへ送るバイト列に変える。正なら上、負なら下。
+    /// キーの変換器を通すので、カーソルキーのモード（DECCKM）にも kitty keyboard protocol にも従う。
+    /// 押して離した 1 回を 1 行とする（離したのを求めるアプリにだけ、離した分のバイト列ができる）。
+    pub fn encode_wheel_as_cursor_keys(&mut self, lines: i32) -> Result<Vec<u8>, VtError> {
+        let key = if lines > 0 {
+            Key::ArrowUp
+        } else {
+            Key::ArrowDown
+        };
+        let input = |action| KeyInput {
+            key,
+            action,
+            mods: Mods::empty(),
+            consumed_mods: Mods::empty(),
+            unshifted: '\0',
+            text: None,
+        };
+        let mut encoded = self.encode_key(&input(KeyAction::Press))?;
+        encoded.extend(self.encode_key(&input(KeyAction::Release))?);
+        Ok(encoded.repeat(lines.unsigned_abs() as usize))
     }
 
     /// マウスの操作を、アプリが求めている報告の形式（X10、SGR など）でバイト列に変える。
@@ -2057,6 +2089,62 @@ mod tests {
             .encode_key(&press(Key::ArrowUp, Mods::empty(), '\0', None))
             .unwrap();
         assert_eq!(encoded, b"\x1bOA");
+    }
+
+    #[test]
+    fn the_wheel_becomes_cursor_keys_only_on_the_alternate_screen() {
+        let mut vt = new_vt();
+        assert!(!vt.wheel_sends_cursor_keys().unwrap());
+        // 既定で Alternate Scroll は有効。
+        vt.feed(b"\x1b[?1049h");
+        assert!(vt.wheel_sends_cursor_keys().unwrap());
+        // アプリがマウスを求めていれば、マウスの報告を送る。
+        vt.feed(b"\x1b[?1000h");
+        assert!(!vt.wheel_sends_cursor_keys().unwrap());
+        vt.feed(b"\x1b[?1000l");
+        assert!(vt.wheel_sends_cursor_keys().unwrap());
+        // アプリが Alternate Scroll を切ったら送らない。
+        vt.feed(b"\x1b[?1007l");
+        assert!(!vt.wheel_sends_cursor_keys().unwrap());
+        vt.feed(b"\x1b[?1007h");
+        assert!(vt.wheel_sends_cursor_keys().unwrap());
+        vt.feed(b"\x1b[?1049l");
+        assert!(!vt.wheel_sends_cursor_keys().unwrap());
+    }
+
+    #[test]
+    fn the_wheel_as_cursor_keys_follows_the_cursor_key_mode() {
+        let mut vt = new_vt();
+        assert_eq!(
+            vt.encode_wheel_as_cursor_keys(3).unwrap(),
+            b"\x1b[A\x1b[A\x1b[A"
+        );
+        assert_eq!(vt.encode_wheel_as_cursor_keys(-1).unwrap(), b"\x1b[B");
+        vt.feed(b"\x1b[?1h");
+        assert_eq!(vt.encode_wheel_as_cursor_keys(2).unwrap(), b"\x1bOA\x1bOA");
+        assert_eq!(vt.encode_wheel_as_cursor_keys(-1).unwrap(), b"\x1bOB");
+    }
+
+    /// kitty keyboard protocol では、本物のカーソルキーと同じ形にする。離したのを求めるアプリには離した分も送る。
+    #[test]
+    fn the_wheel_as_cursor_keys_follows_the_kitty_keyboard_protocol() {
+        let cases: [(&[u8], &[u8]); 3] = [
+            // エスケープコードの曖昧さをなくす。
+            (b"\x1b[>1u", b"\x1b[A"),
+            // 押す・離すを報告する。
+            (b"\x1b[>3u", b"\x1b[1;1:1A\x1b[1;1:3A"),
+            // すべてのキーをエスケープコードで報告する。
+            (b"\x1b[>11u", b"\x1b[1;1:1A\x1b[1;1:3A"),
+        ];
+        for (flags, expected) in cases {
+            let mut vt = new_vt();
+            vt.feed(flags);
+            assert_eq!(
+                vt.encode_wheel_as_cursor_keys(1).unwrap(),
+                expected,
+                "{flags:?}"
+            );
+        }
     }
 
     /// kitty keyboard protocol の「エスケープコードの曖昧さをなくす」（フラグ 1）では、ロックの状態を

@@ -2771,6 +2771,9 @@ const SGR_MOTION: &str = r"\033[?1003h\033[?1006h";
 const CLICKS_IN_THE_LEGACY_FORM: &str = r"\033[?1000h";
 /// 代替画面に入って、カーソルを左上へ置く制御シーケンス。
 const ALTERNATE_SCREEN: &str = r"\033[?1049h\033[H";
+/// `cat -v` が出す、カーソルキーのモードが既定のときの上下のカーソルキー。
+const CURSOR_UP: &str = "^[[A";
+const CURSOR_DOWN: &str = "^[[B";
 
 /// SGR のボタンの番号。修飾キーは足す。動きは 32 を足す。ホイールの奥は 64、手前は 65。
 const SGR_LEFT: u32 = 0;
@@ -2894,6 +2897,16 @@ fn mouse_reports_reach_an_application_through_conpty() {
     server.wait_text(&sgr(SGR_LEFT, REPORT_COL, REPORT_ROW, 'm'));
     server.mouse(&wheel(NOTCH, at));
     server.wait_text(&sgr(SGR_WHEEL_UP, REPORT_COL, REPORT_ROW, 'M'));
+
+    // マウスをやめて代替画面に入ると、ホイールはカーソルキーになる。読み手は動いたままなので、別のタブで動かす。
+    server.post("/e2e/tab/new", b"");
+    server.wait_until("the new tab", |state| tab_count(state) == 2);
+    server.wait_text("PS ");
+    server.send_line(&READER.replace("[?1000h'+$e+'[?1006h", "[?1049h"));
+    let state = server.wait_text("reader-42");
+    assert_eq!(state["mouse_tracking"], false, "{state:#}");
+    server.mouse(&wheel(NOTCH, at));
+    server.wait_text(CURSOR_UP);
 }
 
 #[test]
@@ -3018,10 +3031,27 @@ fn exercise_wheel_with_applications(server: &Server) {
         legacy(SGR_WHEEL_DOWN)
     );
 
-    // 代替画面でアプリが求めていなければ、何も送らず、表示も動かない。
+    // 代替画面でアプリが求めていなければ、ノッチの行数だけカーソルキーを送る。表示は動かない。
     let state = start_report_reader_in_new_tab(server, ALTERNATE_SCREEN);
     assert_eq!(state["mouse_tracking"], false, "{state:#}");
-    assert_eq!(reports_of(server, &wheel(NOTCH, at)), "");
+    let lines = number(&state["scroll"]["lines_per_notch"]) as usize;
+    assert_eq!(
+        reports_of(server, &wheel(NOTCH, at)),
+        CURSOR_UP.repeat(lines)
+    );
+    assert_eq!(
+        reports_of(server, &wheel(-NOTCH, at)),
+        CURSOR_DOWN.repeat(lines)
+    );
+    // 半分のノッチは溜めて、合わせて 1 ノッチの行数になる。
+    let halves = format!(
+        "{}{}",
+        reports_of(server, &wheel(NOTCH / 2, at)),
+        reports_of(server, &wheel(NOTCH / 2, at))
+    );
+    assert_eq!(halves, CURSOR_UP.repeat(lines));
+    // タブバーの上では送らない。
+    assert_eq!(reports_of(server, &wheel(NOTCH, on_tab(&state, 0))), "");
     let after = server.state();
     assert_eq!(scroll_offset(&after), 0, "{after:#}");
     assert_eq!(newest_offset(&after), 0, "{after:#}");
@@ -3032,6 +3062,30 @@ fn exercise_wheel_with_applications(server: &Server) {
         "",
     ));
     assert_eq!(selection(&server.state()), Some("reader-4"));
+
+    // カーソルキーのモード（DECCKM）に従う。
+    let state = start_report_reader_in_new_tab(server, &format!(r"{ALTERNATE_SCREEN}\033[?1h"));
+    let lines = number(&state["scroll"]["lines_per_notch"]) as usize;
+    assert_eq!(reports_of(server, &wheel(NOTCH, at)), "^[OA".repeat(lines));
+    assert_eq!(reports_of(server, &wheel(-NOTCH, at)), "^[OB".repeat(lines));
+
+    // kitty keyboard protocol では、本物のカーソルキーと同じ形にする。
+    start_report_reader_in_new_tab(server, &format!(r"{ALTERNATE_SCREEN}\033[>3u"));
+    assert_eq!(
+        reports_of(server, &wheel(NOTCH, at)),
+        "^[[1;1:1A^[[1;1:3A".repeat(lines)
+    );
+
+    // Alternate Scroll（DECSET 1007）を切ったアプリには送らない。
+    start_report_reader_in_new_tab(server, &format!(r"{ALTERNATE_SCREEN}\033[?1007l"));
+    assert_eq!(reports_of(server, &wheel(NOTCH, at)), "");
+
+    // Shift で報告をやめても、アプリがマウスを求めていればカーソルキーにしない。
+    start_report_reader_in_new_tab(server, &format!(r"{ALTERNATE_SCREEN}{SGR_CLICKS}"));
+    assert_eq!(
+        reports_of(server, &step(&format!("wheel:{NOTCH}"), at, "shift")),
+        ""
+    );
 }
 
 #[test]

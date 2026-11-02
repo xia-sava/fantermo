@@ -2058,7 +2058,8 @@ impl App {
     }
 
     /// マウスのホイールが回った。アプリがマウスを求めていれば、1 ノッチごとにボタン 4（奥）か
-    /// 5（手前）の押下として送り、解放は送らない（xterm と同じ）。そうでなければスクロールバックを動かす。
+    /// 5（手前）の押下として送り、解放は送らない（xterm と同じ）。アプリがマウスを求めていない代替画面
+    /// ならカーソルキーに変えて送る。そうでなければスクロールバックを動かす。
     /// `delta` は WM_MOUSEWHEEL の回転量（奥へ回すと正）、`lparam` は WM_MOUSEWHEEL のとおり画面での位置。
     fn on_wheel(&mut self, delta: i32, lparam: LPARAM, wparam: WPARAM) {
         let (x, y) = self.screen_to_client(lparam);
@@ -2067,7 +2068,12 @@ impl App {
             return;
         }
         if !self.reports_mouse() {
-            self.scroll_by_wheel(delta);
+            let keys = self.session().vt.wheel_sends_cursor_keys();
+            match keys {
+                Ok(true) => self.send_wheel_as_cursor_keys(delta),
+                Ok(false) => self.scroll_by_wheel(delta),
+                Err(e) => tracing::warn!("failed to read the terminal modes: {e}"),
+            }
             return;
         }
         let button = if delta > 0 {
@@ -2082,13 +2088,31 @@ impl App {
         }
     }
 
-    fn scroll_by_wheel(&mut self, delta: i32) {
+    /// ホイールの回転量 `delta` を動かす行数にする。端数は次の回転へ持ち越す。
+    fn take_wheel_lines(&mut self, delta: i32) -> i32 {
         let (lines, remainder) = wheel_lines(
             self.session().wheel_remainder,
             delta,
             self.wheel_lines_per_notch,
         );
         self.session_mut().wheel_remainder = remainder;
+        lines
+    }
+
+    /// 奥へ回すと上、手前へ回すと下のカーソルキーを、動かす行数だけ送る。
+    fn send_wheel_as_cursor_keys(&mut self, delta: i32) {
+        let lines = self.take_wheel_lines(delta);
+        if lines == 0 {
+            return;
+        }
+        match self.session_mut().vt.encode_wheel_as_cursor_keys(lines) {
+            Ok(encoded) => self.send(&encoded),
+            Err(e) => tracing::warn!("failed to encode the wheel as cursor keys: {e}"),
+        }
+    }
+
+    fn scroll_by_wheel(&mut self, delta: i32) {
+        let lines = self.take_wheel_lines(delta);
         if lines == 0 {
             return;
         }
