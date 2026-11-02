@@ -4496,6 +4496,8 @@ fn the_appearance_page_previews_at_once_and_ok_writes_it() {
         "{ONE_PROFILE}[font]\nfamily = [\"Consolas\"]\nsize = 11\n\n[scroll_bar]\nwidth = 12\n\n[window]\npadding = 4\n"
     );
     let server = start_settings_test(&original);
+    // フォントを大きくしてもランナーの画面（1024×768）に収まる大きさから始める。
+    server.resize(50, 15);
     let before = server.state();
     let dialog = open_settings(&server);
     assert_eq!(server.state()["window_enabled"], false);
@@ -5319,9 +5321,23 @@ fn the_file_dialogs_add_a_background_image_and_a_profile_icon() {
     choose_file(&server, ID_PROFILE_ICON_CHOOSE, &image);
     press_ok(&server);
     let saved = saved_config(&server);
-    let written = image.to_str().expect("a UTF-8 path");
-    assert_eq!(saved.background.images[0].path, written);
-    assert_eq!(saved.profiles[0].icon.as_deref(), Some(written));
+    // ダイアログは長い名前のパスを返し、一時フォルダは短い名前（`RUNNER~1` など）のことがあるので、
+    // 同じファイルを指すかで比べる。
+    let same_file = |path: &str| {
+        std::fs::canonicalize(path).expect("the written path exists")
+            == std::fs::canonicalize(&image).expect("the image exists")
+    };
+    assert!(
+        same_file(&saved.background.images[0].path),
+        "{}",
+        saved.background.images[0].path
+    );
+    let icon = saved.profiles[0]
+        .icon
+        .as_deref()
+        .expect("an icon is written");
+    assert!(same_file(icon), "{icon}");
+    assert!(std::path::Path::new(icon).is_absolute(), "{icon}");
 }
 
 /// 色のページの配色と、色を選ぶダイアログ、既定に戻すが、設定ファイルと端末の絵に入る。
