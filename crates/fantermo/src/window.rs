@@ -1166,6 +1166,11 @@ impl App {
                 return None;
             }
         };
+        self.paste_text(text)
+    }
+
+    /// 改行が LF の `text` を貼り付ける。確認が要るときは、編集のダイアログを開くよう返す。
+    fn paste_text(&mut self, text: String) -> Option<Deferred> {
         let (needs_confirmation, large) = match paste_action(&self.paste_config, &text) {
             PasteAction::Confirm { large } => (true, large),
             PasteAction::Paste { allow_unsafe } => (
