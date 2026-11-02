@@ -86,7 +86,10 @@ fn main() {
     let state_path = window_state::path();
     let state = window_state::load(state_path.as_deref());
     match window::run(child_command_line(), config_path, loaded, state_path, state) {
-        Ok(code) => std::process::exit(code as i32),
+        Ok(code) => {
+            conpty::wait_for_closing_consoles();
+            std::process::exit(code as i32)
+        }
         Err(e) => {
             tracing::error!("{e}");
             // 開発中のビルドはコンソールに出たログで分かる。リリースのビルドにはコンソールがない。
