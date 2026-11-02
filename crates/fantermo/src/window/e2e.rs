@@ -1271,7 +1271,7 @@ impl App {
             "profiles": profiles,
             "dialogs": dialogs,
             "images": images,
-            "window": window_state::current(self.hwnd),
+            "window": window_state::current(self.hwnd, self.dpi),
             // SAFETY: self.hwnd は有効なウィンドウ。
             "window_enabled": unsafe { IsWindowEnabled(self.hwnd) }.as_bool(),
             "window_title": real_window_title(self.hwnd),

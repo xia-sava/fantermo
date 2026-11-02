@@ -36,7 +36,7 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
 
 | 要求 | すること |
 |---|---|
-| `GET /e2e/state` | JSON: `pid` `dpi`（ウィンドウが使っている DPI）`monitor_dpi`（`GetDpiForWindow`。OS が決める）`font_size_px` `ui_font_size_px` `cols` `rows` `client_width` `client_height` `terminal_x` `terminal_y` `cell_width` `cell_height` `active` `tabs`（`title` `profile` `cols` `rows` `bell`）`profiles`（名前）`dialogs`（`class` `title` `controls`）`images`（画面に出ている画像の数）`window`（`state.toml` と同じ `left` `top` `width` `height` `maximized`）`background`（背景画像を敷く範囲の `x` `y` `width` `height` と、表示しているタブが選んだ画像の名前 `image`）`selection`（選択範囲の文字列。なければ `null`）`mouse_tracking`（アプリがマウスを求めているか）`scroll`（`total` `offset` `len` と、ホイール 1 ノッチの行数 `lines_per_notch`）`scroll_bar`（`x` `y` `width` `height`、つまみ `thumb` の `top` `length`（なければ `null`）、押している間だけ真の `pressed`）`tab_bar`（`menu` `new_tab` `profiles` の範囲と、描いているタブ `tabs` の `index` `area` `close`）`window_enabled`（ウィンドウが入力を受けるか。ダイアログの間は偽）`window_title` `version` `text`（スクロールバックを含む全体の文字） |
+| `GET /e2e/state` | JSON: `pid` `dpi`（ウィンドウが使っている DPI）`monitor_dpi`（`GetDpiForWindow`。OS が決める）`font_size_px` `ui_font_size_px` `cols` `rows` `client_width` `client_height` `terminal_x` `terminal_y` `cell_width` `cell_height` `active` `tabs`（`title` `profile` `cols` `rows` `bell`）`profiles`（名前）`dialogs`（`class` `title` `controls`）`images`（画面に出ている画像の数）`window`（`state.toml` と同じ `left` `top` `width` `height` `maximized` `dpi`）`background`（背景画像を敷く範囲の `x` `y` `width` `height` と、表示しているタブが選んだ画像の名前 `image`）`selection`（選択範囲の文字列。なければ `null`）`mouse_tracking`（アプリがマウスを求めているか）`scroll`（`total` `offset` `len` と、ホイール 1 ノッチの行数 `lines_per_notch`）`scroll_bar`（`x` `y` `width` `height`、つまみ `thumb` の `top` `length`（なければ `null`）、押している間だけ真の `pressed`）`tab_bar`（`menu` `new_tab` `profiles` の範囲と、描いているタブ `tabs` の `index` `area` `close`）`window_enabled`（ウィンドウが入力を受けるか。ダイアログの間は偽）`window_title` `version` `text`（スクロールバックを含む全体の文字） |
 | `GET /e2e/frame` | いまの画面の PNG |
 | `POST /e2e/input` | 本文のバイト列をそのままバックエンドへ |
 | `POST /e2e/text` | 本文の文字を `WM_CHAR` と同じ経路で（制御文字は送らない。Enter は `key`） |
@@ -98,6 +98,7 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
   - マウスの報告: アプリ側は `start_report_reader`（`stty -icanon -echo -isig -icrnl` と `cat -v`）で読み、`reports_of` が操作ごとの受け取った分を返す。モードごとに `start_report_reader_in_new_tab`。ConPTY では PowerShell で `SetConsoleMode` に `ENABLE_VIRTUAL_TERMINAL_INPUT` を渡して読む（`mouse_reports_reach_an_application_through_conpty`）。
   - 別デスクトップでは本物のカーソルがウィンドウの上にないので、`TrackMouseEvent` の `WM_MOUSELEAVE` がすぐ届く。マウスを載せている間の絵は見られない。リンクの Ctrl+クリックは既定のブラウザを開くので通さない。
 - DPI: `Server` は既定で `FANTERMO_DPI=96` を付ける。別の DPI で起動するのは `Server::start_with_environment`（返した環境変数が優先する）か `start_at_dpi`。起動のあとに変えるのは `change_dpi`（`POST /e2e/message/dpichanged/<DPI>`。この場で終わるので待たない）。
+  - モニターの DPI で起動するのは、`start_with_environment` で `FANTERMO_DPI` を空にする（読めない値は無視する）。
   - モニターの DPI は変えられない。変わるのは `WM_DPICHANGED` に反応する部分（セル、フォント、余白、タブバー、スクロールバー、アイコン）だけで、ウィンドウの枠と、`GetDpiForWindow` を読むダイアログ（設定、文字のダイアログ）はモニターの DPI のまま。`monitor_dpi` と `dpi` の両方を見る。手元は 192、ランナーは 96 なので、`monitor_dpi` と同じ DPI のときだけ成り立つことは、それで分ける。
   - 寸法は固定せず、状態の値から求める（タブバーの高さは `background` の `y`、余白は `terminal_x`）。比べるときの基準は 96 DPI で読んだ値。フォントの測り直しは `at <DPI> DPI: cell` のログの行で分かる。
   - 192 DPI でも 1024×768 に収まるよう、先に `resize(DPI_TEST_GRID)` で小さくする。`change_dpi` が収まることを確認する。既定の 100×30 のままだと手元で通ってランナーで桁数が減る。

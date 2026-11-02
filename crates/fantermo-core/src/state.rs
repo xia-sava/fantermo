@@ -2,7 +2,7 @@
 //!
 //! 状態ファイルは fantermo が終わるとき（ウィンドウを閉じるとき、ログオフ・シャットダウンで終わらされる
 //! とき）に書き、次に起動したときに読む。利用者が手で書くもの
-//! ではない。覚えるのはウィンドウの位置・大きさ・最大化だけ。
+//! ではない。覚えるのはウィンドウの位置・大きさ・最大化と、そのときの DPI だけ。
 
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +27,14 @@ pub struct WindowState {
     pub width: i32,
     pub height: i32,
     pub maximized: bool,
+    /// 書いたときのウィンドウの DPI。違う DPI で起動したときは、桁数と行数が保たれるように大きさを換算
+    /// する。`None`（DPI を書いていなかった版のファイル）なら換算せず、ピクセルのまま使う。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dpi: Option<u32>,
 }
+
+/// 状態ファイルの DPI の上限。これより大きい値は使えない値として扱う。
+const MAX_DPI: u32 = 4800;
 
 /// 読めなかったわけ。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +66,13 @@ pub fn parse(text: &str) -> Result<State, ParseError> {
             window.width, window.height
         )));
     }
+    if let Some(WindowState { dpi: Some(dpi), .. }) = &state.window
+        && !(1..=MAX_DPI).contains(dpi)
+    {
+        return Err(ParseError::Invalid(format!(
+            "the DPI {dpi} is out of range"
+        )));
+    }
     Ok(state)
 }
 
@@ -82,6 +96,7 @@ mod tests {
         width: 1600,
         height: 1000,
         maximized: true,
+        dpi: Some(192),
     };
 
     #[test]
@@ -93,7 +108,8 @@ mod tests {
         assert_eq!(
             text,
             "# fantermo が終了するときに書き出すファイル。手で書き換えるものではない。\n\n\
-             [window]\nleft = -20\ntop = 40\nwidth = 1600\nheight = 1000\nmaximized = true\n"
+             [window]\nleft = -20\ntop = 40\nwidth = 1600\nheight = 1000\nmaximized = true\n\
+             dpi = 192\n"
         );
         assert_eq!(parse(&text), Ok(state));
     }
@@ -118,9 +134,37 @@ mod tests {
                     width: 10,
                     height: 20,
                     maximized: false,
+                    dpi: None,
                 }),
             })
         );
+    }
+
+    #[test]
+    fn a_file_without_a_dpi_has_none() {
+        let text = "[window]\nleft = 0\ntop = 0\nwidth = 10\nheight = 20\nmaximized = false\n";
+        let window = parse(text).unwrap().window.unwrap();
+        assert_eq!(window.dpi, None);
+        assert!(
+            !to_toml(&State {
+                window: Some(window)
+            })
+            .contains("dpi")
+        );
+    }
+
+    #[test]
+    fn a_dpi_out_of_range_is_invalid() {
+        let window = "[window]\nleft = 0\ntop = 0\nwidth = 10\nheight = 20\nmaximized = false\n";
+        for dpi in [0, 4801] {
+            let text = format!("{window}dpi = {dpi}\n");
+            assert_eq!(
+                parse(&text),
+                Err(ParseError::Invalid(format!(
+                    "the DPI {dpi} is out of range"
+                )))
+            );
+        }
     }
 
     #[test]

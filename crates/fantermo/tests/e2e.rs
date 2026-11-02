@@ -16,6 +16,7 @@
 mod common;
 
 use std::{
+    ffi::OsString,
     io::Cursor,
     os::windows::fs::OpenOptionsExt,
     path::PathBuf,
@@ -43,6 +44,13 @@ use fantermo_core::{
     state::{self, State, WindowState},
 };
 use serde_json::Value;
+use windows::Win32::{
+    Foundation::RECT,
+    UI::{
+        HiDpi::AdjustWindowRectExForDpi,
+        WindowsAndMessaging::{WINDOW_EX_STYLE, WS_OVERLAPPEDWINDOW},
+    },
+};
 
 /// `Server::start_cmd` のプロンプト。
 const CMD_PROMPT: &str = "e2e>";
@@ -1170,6 +1178,8 @@ const CMD_COMMAND: [&str; 4] = ["cmd.exe", "/k", "prompt", "e2e$G"];
 const DEFAULT_GRID: (u64, u64) = (100, 30);
 /// 読めなかった状態のファイルを写す先の名前。
 const BROKEN_STATE_FILE: &str = "state.toml.broken";
+/// [`Server`] が既定で付ける `FANTERMO_DPI` の値。これを書いた状態のファイルは換算しない。
+const STATE_TEST_DPI: u32 = 96;
 
 /// 状態のファイルの `[window]`。ファイルがなかったり読めなければ失敗にする。
 #[track_caller]
@@ -1244,6 +1254,7 @@ fn the_window_position_comes_back_and_is_written_again() {
         width: 700,
         height: 480,
         maximized: false,
+        dpi: Some(STATE_TEST_DPI),
     };
     let (mut server, state) = start_with_state(state::to_toml(&seeded_state(WINDOW)).as_bytes());
     assert_eq!(current_window(&state), WINDOW);
@@ -1260,6 +1271,7 @@ fn a_maximized_window_comes_back_maximized_and_keeps_its_normal_size() {
         width: 700,
         height: 480,
         maximized: true,
+        dpi: Some(STATE_TEST_DPI),
     };
     let (mut server, state) = start_with_state(state::to_toml(&seeded_state(WINDOW)).as_bytes());
     assert_eq!(current_window(&state), WINDOW);
@@ -7017,6 +7029,7 @@ fn a_window_between_grid_sizes_fits_the_grid_after_a_dpi_change() {
         width: WIDTH,
         height: HEIGHT,
         maximized: false,
+        dpi: Some(STATE_TEST_DPI),
     }));
     let (server, state) = start_with_state(saved.as_bytes());
     let window = current_window(&state);
@@ -7428,19 +7441,19 @@ fn a_centered_background_image_keeps_its_pixels_after_a_dpi_change() {
     );
 }
 
-/// DPI を変えたあとに書く `state.toml` は、そのときのウィンドウの大きさ（ピクセル）で、DPI は書かない。同じ DPI で起動すると
-/// 同じ桁数と行数に戻り、違う DPI で起動するとピクセルの大きさのまま、そのセルで入る桁数と行数になる。
+/// DPI を変えたあとに書く `state.toml` は、そのときのウィンドウの大きさ（ピクセル）と DPI。同じ DPI で起動すると同じ
+/// 大きさに戻り、違う DPI で起動すると同じ桁数と行数が入る大きさになる。
 #[test]
-fn the_size_saved_after_a_dpi_change_comes_back_in_pixels() {
+fn the_size_saved_after_a_dpi_change_keeps_the_grid() {
     let mut first = Server::start("", &CMD_COMMAND);
     first.wait_text(CMD_PROMPT);
     first.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
+    let before = first.state();
     let changed = change_dpi(&first, DPI_200_PERCENT);
     quit(&mut first);
     assert_eq!(saved_window(&first), current_window(&changed));
+    assert_eq!(saved_window(&first).dpi, Some(192));
     let saved = std::fs::read(first.state_file()).expect("failed to read the state");
-    let text = String::from_utf8_lossy(&saved).into_owned();
-    assert!(!text.contains("dpi"), "{text}");
     drop(first);
 
     let (mut same, state) = start_at_dpi(DPI_200_PERCENT, &saved);
@@ -7450,7 +7463,43 @@ fn the_size_saved_after_a_dpi_change_comes_back_in_pixels() {
     drop(same);
 
     let (mut other, state) = start_at_dpi(DPI_100_PERCENT, &saved);
+    assert_eq!(state["cols"], changed["cols"], "{state:#}");
+    assert_eq!(state["rows"], changed["rows"], "{state:#}");
+    assert_eq!(current_window(&state), current_window(&before));
+    assert_layout_fits_the_grid(&state);
+    quit(&mut other);
+    assert_eq!(saved_window(&other), current_window(&before));
+    let saved_at_100_percent = std::fs::read(other.state_file()).expect("failed to read the state");
+    drop(other);
+
+    // 低い DPI で書いたものを高い DPI で起動しても、桁数と行数が同じ。
+    let (back, state) = start_at_dpi(DPI_200_PERCENT, &saved_at_100_percent);
+    assert_eq!(state["cols"], changed["cols"], "{state:#}");
+    assert_eq!(state["rows"], changed["rows"], "{state:#}");
     assert_eq!(current_window(&state), current_window(&changed));
+    drop(back);
+}
+
+/// DPI の書かれていない `state.toml` は、ピクセルのまま読み、そのセルで入る桁数と行数になる。
+#[test]
+fn a_saved_size_without_a_dpi_is_read_in_pixels() {
+    let mut first = Server::start("", &CMD_COMMAND);
+    first.wait_text(CMD_PROMPT);
+    first.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
+    let changed = change_dpi(&first, DPI_200_PERCENT);
+    quit(&mut first);
+    let saved = state::to_toml(&seeded_state(WindowState {
+        dpi: None,
+        ..saved_window(&first)
+    }));
+    drop(first);
+
+    let (mut other, state) = start_at_dpi(DPI_100_PERCENT, saved.as_bytes());
+    let in_pixels = WindowState {
+        dpi: Some(STATE_TEST_DPI),
+        ..current_window(&changed)
+    };
+    assert_eq!(current_window(&state), in_pixels);
     assert_eq!(state["client_width"], changed["client_width"]);
     assert_eq!(state["client_height"], changed["client_height"]);
     assert!(
@@ -7475,7 +7524,122 @@ fn the_size_saved_after_a_dpi_change_comes_back_in_pixels() {
         "{state:#}"
     );
     quit(&mut other);
-    assert_eq!(saved_window(&other), current_window(&changed));
+    assert_eq!(saved_window(&other), in_pixels);
+}
+
+/// 作業領域に収めるより先に換算する。画面に入らない大きさでも、書いたときの桁数と行数から決まる。
+#[test]
+fn a_saved_size_larger_than_the_screen_is_converted_before_it_is_fitted() {
+    /// どの画面にも入らない大きさと、それを書いたときの DPI。96 DPI ではその 10 分の 1 ほどになる。
+    const SAVED_DPI: u32 = 960;
+    const WIDTH: i32 = 6000;
+    const HEIGHT: i32 = 4000;
+    let saved = state::to_toml(&seeded_state(WindowState {
+        left: 20,
+        top: 20,
+        width: WIDTH,
+        height: HEIGHT,
+        maximized: false,
+        dpi: Some(SAVED_DPI),
+    }));
+    let (mut server, state) = start_at_dpi(DPI_100_PERCENT, saved.as_bytes());
+    let window = current_window(&state);
+    assert_eq!((window.left, window.top), (20, 20), "{state:#}");
+    // 枠と丸めの分があるので、10 分の 1 の前後を見る。
+    assert!(
+        (WIDTH / 14..=WIDTH / 7).contains(&window.width),
+        "{state:#}"
+    );
+    assert!(
+        (HEIGHT / 14..=HEIGHT / 7).contains(&window.height),
+        "{state:#}"
+    );
+    assert_layout_fits_the_grid(&state);
+    quit(&mut server);
+    assert_eq!(saved_window(&server), window);
+}
+
+/// `FANTERMO_DPI` を使わず、モニターの DPI で起動する。書いたときの枠はそのときの DPI の枠として換算する。
+#[test]
+fn a_size_saved_at_another_monitor_dpi_keeps_the_grid() {
+    /// DPI が `dpi` のウィンドウの枠の大きさ。
+    fn frame_at(dpi: u32) -> (i32, i32) {
+        let mut rect = RECT::default();
+        // SAFETY: rect は書き込める。
+        unsafe {
+            AdjustWindowRectExForDpi(
+                &mut rect,
+                WS_OVERLAPPEDWINDOW,
+                false,
+                WINDOW_EX_STYLE(0),
+                dpi,
+            )
+        }
+        .expect("failed to compute the frame");
+        (rect.right - rect.left, rect.bottom - rect.top)
+    }
+
+    let probe = Server::start_cmd();
+    let monitor_dpi = number(&probe.wait_text(CMD_PROMPT)["monitor_dpi"]);
+    drop(probe);
+    let other_dpi = if monitor_dpi == DPI_200_PERCENT {
+        DPI_100_PERCENT
+    } else {
+        DPI_200_PERCENT
+    };
+
+    let reference = Server::start_with_environment("", &CMD_COMMAND, |_| {
+        vec![(DPI_ENV, other_dpi.to_string().into())]
+    });
+    reference.wait_text(CMD_PROMPT);
+    reference.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
+    let written = reference.state();
+    let (frame_width, frame_height) = frame_at(other_dpi as u32);
+    let saved = state::to_toml(&seeded_state(WindowState {
+        left: 20,
+        top: 20,
+        width: number(&written["client_width"]) as i32 + frame_width,
+        height: number(&written["client_height"]) as i32 + frame_height,
+        maximized: false,
+        dpi: Some(other_dpi as u32),
+    }));
+    drop(reference);
+
+    // `FANTERMO_DPI` を読めない値にすると、モニターの DPI を使う。
+    let server = Server::start_with_environment("", &CMD_COMMAND, |dir| {
+        std::fs::write(dir.join(common::STATE_FILE), &saved).expect("failed to write the state");
+        vec![(DPI_ENV, OsString::new())]
+    });
+    let state = server.wait_text(CMD_PROMPT);
+    assert_eq!(state["dpi"], monitor_dpi, "{state:#}");
+    assert_eq!(state["cols"], written["cols"], "{state:#}");
+    assert_eq!(state["rows"], written["rows"], "{state:#}");
+    assert_layout_fits_the_grid(&state);
+}
+
+/// 最大化して書いたものは、最大化を戻す前の大きさを換算し、最大化して開く。
+#[test]
+fn a_maximized_window_saved_at_another_dpi_converts_its_normal_size() {
+    let mut first = Server::start("", &CMD_COMMAND);
+    first.wait_text(CMD_PROMPT);
+    first.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
+    let before = first.state();
+    change_dpi(&first, DPI_200_PERCENT);
+    quit(&mut first);
+    let saved = state::to_toml(&seeded_state(WindowState {
+        maximized: true,
+        ..saved_window(&first)
+    }));
+    drop(first);
+
+    let (mut other, state) = start_at_dpi(DPI_100_PERCENT, saved.as_bytes());
+    let expected = WindowState {
+        maximized: true,
+        ..current_window(&before)
+    };
+    assert_eq!(current_window(&state), expected);
+    quit(&mut other);
+    assert_eq!(saved_window(&other), expected);
 }
 
 /// 設定ダイアログは、メッセージの DPI ではなくモニターの DPI で開く。開いている間に端末の DPI が変わっても、ダイアログの

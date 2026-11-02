@@ -21,7 +21,7 @@ use fantermo_core::{
     frame::Rgb,
     keymap::{self, Keymap},
     link::Link,
-    state::State,
+    state::{State, WindowState},
     vt::{
         self, Key, KeyAction, KeyInput, Mods, MouseAction, MouseButton, MouseInput, PasteOutcome,
         PointerPosition, ScrollPosition,
@@ -216,7 +216,7 @@ fn random_seed() -> u64 {
 /// 返す。`arguments` は fantermo の引数（子プロセスのコマンドライン）。`config_path` は設定ファイルの
 /// 場所で、`loaded` はそこから読んだ設定。読んだときの警告は、ウィンドウを出してから見せる。
 /// `state_path` はウィンドウの状態ファイルの場所で、`state` はそこから読んだ状態。ウィンドウを見せる前に、
-/// 覚えていた位置・大きさに戻し、閉じるときに書く。
+/// 覚えていた位置・大きさに戻し（DPI が違えば桁数と行数が保たれるように換算する）、閉じるときに書く。
 pub fn run(
     arguments: Option<String>,
     config_path: Option<PathBuf>,
@@ -242,8 +242,20 @@ pub fn run(
         config.window.padding,
     )?;
     // 端末の桁数と行数を、戻した大きさから決めさせるため、App を作る前に戻す。
-    let restored = state.window;
-    if let Some(window) = &restored {
+    let saved = state.window;
+    if let Some(window) = &saved {
+        window_state::restore_hidden(hwnd, window);
+    }
+    // 戻した位置のモニタの DPI。戻すとモニタの作業領域に収められるので、換算は状態ファイルの値から行い、
+    // 換算したものを改めて戻す。
+    let window_dpi = dpi_from_env().unwrap_or_else(|| {
+        // SAFETY: hwnd は有効なウィンドウ。
+        unsafe { GetDpiForWindow(hwnd) }
+    });
+    let restored = saved.map(|window| window_at_dpi(hwnd, &dwrite, &config, window, window_dpi));
+    if let Some(window) = &restored
+        && restored != saved
+    {
         window_state::restore_hidden(hwnd, window);
     }
     let mut app = App::new(
@@ -266,10 +278,6 @@ pub fn run(
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, app as isize) };
 
     // ウィンドウを置いたモニタの DPI がシステムの DPI と違えば、DPI が変わったときと同じように作り直す。
-    let window_dpi = dpi_from_env().unwrap_or_else(|| {
-        // SAFETY: hwnd は有効なウィンドウ。
-        unsafe { GetDpiForWindow(hwnd) }
-    });
     if window_dpi != system_dpi {
         change_dpi_in_place(hwnd, window_dpi);
         // 作り直しは桁数と行数を保ってウィンドウの大きさを変えるので、覚えていた大きさに戻し直す。桁数と
@@ -341,6 +349,82 @@ fn dpi_from_env() -> Option<u32> {
     }
 }
 
+/// 状態ファイルのウィンドウ `window` を、DPI が `dpi` のウィンドウに戻すものにする。書いたときと DPI が違えば、
+/// 桁数と行数が保たれる大きさに換算する。DPI が書かれていなければ、ピクセルのまま使う。
+fn window_at_dpi(
+    hwnd: HWND,
+    dwrite: &IDWriteFactory,
+    config: &Config,
+    window: WindowState,
+    dpi: u32,
+) -> WindowState {
+    let Some(saved_dpi) = window.dpi.filter(|&saved_dpi| saved_dpi != dpi) else {
+        return window;
+    };
+    match size_keeping_grid(hwnd, dwrite, config, &window, saved_dpi, dpi) {
+        Ok(size) => WindowState {
+            width: size.cx,
+            height: size.cy,
+            dpi: Some(dpi),
+            ..window
+        },
+        Err(e) => {
+            tracing::warn!(
+                "failed to convert the saved window size from {saved_dpi} DPI to {dpi} DPI: {e}"
+            );
+            window
+        }
+    }
+}
+
+/// DPI が `saved_dpi` のときの大きさ `window` に入る桁数と行数が、DPI が `dpi` のウィンドウにちょうど入る
+/// 大きさ（枠を含む）。
+fn size_keeping_grid(
+    hwnd: HWND,
+    dwrite: &IDWriteFactory,
+    config: &Config,
+    window: &WindowState,
+    saved_dpi: u32,
+    dpi: u32,
+) -> windows::core::Result<SIZE> {
+    let insets_at = |dpi: u32| Insets::new(dpi, config.scroll_bar.width, config.window.padding);
+    let frame = window_frame(hwnd);
+    // DPI_ENV で DPI を差し替えて書いたものなら、枠はそのときもウィンドウの実際の DPI で付いていた。
+    let saved_frame = if dpi_from_env().is_some() {
+        frame
+    } else {
+        window_size(SIZE::default(), saved_dpi)?
+    };
+    let area = terminal_area_in_client(
+        (window.width - saved_frame.cx).max(0) as u32,
+        (window.height - saved_frame.cy).max(0) as u32,
+        insets_at(saved_dpi),
+    );
+    let grid = grid_size(&load_font(dwrite, &config.font, saved_dpi)?, area);
+    let client = client_size_for_terminal(
+        grid_pixels(&load_font(dwrite, &config.font, dpi)?, grid.cols, grid.rows),
+        insets_at(dpi),
+    );
+    Ok(SIZE {
+        cx: client.cx + frame.cx,
+        cy: client.cy + frame.cy,
+    })
+}
+
+/// ウィンドウの枠の大きさ（ウィンドウの大きさとクライアント領域の大きさの差）。
+fn window_frame(hwnd: HWND) -> SIZE {
+    let mut rect = RECT::default();
+    // SAFETY: hwnd は有効なウィンドウで、rect は書き込める。
+    if let Err(e) = unsafe { GetWindowRect(hwnd, &mut rect) } {
+        tracing::warn!("failed to get the window position: {e}");
+    }
+    let (width, height) = client_size(hwnd);
+    SIZE {
+        cx: (rect.right - rect.left) - width as i32,
+        cy: (rect.bottom - rect.top) - height as i32,
+    }
+}
+
 /// ウィンドウの左上を動かさずに、DPI が `dpi` に変わったときの処理（フォントとアトラスの作り直し）を
 /// させる。桁数と行数は保つ。DPI が変わらず、フォントの設定が変わったときにも使う。
 fn change_dpi_in_place(hwnd: HWND, dpi: u32) {
@@ -362,11 +446,9 @@ fn change_dpi_in_place(hwnd: HWND, dpi: u32) {
     }
     // 枠の大きさは、いまのウィンドウの枠から取る。DPI_ENV で DPI を差し替えたときも、枠はウィンドウの実際の
     // DPI で付くため。
-    let (current_width, current_height) = client_size(hwnd);
-    let frame_width = (rect.right - rect.left) - current_width as i32;
-    let frame_height = (rect.bottom - rect.top) - current_height as i32;
-    rect.right = rect.left + client.cx + frame_width;
-    rect.bottom = rect.top + client.cy + frame_height;
+    let frame = window_frame(hwnd);
+    rect.right = rect.left + client.cx + frame.cx;
+    rect.bottom = rect.top + client.cy + frame.cy;
     // WM_DPICHANGED の wparam は、下位に横の DPI、上位に縦の DPI。
     let wparam = WPARAM((dpi | (dpi << 16)) as usize);
     // SAFETY: hwnd は有効なウィンドウ。rect は処理が終わるまで生きている。借用は持っていない。
@@ -2992,8 +3074,8 @@ fn save_window_state(hwnd: HWND) {
     let Some(app) = app_of(hwnd) else {
         return;
     };
-    let path = match app.try_borrow() {
-        Ok(app) => app.state_path.clone(),
+    let (path, dpi) = match app.try_borrow() {
+        Ok(app) => (app.state_path.clone(), app.dpi),
         Err(e) => {
             tracing::warn!("not saving the window state: {e}");
             return;
@@ -3002,7 +3084,7 @@ fn save_window_state(hwnd: HWND) {
     let Some(path) = path else {
         return;
     };
-    let Some(window) = window_state::current(hwnd) else {
+    let Some(window) = window_state::current(hwnd, dpi) else {
         return;
     };
     window_state::save(
