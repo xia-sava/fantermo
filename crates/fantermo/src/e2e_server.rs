@@ -19,6 +19,10 @@
 //! | `POST /e2e/clipboard` | クリップボードを本文の文字で置き換える |
 //! | `POST /e2e/message/<名前>`、`/e2e/message/<名前>/<wParam>` | ウィンドウにメッセージを送り、戻り値の JSON を返す（[`WindowMessage`]） |
 //! | `POST /e2e/mouse` | 本文の各行のマウスの操作を、続けてウィンドウへ送る（[`MouseStep`]） |
+//! | `GET /e2e/menu` | 開いているメニューの項目の JSON |
+//! | `POST /e2e/menu/highlight/<位置>` | メニューのループへ上下の矢印のキーを送って、その項目へ移る |
+//! | `POST /e2e/menu/select/<位置>` | 矢印のキーでその項目へ移り、Enter を送って選ぶ |
+//! | `POST /e2e/menu/key/<キー>` | メニューのループへキーを送る（[`MenuKey`]） |
 //! | `POST /e2e/menu/close` | 開いているメニューを閉じる |
 //! | `POST /e2e/quit` | ウィンドウを閉じる |
 //!
@@ -161,6 +165,29 @@ impl MouseStep {
     }
 }
 
+/// `POST /e2e/menu/key/<キー>` で送れるキー。名前は `escape` か、英数字一文字（アクセラレータ）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuKey {
+    Escape,
+    /// 大文字の英字か数字。仮想キーの番号はこの文字のコードと同じ。
+    Accelerator(char),
+}
+
+impl MenuKey {
+    fn from_name(name: &str) -> Option<Self> {
+        if name == "escape" {
+            return Some(Self::Escape);
+        }
+        let mut chars = name.chars();
+        match (chars.next(), chars.next()) {
+            (Some(c), None) if c.is_ascii_alphanumeric() => {
+                Some(Self::Accelerator(c.to_ascii_uppercase()))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// ウィンドウのスレッドでする操作。
 #[derive(Debug, PartialEq, Eq)]
 pub enum Request {
@@ -191,6 +218,10 @@ pub enum Request {
         wparam: usize,
     },
     Mouse(Vec<MouseStep>),
+    MenuItems,
+    HighlightMenuItem(usize),
+    SelectMenuItem(usize),
+    MenuKey(MenuKey),
     CloseMenu,
     Quit,
 }
@@ -395,6 +426,16 @@ fn parse_request(method: &str, path: &str, body: Vec<u8>) -> Result<Request, Res
         ("POST", ["e2e", "message", name]) => parse_message(name, 0),
         ("POST", ["e2e", "message", name, wparam]) => parse_message(name, parse_number(wparam)?),
         ("POST", ["e2e", "mouse"]) => parse_mouse(body),
+        ("GET", ["e2e", "menu"]) => Ok(Request::MenuItems),
+        ("POST", ["e2e", "menu", "highlight", position]) => {
+            Ok(Request::HighlightMenuItem(parse_number(position)?))
+        }
+        ("POST", ["e2e", "menu", "select", position]) => {
+            Ok(Request::SelectMenuItem(parse_number(position)?))
+        }
+        ("POST", ["e2e", "menu", "key", name]) => MenuKey::from_name(name)
+            .map(Request::MenuKey)
+            .ok_or_else(|| Response::bad_request(format!("no such menu key: {name}"))),
         ("POST", ["e2e", "menu", "close"]) => Ok(Request::CloseMenu),
         ("POST", ["e2e", "quit"]) => Ok(Request::Quit),
         _ => Err(Response::text(
@@ -598,6 +639,37 @@ mod tests {
                 body.len()
             );
             assert_eq!(parse(&request).unwrap_err().status, STATUS_BAD_REQUEST);
+        }
+    }
+
+    #[test]
+    fn menu_requests_take_a_position_or_a_key() {
+        assert_eq!(
+            parse("GET /e2e/menu HTTP/1.1\r\n\r\n"),
+            Ok(Request::MenuItems)
+        );
+        assert_eq!(
+            parse("POST /e2e/menu/highlight/3 HTTP/1.1\r\n\r\n"),
+            Ok(Request::HighlightMenuItem(3))
+        );
+        assert_eq!(
+            parse("POST /e2e/menu/select/3 HTTP/1.1\r\n\r\n"),
+            Ok(Request::SelectMenuItem(3))
+        );
+        assert_eq!(
+            parse("POST /e2e/menu/key/escape HTTP/1.1\r\n\r\n"),
+            Ok(Request::MenuKey(MenuKey::Escape))
+        );
+        assert_eq!(
+            parse("POST /e2e/menu/key/t HTTP/1.1\r\n\r\n"),
+            Ok(Request::MenuKey(MenuKey::Accelerator('T')))
+        );
+        for request in [
+            "POST /e2e/menu/select/x HTTP/1.1\r\n\r\n",
+            "POST /e2e/menu/key/enter HTTP/1.1\r\n\r\n",
+            "POST /e2e/menu/key/- HTTP/1.1\r\n\r\n",
+        ] {
+            assert_eq!(parse(request).unwrap_err().status, STATUS_BAD_REQUEST);
         }
     }
 

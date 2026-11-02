@@ -4,6 +4,8 @@
 //! `Deferred` と同じく [`run_deferred`] に渡す。ウィンドウの大きさの変更はこの場で `WM_SIZE` が届くので、借用の
 //! 外でしてから答える。ウィンドウへ送るメッセージも、この場でウィンドウプロシージャが動くので同じ。
 
+use std::{ffi::c_void, ops::Range};
+
 use serde_json::json;
 use windows::{
     Win32::{
@@ -18,19 +20,23 @@ use windows::{
         UI::{
             Controls::TDM_CLICK_BUTTON,
             Input::KeyboardAndMouse::{
-                GetKeyboardState, SetKeyboardState, VK_CONTROL, VK_MENU, VK_SHIFT,
+                GetKeyboardState, SetKeyboardState, VIRTUAL_KEY, VK_CONTROL, VK_DOWN, VK_ESCAPE,
+                VK_MENU, VK_RETURN, VK_SHIFT, VK_UP,
             },
             WindowsAndMessaging::{
                 ENDSESSION_LOGOFF, EndMenu, EnumChildWindows, EnumThreadWindows, GetClassNameW,
-                GetWindowRect, GetWindowTextLengthW, GetWindowTextW, IsWindow, IsWindowVisible,
-                PostMessageW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SendMessageW, SetWindowPos,
-                WM_CAPTURECHANGED, WM_COMMAND, WM_ENDSESSION, WM_LBUTTONDOWN, WM_LBUTTONUP,
-                WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUERYENDSESSION,
-                WM_RBUTTONDOWN, WM_RBUTTONUP,
+                GetMenuItemCount, GetMenuItemInfoW, GetWindowRect, GetWindowTextLengthW,
+                GetWindowTextW, HMENU, IsWindow, IsWindowVisible, MENUITEMINFOW, MFS_CHECKED,
+                MFS_GRAYED, MFS_HILITE, MFT_SEPARATOR, MIIM_BITMAP, MIIM_FTYPE, MIIM_STATE,
+                MIIM_STRING, MIIM_SUBMENU, MN_GETHMENU, PostMessageW, SWP_NOACTIVATE, SWP_NOMOVE,
+                SWP_NOZORDER, SendMessageW, SetWindowPos, WM_CAPTURECHANGED, WM_COMMAND,
+                WM_ENDSESSION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+                WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUERYENDSESSION, WM_RBUTTONDOWN,
+                WM_RBUTTONUP,
             },
         },
     },
-    core::BOOL,
+    core::{BOOL, PWSTR},
 };
 
 use super::{
@@ -39,7 +45,9 @@ use super::{
 };
 use crate::{
     clipboard,
-    e2e_server::{MouseAction, MouseHeld, MouseStep, Pending, Request, Response, WindowMessage},
+    e2e_server::{
+        MenuKey, MouseAction, MouseHeld, MouseStep, Pending, Request, Response, WindowMessage,
+    },
     paint::Area,
     scroll_bar, version, window_state,
 };
@@ -50,6 +58,14 @@ const FRAME_FILE: &str = "frame.png";
 
 /// `TaskDialogIndirect` とメッセージボックスのウィンドウのクラス。
 const SYSTEM_DIALOG_CLASS: &str = "#32770";
+
+/// メニューのウィンドウのクラス。
+const MENU_CLASS: &str = "#32768";
+
+/// `WM_KEYDOWN` の `lParam`: 繰り返しの数が 1。
+const KEY_DOWN_LPARAM: isize = 1;
+/// `WM_KEYUP` の `lParam`: 繰り返しの数が 1 で、前に押されていて、離した。
+const KEY_UP_LPARAM: isize = 0xC000_0001;
 
 /// ウィンドウのクラスの名前の長さの上限（Windows の決まり）。
 const MAX_CLASS_NAME: usize = 256;
@@ -99,6 +115,10 @@ fn run(hwnd: HWND, Pending { request, reply }: Pending, with_app: &WithApp) {
             answer(Response::json(&json!({})));
             send_mouse(hwnd, &steps);
         }
+        Request::MenuItems => answer(menu_items(hwnd)),
+        Request::HighlightMenuItem(position) => answer(highlight_menu_item(hwnd, position)),
+        Request::SelectMenuItem(position) => answer(select_menu_item(hwnd, position)),
+        Request::MenuKey(key) => answer(press_menu_key(hwnd, key)),
         Request::CloseMenu => {
             // SAFETY: このスレッドが開いているメニューを閉じる。
             answer(match unsafe { EndMenu() } {
@@ -364,6 +384,148 @@ fn press_dialog_button(main: HWND, id: i32) -> Response {
     }
 }
 
+/// 開いているメニューの項目。
+struct MenuItem {
+    /// 項目の文字。アクセラレータの `&` と、キーの組み合わせの前のタブも含む。
+    text: String,
+    separator: bool,
+    enabled: bool,
+    checked: bool,
+    /// 矢印のキーなどで選んでいる。
+    highlighted: bool,
+    submenu: bool,
+    /// ビットマップ（プロファイルのアイコン）が付いている。
+    icon: bool,
+}
+
+/// `menu` の `position` 番目の項目を読む。
+fn read_menu_item(menu: HMENU, position: u32) -> windows::core::Result<MenuItem> {
+    let mut info = MENUITEMINFOW {
+        cbSize: size_of::<MENUITEMINFOW>() as u32,
+        fMask: MIIM_FTYPE | MIIM_STATE | MIIM_SUBMENU | MIIM_BITMAP | MIIM_STRING,
+        ..Default::default()
+    };
+    // SAFETY: menu は有効なメニューで、info は cbSize を入れて初期化済み。文字の置き場所がないので、長さだけが入る。
+    unsafe { GetMenuItemInfoW(menu, position, true, &mut info)? };
+    let mut buffer = vec![0u16; info.cch as usize + 1];
+    info.dwTypeData = PWSTR(buffer.as_mut_ptr());
+    info.cch = buffer.len() as u32;
+    // SAFETY: dwTypeData は cch 文字分の書き込める領域を指し、buffer はこの呼び出しの間は生きている。
+    unsafe { GetMenuItemInfoW(menu, position, true, &mut info)? };
+    Ok(MenuItem {
+        text: String::from_utf16_lossy(&buffer[..info.cch as usize]),
+        separator: info.fType.contains(MFT_SEPARATOR),
+        enabled: (info.fState.0 & MFS_GRAYED.0) == 0,
+        checked: info.fState.contains(MFS_CHECKED),
+        highlighted: info.fState.contains(MFS_HILITE),
+        submenu: !info.hSubMenu.is_invalid(),
+        icon: !info.hbmpItem.is_invalid(),
+    })
+}
+
+/// 開いているメニューのウィンドウと、その項目。メニューが開いていなければ、返す答えを `Err` に入れて返す。
+fn open_menu(main: HWND) -> Result<(HWND, Vec<MenuItem>), Response> {
+    let window = open_dialogs(main)
+        .into_iter()
+        .find(|&window| class_name(window) == MENU_CLASS)
+        .ok_or_else(|| Response::bad_request("no menu is open"))?;
+    // SAFETY: window はこのスレッドのメニューのウィンドウ。答えはそのメニューのハンドル。
+    let menu = HMENU(unsafe { SendMessageW(window, MN_GETHMENU, None, None) }.0 as *mut c_void);
+    // SAFETY: メニューのハンドルは調べるだけで、無効なら -1 が返る。
+    let count = u32::try_from(unsafe { GetMenuItemCount(Some(menu)) })
+        .map_err(|_| Response::internal_error("cannot read the number of the menu items"))?;
+    let items = (0..count)
+        .map(|position| read_menu_item(menu, position))
+        .collect::<windows::core::Result<_>>()
+        .map_err(|e| Response::internal_error(format!("cannot read the menu items: {e}")))?;
+    Ok((window, items))
+}
+
+fn menu_items(main: HWND) -> Response {
+    let items = match open_menu(main) {
+        Ok((_, items)) => items,
+        Err(response) => return response,
+    };
+    let items: Vec<serde_json::Value> = items
+        .iter()
+        .map(|item| {
+            json!({
+                "text": item.text,
+                "separator": item.separator,
+                "enabled": item.enabled,
+                "checked": item.checked,
+                "highlighted": item.highlighted,
+                "submenu": item.submenu,
+                "icon": item.icon,
+            })
+        })
+        .collect();
+    Response::json(&json!({ "items": items }))
+}
+
+/// メニューのウィンドウへキーを積む。メニューのループが、利用者が押したキーと同じように処理する。
+fn post_menu_key(window: HWND, key: VIRTUAL_KEY) -> Result<(), Response> {
+    let code = WPARAM(usize::from(key.0));
+    for (message, lparam) in [(WM_KEYDOWN, KEY_DOWN_LPARAM), (WM_KEYUP, KEY_UP_LPARAM)] {
+        // SAFETY: window はこのスレッドのウィンドウ。積むだけで、この場では処理されない。
+        unsafe { PostMessageW(Some(window), message, code, LPARAM(lparam)) }
+            .map_err(|e| Response::internal_error(format!("cannot send the menu key: {e}")))?;
+    }
+    Ok(())
+}
+
+/// `items` の `position` 番目の項目へ移るキーを積む。区切りのほかはすべて矢印のキーの一歩で、区切りは飛ばされる。
+fn post_keys_to_menu_item(
+    window: HWND,
+    items: &[MenuItem],
+    position: usize,
+) -> Result<(), Response> {
+    if items.get(position).is_none_or(|item| item.separator) {
+        return Err(Response::bad_request(format!("no menu item at {position}")));
+    }
+    let steps = |range: Range<usize>| items[range].iter().filter(|item| !item.separator).count();
+    let (key, count) = match items.iter().position(|item| item.highlighted) {
+        None => (VK_DOWN, steps(0..position + 1)),
+        Some(current) if current <= position => (VK_DOWN, steps(current + 1..position + 1)),
+        Some(current) => (VK_UP, steps(position..current)),
+    };
+    for _ in 0..count {
+        post_menu_key(window, key)?;
+    }
+    Ok(())
+}
+
+fn highlight_menu_item(main: HWND, position: usize) -> Response {
+    let moved = open_menu(main)
+        .and_then(|(window, items)| post_keys_to_menu_item(window, &items, position));
+    match moved {
+        Ok(()) => Response::json(&json!({})),
+        Err(response) => response,
+    }
+}
+
+fn select_menu_item(main: HWND, position: usize) -> Response {
+    let selected = open_menu(main).and_then(|(window, items)| {
+        post_keys_to_menu_item(window, &items, position)?;
+        post_menu_key(window, VK_RETURN)
+    });
+    match selected {
+        Ok(()) => Response::json(&json!({})),
+        Err(response) => response,
+    }
+}
+
+fn press_menu_key(main: HWND, key: MenuKey) -> Response {
+    let key = match key {
+        MenuKey::Escape => VK_ESCAPE,
+        MenuKey::Accelerator(character) => VIRTUAL_KEY(character as u16),
+    };
+    match open_menu(main).and_then(|(window, _)| post_menu_key(window, key)) {
+        Ok(()) => Response::json(&json!({})),
+        Err(response) => response,
+    }
+}
+
 fn area_json(area: Area) -> serde_json::Value {
     json!({ "x": area.x, "y": area.y, "width": area.width, "height": area.height })
 }
@@ -429,6 +591,10 @@ impl App {
             | Request::ResizeWindow { .. }
             | Request::SendMessage { .. }
             | Request::Mouse(_)
+            | Request::MenuItems
+            | Request::HighlightMenuItem(_)
+            | Request::SelectMenuItem(_)
+            | Request::MenuKey(_)
             | Request::CloseMenu => (
                 Response::internal_error("handled outside of the borrow"),
                 None,

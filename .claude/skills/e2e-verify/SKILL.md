@@ -46,6 +46,10 @@ OS のクリップボードを実際に変えるテスト（`os_clipboard` を�
 | `GET /e2e/clipboard`、`POST /e2e/clipboard` | クリップボードの文字列を読む（JSON の `text`）・置き換える |
 | `POST /e2e/message/<名前>`、`/e2e/message/<名前>/<wParam>` | ウィンドウにメッセージを `SendMessageW` で送り、戻り値を JSON の `result` で返す。名前は `queryendsession`、`endsession`、`capturechanged`（`WM_` を除いた小文字。`lParam` はメッセージごとに決まっている） |
 | `POST /e2e/mouse` | 本文の各行のマウスの操作を、続けて `SendMessageW` で送る。行の形は `<操作> <x> <y> [押しているもの…]`。操作は `move`、`left-down`、`left-up`、`middle-down`、`middle-up`、`right-down`、`right-up`、`wheel:<回転量>`（1 ノッチが 120、奥が正）。座標はクライアント座標（ウィンドウの外を指す負の値も書ける）。押しているものは `left` `middle` `right` `shift` `ctrl` `alt` |
+| `GET /e2e/menu` | JSON: 開いているメニューの `items`（`text`（`&` とキーの組み合わせの前のタブを含む）`separator` `enabled` `checked` `highlighted` `submenu` `icon`）。開いていなければ 400 |
+| `POST /e2e/menu/highlight/<位置>` | メニューのループへ上下の矢印のキーを送って、その項目へ移る。区切りと並びの外は 400 |
+| `POST /e2e/menu/select/<位置>` | 矢印のキーでその項目へ移り、Enter を送って選ぶ。区切りと並びの外は 400 |
+| `POST /e2e/menu/key/<キー>` | メニューのループへキーを送る。`escape` か、英数字一文字（アクセラレータ） |
 | `POST /e2e/menu/close` | 開いているメニューを閉じる（`EndMenu`）。開いていなければ 400 |
 | `POST /e2e/quit` | ウィンドウを閉じる |
 
@@ -66,7 +70,12 @@ OS のクリップボードを実際に変えるテスト（`os_clipboard` を�
   - 答えを先に返してから送る（メニューを開くと閉じるまで戻らないため）。続く要求はそのあとに処理されるので、次に読む状態には送った分が入っている。最後のタブの閉じるボタンでウィンドウが終わっても答えは返る。
   - ダブルクリックは `GetDoubleClickTime` の間隔の中で判定するので、一つの要求に続けて書く（別の要求にすると、負荷が高いと間に合わない）。逆に、同じ位置を間隔の中で押すとダブルクリックになるので、選び直すときは別の位置を挟む。つまみの外を押して離す 1 ページの送りも一つの要求に書く（250 ms で繰り返しが始まる）。押し続けるのを見るときは `left-down` だけ送り、`wait_until` で待つ。
   - 押していることは `wParam`（`MK_*`）に、修飾キーはそれに加えてウィンドウのスレッドのキーボードの状態（`SetKeyboardState`。`keyboard::current_mods` が読む）に、送る間だけ入れる。書いていない修飾キーは離した状態にする。別デスクトップのスレッドの `GetKeyState` にも利用者が本物のキーボードで押した修飾キーが見えることがあり、そのまま読むと Shift で報告が選択に変わるなど、テストが時々落ちる。
-  - メニュー: `wait_menu`（`dialogs` の `class` が `#32768`）で待ち、`close_menu` で閉じる。メニューを開いている間も要求は処理される。
+  - メニュー: `open_menu` で開いて項目を読み（`wait_menu` は `dialogs` の `class` が `#32768` になるのを待つ）、`close_menu` で閉じる。メニューを開いている間も要求は処理される。
+    - 並びは `menu_shape` の短い形（`"C- P | A | T W"`。アクセラレータ、押せなければ `-`、印があれば `*`、区切りは `|`）で固定する。順番と押せるかは固定し、言い回しは比べない。文字を比べるのは設定から決まるもの（プロファイルの名前、添えるキー）だけ。
+    - 選ぶのは `select_item`（アクセラレータで位置を探す）か `select_position`。先に `highlight_position` で移ったのを待ってから Enter を送るので、移れないときはそこで項目と状態を出して落ちる。答えは選んだ結果を待たないので、結果は状態で待つ。ダイアログを開く項目は `wait_dialog_of_class` で待つ。
+    - 矢印のキーは押せない項目にも止まる。押せない項目で Enter を押すと、何も選ばずにメニューが閉じる。
+    - アクセラレータの `POST /e2e/menu/key/<英数字>` は `TranslateMessage` の文字で届くので、利用者が本物のキーボードで Ctrl を押していると選べないことがある。矢印のキーと Enter は文字を通らない。
+    - 「設定ファイルを開く」は既定のアプリを起動するので、選ばない。
   - マウスの報告: アプリ側は `start_report_reader`（`stty -icanon -echo -isig -icrnl` と `cat -v`）で読み、`reports_of` が操作ごとの受け取った分を返す。モードごとに `start_report_reader_in_new_tab`。ConPTY では PowerShell で `SetConsoleMode` に `ENABLE_VIRTUAL_TERMINAL_INPUT` を渡して読む（`mouse_reports_reach_an_application_through_conpty`）。
   - 別デスクトップでは本物のカーソルがウィンドウの上にないので、`TrackMouseEvent` の `WM_MOUSELEAVE` がすぐ届く。マウスを載せている間の絵は見られない。リンクの Ctrl+クリックは既定のブラウザを開くので通さない。
 - メッセージを足す: `WindowMessage` に足し、`send_window_message` で `lParam` を決める。`SendMessageW` はこの場でウィンドウプロシージャを動かすので、借用の外（`window/e2e.rs` の `run`）から送る。借用の中だと状態を書く処理などが黙って飛ばされる。
