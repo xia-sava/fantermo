@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 windows = { workspace = true, features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_System_JobObjects",
     "Win32_System_StationsAndDesktops",
