@@ -15,10 +15,13 @@
 //! | `POST /e2e/window/size/<桁数>/<行数>` | 端末がその大きさになるようにウィンドウの大きさを変える |
 //! | `POST /e2e/paste` | 本文の文字を、クリップボードから読んだものとして貼り付ける |
 //! | `POST /e2e/dialog/button/<ID>` | 開いているダイアログのそのボタンを押す |
-//! | `GET /e2e/clipboard` | OS のクリップボードの文字列の JSON |
-//! | `POST /e2e/clipboard` | OS のクリップボードを本文の文字で置き換える |
+//! | `GET /e2e/clipboard` | クリップボードの文字列の JSON |
+//! | `POST /e2e/clipboard` | クリップボードを本文の文字で置き換える |
 //! | `POST /e2e/message/<名前>`、`/e2e/message/<名前>/<wParam>` | ウィンドウにメッセージを送り、戻り値の JSON を返す（[`WindowMessage`]） |
 //! | `POST /e2e/quit` | ウィンドウを閉じる |
+//!
+//! クリップボードは、環境変数 `FANTERMO_E2E_CLIPBOARD_FILE` があればそのファイル（テストの `Server` は既定でこれを
+//! 渡す）、なければ OS のもの。
 
 use std::{
     io::{BufRead, BufReader, Write},
