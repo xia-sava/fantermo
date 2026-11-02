@@ -23,6 +23,7 @@ use std::{
         Arc,
         atomic::{AtomicU32, Ordering},
     },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -317,8 +318,18 @@ fn exercise_closing_the_window(
 /// `ping -t` は止めるまで動く。
 const CMD_LONG_COMMAND: &str = "ping -t 127.0.0.1";
 const CMD_LONG_PROCESS: &str = "ping.exe";
-/// `ping` の応答の行にある文字列。表示の言語によらない。
-const PING_REPLY: &str = "TTL=";
+/// 一行で続けて起動する、同じコンソールの `ping` の数。
+const CONSOLE_CLIENTS: u32 = 20;
+/// 接続の途中で閉じるタブの数。
+const TABS_CLOSED_WHILE_STARTING: usize = 6;
+/// `start /b` で起動したプロセスができるのを待つ上限。
+const CONSOLE_CLIENT_TIMEOUT: Duration = Duration::from_secs(60);
+/// コンソールの外のプロセスができたかを確認する間隔。
+const CONSOLE_CLIENT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// どのコンソールにも接続せずに動き続ける、窓を出さないプログラム。
+const GUI_PROCESS: &str = "wscript.exe";
+/// 閉じたあと、起動の途中だった Cygwin の `sleep` が `/proc` に見えるようになるまで置く時間。
+const CYGWIN_SLEEP_SETTLE: Duration = Duration::from_secs(2);
 
 /// `/bin/sh` で長く動くコマンド。
 const SH_LONG_COMMAND: &str = "sleep 300";
@@ -363,13 +374,185 @@ fn closing_a_tab_ends_its_child_processes_only() {
         .into_iter()
         .filter(|process| !first.contains(process))
         .collect();
-    // プロセスができただけで閉じると、動き出す途中の `ping` が `conhost.exe` とともに残ることがある。
-    server.wait_text(PING_REPLY);
 
     server.post("/e2e/tab/close", b"");
     server.wait_until("one tab", |state| tab_count(state) == 1);
     processes::wait_ended(&second);
     processes::assert_running(&first);
+}
+
+/// 疑似コンソールを閉じる前後に接続するプロセスができ続けるよう、同じコンソールの `ping` を続けて起動する行。
+fn cmd_line_starting_console_clients() -> String {
+    format!("for /l %i in (1,1,{CONSOLE_CLIENTS}) do @start /b {CMD_LONG_COMMAND} >NUL")
+}
+
+/// `name` のプロセスが `root` の子孫に新しくできるのを、できるだけ間を空けずに待つ。
+#[track_caller]
+fn wait_new_descendant(root: u32, name: &str, known: &[Process]) -> Vec<Process> {
+    let deadline = Instant::now() + CONSOLE_CLIENT_TIMEOUT;
+    loop {
+        let found = processes::descendants(root);
+        let new: Vec<Process> = found
+            .into_iter()
+            .filter(|process| !known.contains(process))
+            .collect();
+        if new.iter().any(|process| process.name == name) {
+            return new;
+        }
+        assert!(Instant::now() < deadline, "no new {name} under {root}");
+    }
+}
+
+/// 新しいタブを開いてシェルの準備ができるのを待ち、タブのプロセス（疑似コンソールの `conhost.exe` とシェル）を返す。
+#[track_caller]
+fn open_cmd_tab(server: &Server) -> Vec<Process> {
+    let before = processes::descendants(server.pid());
+    let tabs = tab_count(&server.state());
+    server.post("/e2e/tab/new", b"");
+    server.wait_until("a new tab", |state| tab_count(state) == tabs + 1);
+    wait_cmd_ready(server);
+    processes::descendants(server.pid())
+        .into_iter()
+        .filter(|process| !before.contains(process))
+        .collect()
+}
+
+/// 接続の途中のプロセスがあるタブを閉じても、そのタブの疑似コンソールのプロセス（`conhost.exe`）まで終わる。
+/// `conhost.exe` は接続しているプロセスがなくなるまで終わらないので、親を辿れなくなったものも含めて残っていないと分かる。
+#[test]
+fn closing_tabs_while_commands_start_ends_their_child_processes() {
+    let server = Server::start_cmd();
+    wait_cmd_ready(&server);
+    let pid = server.pid();
+    let first = processes::descendants(pid);
+
+    let mut closed = Vec::new();
+    for _ in 0..TABS_CLOSED_WHILE_STARTING {
+        let tab = open_cmd_tab(&server);
+        let known = processes::descendants(pid);
+        server.send_line(&cmd_line_starting_console_clients());
+        closed.extend(wait_new_descendant(pid, CMD_LONG_PROCESS, &known));
+        closed.extend(tab);
+        server.post("/e2e/tab/close", b"");
+        server.wait_until("one tab", |state| tab_count(state) == 1);
+    }
+
+    processes::wait_ended(&closed);
+    processes::assert_running(&first);
+}
+
+/// 接続の途中のプロセスがあるままウィンドウを閉じても、子孫のプロセスは残らない。
+#[test]
+fn closing_the_window_while_commands_start_leaves_no_child_processes() {
+    let mut server = Server::start_watching_children("", &CMD_COMMAND);
+    wait_cmd_ready(&server);
+    open_cmd_tab(&server);
+    let known = processes::descendants(server.pid());
+    server.send_line(&cmd_line_starting_console_clients());
+    server.post("/e2e/tab/select/0", b"");
+    server.send_line(&cmd_line_starting_console_clients());
+    wait_new_descendant(server.pid(), CMD_LONG_PROCESS, &known);
+    server.post("/e2e/quit", b"");
+    assert_eq!(server.wait_exit(), 0);
+    server.assert_no_children_remained();
+}
+
+/// `root` の子孫に新しくできる `ping.exe` と窓のないプログラムを待って返す。
+#[track_caller]
+fn wait_descendants_outside_the_console(root: u32, known: &[Process]) -> Vec<Process> {
+    let deadline = Instant::now() + CONSOLE_CLIENT_TIMEOUT;
+    loop {
+        let found: Vec<Process> = processes::descendants(root)
+            .into_iter()
+            .filter(|process| !known.contains(process))
+            .filter(|process| process.name == CMD_LONG_PROCESS || process.name == GUI_PROCESS)
+            .collect();
+        if found.iter().any(|process| process.name == GUI_PROCESS)
+            && found.iter().any(|process| process.name == CMD_LONG_PROCESS)
+        {
+            return found;
+        }
+        assert!(Instant::now() < deadline, "under {root}: {found:#?}");
+        thread::sleep(CONSOLE_CLIENT_POLL_INTERVAL);
+    }
+}
+
+/// 別のコンソールを持つプロセスと、どのコンソールにも接続しないプロセスは、接続の途中のプロセスがあったタブを
+/// 閉じても動き続ける。
+#[test]
+fn closing_a_tab_while_commands_start_leaves_processes_outside_its_console() {
+    let server = Server::start_cmd();
+    wait_cmd_ready(&server);
+    let pid = server.pid();
+    let script = server.dir().join("sleep.vbs");
+    std::fs::write(&script, "WScript.Sleep 300000\n").expect("failed to write the script");
+    let tab = open_cmd_tab(&server);
+    let known = processes::descendants(pid);
+    // 親の PowerShell を動かしたままにして、親子で辿れるようにする。窓のあるコンソールは、別デスクトップで起動しても
+    // 既定の端末へ渡って利用者の画面に出ることがあるので、窓のないコンソール（`CreateNoWindow`）で起動する。
+    server.send_line(&format!(
+        "start /b powershell.exe -NoProfile -Command \"$i = New-Object Diagnostics.ProcessStartInfo 'ping.exe', '-t 127.0.0.1'; $i.UseShellExecute = $false; $i.CreateNoWindow = $true; [void][Diagnostics.Process]::Start($i); Start-Sleep 300\" & start \"\" {GUI_PROCESS} //B \"{}\"",
+        script.display()
+    ));
+    let detached = wait_descendants_outside_the_console(pid, &known);
+    assert_eq!(detached.len(), 2, "{detached:#?}");
+
+    let known = processes::descendants(pid);
+    server.send_line(&cmd_line_starting_console_clients());
+    wait_new_descendant(pid, CMD_LONG_PROCESS, &known);
+    server.post("/e2e/tab/close", b"");
+    server.wait_until("one tab", |state| tab_count(state) == 1);
+
+    processes::wait_ended(&tab);
+    processes::assert_running(&detached);
+}
+
+/// `sleep` を打った直後に閉じるときの、打ってから閉じるまでの時間（ミリ秒）。シェルが SIGHUP を受け取るのがコマンドの
+/// 起動の途中になるよう、タブごとに変える。
+const CYGWIN_CLOSE_DELAYS_MS: [u64; 6] = [10, 20, 30, 40, 50, 70];
+
+/// 動き出すのを待たずにタブを閉じても、コマンドは残らない。
+#[test]
+fn cygwin_closing_tabs_right_after_typing_a_command_ends_it() {
+    let Some(config) = cygwin_config("cygwin_closing_tabs_right_after_typing") else {
+        return;
+    };
+    let server = Server::start(&config, &[]);
+    wait_sh_ready(&server);
+    let mut markers = Vec::new();
+    for delay in CYGWIN_CLOSE_DELAYS_MS {
+        server.post("/e2e/tab/new", b"");
+        server.wait_until("two tabs", |state| tab_count(state) == 2);
+        wait_sh_ready(&server);
+        let marker = unique_sleep_seconds();
+        server.send_line(&format!("sleep {marker}"));
+        thread::sleep(Duration::from_millis(delay));
+        server.post("/e2e/tab/close", b"");
+        server.wait_until("one tab", |state| tab_count(state) == 1);
+        markers.push(marker);
+    }
+    // 起動の途中だった `sleep` が `/proc` に見えるようになるまで待ってから見る。
+    thread::sleep(CYGWIN_SLEEP_SETTLE);
+    for marker in &markers {
+        wait_cygwin_sleep(marker, false);
+    }
+}
+
+/// 動き出すのを待たずにウィンドウを閉じても、コマンドは残らない。ブリッジの標準入力と標準エラー出力が同時に閉じる。
+#[test]
+fn cygwin_closing_the_window_right_after_typing_a_command_ends_it() {
+    let Some(config) = cygwin_config("cygwin_closing_the_window_right_after_typing") else {
+        return;
+    };
+    for delay in CYGWIN_CLOSE_DELAYS_MS {
+        let mut server = Server::start_watching_children(&config, &[]);
+        wait_sh_ready(&server);
+        server.send_line(&format!("sleep {}", unique_sleep_seconds()));
+        thread::sleep(Duration::from_millis(delay));
+        server.post("/e2e/quit", b"");
+        assert_eq!(server.wait_exit(), 0);
+        server.assert_no_children_remained();
+    }
 }
 
 /// Cygwin のプログラムの親は Windows のプロセスの親子で辿れないので、`/proc` のコマンドラインを見る。
