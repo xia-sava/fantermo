@@ -15,6 +15,14 @@
 //! | `POST /e2e/window/size/<桁数>/<行数>` | 端末がその大きさになるようにウィンドウの大きさを変える |
 //! | `POST /e2e/paste` | 本文の文字を、クリップボードから読んだものとして貼り付ける |
 //! | `POST /e2e/dialog/button/<ID>` | 開いているダイアログのそのボタンを押す |
+//! | `GET /e2e/dialog/controls` | いちばん上のダイアログの大きさと、コントロールの値の JSON |
+//! | `POST /e2e/dialog/text/<ID>` | 入力欄の文字を本文の文字にする（`EN_CHANGE` が届く） |
+//! | `POST /e2e/dialog/select/<ID>/<位置>` | コンボボックスや一覧のその項目を選ぶ（`CBN_SELCHANGE`、`LBN_SELCHANGE` が届く） |
+//! | `POST /e2e/dialog/radio/<ID>` | ラジオボタンを選ぶ（`BN_CLICKED` が届く） |
+//! | `POST /e2e/dialog/click/<ID>` | ボタンを押す（`BN_CLICKED` が届く）。答えを先に返す |
+//! | `POST /e2e/dialog/spin/<ID>/<回数>` | 上下の矢印を押す（`UDN_DELTAPOS` が届く） |
+//! | `POST /e2e/dialog/key/<組み合わせ>` | ダイアログのループへキーを積む |
+//! | `POST /e2e/dialog/close` | ダイアログの × を押す（`WM_CLOSE`） |
 //! | `GET /e2e/clipboard` | クリップボードの文字列の JSON |
 //! | `POST /e2e/clipboard` | クリップボードを本文の文字で置き換える |
 //! | `POST /e2e/message/<名前>`、`/e2e/message/<名前>/<wParam>` | ウィンドウにメッセージを送り、戻り値の JSON を返す（[`WindowMessage`]） |
@@ -211,6 +219,23 @@ pub enum Request {
     },
     Paste(String),
     PressDialogButton(i32),
+    DialogControls,
+    SetDialogText {
+        id: i32,
+        text: String,
+    },
+    SelectDialogItem {
+        id: i32,
+        position: usize,
+    },
+    CheckDialogRadio(i32),
+    ClickDialogButton(i32),
+    StepDialogSpin {
+        id: i32,
+        delta: i32,
+    },
+    PressDialogKey(KeyCombo),
+    CloseDialog,
     ReadClipboard,
     WriteClipboard(String),
     SendMessage {
@@ -415,6 +440,29 @@ fn parse_request(method: &str, path: &str, body: Vec<u8>) -> Result<Request, Res
         ("POST", ["e2e", "dialog", "button", id]) => {
             Ok(Request::PressDialogButton(parse_number(id)?))
         }
+        ("GET", ["e2e", "dialog", "controls"]) => Ok(Request::DialogControls),
+        ("POST", ["e2e", "dialog", "text", id]) => Ok(Request::SetDialogText {
+            id: parse_number(id)?,
+            text: parse_text(body)?,
+        }),
+        ("POST", ["e2e", "dialog", "select", id, position]) => Ok(Request::SelectDialogItem {
+            id: parse_number(id)?,
+            position: parse_number(position)?,
+        }),
+        ("POST", ["e2e", "dialog", "radio", id]) => {
+            Ok(Request::CheckDialogRadio(parse_number(id)?))
+        }
+        ("POST", ["e2e", "dialog", "click", id]) => {
+            Ok(Request::ClickDialogButton(parse_number(id)?))
+        }
+        ("POST", ["e2e", "dialog", "spin", id, delta]) => Ok(Request::StepDialogSpin {
+            id: parse_number(id)?,
+            delta: parse_number(delta)?,
+        }),
+        ("POST", ["e2e", "dialog", "key", combo]) => KeyCombo::parse(combo)
+            .map(Request::PressDialogKey)
+            .map_err(Response::bad_request),
+        ("POST", ["e2e", "dialog", "close"]) => Ok(Request::CloseDialog),
         ("GET", ["e2e", "clipboard"]) => Ok(Request::ReadClipboard),
         ("POST", ["e2e", "clipboard"]) => parse_text(body).map(Request::WriteClipboard),
         ("POST", ["e2e", "tab", "close"]) => Ok(Request::CloseTab),
@@ -668,6 +716,56 @@ mod tests {
             "POST /e2e/menu/select/x HTTP/1.1\r\n\r\n",
             "POST /e2e/menu/key/enter HTTP/1.1\r\n\r\n",
             "POST /e2e/menu/key/- HTTP/1.1\r\n\r\n",
+        ] {
+            assert_eq!(parse(request).unwrap_err().status, STATUS_BAD_REQUEST);
+        }
+    }
+
+    #[test]
+    fn dialog_control_requests_take_an_id_and_a_value() {
+        assert_eq!(
+            parse("GET /e2e/dialog/controls HTTP/1.1\r\n\r\n"),
+            Ok(Request::DialogControls)
+        );
+        assert_eq!(
+            parse("POST /e2e/dialog/text/201 HTTP/1.1\r\nContent-Length: 2\r\n\r\n14"),
+            Ok(Request::SetDialogText {
+                id: 201,
+                text: "14".to_owned(),
+            })
+        );
+        assert_eq!(
+            parse("POST /e2e/dialog/select/100/3 HTTP/1.1\r\n\r\n"),
+            Ok(Request::SelectDialogItem {
+                id: 100,
+                position: 3,
+            })
+        );
+        assert_eq!(
+            parse("POST /e2e/dialog/radio/211 HTTP/1.1\r\n\r\n"),
+            Ok(Request::CheckDialogRadio(211))
+        );
+        assert_eq!(
+            parse("POST /e2e/dialog/click/101 HTTP/1.1\r\n\r\n"),
+            Ok(Request::ClickDialogButton(101))
+        );
+        assert_eq!(
+            parse("POST /e2e/dialog/spin/202/-1 HTTP/1.1\r\n\r\n"),
+            Ok(Request::StepDialogSpin { id: 202, delta: -1 })
+        );
+        assert_eq!(
+            parse("POST /e2e/dialog/key/ctrl+n HTTP/1.1\r\n\r\n"),
+            Ok(Request::PressDialogKey(KeyCombo::new(Mods::CTRL, Key::N)))
+        );
+        assert_eq!(
+            parse("POST /e2e/dialog/close HTTP/1.1\r\n\r\n"),
+            Ok(Request::CloseDialog)
+        );
+        for request in [
+            "POST /e2e/dialog/text/x HTTP/1.1\r\n\r\n",
+            "POST /e2e/dialog/select/100/x HTTP/1.1\r\n\r\n",
+            "POST /e2e/dialog/spin/202/x HTTP/1.1\r\n\r\n",
+            "POST /e2e/dialog/key/nothing HTTP/1.1\r\n\r\n",
         ] {
             assert_eq!(parse(request).unwrap_err().status, STATUS_BAD_REQUEST);
         }

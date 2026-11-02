@@ -30,11 +30,13 @@ FANTERMO_E2E_CYGWIN_ROOT='C:\app\cygwin' FANTERMO_E2E_WSL=Ubuntu ./tools/dev.sh 
 
 OS のクリップボードを実際に変えるテスト（`os_clipboard` を含む名前）は `FANTERMO_E2E_OS_CLIPBOARD=1` があるときだけ実行する。CI では付ける。手元では付けない（利用者のクリップボードの文字列のほかの形式が消える）。
 
+OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_file_dialogs_add_a_background_image_and_a_profile_icon`）は `FANTERMO_E2E_FILE_DIALOG=1` があるときだけ実行する。CI では付ける。手元では付けない（OS がダイアログの履歴 `LastVisitedPidlMRU` に一時フォルダを残す）。
+
 ## 要求の一覧
 
 | 要求 | すること |
 |---|---|
-| `GET /e2e/state` | JSON: `pid` `cols` `rows` `client_width` `client_height` `terminal_x` `terminal_y` `cell_width` `cell_height` `active` `tabs`（`title` `profile` `cols` `rows` `bell`）`profiles`（名前）`dialogs`（`class` `title` `controls`）`images`（画面に出ている画像の数）`window`（`state.toml` と同じ `left` `top` `width` `height` `maximized`）`background`（背景画像を敷く範囲の `x` `y` `width` `height` と、表示しているタブが選んだ画像の名前 `image`）`selection`（選択範囲の文字列。なければ `null`）`mouse_tracking`（アプリがマウスを求めているか）`scroll`（`total` `offset` `len` と、ホイール 1 ノッチの行数 `lines_per_notch`）`scroll_bar`（`x` `y` `width` `height`、つまみ `thumb` の `top` `length`（なければ `null`）、押している間だけ真の `pressed`）`tab_bar`（`menu` `new_tab` `profiles` の範囲と、描いているタブ `tabs` の `index` `area` `close`）`window_title` `version` `text`（スクロールバックを含む全体の文字） |
+| `GET /e2e/state` | JSON: `pid` `cols` `rows` `client_width` `client_height` `terminal_x` `terminal_y` `cell_width` `cell_height` `active` `tabs`（`title` `profile` `cols` `rows` `bell`）`profiles`（名前）`dialogs`（`class` `title` `controls`）`images`（画面に出ている画像の数）`window`（`state.toml` と同じ `left` `top` `width` `height` `maximized`）`background`（背景画像を敷く範囲の `x` `y` `width` `height` と、表示しているタブが選んだ画像の名前 `image`）`selection`（選択範囲の文字列。なければ `null`）`mouse_tracking`（アプリがマウスを求めているか）`scroll`（`total` `offset` `len` と、ホイール 1 ノッチの行数 `lines_per_notch`）`scroll_bar`（`x` `y` `width` `height`、つまみ `thumb` の `top` `length`（なければ `null`）、押している間だけ真の `pressed`）`tab_bar`（`menu` `new_tab` `profiles` の範囲と、描いているタブ `tabs` の `index` `area` `close`）`window_enabled`（ウィンドウが入力を受けるか。ダイアログの間は偽）`window_title` `version` `text`（スクロールバックを含む全体の文字） |
 | `GET /e2e/frame` | いまの画面の PNG |
 | `POST /e2e/input` | 本文のバイト列をそのままバックエンドへ |
 | `POST /e2e/text` | 本文の文字を `WM_CHAR` と同じ経路で（制御文字は送らない。Enter は `key`） |
@@ -43,6 +45,14 @@ OS のクリップボードを実際に変えるテスト（`os_clipboard` を�
 | `POST /e2e/window/size/<桁数>/<行数>` | ウィンドウの大きさを変えて、そのあとの状態を返す |
 | `POST /e2e/paste` | 本文の文字を、クリップボードから読んだものとして貼り付ける（`paste.confirm` と `paste.confirm_size` に従う） |
 | `POST /e2e/dialog/button/<ID>` | 開いているダイアログのボタンを押す（`TaskDialogIndirect` は `TDM_CLICK_BUTTON`、ほかは `WM_COMMAND`。メッセージボックスは押せない） |
+| `GET /e2e/dialog/controls` | いちばん上のダイアログ（無効なものとメニューを除く）の JSON: `class` `title` `dpi` `left` `top` `width` `height`（枠を含む、画面のピクセル）`client_width` `client_height` `work_area`（`left` `top` `right` `bottom`）`focus`（コントロールの ID）`controls`（子孫のすべて。`id` `class` `text` `visible` `enabled` `x` `y` `width` `height`（クライアント座標）、ボタンは `checked`、コンボボックスと一覧は `selected`（なければ `null`）と `items`）。開いていなければ 400 |
+| `POST /e2e/dialog/text/<ID>` | 入力欄の文字を本文にする（`WM_SETTEXT`。`EN_CHANGE` が届く） |
+| `POST /e2e/dialog/select/<ID>/<位置>` | コンボボックスか一覧のその項目を選ぶ（`CBN_SELCHANGE`、`LBN_SELCHANGE`）。設定ダイアログのページの切り替えはページの一覧（ID 100）でこれ |
+| `POST /e2e/dialog/radio/<ID>` | ラジオボタンを選ぶ（同じ並びのほかを外して `BN_CLICKED`） |
+| `POST /e2e/dialog/click/<ID>` | ボタンを押す（`WM_COMMAND` の `BN_CLICKED`）。答えを先に返す。メッセージボックス、色を選ぶダイアログ、ファイルを選ぶダイアログのボタンも押せる |
+| `POST /e2e/dialog/spin/<ID>/<回数>` | 上下の矢印を押す（`UDN_DELTAPOS`。ID は矢印のもの。正が上） |
+| `POST /e2e/dialog/key/<組み合わせ>` | ダイアログのループへキーを積む（フォーカスのあるコントロール宛ての `WM_KEYDOWN`）。キーを読み取るダイアログ、Esc、Enter |
+| `POST /e2e/dialog/close` | ダイアログの × を押す（`WM_CLOSE`を積む）。OK だけのメッセージボックスも閉じる |
 | `GET /e2e/clipboard`、`POST /e2e/clipboard` | クリップボードの文字列を読む（JSON の `text`）・置き換える |
 | `POST /e2e/message/<名前>`、`/e2e/message/<名前>/<wParam>` | ウィンドウにメッセージを `SendMessageW` で送り、戻り値を JSON の `result` で返す。名前は `queryendsession`、`endsession`、`capturechanged`（`WM_` を除いた小文字。`lParam` はメッセージごとに決まっている） |
 | `POST /e2e/mouse` | 本文の各行のマウスの操作を、続けて `SendMessageW` で送る。行の形は `<操作> <x> <y> [押しているもの…]`。操作は `move`、`left-down`、`left-up`、`middle-down`、`middle-up`、`right-down`、`right-up`、`wheel:<回転量>`（1 ノッチが 120、奥が正）。座標はクライアント座標（ウィンドウの外を指す負の値も書ける）。押しているものは `left` `middle` `right` `shift` `ctrl` `alt` |
@@ -61,6 +71,15 @@ OS のクリップボードを実際に変えるテスト（`os_clipboard` を�
 - 閉じる確認の前に、動かしたコマンドが動き出したのをタブごとに確認する。Cygwin では起動の途中で閉じるとコマンドが残ることがある。
 - 画像: ConPTY は APC と DCS を落とすので、ブリッジのタブで `printf` する。`images` を待ってから `picture()` で画素を読む。位置は `terminal_x` などから計算する（`cell_pixel`）。
 - ダイアログ: 編集のダイアログや確認のダイアログの間も要求は処理される（ダイアログのループが届ける）。`wait_dialogs` で待ち、`press_dialog_button` で押す。
+- 設定ダイアログ: `open_settings` で開き、`show_page` でページを移し、`set_text`・`select`・`choose_radio`・`spin`・`click` で操作する。`read_controls` と `control` で値を読み、値は文言ではなくコントロールの ID と `saved_config`（`config.toml` を `fantermo_core::config::parse` で読んだもの）で見る。
+  - 操作は利用者の操作と同じ通知をウィンドウプロシージャへこの場で送る。`click` のほかは終わってから答えるので、続けて読めば結果が見える。`click` は答えを先に返してから送るが（押すと閉じるまで戻らないダイアログがあるため）、続く要求はそのあとに処理される。ファイルの中身を見る前に要求を一つ挟む（`press_apply`）か、`wait_dialogs(0)` で閉じるのを待つ。
+  - 隠れているページのコントロール、押せないコントロール、無効なダイアログの操作は 400 で断る。操作の前に `show_page` する。テストは利用者のできることだけをする。
+  - 項目を打つと 400 ms 待って反映するので、端末への反映は `wait_until`・`wait_pixels` で待つ。矢印、コンボボックス、ラジオボタン、ボタンはすぐ反映する。
+  - 入れ子のダイアログは `wait_top_dialog`（`state` の `dialogs` はいちばん上が先頭）で待ち、同じ要求で操作する。メッセージボックスは `wait_message_box`。はい / いいえは `click`（6 / 7）、OK だけのものは `close_message_box`。色を選ぶダイアログは赤・緑・青の入力欄（706〜708）に書いて `click(1)`、ファイルを選ぶダイアログは `choose_file`（ファイル名の欄に書いて `click(1)`）。フォルダを選ぶダイアログは書いても移るだけで選べないので、やめるところだけを見る。
+  - キーを読み取るダイアログは `capture_key`。修飾キーはダイアログのループがキーを読むときに読むので、`POST /e2e/dialog/key` は積んだあとダイアログが閉じるまでスレッドのキーボードの状態を保ち、閉じたあとの最初の要求で戻す（`release_kept_modifiers`）。
+  - 未知のキーがある設定は起動時に警告のメッセージボックスが開く。閉じてから設定ダイアログを開く。
+  - 読めないファイルは共有しないで開いて作る（`with_settings_file_open`）。読めるが置き換えられないのは読むことだけ共有する形と読み取り専用の属性。起動時に読めないファイルはフォルダで作る。
+  - ダイアログは `FANTERMO_DPI` ではなくモニターの DPI で開く（手元は 192）。大きさはその DPI で測る（`assert_controls_fit`）。
 - 子プロセス: `Server::start_watching_children` で起動すると、fantermo が終わったあと run-hidden が子孫の終わりを待ち（`--wait-children`）、`assert_no_children_remained` で残りが分かる。付けないと、run-hidden が Job を閉じて全部終わらせるので、残りがあっても見えない。タブを閉じる確認は `common::processes`（親子と作成時刻）で。Cygwin のプログラムは Windows の親子で辿れないので、`/proc` のコマンドラインと一意な `sleep` の引数で見る。
 - クリップボード: `Server` は既定で `FANTERMO_E2E_CLIPBOARD_FILE`（一時フォルダのファイル）を渡し、fantermo はそのファイルをクリップボードの代わりに使う。OS のものを使うのは `Server::start_with_os_clipboard` だけで、`OsClipboard` が直列にする。
 - 起動の前に置くファイル: `Server::start_with_setup` の `prepare` が一時フォルダで呼ばれる。`state.toml` の初期値（`common::STATE_FILE`）はここで置く。閉じたあとの中身は `state_file()` で、`Server` を破棄する前に読む。

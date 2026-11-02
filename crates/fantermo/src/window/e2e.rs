@@ -4,13 +4,16 @@
 //! `Deferred` と同じく [`run_deferred`] に渡す。ウィンドウの大きさの変更はこの場で `WM_SIZE` が届くので、借用の
 //! 外でしてから答える。ウィンドウへ送るメッセージも、この場でウィンドウプロシージャが動くので同じ。
 
-use std::{ffi::c_void, ops::Range};
+use std::{cell::RefCell, ffi::c_void, ops::Range};
 
 use serde_json::json;
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, POINT, RECT, TRUE, WPARAM},
-        Graphics::Gdi::ClientToScreen,
+        Graphics::Gdi::{
+            ClientToScreen, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+            MonitorFromWindow, ScreenToClient,
+        },
         System::{
             SystemServices::{
                 MK_CONTROL, MK_LBUTTON, MK_MBUTTON, MK_RBUTTON, MK_SHIFT, MODIFIERKEYS_FLAGS,
@@ -18,25 +21,31 @@ use windows::{
             Threading::GetCurrentThreadId,
         },
         UI::{
-            Controls::TDM_CLICK_BUTTON,
+            Controls::{BST_CHECKED, NMHDR, NMUPDOWN, TDM_CLICK_BUTTON, UDN_DELTAPOS},
+            HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::{
-                GetKeyboardState, SetKeyboardState, VIRTUAL_KEY, VK_CONTROL, VK_DOWN, VK_ESCAPE,
-                VK_MENU, VK_RETURN, VK_SHIFT, VK_UP,
+                GetFocus, GetKeyboardState, IsWindowEnabled, MAPVK_VSC_TO_VK_EX, MapVirtualKeyW,
+                SetKeyboardState, VIRTUAL_KEY, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_MENU, VK_RETURN,
+                VK_SHIFT, VK_UP,
             },
             WindowsAndMessaging::{
-                ENDSESSION_LOGOFF, EndMenu, EnumChildWindows, EnumThreadWindows, GetClassNameW,
-                GetMenuItemCount, GetMenuItemInfoW, GetWindowRect, GetWindowTextLengthW,
-                GetWindowTextW, HMENU, IsWindow, IsWindowVisible, MENUITEMINFOW, MFS_CHECKED,
+                BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTORADIOBUTTON, CB_GETCOUNT,
+                CB_GETCURSEL, CB_GETLBTEXT, CB_GETLBTEXTLEN, CB_SETCURSEL, CBN_SELCHANGE,
+                ENDSESSION_LOGOFF, EndMenu, EnumChildWindows, EnumThreadWindows, GWL_STYLE,
+                GetClassNameW, GetDlgCtrlID, GetMenuItemCount, GetMenuItemInfoW,
+                GetNextDlgGroupItem, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
+                GetWindowTextW, HMENU, IsWindow, IsWindowVisible, LB_GETCOUNT, LB_GETCURSEL,
+                LB_GETTEXT, LB_GETTEXTLEN, LB_SETCURSEL, LBN_SELCHANGE, MENUITEMINFOW, MFS_CHECKED,
                 MFS_GRAYED, MFS_HILITE, MFT_SEPARATOR, MIIM_BITMAP, MIIM_FTYPE, MIIM_STATE,
                 MIIM_STRING, MIIM_SUBMENU, MN_GETHMENU, PostMessageW, SWP_NOACTIVATE, SWP_NOMOVE,
-                SWP_NOZORDER, SendMessageW, SetWindowPos, WM_CAPTURECHANGED, WM_COMMAND,
-                WM_ENDSESSION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
-                WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUERYENDSESSION, WM_RBUTTONDOWN,
-                WM_RBUTTONUP,
+                SWP_NOZORDER, SendMessageW, SetWindowPos, SetWindowTextW, WM_CAPTURECHANGED,
+                WM_CLOSE, WM_COMMAND, WM_ENDSESSION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
+                WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NOTIFY,
+                WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP,
             },
         },
     },
-    core::{BOOL, PWSTR},
+    core::{BOOL, HSTRING, PWSTR},
 };
 
 use super::{
@@ -48,10 +57,14 @@ use crate::{
     e2e_server::{
         MenuKey, MouseAction, MouseHeld, MouseStep, Pending, Request, Response, WindowMessage,
     },
+    keyboard::{self, KeyPosition},
     paint::Area,
     scroll_bar, version, window_state,
 };
-use fantermo_core::vt::KeyAction;
+use fantermo_core::{
+    keymap::KeyCombo,
+    vt::{Key, KeyAction, Mods},
+};
 
 /// 絵を書くファイル。
 const FRAME_FILE: &str = "frame.png";
@@ -61,6 +74,28 @@ const SYSTEM_DIALOG_CLASS: &str = "#32770";
 
 /// メニューのウィンドウのクラス。
 const MENU_CLASS: &str = "#32768";
+
+/// キーを読み取るダイアログのウィンドウのクラス。
+const KEY_CAPTURE_CLASS: &str = "fantermo-key-capture";
+
+/// コントロールのウィンドウのクラス（大文字小文字を区別しない）。
+const BUTTON_CLASS: &str = "Button";
+const EDIT_CLASS: &str = "Edit";
+const COMBO_BOX_CLASS: &str = "ComboBox";
+const LIST_BOX_CLASS: &str = "ListBox";
+const UP_DOWN_CLASS: &str = "msctls_updown32";
+
+/// ボタンのスタイルのうち、ボタンの種類を表すビット。
+const BUTTON_TYPE_MASK: isize = 0xF;
+
+/// スキャンコードの上限。
+const MAX_SCAN_CODE: u16 = 0xFF;
+/// `MapVirtualKeyW` に拡張キーのスキャンコードを渡すときの接頭辞。
+const EXTENDED_SCAN_CODE_PREFIX: u32 = 0xE000;
+/// `WM_KEYDOWN` の `lParam` の、スキャンコードの位置。
+const SCAN_CODE_SHIFT: u32 = 16;
+/// `WM_KEYDOWN` の `lParam` の、拡張キーのビット。
+const EXTENDED_KEY_BIT: isize = 1 << 24;
 
 /// `WM_KEYDOWN` の `lParam`: 繰り返しの数が 1。
 const KEY_DOWN_LPARAM: isize = 1;
@@ -93,6 +128,7 @@ pub(super) fn on_wake(hwnd: HWND, with_app: &WithApp) {
 }
 
 fn run(hwnd: HWND, Pending { request, reply }: Pending, with_app: &WithApp) {
+    release_kept_modifiers(hwnd);
     let answer = |response: Response| {
         if reply.send(response).is_err() {
             tracing::warn!("the e2e control stopped waiting for an answer");
@@ -120,6 +156,24 @@ fn run(hwnd: HWND, Pending { request, reply }: Pending, with_app: &WithApp) {
         Request::SelectMenuItem(position) => answer(select_menu_item(hwnd, position)),
         Request::MenuKey(key) => answer(press_menu_key(hwnd, key)),
         Request::CloseMenu => answer(close_menu(hwnd)),
+        Request::DialogControls => answer(dialog_controls(hwnd)),
+        Request::SetDialogText { id, text } => answer(set_dialog_text(hwnd, id, &text)),
+        Request::SelectDialogItem { id, position } => {
+            answer(select_dialog_item(hwnd, id, position));
+        }
+        Request::CheckDialogRadio(id) => answer(check_dialog_radio(hwnd, id)),
+        Request::StepDialogSpin { id, delta } => answer(step_dialog_spin(hwnd, id, delta)),
+        Request::PressDialogKey(combo) => answer(press_dialog_key(hwnd, combo)),
+        Request::CloseDialog => answer(close_dialog(hwnd)),
+        // 押すとダイアログを開くボタンは、閉じるまで送った先から戻らない。答えを先に返す。順番は `Request::Mouse` と
+        // 同じく保たれる。
+        Request::ClickDialogButton(id) => match button_to_click(hwnd, id) {
+            Ok((dialog, button)) => {
+                answer(Response::json(&json!({})));
+                send_command(dialog, id, BN_CLICKED, button);
+            }
+            Err(response) => answer(response),
+        },
         other => {
             let mut response = None;
             let mut deferred = None;
@@ -378,6 +432,446 @@ fn press_dialog_button(main: HWND, id: i32) -> Response {
     }
 }
 
+/// `window` のすべての子孫のウィンドウ。
+fn descendants(window: HWND) -> Vec<HWND> {
+    /// 列挙で渡されたウィンドウを `lparam` の指す `Vec<HWND>` に足す。
+    unsafe extern "system" fn collect(child: HWND, lparam: LPARAM) -> BOOL {
+        // SAFETY: lparam は、列挙している間だけ生きている `Vec<HWND>` を指す。
+        unsafe { &mut *(lparam.0 as *mut Vec<HWND>) }.push(child);
+        TRUE
+    }
+    let mut windows: Vec<HWND> = Vec::new();
+    // SAFETY: windows はこの呼び出しの間は生きている。列挙の失敗は、子がないことと同じに扱う。
+    unsafe {
+        _ = EnumChildWindows(
+            Some(window),
+            Some(collect),
+            LPARAM((&raw mut windows) as isize),
+        );
+    }
+    windows
+}
+
+/// いちばん上の、利用者が操作できるダイアログ。メッセージボックスや色を選ぶダイアログが上に開いていれば、下の
+/// ダイアログは無効なのでそちらになる。
+fn top_dialog(main: HWND) -> Result<HWND, Response> {
+    open_dialogs(main)
+        .into_iter()
+        .find(|&window| {
+            // SAFETY: window はこのスレッドの有効なウィンドウ。
+            class_name(window) != MENU_CLASS && unsafe { IsWindowEnabled(window) }.as_bool()
+        })
+        .ok_or_else(|| Response::bad_request("no dialog is open"))
+}
+
+/// `dialog` の子孫のうち、ID が `id` でクラスが `class` のコントロール。利用者が触れないもの（見えていない、押せない）は
+/// 断る。ファイルを選ぶダイアログのように同じ ID の入れ子があるので、クラスでも絞る。
+fn usable_control(dialog: HWND, id: i32, class: &str) -> Result<HWND, Response> {
+    let control = descendants(dialog)
+        .into_iter()
+        .find(|&child| {
+            // SAFETY: 子のウィンドウの ID を問い合わせるだけ。
+            let child_id = unsafe { GetDlgCtrlID(child) };
+            child_id == id && class_name(child).eq_ignore_ascii_case(class)
+        })
+        .ok_or_else(|| Response::bad_request(format!("no {class} of the ID {id}")))?;
+    // SAFETY: control はこのスレッドの有効なウィンドウ。
+    let usable =
+        unsafe { IsWindowVisible(control).as_bool() && IsWindowEnabled(control).as_bool() };
+    if !usable {
+        return Err(Response::bad_request(format!(
+            "the {class} of the ID {id} is hidden or disabled"
+        )));
+    }
+    Ok(control)
+}
+
+/// `dialog` へ、コントロール `control`（ID は `id`）からの通知 `code` を `WM_COMMAND` で送る。
+fn send_command(dialog: HWND, id: i32, code: u32, control: HWND) {
+    let wparam = (id as u16 as usize) | ((code as u16 as usize) << 16);
+    // SAFETY: dialog はこのスレッドの有効なウィンドウ。ウィンドウプロシージャがこの場で動くが、借用は持っていない。
+    unsafe {
+        SendMessageW(
+            dialog,
+            WM_COMMAND,
+            Some(WPARAM(wparam)),
+            Some(LPARAM(control.0 as isize)),
+        )
+    };
+}
+
+/// コントロールの文字。
+fn control_text(control: HWND) -> String {
+    real_window_title(control)
+}
+
+/// `count` 個の項目の文字を、項目ごとに長さと中身を問い合わせて読む。
+fn list_items(
+    control: HWND,
+    count_message: u32,
+    length_message: u32,
+    text_message: u32,
+) -> Vec<String> {
+    // SAFETY: control は有効なコントロール。
+    let count = unsafe { SendMessageW(control, count_message, None, None) }.0;
+    (0..count)
+        .map(|index| {
+            let position = Some(WPARAM(index as usize));
+            // SAFETY: control は有効なコントロールで、index は項目の数より小さい。
+            let length = unsafe { SendMessageW(control, length_message, position, None) }.0;
+            let mut buffer = vec![0u16; length.max(0) as usize + 1];
+            // SAFETY: buffer は項目の文字と終端が入る大きさで、この呼び出しの間は生きている。
+            let copied = unsafe {
+                SendMessageW(
+                    control,
+                    text_message,
+                    position,
+                    Some(LPARAM(buffer.as_mut_ptr() as isize)),
+                )
+            }
+            .0;
+            String::from_utf16_lossy(&buffer[..copied.max(0) as usize])
+        })
+        .collect()
+}
+
+/// `control` の値。クラスごとに、ボタンは `checked`、コンボボックスと一覧は `selected`（選んでいなければ `null`）と
+/// `items`。位置はダイアログのクライアント領域の座標。
+fn control_json(dialog: HWND, control: HWND) -> serde_json::Value {
+    let class = class_name(control);
+    let mut rect = RECT::default();
+    // SAFETY: control は有効なウィンドウで、rect は書き込める。
+    if let Err(e) = unsafe { GetWindowRect(control, &mut rect) } {
+        tracing::warn!("failed to read the rectangle of a control: {e}");
+    }
+    let mut top_left = POINT {
+        x: rect.left,
+        y: rect.top,
+    };
+    // SAFETY: dialog は有効なウィンドウで、top_left は書き込める。
+    if !unsafe { ScreenToClient(dialog, &mut top_left) }.as_bool() {
+        tracing::warn!("failed to convert the position of a control");
+    }
+    let mut value = json!({
+        // SAFETY: 子のウィンドウの ID を問い合わせるだけ。
+        "id": unsafe { GetDlgCtrlID(control) },
+        "class": class,
+        "text": control_text(control),
+        // SAFETY: control は有効なウィンドウ。
+        "visible": unsafe { IsWindowVisible(control) }.as_bool(),
+        // SAFETY: control は有効なウィンドウ。
+        "enabled": unsafe { IsWindowEnabled(control) }.as_bool(),
+        "x": top_left.x,
+        "y": top_left.y,
+        "width": rect.right - rect.left,
+        "height": rect.bottom - rect.top,
+    });
+    let selected = |message: u32| {
+        // SAFETY: control は有効なコントロール。
+        usize::try_from(unsafe { SendMessageW(control, message, None, None) }.0).ok()
+    };
+    if class.eq_ignore_ascii_case(BUTTON_CLASS) {
+        // SAFETY: control は有効なボタン。
+        let state = unsafe { SendMessageW(control, BM_GETCHECK, None, None) }.0;
+        value["checked"] = json!(state == BST_CHECKED.0 as isize);
+    } else if class.eq_ignore_ascii_case(COMBO_BOX_CLASS) {
+        value["selected"] = json!(selected(CB_GETCURSEL));
+        value["items"] = json!(list_items(
+            control,
+            CB_GETCOUNT,
+            CB_GETLBTEXTLEN,
+            CB_GETLBTEXT
+        ));
+    } else if class.eq_ignore_ascii_case(LIST_BOX_CLASS) {
+        value["selected"] = json!(selected(LB_GETCURSEL));
+        value["items"] = json!(list_items(control, LB_GETCOUNT, LB_GETTEXTLEN, LB_GETTEXT));
+    }
+    value
+}
+
+/// いちばん上のダイアログの大きさと、コントロールの値。`width` と `height` は枠を含むウィンドウの大きさ、`work_area` は
+/// ウィンドウのあるモニターの作業領域で、どちらも画面の座標のピクセル。`dpi` はダイアログの DPI。`focus` はフォーカスの
+/// あるコントロールの ID。
+fn dialog_controls(main: HWND) -> Response {
+    let dialog = match top_dialog(main) {
+        Ok(dialog) => dialog,
+        Err(response) => return response,
+    };
+    let mut rect = RECT::default();
+    // SAFETY: dialog は有効なウィンドウで、rect は書き込める。
+    if let Err(e) = unsafe { GetWindowRect(dialog, &mut rect) } {
+        return Response::internal_error(format!("cannot read the dialog size: {e}"));
+    }
+    let (client_width, client_height) = client_size(dialog);
+    let mut monitor = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: dialog は有効なウィンドウで、monitor は cbSize を入れて初期化済み。
+    let found = unsafe {
+        GetMonitorInfoW(
+            MonitorFromWindow(dialog, MONITOR_DEFAULTTONEAREST),
+            &mut monitor,
+        )
+    };
+    if !found.as_bool() {
+        return Response::internal_error("cannot read the work area");
+    }
+    let work = monitor.rcWork;
+    let controls: Vec<serde_json::Value> = descendants(dialog)
+        .into_iter()
+        .map(|control| control_json(dialog, control))
+        .collect();
+    // SAFETY: このスレッドのフォーカスを問い合わせるだけ。
+    let focus = unsafe { GetFocus() };
+    Response::json(&json!({
+        "class": class_name(dialog),
+        "title": real_window_title(dialog),
+        // SAFETY: dialog は有効なウィンドウ。
+        "dpi": unsafe { GetDpiForWindow(dialog) },
+        "left": rect.left,
+        "top": rect.top,
+        "width": rect.right - rect.left,
+        "height": rect.bottom - rect.top,
+        "client_width": client_width,
+        "client_height": client_height,
+        "work_area": {
+            "left": work.left,
+            "top": work.top,
+            "right": work.right,
+            "bottom": work.bottom,
+        },
+        // SAFETY: 無効なハンドルなら 0 が返る。
+        "focus": unsafe { GetDlgCtrlID(focus) },
+        "controls": controls,
+    }))
+}
+
+fn set_dialog_text(main: HWND, id: i32, text: &str) -> Response {
+    let control = top_dialog(main).and_then(|dialog| usable_control(dialog, id, EDIT_CLASS));
+    let control = match control {
+        Ok(control) => control,
+        Err(response) => return response,
+    };
+    // SAFETY: control は有効なウィンドウ。親に EN_CHANGE がこの場で届くが、借用は持っていない。
+    match unsafe { SetWindowTextW(control, &HSTRING::from(text)) } {
+        Ok(()) => Response::json(&json!({})),
+        Err(e) => Response::internal_error(format!("cannot set the text: {e}")),
+    }
+}
+
+/// コンボボックスか一覧の `position` 番目の項目を選び、親に選択の変更を知らせる。
+fn select_dialog_item(main: HWND, id: i32, position: usize) -> Response {
+    let dialog = match top_dialog(main) {
+        Ok(dialog) => dialog,
+        Err(response) => return response,
+    };
+    let is_combo_box = descendants(dialog).into_iter().any(|child| {
+        // SAFETY: 子のウィンドウの ID を問い合わせるだけ。
+        let child_id = unsafe { GetDlgCtrlID(child) };
+        child_id == id && class_name(child).eq_ignore_ascii_case(COMBO_BOX_CLASS)
+    });
+    let found = if is_combo_box {
+        usable_control(dialog, id, COMBO_BOX_CLASS)
+            .map(|control| (control, CB_GETCOUNT, CB_SETCURSEL, CBN_SELCHANGE))
+    } else {
+        usable_control(dialog, id, LIST_BOX_CLASS)
+            .map(|control| (control, LB_GETCOUNT, LB_SETCURSEL, LBN_SELCHANGE))
+    };
+    let (control, count_message, select_message, changed) = match found {
+        Ok(found) => found,
+        Err(response) => return response,
+    };
+    // SAFETY: control は有効なコントロール。
+    let count = unsafe { SendMessageW(control, count_message, None, None) }.0;
+    if !usize::try_from(count).is_ok_and(|count| position < count) {
+        return Response::bad_request(format!("no item at {position} of {count}"));
+    }
+    // SAFETY: control は有効なコントロールで、position は項目の数より小さい。
+    unsafe { SendMessageW(control, select_message, Some(WPARAM(position)), None) };
+    send_command(dialog, id, changed, control);
+    Response::json(&json!({}))
+}
+
+/// ラジオボタンを選ぶ。同じ並びのほかのラジオボタンを外し、親に押したことを知らせる。別のスレッドからの `BM_CLICK` と
+/// 違い、ダイアログがアクティブでなくても届く。
+fn check_dialog_radio(main: HWND, id: i32) -> Response {
+    let dialog = match top_dialog(main) {
+        Ok(dialog) => dialog,
+        Err(response) => return response,
+    };
+    let radio = match usable_control(dialog, id, BUTTON_CLASS) {
+        Ok(radio) => radio,
+        Err(response) => return response,
+    };
+    let is_radio = |button: HWND| {
+        // SAFETY: button は有効なウィンドウ。
+        let style = unsafe { GetWindowLongPtrW(button, GWL_STYLE) };
+        class_name(button).eq_ignore_ascii_case(BUTTON_CLASS)
+            && style & BUTTON_TYPE_MASK == BS_AUTORADIOBUTTON as isize
+    };
+    if !is_radio(radio) {
+        return Response::bad_request(format!("the ID {id} is not a radio button"));
+    }
+    let mut member = radio;
+    loop {
+        // SAFETY: dialog は member の親。並びの最後の次は先頭へ戻る。
+        member = match unsafe { GetNextDlgGroupItem(dialog, Some(member), false) } {
+            Ok(next) => next,
+            Err(e) => return Response::internal_error(format!("cannot walk the group: {e}")),
+        };
+        if member == radio {
+            break;
+        }
+        if is_radio(member) {
+            // SAFETY: member は有効なボタン。
+            unsafe { SendMessageW(member, BM_SETCHECK, Some(WPARAM(0)), None) };
+        }
+    }
+    // SAFETY: radio は有効なボタン。
+    unsafe {
+        SendMessageW(
+            radio,
+            BM_SETCHECK,
+            Some(WPARAM(BST_CHECKED.0 as usize)),
+            None,
+        )
+    };
+    send_command(dialog, id, BN_CLICKED, radio);
+    Response::json(&json!({}))
+}
+
+/// 押せるボタン `id` と、そのダイアログ。
+fn button_to_click(main: HWND, id: i32) -> Result<(HWND, HWND), Response> {
+    let dialog = top_dialog(main)?;
+    Ok((dialog, usable_control(dialog, id, BUTTON_CLASS)?))
+}
+
+/// 上下の矢印 `id` を `delta` の分だけ押したことを親に知らせる。矢印のウィンドウへマウスのメッセージを送ると
+/// キャプチャを取るので、矢印が親へ送るのと同じ通知を送る。
+fn step_dialog_spin(main: HWND, id: i32, delta: i32) -> Response {
+    let dialog = match top_dialog(main) {
+        Ok(dialog) => dialog,
+        Err(response) => return response,
+    };
+    let spin = match usable_control(dialog, id, UP_DOWN_CLASS) {
+        Ok(spin) => spin,
+        Err(response) => return response,
+    };
+    let mut notification = NMUPDOWN {
+        hdr: NMHDR {
+            hwndFrom: spin,
+            idFrom: id as usize,
+            code: UDN_DELTAPOS,
+        },
+        iPos: 0,
+        iDelta: delta,
+    };
+    // SAFETY: dialog は有効なウィンドウで、notification はこの呼び出しの間は生きている。ウィンドウプロシージャが
+    // この場で動くが、借用は持っていない。
+    unsafe {
+        SendMessageW(
+            dialog,
+            WM_NOTIFY,
+            Some(WPARAM(id as usize)),
+            Some(LPARAM((&raw mut notification) as isize)),
+        )
+    };
+    Response::json(&json!({}))
+}
+
+/// `key` を打つ位置を、スキャンコードの順に探す。`(スキャンコード, 拡張キー)`。
+fn position_of_key(key: Key) -> Option<(u16, bool)> {
+    (0..=MAX_SCAN_CODE)
+        .flat_map(|scan_code| [(scan_code, false), (scan_code, true)])
+        .find(|&(scan_code, extended)| {
+            keyboard::key_from_position(KeyPosition {
+                scan_code,
+                extended,
+                repeated: false,
+            }) == key
+        })
+}
+
+thread_local! {
+    /// キーを読み取るダイアログが閉じるまで保つ、キーボードの状態。
+    static KEPT_MODIFIERS: RefCell<Option<HeldModifiers>> = const { RefCell::new(None) };
+}
+
+/// キーを読み取るダイアログが閉じていれば、保っていたキーボードの状態を元に戻す。
+fn release_kept_modifiers(main: HWND) {
+    let capturing = open_dialogs(main)
+        .into_iter()
+        .any(|window| class_name(window) == KEY_CAPTURE_CLASS);
+    if !capturing {
+        KEPT_MODIFIERS.take();
+    }
+}
+
+/// いちばん上のダイアログのループへ `combo` のキーを積む。フォーカスのあるコントロールに届いた形にする。修飾キーは、
+/// 積んだキーをダイアログのループが読むときに押している必要がある。読むのはこの要求の後なので、キーを読み取るダイアログ
+/// なら閉じるまで保つ（`release_kept_modifiers`）。
+fn press_dialog_key(main: HWND, combo: KeyCombo) -> Response {
+    let dialog = match top_dialog(main) {
+        Ok(dialog) => dialog,
+        Err(response) => return response,
+    };
+    let Some((scan_code, extended)) = position_of_key(combo.key) else {
+        return Response::bad_request(format!("no position for the key {combo}"));
+    };
+    let extended_prefix = if extended {
+        EXTENDED_SCAN_CODE_PREFIX
+    } else {
+        0
+    };
+    let virtual_key = {
+        // SAFETY: スキャンコードの変換を問い合わせるだけ。
+        unsafe { MapVirtualKeyW(u32::from(scan_code) | extended_prefix, MAPVK_VSC_TO_VK_EX) }
+    };
+    let mut lparam = KEY_DOWN_LPARAM | ((scan_code as isize) << SCAN_CODE_SHIFT);
+    if extended {
+        lparam |= EXTENDED_KEY_BIT;
+    }
+    let held = HeldModifiers::press(MouseHeld {
+        shift: combo.mods.contains(Mods::SHIFT),
+        ctrl: combo.mods.contains(Mods::CTRL),
+        alt: combo.mods.contains(Mods::ALT),
+        ..MouseHeld::default()
+    });
+    // SAFETY: このスレッドのフォーカスを問い合わせるだけ。
+    let focus = unsafe { GetFocus() };
+    let target = if focus.is_invalid() { dialog } else { focus };
+    // SAFETY: target はこのスレッドのウィンドウ。積むだけで、この場では処理されない。
+    let posted = unsafe {
+        PostMessageW(
+            Some(target),
+            WM_KEYDOWN,
+            WPARAM(virtual_key as usize),
+            LPARAM(lparam),
+        )
+    };
+    if let Err(e) = posted {
+        return Response::internal_error(format!("cannot send the key: {e}"));
+    }
+    if class_name(dialog) == KEY_CAPTURE_CLASS {
+        KEPT_MODIFIERS.set(held);
+    }
+    Response::json(&json!({}))
+}
+
+/// いちばん上のダイアログの × を押したことにする。積むだけで、ダイアログが自分のループで処理する。
+fn close_dialog(main: HWND) -> Response {
+    let dialog = match top_dialog(main) {
+        Ok(dialog) => dialog,
+        Err(response) => return response,
+    };
+    // SAFETY: dialog はこのスレッドのウィンドウ。積むだけで、この場では処理されない。
+    match unsafe { PostMessageW(Some(dialog), WM_CLOSE, WPARAM(0), LPARAM(0)) } {
+        Ok(()) => Response::json(&json!({})),
+        Err(e) => Response::internal_error(format!("cannot close the dialog: {e}")),
+    }
+}
+
 /// 開いているメニューの項目。
 struct MenuItem {
     /// 項目の文字。アクセラレータの `&` と、キーの組み合わせの前のタブも含む。
@@ -601,7 +1095,15 @@ impl App {
             | Request::HighlightMenuItem(_)
             | Request::SelectMenuItem(_)
             | Request::MenuKey(_)
-            | Request::CloseMenu => (
+            | Request::CloseMenu
+            | Request::DialogControls
+            | Request::SetDialogText { .. }
+            | Request::SelectDialogItem { .. }
+            | Request::CheckDialogRadio(_)
+            | Request::ClickDialogButton(_)
+            | Request::StepDialogSpin { .. }
+            | Request::PressDialogKey(_)
+            | Request::CloseDialog => (
                 Response::internal_error("handled outside of the borrow"),
                 None,
             ),
@@ -616,7 +1118,7 @@ impl App {
     /// アプリがマウスを求めているか。`scroll` は表示している範囲（`total` 全体の行数、`offset` 先頭の行、`len` 行数）と、
     /// ホイール 1 ノッチの行数 `lines_per_notch`。`scroll_bar` はスクロールバーの範囲と、つまみ `thumb`（`top`、
     /// `length`。なければ `null`）、押している間だけ真の `pressed`。`tab_bar` はタブとボタンの範囲で、`tabs` は
-    /// 描いているタブだけ。
+    /// 描いているタブだけ。`window_enabled` はウィンドウが入力を受けるか（ダイアログの間は偽）。
     fn e2e_state(&mut self) -> serde_json::Value {
         let size = self.session().vt.size();
         let text = self.session().vt.plain_text().unwrap_or_else(|e| {
@@ -743,6 +1245,8 @@ impl App {
             "dialogs": dialogs,
             "images": images,
             "window": window_state::current(self.hwnd),
+            // SAFETY: self.hwnd は有効なウィンドウ。
+            "window_enabled": unsafe { IsWindowEnabled(self.hwnd) }.as_bool(),
             "window_title": real_window_title(self.hwnd),
             "version": version::display(),
             "text": text,
