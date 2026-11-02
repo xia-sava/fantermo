@@ -227,7 +227,7 @@ pub fn run(
     let Loaded {
         config,
         notice,
-        written,
+        notice_key,
     } = loaded;
     let dwrite = font::create_factory()?;
     // SAFETY: 引数のない問い合わせ。
@@ -256,7 +256,7 @@ pub fn run(
         arguments,
     )?;
     app.state_path = state_path;
-    app.settings_written = written;
+    app.settings_notice_key = notice_key;
     #[cfg(feature = "e2e")]
     {
         app.e2e = crate::e2e_server::start(poster(hwnd, WM_APP_E2E, WPARAM(0)));
@@ -741,9 +741,8 @@ struct App {
     settings_dialog_open: bool,
     /// 設定ダイアログを開いている間に、設定ファイルが書き換えられた。閉じたら読み直す。
     reload_pending: bool,
-    /// 設定ダイアログか、古い書き方の読み替えが最後に設定ファイルに書いた中身。読み直すときに中身が
-    /// これと同じなら、使っている設定と同じなので読まない。違えば捨てる。
-    settings_written: Option<String>,
+    /// 最後に設定ファイルを読んだときの警告の中身（[`Loaded::notice_key`]）。読み直して同じなら、続けて見せない。
+    settings_notice_key: Option<String>,
     /// 更新の確認かダウンロードを別のスレッドでしているか、その結果を見せている。その間は新しく始めない。
     update_busy: bool,
     /// 更新のスレッドが結果を送るチャネルの送信側と、ウィンドウが受け取る受信側。送ったら
@@ -864,7 +863,7 @@ impl App {
             scroll_position: None,
             settings_dialog_open: false,
             reload_pending: false,
-            settings_written: None,
+            settings_notice_key: None,
             update_busy: false,
             update_sender,
             update_events,
@@ -2297,34 +2296,23 @@ impl App {
     /// 同じく返す。
     /// グリフの描き方だけが変わったときは、セルの寸法は変わらないので、この場でアトラスだけを作り直す。
     /// 貼り付けの設定はすぐに入れ替える。プロファイルは次に開く端末から使う。
-    /// エラーがあれば、それを見せることを返す（借用を手放してから [`run_deferred`] で見せる）。エラーが
-    /// なければ、設定の警告を取り下げる（開いているメッセージボックスも閉じさせる）。
+    /// エラーがあれば、それを見せることを返す（借用を手放してから [`run_deferred`] で見せる）。前に読んだ
+    /// ときと同じエラーなら見せない。エラーがなければ、設定の警告を取り下げる（開いているメッセージボックス
+    /// も閉じさせる）。
     ///
-    /// 設定ダイアログを開いている間は読まず、閉じてから読む。設定ダイアログが書いた中身のままなら読まない。
-    /// 古い書き方を読み替えて書き戻したら、その中身を覚え、書き戻した知らせでは読み直さない。
+    /// 設定ダイアログを開いている間は読まず、閉じてから読む。
     fn reload_config(&mut self) -> (Option<u32>, Option<Deferred>) {
         if self.settings_dialog_open {
             self.reload_pending = true;
             return (None, None);
         }
-        // 一度の書き込みの知らせが、間を置いて二度に分かれて届くこともあるので、中身が変わるまで覚えておく。
-        if let Some(written) = self.settings_written.take()
-            && let Some(path) = &self.config_path
-            && std::fs::read_to_string(path).is_ok_and(|text| text == written)
-        {
-            tracing::debug!("the settings file is as fantermo wrote it");
-            self.settings_written = Some(written);
-            return (None, None);
-        }
         let Loaded {
             config,
             notice,
-            written,
+            notice_key,
         } = config_file::reload(self.config_path.as_deref(), &self.config_in_use());
-        if written.is_some() {
-            self.settings_written = written;
-        }
         let warn = match notice {
+            Some(_) if notice_key == self.settings_notice_key => None,
             Some(text) => Some(Deferred::Warn {
                 topic: Topic::Settings,
                 text,
@@ -2334,6 +2322,7 @@ impl App {
                 None
             }
         };
+        self.settings_notice_key = notice_key;
         (self.apply_config(config), warn)
     }
 
@@ -2931,6 +2920,8 @@ struct SettingsHost<'a, 'b> {
     hwnd: HWND,
     with_app: &'a WithApp<'b>,
     config_path: PathBuf,
+    /// 「OK」か「適用」で保存した。
+    saved: bool,
 }
 
 impl settings_dialog::Host for SettingsHost<'_, '_> {
@@ -2944,14 +2935,15 @@ impl settings_dialog::Host for SettingsHost<'_, '_> {
     }
 
     fn save(&mut self, base: &Config, edited: &Config) -> Result<(), String> {
-        let written = config_file::save(&self.config_path, base, edited)?;
-        (self.with_app)(&mut |app| app.settings_written = Some(written.clone()));
+        config_file::save(&self.config_path, base, edited)?;
+        self.saved = true;
         Ok(())
     }
 }
 
-/// 設定ダイアログを開き、閉じるまで待つ。開いている間に設定ファイルが書き換えられていたら、閉じて
-/// から読み直す。
+/// 設定ダイアログを開き、閉じるまで待つ。保存したか、開いている間に設定ファイルが書き換えられていたら、
+/// 閉じてから読み直す。保存は変えた項目だけをファイルに書くので、開いている間に別のプログラムが書いた分は
+/// ファイルに残っていて、読み直しで反映される。
 fn edit_settings(hwnd: HWND, with_app: &WithApp) {
     let mut opened = None;
     with_app(&mut |app| {
@@ -2969,6 +2961,7 @@ fn edit_settings(hwnd: HWND, with_app: &WithApp) {
         hwnd,
         with_app,
         config_path,
+        saved: false,
     };
     settings_dialog::run(hwnd, request, &mut host);
     // 開いている間に最後の端末が終わってウィンドウが閉じたら、App はもう無い。
@@ -2980,7 +2973,7 @@ fn edit_settings(hwnd: HWND, with_app: &WithApp) {
         app.settings_dialog_open = false;
         pending = std::mem::take(&mut app.reload_pending);
     });
-    if pending {
+    if pending || host.saved {
         reload_settings(hwnd, with_app);
     }
 }

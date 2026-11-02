@@ -5508,6 +5508,144 @@ fn a_file_changed_while_the_dialog_is_open_is_read_after_closing() {
     });
 }
 
+/// 開いている間に別のプログラムが書き換えた設定は、保存したときも閉じたあとに反映する。ダイアログで変えた項目も残る。
+#[test]
+fn a_file_changed_while_the_dialog_is_open_is_read_after_saving() {
+    let server = start_settings_test(&format!("{ONE_PROFILE}[window]\npadding = 4\n"));
+    let first_x = number(&server.state()["terminal_x"]);
+
+    // ダイアログで何も変えずに「OK」を押す。
+    open_settings(&server);
+    std::fs::write(
+        config_path(&server),
+        format!("{ONE_PROFILE}[window]\npadding = 10\n"),
+    )
+    .expect("failed to write the settings");
+    press_ok(&server);
+    server.wait_until("the padding of the file", |state| {
+        number(&state["terminal_x"]) == first_x + 6
+    });
+
+    // ダイアログでほかの項目を変えて「OK」を押す。
+    let bar = number(&server.state()["scroll_bar"]["width"]);
+    open_settings(&server);
+    std::fs::write(
+        config_path(&server),
+        format!("{ONE_PROFILE}[window]\npadding = 12\n"),
+    )
+    .expect("failed to write the settings");
+    set_text(&server, ID_SCROLL_BAR_WIDTH, &(bar + 5).to_string());
+    press_ok(&server);
+    server.wait_until("the padding of the file and the width", |state| {
+        number(&state["terminal_x"]) == first_x + 8
+            && number(&state["scroll_bar"]["width"]) == bar + 5
+    });
+    let saved = saved_config(&server);
+    assert_eq!(saved.window.padding, 12);
+    assert_eq!(u64::from(saved.scroll_bar.width), bar + 5);
+
+    // 「適用」のあとは、開いたままで反映せず、「キャンセル」で閉じたあとに反映する。
+    open_settings(&server);
+    press_apply(&server);
+    std::fs::write(
+        config_path(&server),
+        format!("{ONE_PROFILE}[window]\npadding = 14\n"),
+    )
+    .expect("failed to write the settings");
+    server.assert_holds_for(Duration::from_millis(600), "the padding", |state| {
+        number(&state["terminal_x"]) == first_x + 8
+    });
+    press_cancel(&server);
+    server.wait_until("the padding of the file", |state| {
+        number(&state["terminal_x"]) == first_x + 10
+    });
+}
+
+/// 設定ファイルの警告を、続けて出さない時間の窓。
+const NO_REPEATED_WARNING: Duration = Duration::from_millis(600);
+
+/// メッセージボックスが開かないことを確認する。
+#[track_caller]
+fn assert_no_warning_opens(server: &Server) {
+    server.assert_holds_for(NO_REPEATED_WARNING, "no warning", |state| {
+        state["dialogs"].as_array().map_or(0, Vec::len) == 0
+    });
+}
+
+/// 同じ警告は、保存しても別のプログラムが書き換えても続けて出さない。中身が変わったら出し、直ったあとにまた
+/// 同じ警告になれば出す。
+#[test]
+fn the_same_settings_warning_is_not_shown_again() {
+    let first = format!("unknown_one = 1\n{ONE_PROFILE}");
+    let server = Server::start(&first, &[]);
+    assert!(wait_message_box(&server).contains("unknown_one"));
+    close_message_box(&server, 0);
+    server.wait_text(CMD_PROMPT);
+
+    // 「OK」のたびに出さない。項目を書いて行がずれても、中身は同じ。
+    open_settings(&server);
+    press_ok(&server);
+    assert_no_warning_opens(&server);
+    open_settings(&server);
+    set_text(&server, ID_PADDING, "9");
+    press_ok(&server);
+    assert_no_warning_opens(&server);
+    assert_eq!(saved_config(&server).window.padding, 9);
+    open_settings(&server);
+    press_apply(&server);
+    press_cancel(&server);
+    assert_no_warning_opens(&server);
+
+    // 別のプログラムが書き換えても、警告が同じなら出さない。
+    let padded = number(&server.state()["terminal_x"]) + 1;
+    std::fs::write(
+        config_path(&server),
+        format!("# a comment\n\nunknown_one = 1\n{ONE_PROFILE}[window]\npadding = 10\n"),
+    )
+    .expect("failed to write the settings");
+    server.wait_until("the changed padding", |state| {
+        number(&state["terminal_x"]) == padded
+    });
+    assert_no_warning_opens(&server);
+
+    // 中身が変わったら出す。
+    std::fs::write(
+        config_path(&server),
+        format!("unknown_two = 1\n{ONE_PROFILE}"),
+    )
+    .expect("failed to write the settings");
+    assert!(wait_message_box(&server).contains("unknown_two"));
+    close_message_box(&server, 0);
+
+    // ダイアログの間に中身が変わったら、閉じたあとに出す。
+    open_settings(&server);
+    std::fs::write(
+        config_path(&server),
+        format!("unknown_three = 1\n{ONE_PROFILE}"),
+    )
+    .expect("failed to write the settings");
+    click(&server, ID_OK);
+    assert!(wait_message_box(&server).contains("unknown_three"));
+    close_message_box(&server, 0);
+
+    // 直ったあとに同じ警告になれば出す。
+    std::fs::write(config_path(&server), ONE_PROFILE).expect("failed to write the settings");
+    let width = number(&server.state()["scroll_bar"]["width"]);
+    open_settings(&server);
+    set_text(&server, ID_SCROLL_BAR_WIDTH, &(width + 1).to_string());
+    press_ok(&server);
+    server.wait_until("the changed width", |state| {
+        number(&state["scroll_bar"]["width"]) == width + 1
+    });
+    std::fs::write(
+        config_path(&server),
+        format!("unknown_three = 1\n{ONE_PROFILE}"),
+    )
+    .expect("failed to write the settings");
+    assert!(wait_message_box(&server).contains("unknown_three"));
+    close_message_box(&server, 0);
+}
+
 /// 読めない設定ファイルは、起動時にメッセージで知らせて既定の設定で動く。
 #[test]
 fn a_settings_file_that_cannot_be_read_is_reported_at_startup() {

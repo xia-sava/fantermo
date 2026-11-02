@@ -73,9 +73,9 @@ pub struct Loaded {
     pub config: Config,
     /// 作れなかった・読めなかった・エラーがあったときに、利用者に見せる文。何もなければ `None`。
     pub notice: Option<String>,
-    /// 古い書き方を読み替えてファイルに書き戻したときの、書いた中身。書き戻していなければ `None`。
-    /// この書き込みの知らせで読み直さないように覚えておく。
-    pub written: Option<String>,
+    /// 警告の中身を比べるための文。いつ読んだかと行番号を含めないので、起動時の警告と読み直したときの
+    /// 警告、項目が足されて行がずれただけの警告は同じになる。何もなければ `None`。
+    pub notice_key: Option<String>,
 }
 
 /// いつ読んだか。エラーがあったときに、どの設定で動いているかの言い方を決める。
@@ -122,7 +122,7 @@ pub fn load(path: Option<&Path>) -> Loaded {
                 Occasion::Startup.whole(),
                 path.display()
             )),
-            written: None,
+            notice_key: Some(e.to_string()),
         };
     }
     read(path, &Config::default(), Occasion::Startup)
@@ -179,11 +179,11 @@ fn read(path: Option<&Path>, previous: &Config, occasion: Occasion) -> Loaded {
                     occasion.whole(),
                     path.display()
                 )),
-                written: None,
+                notice_key: Some(e.to_string()),
             };
         }
     };
-    let (text, written) = migrate(path, text);
+    let text = migrate(path, text);
     let parsed = config::parse(&text, previous);
     for warning in &parsed.warnings {
         tracing::warn!("{}", log_line(path, warning));
@@ -196,8 +196,8 @@ fn read(path: Option<&Path>, previous: &Config, occasion: Occasion) -> Loaded {
     }
     Loaded {
         notice: notice_text(path, &parsed, occasion),
+        notice_key: notice_key(&parsed),
         config: parsed.config,
-        written,
     }
 }
 
@@ -217,12 +217,12 @@ fn warn_windows_programs_in_bridges(path: &Path, config: &Config) {
 }
 
 /// 設定ファイル `path` の中身 `text` の古い書き方を今の書き方に読み替え、読み替えたら何をどう変えたかを
-/// ログに残してファイルに書き戻す。読み替えた中身と、書き戻したならその中身を返す。書けなければ警告を
-/// ログに残し、読み替えた中身で動く（ファイルは前のまま）。
-fn migrate(path: &Path, text: String) -> (String, Option<String>) {
+/// ログに残してファイルに書き戻す。読み替えた中身を返す。書けなければ警告をログに残し、読み替えた中身で
+/// 動く（ファイルは前のまま）。
+fn migrate(path: &Path, text: String) -> String {
     let migrated = config::migrate::migrate(&text);
     if !migrated.changed() {
-        return (text, None);
+        return text;
     }
     for (step, change) in &migrated.changes {
         tracing::info!("{}: {}", path.display(), change.message);
@@ -232,28 +232,22 @@ fn migrate(path: &Path, text: String) -> (String, Option<String>) {
         }
     }
     match window_state::write_replacing(path, &migrated.text) {
-        Ok(()) => {
-            tracing::info!(
-                "rewrote the settings file {} in the current format",
-                path.display()
-            );
-            (migrated.text.clone(), Some(migrated.text))
-        }
-        Err(e) => {
-            tracing::warn!(
-                "cannot rewrite the settings file {} in the current format, using the settings read in the current format: {e}",
-                path.display()
-            );
-            (migrated.text, None)
-        }
+        Ok(()) => tracing::info!(
+            "rewrote the settings file {} in the current format",
+            path.display()
+        ),
+        Err(e) => tracing::warn!(
+            "cannot rewrite the settings file {} in the current format, using the settings read in the current format: {e}",
+            path.display()
+        ),
     }
+    migrated.text
 }
 
 /// 設定ファイルの、`base` から `edited` へ変えた項目だけを書き換える（`fantermo_core::config_edit`）。
-/// ファイルが無ければ [`config::TEMPLATE`] を書き換えて作る。変える項目がなければ書かない。ファイルの
-/// 中身を返す。読めない・TOML として
-/// 読めない・書けないときは、利用者に見せる文を返し、ファイルは変えない。
-pub fn save(path: &Path, base: &Config, edited: &Config) -> Result<String, String> {
+/// ファイルが無ければ [`config::TEMPLATE`] を書き換えて作る。変える項目がなければ書かない。読めない・
+/// TOML として読めない・書けないときは、利用者に見せる文を返し、ファイルは変えない。
+pub fn save(path: &Path, base: &Config, edited: &Config) -> Result<(), String> {
     let failed = |reason: &str, e: &dyn std::fmt::Display| {
         tracing::warn!("cannot save the settings to {}: {e}", path.display());
         format!("{reason}\n\n{}\n{e}", path.display())
@@ -276,13 +270,13 @@ pub fn save(path: &Path, base: &Config, edited: &Config) -> Result<String, Strin
     })?;
     // 何も変わらなければ書かない（書き換えの知らせを出さない）。
     if exists && updated == text {
-        return Ok(updated);
+        return Ok(());
     }
     if let Err(e) = window_state::write_replacing(path, &updated) {
         return Err(failed("設定ファイルに保存できませんでした。", &e));
     }
     tracing::info!("saved the settings to {}", path.display());
-    Ok(updated)
+    Ok(())
 }
 
 /// 解釈した結果の警告を、利用者に見せる文にする。警告がなければ `None`。
@@ -310,6 +304,19 @@ fn notice_text(path: &Path, parsed: &Parsed, occasion: Occasion) -> Option<Strin
         text.push_str(&warning.message);
     }
     Some(text)
+}
+
+/// 解釈した結果の警告の中身を比べるための文（[`Loaded::notice_key`]）。警告がなければ `None`。
+fn notice_key(parsed: &Parsed) -> Option<String> {
+    if parsed.warnings.is_empty() {
+        return None;
+    }
+    let messages: Vec<&str> = parsed
+        .warnings
+        .iter()
+        .map(|warning| warning.message.as_str())
+        .collect();
+    Some(messages.join("\n"))
 }
 
 /// ログに残す、警告の 1 行。ファイルの場所と行を添える。
@@ -491,12 +498,11 @@ mod tests {
         let path = dir.join("fantermo").join("config.toml");
         let mut edited = Config::default();
         edited.font.size_pt = 14.0;
-        let written = save(&path, &Config::default(), &edited).unwrap();
+        save(&path, &Config::default(), &edited).unwrap();
         assert_eq!(
-            written,
+            std::fs::read_to_string(&path).unwrap(),
             config::TEMPLATE.replace("# size = 12", "size = 14")
         );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
 
         std::fs::write(&path, "# mine\n[font]\nsize = 9\n").unwrap();
         let base = config::parse("[font]\nsize = 9\n", &Config::default()).config;
@@ -508,10 +514,7 @@ mod tests {
         // 変える項目がなければ書かない。
         let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
-        assert_eq!(
-            save(&path, &edited, &edited).unwrap(),
-            "# mine\n[font]\nsize = 14\n"
-        );
+        save(&path, &edited, &edited).unwrap();
         assert_eq!(
             std::fs::metadata(&path).unwrap().modified().unwrap(),
             modified
@@ -527,6 +530,34 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// 警告の文は読んだときで変わるが、比べるための文は同じ。行がずれても同じで、項目が変われば違う。
+    #[test]
+    fn the_notice_key_ignores_the_occasion_and_the_line() {
+        let dir = scratch_dir("notice-key");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "unknown_one = 1\n").unwrap();
+        let startup = load(Some(&path));
+        assert!(startup.notice.is_some());
+        let reloaded = reload(Some(&path), &startup.config);
+        assert_ne!(reloaded.notice, startup.notice);
+        assert_eq!(reloaded.notice_key, startup.notice_key);
+
+        std::fs::write(&path, "# mine\n\nunknown_one = 1\n").unwrap();
+        let shifted = reload(Some(&path), &startup.config);
+        assert_ne!(shifted.notice, reloaded.notice);
+        assert_eq!(shifted.notice_key, startup.notice_key);
+
+        std::fs::write(&path, "unknown_two = 1\n").unwrap();
+        let other = reload(Some(&path), &startup.config);
+        assert!(other.notice_key.is_some());
+        assert_ne!(other.notice_key, startup.notice_key);
+
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(reload(Some(&path), &startup.config).notice_key, None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn old_forms_are_rewritten_in_the_file() {
         let dir = scratch_dir("migrate");
@@ -538,13 +569,16 @@ mod tests {
         std::fs::write(&path, old).unwrap();
         let loaded = load(Some(&path));
         assert_eq!(loaded.notice, None);
-        assert_eq!(loaded.written.as_deref(), Some(current));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), current);
         assert_eq!(loaded.config.background.images[0].path, "a.png");
         assert_eq!(loaded.config.background.image_opacity, 0.2);
         // 今の書き方なら書かない。
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
         let again = reload(Some(&path), &loaded.config);
-        assert_eq!(again.written, None);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            modified
+        );
         assert_eq!(again.config, loaded.config);
 
         // 書けなければファイルはそのままで、読み替えた中身で動く。
@@ -553,7 +587,6 @@ mod tests {
         permissions.set_readonly(true);
         std::fs::set_permissions(&path, permissions.clone()).unwrap();
         let loaded = load(Some(&path));
-        assert_eq!(loaded.written, None);
         assert_eq!(loaded.notice, None);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
         assert_eq!(loaded.config, again.config);
