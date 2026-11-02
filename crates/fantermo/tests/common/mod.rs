@@ -71,6 +71,9 @@ const REMOVE_INTERVAL: Duration = Duration::from_millis(100);
 
 const STATUS_OK: u16 = 200;
 
+/// 一時フォルダの中の、ウィンドウの状態のファイルの名前。
+pub const STATE_FILE: &str = "state.toml";
+
 /// 隔離して起動した fantermo。
 pub struct Server {
     child: Child,
@@ -101,11 +104,21 @@ impl Server {
         config: &str,
         command: &[&str],
     ) -> Self {
-        Self::launch(config, command, &[], true)
+        Self::launch(config, command, &[], true, |_| {})
+    }
+
+    /// [`Server::start`] と同じだが、起動する前に `prepare` を一時フォルダで呼ぶ。`state.toml` の初期値や、設定から
+    /// 相対パスで指す画像を置くのに使う。
+    pub fn start_with_setup(
+        config_toml: &str,
+        command: &[&str],
+        prepare: impl FnOnce(&Path),
+    ) -> Self {
+        Self::launch(config_toml, command, &[], false, prepare)
     }
 
     fn start_with(config_toml: &str, command: &[&str], run_hidden_args: &[&str]) -> Self {
-        Self::launch(config_toml, command, run_hidden_args, false)
+        Self::launch(config_toml, command, run_hidden_args, false, |_| {})
     }
 
     fn launch(
@@ -113,6 +126,7 @@ impl Server {
         command: &[&str],
         run_hidden_args: &[&str],
         os_clipboard: bool,
+        prepare: impl FnOnce(&Path),
     ) -> Self {
         let exe = fantermo_exe();
         let run_hidden = sibling_of_fantermo("run-hidden.exe");
@@ -130,6 +144,7 @@ impl Server {
         std::fs::create_dir_all(&dir).expect("failed to create the temporary folder");
         let config = dir.join("config.toml");
         std::fs::write(&config, config_toml).expect("failed to write the settings");
+        prepare(&dir);
         let log = File::create(log_path(&dir)).expect("failed to create the log");
         let log_for_stderr = log.try_clone().expect("failed to duplicate the log");
         let mut launcher = Command::new(&run_hidden);
@@ -145,7 +160,7 @@ impl Server {
             .current_dir(&dir)
             .env("FANTERMO_E2E_DIR", &dir)
             .env("FANTERMO_CONFIG", &config)
-            .env("FANTERMO_STATE", dir.join("state.toml"))
+            .env("FANTERMO_STATE", dir.join(STATE_FILE))
             .env("FANTERMO_DPI", "96")
             .env("RUST_LOG", "info,fantermo=debug")
             .env("NO_COLOR", "1")
@@ -276,6 +291,11 @@ impl Server {
     /// 一時フォルダ。設定ファイル（`config.toml`）もここにある。
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// ウィンドウの状態のファイル。
+    pub fn state_file(&self) -> PathBuf {
+        self.dir.join(STATE_FILE)
     }
 
     /// fantermo のプロセスの番号。

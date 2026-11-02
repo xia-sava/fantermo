@@ -34,7 +34,7 @@ OS のクリップボードを実際に変えるテスト（`os_clipboard` を�
 
 | 要求 | すること |
 |---|---|
-| `GET /e2e/state` | JSON: `pid` `cols` `rows` `client_width` `client_height` `terminal_x` `terminal_y` `cell_width` `cell_height` `active` `tabs`（`title` `profile` `cols` `rows` `bell`）`profiles`（名前）`dialogs`（`class` `title` `controls`）`images`（画面に出ている画像の数）`window_title` `version` `text`（スクロールバックを含む全体の文字） |
+| `GET /e2e/state` | JSON: `pid` `cols` `rows` `client_width` `client_height` `terminal_x` `terminal_y` `cell_width` `cell_height` `active` `tabs`（`title` `profile` `cols` `rows` `bell`）`profiles`（名前）`dialogs`（`class` `title` `controls`）`images`（画面に出ている画像の数）`window`（`state.toml` と同じ `left` `top` `width` `height` `maximized`）`window_title` `version` `text`（スクロールバックを含む全体の文字） |
 | `GET /e2e/frame` | いまの画面の PNG |
 | `POST /e2e/input` | 本文のバイト列をそのままバックエンドへ |
 | `POST /e2e/text` | 本文の文字を `WM_CHAR` と同じ経路で（制御文字は送らない。Enter は `key`） |
@@ -56,6 +56,7 @@ OS のクリップボードを実際に変えるテスト（`os_clipboard` を�
 - ダイアログ: 編集のダイアログや確認のダイアログの間も要求は処理される（ダイアログのループが届ける）。`wait_dialogs` で待ち、`press_dialog_button` で押す。
 - 子プロセス: `Server::start_watching_children` で起動すると、fantermo が終わったあと run-hidden が子孫の終わりを待ち（`--wait-children`）、`assert_no_children_remained` で残りが分かる。付けないと、run-hidden が Job を閉じて全部終わらせるので、残りがあっても見えない。タブを閉じる確認は `common::processes`（親子と作成時刻）で。Cygwin のプログラムは Windows の親子で辿れないので、`/proc` のコマンドラインと一意な `sleep` の引数で見る。
 - クリップボード: `Server` は既定で `FANTERMO_E2E_CLIPBOARD_FILE`（一時フォルダのファイル）を渡し、fantermo はそのファイルをクリップボードの代わりに使う。OS のものを使うのは `Server::start_with_os_clipboard` だけで、`OsClipboard` が直列にする。
+- 起動の前に置くファイル: `Server::start_with_setup` の `prepare` が一時フォルダで呼ばれる。`state.toml` の初期値（`common::STATE_FILE`）はここで置く。閉じたあとの中身は `state_file()` で、`Server` を破棄する前に読む。
 - ブリッジの単体のテストで中身を比べるときは、子プロセスに `/tmp` のファイルへ書かせて読む（テストと子プロセスは同じ環境で動く）。
 - 読み取りの依頼のように答えがないことがあるものは、時間で待たず、依頼と同じ出力の後ろの印を待ってから、区切りの入力を送る（`start_clipboard_read`）。
 

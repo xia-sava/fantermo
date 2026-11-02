@@ -28,7 +28,7 @@ use super::{
 use crate::{
     clipboard,
     e2e_server::{Pending, Request, Response},
-    version,
+    version, window_state,
 };
 use fantermo_core::vt::KeyAction;
 
@@ -284,7 +284,8 @@ impl App {
 
     /// いまの状態。`text` は表示している端末の、スクロールバックを含む全体の文字。`images` は表示している端末の
     /// 画面に出ている画像の数。`dialogs` はこのウィンドウの上に開いているダイアログ。`controls` はその
-    /// コントロールの文字で、`TaskDialogIndirect` の本文は入らない。
+    /// コントロールの文字で、`TaskDialogIndirect` の本文は入らない。`window` は状態ファイルに書くのと同じ、
+    /// ウィンドウの位置・大きさ・最大化。
     fn e2e_state(&mut self) -> serde_json::Value {
         let size = self.session().vt.size();
         let text = self.session().vt.plain_text().unwrap_or_else(|e| {
@@ -343,6 +344,7 @@ impl App {
             "profiles": profiles,
             "dialogs": dialogs,
             "images": images,
+            "window": window_state::current(self.hwnd),
             "window_title": real_window_title(self.hwnd),
             "version": version::display(),
             "text": text,
