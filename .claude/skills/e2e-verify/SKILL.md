@@ -74,7 +74,7 @@ OS のクリップボードを実際に変えるテスト（`os_clipboard` を�
     - 並びは `menu_shape` の短い形（`"C- P | A | T W"`。アクセラレータ、押せなければ `-`、印があれば `*`、区切りは `|`）で固定する。順番と押せるかは固定し、言い回しは比べない。文字を比べるのは設定から決まるもの（プロファイルの名前、添えるキー）だけ。
     - 選ぶのは `select_item`（アクセラレータで位置を探す）か `select_position`。先に `highlight_position` で移ったのを待ってから Enter を送るので、移れないときはそこで項目と状態を出して落ちる。答えは選んだ結果を待たないので、結果は状態で待つ。ダイアログを開く項目は `wait_dialog_of_class` で待つ。
     - 矢印のキーは押せない項目にも止まる。押せない項目で Enter を押すと、何も選ばずにメニューが閉じる。
-    - アクセラレータの `POST /e2e/menu/key/<英数字>` は `TranslateMessage` の文字で届くので、利用者が本物のキーボードで Ctrl を押していると選べないことがある。矢印のキーと Enter は文字を通らない。
+    - アクセラレータの `POST /e2e/menu/key/<英数字>` は `TranslateMessage` の文字で届く。利用者が本物のキーボードで押した Ctrl がスレッドのキーボードの状態に見えると、選べないはず（起きたことはなく、見当）。矢印のキーと Enter は文字を通らない。
     - 「設定ファイルを開く」は既定のアプリを起動するので、選ばない。
   - マウスの報告: アプリ側は `start_report_reader`（`stty -icanon -echo -isig -icrnl` と `cat -v`）で読み、`reports_of` が操作ごとの受け取った分を返す。モードごとに `start_report_reader_in_new_tab`。ConPTY では PowerShell で `SetConsoleMode` に `ENABLE_VIRTUAL_TERMINAL_INPUT` を渡して読む（`mouse_reports_reach_an_application_through_conpty`）。
   - 別デスクトップでは本物のカーソルがウィンドウの上にないので、`TrackMouseEvent` の `WM_MOUSELEAVE` がすぐ届く。マウスを載せている間の絵は見られない。リンクの Ctrl+クリックは既定のブラウザを開くので通さない。
