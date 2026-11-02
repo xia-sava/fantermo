@@ -12,10 +12,10 @@ use windows::{
         UI::{
             Controls::TDM_CLICK_BUTTON,
             WindowsAndMessaging::{
-                EnumChildWindows, EnumThreadWindows, GetClassNameW, GetWindowRect,
-                GetWindowTextLengthW, GetWindowTextW, IsWindow, IsWindowVisible, PostMessageW,
-                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SendMessageW, SetWindowPos, WM_COMMAND,
-                WM_ENDSESSION, WM_QUERYENDSESSION,
+                ENDSESSION_LOGOFF, EnumChildWindows, EnumThreadWindows, GetClassNameW,
+                GetWindowRect, GetWindowTextLengthW, GetWindowTextW, IsWindow, IsWindowVisible,
+                PostMessageW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SendMessageW, SetWindowPos,
+                WM_COMMAND, WM_ENDSESSION, WM_QUERYENDSESSION,
             },
         },
     },
@@ -41,9 +41,6 @@ const SYSTEM_DIALOG_CLASS: &str = "#32770";
 
 /// ウィンドウのクラスの名前の長さの上限（Windows の決まり）。
 const MAX_CLASS_NAME: usize = 256;
-
-/// `WM_QUERYENDSESSION` と `WM_ENDSESSION` の `lParam` の、ログオフを表す値。
-const ENDSESSION_LOGOFF: isize = 0x8000_0000;
 
 /// 届いている要求をすべて処理する。ウィンドウが閉じたら残りは処理しない（`Control` と一緒に捨てられ、
 /// 待っている側には閉じたと分かる）。
@@ -142,8 +139,8 @@ fn resize_window(hwnd: HWND, cols: u16, rows: u16, with_app: &WithApp) -> Respon
 /// ウィンドウにメッセージを送り、ウィンドウプロシージャの戻り値を返す。
 fn send_window_message(hwnd: HWND, message: WindowMessage, wparam: usize) -> Response {
     let (id, lparam) = match message {
-        WindowMessage::QueryEndSession => (WM_QUERYENDSESSION, ENDSESSION_LOGOFF),
-        WindowMessage::EndSession => (WM_ENDSESSION, ENDSESSION_LOGOFF),
+        WindowMessage::QueryEndSession => (WM_QUERYENDSESSION, ENDSESSION_LOGOFF as isize),
+        WindowMessage::EndSession => (WM_ENDSESSION, ENDSESSION_LOGOFF as isize),
     };
     // SAFETY: hwnd は有効なウィンドウ。ウィンドウプロシージャがこの場で動くが、借用は持っていない。
     let result = unsafe { SendMessageW(hwnd, id, Some(WPARAM(wparam)), Some(LPARAM(lparam))) };
