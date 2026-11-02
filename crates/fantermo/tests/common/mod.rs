@@ -124,7 +124,8 @@ impl Server {
     }
 
     /// [`Server::start`] と同じだが、起動する前に `environment` を一時フォルダで呼び、返した環境変数を付けて起動する。
-    /// 土台が付ける環境変数（`FANTERMO_DPI` など）も、これで上書きできる。
+    /// `FANTERMO_DPI` はこれで上書きできる。一時フォルダを指す `FANTERMO_E2E_DIR`・`FANTERMO_CONFIG`・`FANTERMO_STATE` は
+    /// 上書きできない。
     pub fn start_with_environment(
         config_toml: &str,
         command: &[&str],
@@ -174,9 +175,6 @@ impl Server {
             .arg(&exe)
             .args(command)
             .current_dir(&dir)
-            .env("FANTERMO_E2E_DIR", &dir)
-            .env("FANTERMO_CONFIG", &config)
-            .env("FANTERMO_STATE", dir.join(STATE_FILE))
             .env("FANTERMO_DPI", "96")
             .env("RUST_LOG", "info,fantermo=debug")
             .env("NO_COLOR", "1")
@@ -184,6 +182,10 @@ impl Server {
             .env_remove("HOME")
             .env_remove("SHELL")
             .envs(environment)
+            // 一時フォルダの外を読み書きしないよう、テストからも上書きさせない。
+            .env("FANTERMO_E2E_DIR", &dir)
+            .env("FANTERMO_CONFIG", &config)
+            .env("FANTERMO_STATE", dir.join(STATE_FILE))
             .stdin(Stdio::null())
             .stdout(log)
             .stderr(log_for_stderr)
