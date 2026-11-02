@@ -4180,6 +4180,27 @@ fn assert_controls_fit(dialog: &Value, page: usize) {
     }
 }
 
+/// 小さいウィンドウの真ん中に置くと画面の外へはみ出す設定ダイアログは、作業領域の中に置く。
+#[test]
+fn the_settings_dialog_stays_on_the_screen_over_a_small_window() {
+    const SMALL_GRID: (u16, u16) = (20, 5);
+    let server = start_settings_test(ONE_PROFILE);
+    server.resize(SMALL_GRID.0, SMALL_GRID.1);
+    let dialog = open_settings(&server);
+    let work = &dialog["work_area"];
+    let field = |value: &Value| value.as_i64().expect("not a number");
+    let (left, top) = (field(&dialog["left"]), field(&dialog["top"]));
+    let (width, height) = (field(&dialog["width"]), field(&dialog["height"]));
+    assert!(
+        left >= field(&work["left"])
+            && top >= field(&work["top"])
+            && left + width <= field(&work["right"])
+            && top + height <= field(&work["bottom"]),
+        "{dialog:#}"
+    );
+    press_cancel(&server);
+}
+
 /// `page` を見せて、コントロール `id` を押せるかを読む。
 #[track_caller]
 fn control_enabled_on_page(server: &Server, page: usize, id: i32) -> bool {

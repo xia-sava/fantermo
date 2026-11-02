@@ -30,7 +30,8 @@ use windows::{
         Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
             COLOR_BTNFACE, CreateFontIndirectW, CreateSolidBrush, DT_CALCRECT, DT_WORDBREAK,
-            DeleteObject, DrawTextW, GetDC, HBRUSH, HFONT, HGDIOBJ, InvalidateRect, ReleaseDC,
+            DeleteObject, DrawTextW, GetDC, GetMonitorInfoW, HBRUSH, HFONT, HGDIOBJ,
+            InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow, ReleaseDC,
             SelectObject,
         },
         System::LibraryLoader::GetModuleHandleW,
@@ -2043,8 +2044,35 @@ fn place(owner: HWND, dialog: HWND, dpi: u32) -> windows::core::Result<()> {
     unsafe { GetWindowRect(owner, &mut owner_rect)? };
     let left = owner_rect.left + (owner_rect.right - owner_rect.left - width) / 2;
     let top = owner_rect.top + (owner_rect.bottom - owner_rect.top - height) / 2;
+    let mut monitor = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: owner は有効なウィンドウで、monitor は cbSize を入れて初期化済み。
+    let found = unsafe {
+        GetMonitorInfoW(
+            MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST),
+            &mut monitor,
+        )
+    };
+    let (left, top) = if found.as_bool() {
+        let work = monitor.rcWork;
+        (
+            keep_within(left, width, work.left, work.right),
+            keep_within(top, height, work.top, work.bottom),
+        )
+    } else {
+        tracing::warn!("failed to read the work area for the settings dialog");
+        (left, top)
+    };
     // SAFETY: dialog は有効なウィンドウ。
     unsafe { SetWindowPos(dialog, None, left, top, width, height, SWP_NOZORDER) }
+}
+
+/// 位置 `start` から長さ `length` の範囲が `low` から `high` までに収まる位置。収まらなければ `low`（タイトルバーを画面に
+/// 残す）。
+fn keep_within(start: i32, length: i32, low: i32, high: i32) -> i32 {
+    start.min(high - length).max(low)
 }
 
 /// 96 DPI のときの `value` ピクセルを、DPI が `dpi` のときのピクセルにする。
@@ -3972,6 +4000,14 @@ mod tests {
         // 文もその分だけ下がる。
         let warning_shift = LABEL_OFFSET + 3 * 16;
         assert!(note_top + warning_shift + PROFILE_NOTE_HEIGHT <= button_top - MARGIN);
+    }
+
+    #[test]
+    fn the_dialog_position_stays_within_the_work_area() {
+        assert_eq!(keep_within(100, 50, 0, 1000), 100, "already inside");
+        assert_eq!(keep_within(-30, 50, 0, 1000), 0, "past the start");
+        assert_eq!(keep_within(980, 50, 0, 1000), 950, "past the end");
+        assert_eq!(keep_within(100, 2000, 0, 1000), 0, "longer than the area");
     }
 
     #[test]
