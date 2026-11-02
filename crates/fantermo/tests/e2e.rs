@@ -299,6 +299,8 @@ fn exercise_closing_the_window(
 /// `ping -t` は止めるまで動く。
 const CMD_LONG_COMMAND: &str = "ping -t 127.0.0.1";
 const CMD_LONG_PROCESS: &str = "ping.exe";
+/// `ping` の応答の行にある文字列。表示の言語によらない。
+const PING_REPLY: &str = "TTL=";
 
 /// `/bin/sh` で長く動くコマンド。
 const SH_LONG_COMMAND: &str = "sleep 300";
@@ -343,6 +345,8 @@ fn closing_a_tab_ends_its_child_processes_only() {
         .into_iter()
         .filter(|process| !first.contains(process))
         .collect();
+    // プロセスができただけで閉じると、動き出す途中の `ping` が `conhost.exe` とともに残ることがある。
+    server.wait_text(PING_REPLY);
 
     server.post("/e2e/tab/close", b"");
     server.wait_until("one tab", |state| tab_count(state) == 1);
