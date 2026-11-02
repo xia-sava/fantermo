@@ -2767,6 +2767,8 @@ fn sgr(button: u32, col: u32, row: u32, end: char) -> String {
 const SGR_CLICKS: &str = r"\033[?1000h\033[?1006h";
 const SGR_DRAGS: &str = r"\033[?1002h\033[?1006h";
 const SGR_MOTION: &str = r"\033[?1003h\033[?1006h";
+/// SGR でない古い形の報告の、アプリがマウスを求める制御シーケンス。
+const CLICKS_IN_THE_LEGACY_FORM: &str = r"\033[?1000h";
 /// 代替画面に入って、カーソルを左上へ置く制御シーケンス。
 const ALTERNATE_SCREEN: &str = r"\033[?1049h\033[H";
 
@@ -2974,16 +2976,9 @@ fn exercise_wheel_with_applications(server: &Server) {
     start_report_reader(server, SGR_CLICKS);
     let state = server.wait_until("the mouse mode", |state| state["mouse_tracking"] == true);
     let at = cell_center(&state, REPORT_COL, REPORT_ROW);
-    // 1 ノッチごとに、ボタンを押して離したものとして送る。
-    let notch_report = |button| {
-        format!(
-            "{}{}",
-            sgr(button, REPORT_COL, REPORT_ROW, 'M'),
-            sgr(button, REPORT_COL, REPORT_ROW, 'm')
-        )
-    };
-    let up = notch_report(SGR_WHEEL_UP);
-    let down = notch_report(SGR_WHEEL_DOWN);
+    // 1 ノッチごとに、ボタンの押下だけを送る。
+    let up = sgr(SGR_WHEEL_UP, REPORT_COL, REPORT_ROW, 'M');
+    let down = sgr(SGR_WHEEL_DOWN, REPORT_COL, REPORT_ROW, 'M');
 
     assert_eq!(reports_of(server, &wheel(NOTCH, at)), up);
     assert_eq!(reports_of(server, &wheel(-NOTCH, at)), down);
@@ -3004,6 +2999,24 @@ fn exercise_wheel_with_applications(server: &Server) {
     assert_eq!(newest_offset(&state), 0, "{state:#}");
     assert!(state["scroll_bar"]["thumb"].is_null(), "{state:#}");
     assert_eq!(reports_of(server, &wheel(NOTCH, at)), up);
+
+    // SGR でない古い形でも、押下だけを送る。押下は `CSI M` に続けて、ボタン + 32、桁 + 33、行 + 33 の文字。
+    let state = start_report_reader_in_new_tab(server, CLICKS_IN_THE_LEGACY_FORM);
+    assert_eq!(state["mouse_tracking"], true, "{state:#}");
+    let legacy = |button: u32| {
+        let char_of = |value: u32| char::from_u32(value).expect("a printable character");
+        format!(
+            "^[[M{}{}{}",
+            char_of(button + 32),
+            char_of(REPORT_COL + 33),
+            char_of(REPORT_ROW + 33)
+        )
+    };
+    assert_eq!(reports_of(server, &wheel(NOTCH, at)), legacy(SGR_WHEEL_UP));
+    assert_eq!(
+        reports_of(server, &wheel(-NOTCH, at)),
+        legacy(SGR_WHEEL_DOWN)
+    );
 
     // 代替画面でアプリが求めていなければ、何も送らず、表示も動かない。
     let state = start_report_reader_in_new_tab(server, ALTERNATE_SCREEN);
