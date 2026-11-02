@@ -1294,9 +1294,20 @@ const UNEVEN_WINDOW: WindowState = WindowState {
 /// 設定 `config` と `state.toml` の [`UNEVEN_WINDOW`] で `command` を起動し、プロンプト `prompt` が出るのを待つ。端末を
 /// 描く領域がセルで割り切れないことを確認する。
 fn start_uneven(config: &str, command: &[&str], prompt: &str) -> (Server, Value) {
+    start_uneven_with_setup(config, command, prompt, |_| {})
+}
+
+/// [`start_uneven`] と同じく起動する。起動の前に一時フォルダで `prepare` を呼ぶ。
+fn start_uneven_with_setup(
+    config: &str,
+    command: &[&str],
+    prompt: &str,
+    prepare: impl FnOnce(&std::path::Path),
+) -> (Server, Value) {
     let saved = state::to_toml(&seeded_state(UNEVEN_WINDOW));
     let server = Server::start_with_setup(config, command, |dir| {
         std::fs::write(dir.join(common::STATE_FILE), &saved).expect("failed to write the state");
+        prepare(dir);
     });
     let state = server.wait_text(prompt);
     assert_eq!(current_window(&state), UNEVEN_WINDOW, "{state:#}");
@@ -1458,19 +1469,23 @@ fn bands_image() -> Vec<u8> {
     let mut pixels = Vec::new();
     for y in 0..BANDS_SIDE {
         for x in 0..BANDS_SIDE {
-            let color = if y < BAND_HEIGHT {
-                BAND_TOP
-            } else if y >= BANDS_SIDE - BAND_HEIGHT {
-                BAND_BOTTOM
-            } else if x < BANDS_SIDE / 2 {
-                MIDDLE_LEFT
-            } else {
-                MIDDLE_RIGHT
-            };
-            pixels.extend_from_slice(&color);
+            pixels.extend_from_slice(&bands_color(x, y));
         }
     }
     common::encode_png(BANDS_SIDE, BANDS_SIDE, &pixels)
+}
+
+/// [`bands_image`] の、画像の中の位置 `(x, y)` の色。
+fn bands_color(x: u32, y: u32) -> [u8; 3] {
+    if y < BAND_HEIGHT {
+        BAND_TOP
+    } else if y >= BANDS_SIDE - BAND_HEIGHT {
+        BAND_BOTTOM
+    } else if x < BANDS_SIDE / 2 {
+        MIDDLE_LEFT
+    } else {
+        MIDDLE_RIGHT
+    }
 }
 
 /// 単色の画像。
@@ -1684,6 +1699,95 @@ fn a_tiled_background_image_repeats_from_the_top_left() {
             ((left + side / 4, top + side + side / 2), MIDDLE_LEFT),
         ],
     );
+}
+
+/// 範囲の左上から敷き詰めた [`BANDS_IMAGE`] の、右端と下端に丸ごとは入らない最後の 1 枚の画素と、不透明度
+/// `image_opacity` で見える色。その 1 枚の最初の列・真ん中・範囲の最後の列（行も同じ）を見る。右端はプロンプトの
+/// 文字を避けて、2 枚目の行から下を見る。
+fn tiled_edge_pixels(area: BackdropArea, image_opacity: f64) -> Vec<((u32, u32), [u8; 3])> {
+    let side = BANDS_SIDE;
+    assert!(
+        area.width > 2 * side && area.height > 2 * side,
+        "the area is too small: {area:?}"
+    );
+    let partial_columns = partial_tile(area.width);
+    let partial_rows = partial_tile(area.height);
+    let mut columns_beside = vec![side + side / 4, side + side * 3 / 4];
+    columns_beside.extend(&partial_columns);
+    let mut rows_beside = vec![side + BAND_HEIGHT / 2, side + side / 2];
+    rows_beside.extend(&partial_rows);
+
+    let pixel = |x: u32, y: u32| {
+        let color = bands_color(x % side, y % side);
+        (
+            (area.x + x, area.y + y),
+            over_terminal_background(color, image_opacity),
+        )
+    };
+    let mut pixels = Vec::new();
+    for &x in &partial_columns {
+        pixels.extend(rows_beside.iter().map(|&y| pixel(x, y)));
+    }
+    for &y in &partial_rows {
+        pixels.extend(columns_beside.iter().map(|&x| pixel(x, y)));
+    }
+    pixels
+}
+
+/// 長さ `length` の範囲に [`BANDS_IMAGE`] を敷き詰めたときの、丸ごとは入らない最後の 1 枚の最初・真ん中・最後の位置。
+/// 割り切れれば空。
+fn partial_tile(length: u32) -> Vec<u32> {
+    let start = length / BANDS_SIDE * BANDS_SIDE;
+    if start == length {
+        return Vec::new();
+    }
+    vec![start, start + (length - start - 1) / 2, length - 1]
+}
+
+/// 背景画像の設定 `background` で、セルにも [`BANDS_IMAGE`] にも割り切れない大きさのウィンドウを開き、シェルの
+/// プロンプトまで待つ。
+fn start_uneven_with_background(background: &str) -> (Server, BackdropArea) {
+    let (server, state) = start_uneven_with_setup(
+        &format!("{TERMINAL_BACKGROUND_SETTING}{background}"),
+        &CMD_COMMAND,
+        CMD_PROMPT,
+        |dir| {
+            std::fs::write(dir.join(BANDS_IMAGE), bands_image())
+                .expect("failed to write the image");
+        },
+    );
+    assert_eq!(state["background"]["image"], BANDS_IMAGE, "{state:#}");
+    let area = BackdropArea::of(&state);
+    assert!(
+        !area.width.is_multiple_of(BANDS_SIDE) && !area.height.is_multiple_of(BANDS_SIDE),
+        "the area fits the image: {area:?}"
+    );
+    (server, area)
+}
+
+/// 敷き詰めは範囲の右端と下端まで描き、丸ごとは入らない最後の 1 枚もはみ出す分を切って描く。DPI を変えたあとの
+/// 新しい範囲でも同じ。
+#[test]
+fn a_tiled_background_image_reaches_the_right_and_bottom_edges() {
+    let (server, area) = start_uneven_with_background(&format!(
+        "[background]\nimage_opacity = 1.0\nfit = \"tile\"\n\n[[background.images]]\npath = '{BANDS_IMAGE}'\n"
+    ));
+    wait_pixels(&server, &tiled_edge_pixels(area, 1.0));
+
+    for dpi in [DPI_150_PERCENT, DPI_200_PERCENT, DPI_100_PERCENT] {
+        let state = change_dpi(&server, dpi);
+        assert_eq!(state["background"]["image"], BANDS_IMAGE, "{state:#}");
+        wait_pixels(&server, &tiled_edge_pixels(BackdropArea::of(&state), 1.0));
+    }
+}
+
+/// 項目に書いた敷き詰めと不透明度でも、右端と下端の最後の 1 枚を描く。
+#[test]
+fn a_tiled_image_entry_reaches_the_right_and_bottom_edges_with_its_opacity() {
+    let (server, area) = start_uneven_with_background(&format!(
+        "[background]\nimage_opacity = 1.0\nfit = \"stretch\"\n\n[[background.images]]\npath = '{BANDS_IMAGE}'\nfit = \"tile\"\nimage_opacity = 0.5\n"
+    ));
+    wait_pixels(&server, &tiled_edge_pixels(area, 0.5));
 }
 
 #[test]
