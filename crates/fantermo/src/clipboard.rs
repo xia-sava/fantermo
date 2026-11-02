@@ -31,8 +31,50 @@ impl Drop for OpenedClipboard {
     }
 }
 
+/// e2e テストが OS のクリップボードの代わりに使うファイル。テストは利用者のクリップボードを変えない。
+#[cfg(feature = "e2e")]
+mod stand_in {
+    use std::{io::ErrorKind, path::PathBuf};
+
+    use windows::{Win32::Foundation::E_FAIL, core::Error};
+
+    /// 代わりに使うファイルを指定する環境変数。
+    const FILE_ENV: &str = "FANTERMO_E2E_CLIPBOARD_FILE";
+
+    pub fn file() -> Option<PathBuf> {
+        std::env::var_os(FILE_ENV).map(PathBuf::from)
+    }
+
+    fn error(e: &std::io::Error) -> Error {
+        Error::new(E_FAIL, e.to_string())
+    }
+
+    pub fn read(file: &PathBuf) -> windows::core::Result<Option<String>> {
+        match std::fs::read_to_string(file) {
+            Ok(text) => Ok(Some(text)),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(error(&e)),
+        }
+    }
+
+    pub fn write(file: &PathBuf, text: &str) -> windows::core::Result<()> {
+        std::fs::write(file, text).map_err(|e| error(&e))
+    }
+
+    pub fn clear(file: &PathBuf) -> windows::core::Result<()> {
+        match std::fs::remove_file(file) {
+            Err(e) if e.kind() != ErrorKind::NotFound => Err(error(&e)),
+            _ => Ok(()),
+        }
+    }
+}
+
 /// クリップボードを `text` で置き換える。
 pub fn set_text(owner: HWND, text: &str) -> windows::core::Result<()> {
+    #[cfg(feature = "e2e")]
+    if let Some(file) = stand_in::file() {
+        return stand_in::write(&file, text);
+    }
     let units: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
     let bytes = units.len() * size_of::<u16>();
 
@@ -68,6 +110,10 @@ pub fn set_text(owner: HWND, text: &str) -> windows::core::Result<()> {
 
 /// クリップボードを空にする。
 pub fn clear(owner: HWND) -> windows::core::Result<()> {
+    #[cfg(feature = "e2e")]
+    if let Some(file) = stand_in::file() {
+        return stand_in::clear(&file);
+    }
     let _clipboard = OpenedClipboard::open(owner)?;
     // SAFETY: クリップボードは開いている。
     unsafe { EmptyClipboard() }
@@ -75,6 +121,10 @@ pub fn clear(owner: HWND) -> windows::core::Result<()> {
 
 /// クリップボードの文字列。文字列がなければ `None`。
 pub fn text(owner: HWND) -> windows::core::Result<Option<String>> {
+    #[cfg(feature = "e2e")]
+    if let Some(file) = stand_in::file() {
+        return stand_in::read(&file);
+    }
     let _clipboard = OpenedClipboard::open(owner)?;
     // SAFETY: クリップボードは開いている。返るハンドルはクリップボードが持ち、閉じるまで有効。
     let Ok(handle) = (unsafe { GetClipboardData(u32::from(CF_UNICODETEXT.0)) }) else {

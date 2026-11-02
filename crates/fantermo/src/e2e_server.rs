@@ -11,8 +11,12 @@
 //! | `POST /e2e/input` | 本文のバイト列をそのままバックエンドへ送る |
 //! | `POST /e2e/text` | 本文の文字を、キーを伴わずに届く文字（`WM_CHAR`）と同じ経路で送る |
 //! | `POST /e2e/key/<組み合わせ>` | `ctrl+shift+t` などを、キーを押したときと同じ経路で処理する |
-//! | `POST /e2e/tab/new`、`/e2e/tab/close`、`/e2e/tab/select/<位置>` | タブの操作 |
+//! | `POST /e2e/tab/new`、`/e2e/tab/new/<プロファイルの位置>`、`/e2e/tab/close`、`/e2e/tab/select/<位置>` | タブの操作 |
 //! | `POST /e2e/window/size/<桁数>/<行数>` | 端末がその大きさになるようにウィンドウの大きさを変える |
+//! | `POST /e2e/paste` | 本文の文字を、クリップボードから読んだものとして貼り付ける |
+//! | `POST /e2e/dialog/button/<ID>` | 開いているダイアログのそのボタンを押す |
+//! | `GET /e2e/clipboard` | OS のクリップボードの文字列の JSON |
+//! | `POST /e2e/clipboard` | OS のクリップボードを本文の文字で置き換える |
 //! | `POST /e2e/quit` | ウィンドウを閉じる |
 
 use std::{
@@ -61,12 +65,18 @@ pub enum Request {
         unshifted: char,
     },
     NewTab,
+    /// プロファイルの並びの中のこの位置のプロファイルで、新しいタブを開く。
+    NewProfileTab(usize),
     CloseTab,
     SelectTab(usize),
     ResizeWindow {
         cols: u16,
         rows: u16,
     },
+    Paste(String),
+    PressDialogButton(i32),
+    ReadClipboard,
+    WriteClipboard(String),
     Quit,
 }
 
@@ -249,11 +259,18 @@ fn parse_request(method: &str, path: &str, body: Vec<u8>) -> Result<Request, Res
         ("GET", ["e2e", "state"]) => Ok(Request::State),
         ("GET", ["e2e", "frame"]) => Ok(Request::Frame),
         ("POST", ["e2e", "input"]) => Ok(Request::Input(body)),
-        ("POST", ["e2e", "text"]) => String::from_utf8(body)
-            .map(Request::Text)
-            .map_err(|e| Response::bad_request(e.to_string())),
+        ("POST", ["e2e", "text"]) => parse_text(body).map(Request::Text),
         ("POST", ["e2e", "key", combo]) => parse_key(combo),
         ("POST", ["e2e", "tab", "new"]) => Ok(Request::NewTab),
+        ("POST", ["e2e", "tab", "new", profile]) => {
+            Ok(Request::NewProfileTab(parse_number(profile)?))
+        }
+        ("POST", ["e2e", "paste"]) => parse_text(body).map(Request::Paste),
+        ("POST", ["e2e", "dialog", "button", id]) => {
+            Ok(Request::PressDialogButton(parse_number(id)?))
+        }
+        ("GET", ["e2e", "clipboard"]) => Ok(Request::ReadClipboard),
+        ("POST", ["e2e", "clipboard"]) => parse_text(body).map(Request::WriteClipboard),
         ("POST", ["e2e", "tab", "close"]) => Ok(Request::CloseTab),
         ("POST", ["e2e", "tab", "select", index]) => Ok(Request::SelectTab(parse_number(index)?)),
         ("POST", ["e2e", "window", "size", cols, rows]) => Ok(Request::ResizeWindow {
@@ -266,6 +283,10 @@ fn parse_request(method: &str, path: &str, body: Vec<u8>) -> Result<Request, Res
             format!("no such request: {method} {path}"),
         )),
     }
+}
+
+fn parse_text(body: Vec<u8>) -> Result<String, Response> {
+    String::from_utf8(body).map_err(|e| Response::bad_request(e.to_string()))
 }
 
 fn parse_number<T: std::str::FromStr>(text: &str) -> Result<T, Response> {
@@ -350,6 +371,30 @@ mod tests {
                 .unwrap_err()
                 .status,
             STATUS_BAD_REQUEST
+        );
+    }
+
+    #[test]
+    fn profile_tabs_paste_dialogs_and_the_clipboard_are_requests() {
+        assert_eq!(
+            parse("POST /e2e/tab/new/1 HTTP/1.1\r\n\r\n"),
+            Ok(Request::NewProfileTab(1))
+        );
+        assert_eq!(
+            parse("POST /e2e/paste HTTP/1.1\r\nContent-Length: 3\r\n\r\na\nb"),
+            Ok(Request::Paste("a\nb".to_owned()))
+        );
+        assert_eq!(
+            parse("POST /e2e/dialog/button/1001 HTTP/1.1\r\n\r\n"),
+            Ok(Request::PressDialogButton(1001))
+        );
+        assert_eq!(
+            parse("GET /e2e/clipboard HTTP/1.1\r\n\r\n"),
+            Ok(Request::ReadClipboard)
+        );
+        assert_eq!(
+            parse("POST /e2e/clipboard HTTP/1.1\r\nContent-Length: 1\r\n\r\nx"),
+            Ok(Request::WriteClipboard("x".to_owned()))
         );
     }
 
