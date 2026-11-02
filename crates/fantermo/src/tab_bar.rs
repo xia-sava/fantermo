@@ -349,8 +349,8 @@ impl Layout {
     }
 
     /// 描くタブ。
-    #[cfg(test)]
-    fn tabs(&self) -> &[TabSlot] {
+    #[cfg(any(test, feature = "e2e"))]
+    pub fn tabs(&self) -> &[TabSlot] {
         &self.tabs
     }
 

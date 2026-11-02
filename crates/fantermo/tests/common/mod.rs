@@ -311,6 +311,12 @@ impl Server {
         value["result"].as_i64().expect("the answer has no result")
     }
 
+    /// `steps` の各行のマウスの操作を、続けてウィンドウへ送る。行の形は `e2e_server` の `MouseStep`。一つの要求の
+    /// 中で続けて送るので、ダブルクリックの間隔やスクロールバーの繰り返しの待ち時間にかからない。
+    pub fn mouse(&self, steps: &str) {
+        self.post("/e2e/mouse", steps.as_bytes());
+    }
+
     /// `body` を、クリップボードから読んだものとして貼り付ける。
     pub fn paste(&self, body: &str) {
         self.post("/e2e/paste", body.as_bytes());

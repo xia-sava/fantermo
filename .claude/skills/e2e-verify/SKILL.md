@@ -34,7 +34,7 @@ OS のクリップボードを実際に変えるテスト（`os_clipboard` を�
 
 | 要求 | すること |
 |---|---|
-| `GET /e2e/state` | JSON: `pid` `cols` `rows` `client_width` `client_height` `terminal_x` `terminal_y` `cell_width` `cell_height` `active` `tabs`（`title` `profile` `cols` `rows` `bell`）`profiles`（名前）`dialogs`（`class` `title` `controls`）`images`（画面に出ている画像の数）`window`（`state.toml` と同じ `left` `top` `width` `height` `maximized`）`background`（背景画像を敷く範囲の `x` `y` `width` `height` と、表示しているタブが選んだ画像の名前 `image`）`window_title` `version` `text`（スクロールバックを含む全体の文字） |
+| `GET /e2e/state` | JSON: `pid` `cols` `rows` `client_width` `client_height` `terminal_x` `terminal_y` `cell_width` `cell_height` `active` `tabs`（`title` `profile` `cols` `rows` `bell`）`profiles`（名前）`dialogs`（`class` `title` `controls`）`images`（画面に出ている画像の数）`window`（`state.toml` と同じ `left` `top` `width` `height` `maximized`）`background`（背景画像を敷く範囲の `x` `y` `width` `height` と、表示しているタブが選んだ画像の名前 `image`）`selection`（選択範囲の文字列。なければ `null`）`mouse_tracking`（アプリがマウスを求めているか）`scroll`（`total` `offset` `len` と、ホイール 1 ノッチの行数 `lines_per_notch`）`scroll_bar`（`x` `y` `width` `height`、つまみ `thumb` の `top` `length`（なければ `null`）、押している間だけ真の `pressed`）`tab_bar`（`menu` `new_tab` `profiles` の範囲と、描いているタブ `tabs` の `index` `area` `close`）`window_title` `version` `text`（スクロールバックを含む全体の文字） |
 | `GET /e2e/frame` | いまの画面の PNG |
 | `POST /e2e/input` | 本文のバイト列をそのままバックエンドへ |
 | `POST /e2e/text` | 本文の文字を `WM_CHAR` と同じ経路で（制御文字は送らない。Enter は `key`） |
@@ -44,7 +44,9 @@ OS のクリップボードを実際に変えるテスト（`os_clipboard` を�
 | `POST /e2e/paste` | 本文の文字を、クリップボードから読んだものとして貼り付ける（`paste.confirm` と `paste.confirm_size` に従う） |
 | `POST /e2e/dialog/button/<ID>` | 開いているダイアログのボタンを押す（`TaskDialogIndirect` は `TDM_CLICK_BUTTON`、ほかは `WM_COMMAND`。メッセージボックスは押せない） |
 | `GET /e2e/clipboard`、`POST /e2e/clipboard` | クリップボードの文字列を読む（JSON の `text`）・置き換える |
-| `POST /e2e/message/<名前>`、`/e2e/message/<名前>/<wParam>` | ウィンドウにメッセージを `SendMessageW` で送り、戻り値を JSON の `result` で返す。名前は `queryendsession`、`endsession`（`WM_` を除いた小文字。`lParam` はメッセージごとに決まっている） |
+| `POST /e2e/message/<名前>`、`/e2e/message/<名前>/<wParam>` | ウィンドウにメッセージを `SendMessageW` で送り、戻り値を JSON の `result` で返す。名前は `queryendsession`、`endsession`、`capturechanged`（`WM_` を除いた小文字。`lParam` はメッセージごとに決まっている） |
+| `POST /e2e/mouse` | 本文の各行のマウスの操作を、続けて `SendMessageW` で送る。行の形は `<操作> <x> <y> [押しているもの…]`。操作は `move`、`left-down`、`left-up`、`middle-down`、`middle-up`、`right-down`、`right-up`、`wheel:<回転量>`（1 ノッチが 120、奥が正）。座標はクライアント座標（ウィンドウの外を指す負の値も書ける）。押しているものは `left` `middle` `right` `shift` `ctrl` `alt` |
+| `POST /e2e/menu/close` | 開いているメニューを閉じる（`EndMenu`）。開いていなければ 400 |
 | `POST /e2e/quit` | ウィンドウを閉じる |
 
 ## テストの書き方
@@ -60,6 +62,13 @@ OS のクリップボードを実際に変えるテスト（`os_clipboard` を�
 - 起動の前に置くファイル: `Server::start_with_setup` の `prepare` が一時フォルダで呼ばれる。`state.toml` の初期値（`common::STATE_FILE`）はここで置く。閉じたあとの中身は `state_file()` で、`Server` を破棄する前に読む。
 - 背景画像: `common::encode_png` で作った PNG を `prepare` で置き、設定には相対パスで書く（設定ファイルのフォルダから辿る）。候補が一枚なら選び方はランダムにならない。位置は状態の `background` の範囲から決め、文字のないところを見る。画素は `wait_pixels` で待ち、背景色を `[colors] background` で固定して比べる。合成の丸めとソフトウェアの描画の差の分、許容の幅を持たせる（`BACKGROUND_COLOR_TOLERANCE`）。
 - ログオフ: `send_message` で `queryendsession`・`endsession` を送り、`state_file()` を読む。書かれたかどうかは、送る前にファイルを消して見る。OS がプロセスごと終わらせるところは `processes::terminate` で fantermo だけを終わらせて真似る。fantermo のほかのプロセスは OS に終わらされないので、残らないことの確認は実際のログオフより厳しい。
+- マウス: `Server::mouse` に行を渡す（`e2e.rs` の `left_click`・`left_drag`・`button_click`・`wheel`・`step` で作る）。位置はセルなら `cell_center`・`cell_left`・`cell_right`、ほかは状態の `scroll_bar`・`tab_bar` から決める。文字の位置は `find_cell`。
+  - 答えを先に返してから送る（メニューを開くと閉じるまで戻らないため）。続く要求はそのあとに処理されるので、次に読む状態には送った分が入っている。最後のタブの閉じるボタンでウィンドウが終わっても答えは返る。
+  - ダブルクリックは `GetDoubleClickTime` の間隔の中で判定するので、一つの要求に続けて書く（別の要求にすると、負荷が高いと間に合わない）。逆に、同じ位置を間隔の中で押すとダブルクリックになるので、選び直すときは別の位置を挟む。つまみの外を押して離す 1 ページの送りも一つの要求に書く（250 ms で繰り返しが始まる）。押し続けるのを見るときは `left-down` だけ送り、`wait_until` で待つ。
+  - 押していることは `wParam`（`MK_*`）に、修飾キーはそれに加えてウィンドウのスレッドのキーボードの状態（`SetKeyboardState`。`keyboard::current_mods` が読む）に、送る間だけ入れる。書いていない修飾キーは離した状態にする。別デスクトップのスレッドの `GetKeyState` にも利用者が本物のキーボードで押した修飾キーが見えることがあり、そのまま読むと Shift で報告が選択に変わるなど、テストが時々落ちる。
+  - メニュー: `wait_menu`（`dialogs` の `class` が `#32768`）で待ち、`close_menu` で閉じる。メニューを開いている間も要求は処理される。
+  - マウスの報告: アプリ側は `start_report_reader`（`stty -icanon -echo -isig -icrnl` と `cat -v`）で読み、`reports_of` が操作ごとの受け取った分を返す。モードごとに `start_report_reader_in_new_tab`。ConPTY では PowerShell で `SetConsoleMode` に `ENABLE_VIRTUAL_TERMINAL_INPUT` を渡して読む（`mouse_reports_reach_an_application_through_conpty`）。
+  - 別デスクトップでは本物のカーソルがウィンドウの上にないので、`TrackMouseEvent` の `WM_MOUSELEAVE` がすぐ届く。マウスを載せている間の絵は見られない。リンクの Ctrl+クリックは既定のブラウザを開くので通さない。
 - メッセージを足す: `WindowMessage` に足し、`send_window_message` で `lParam` を決める。`SendMessageW` はこの場でウィンドウプロシージャを動かすので、借用の外（`window/e2e.rs` の `run`）から送る。借用の中だと状態を書く処理などが黙って飛ばされる。
 - ブリッジの単体のテストで中身を比べるときは、子プロセスに `/tmp` のファイルへ書かせて読む（テストと子プロセスは同じ環境で動く）。
 - 読み取りの依頼のように答えがないことがあるものは、時間で待たず、依頼と同じ出力の後ろの印を待ってから、区切りの入力を送る（`start_clipboard_read`）。

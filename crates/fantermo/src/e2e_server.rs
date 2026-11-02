@@ -18,6 +18,8 @@
 //! | `GET /e2e/clipboard` | クリップボードの文字列の JSON |
 //! | `POST /e2e/clipboard` | クリップボードを本文の文字で置き換える |
 //! | `POST /e2e/message/<名前>`、`/e2e/message/<名前>/<wParam>` | ウィンドウにメッセージを送り、戻り値の JSON を返す（[`WindowMessage`]） |
+//! | `POST /e2e/mouse` | 本文の各行のマウスの操作を、続けてウィンドウへ送る（[`MouseStep`]） |
+//! | `POST /e2e/menu/close` | 開いているメニューを閉じる |
 //! | `POST /e2e/quit` | ウィンドウを閉じる |
 //!
 //! クリップボードは、環境変数 `FANTERMO_E2E_CLIPBOARD_FILE` があればそのファイル（テストの `Server` は既定でこれを
@@ -62,6 +64,8 @@ const STATUS_UNAVAILABLE: u16 = 503;
 pub enum WindowMessage {
     QueryEndSession,
     EndSession,
+    /// ほかのウィンドウがマウスをキャプチャした。
+    CaptureChanged,
 }
 
 impl WindowMessage {
@@ -69,8 +73,91 @@ impl WindowMessage {
         match name {
             "queryendsession" => Some(Self::QueryEndSession),
             "endsession" => Some(Self::EndSession),
+            "capturechanged" => Some(Self::CaptureChanged),
             _ => None,
         }
+    }
+}
+
+/// マウスの操作の種類。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseAction {
+    Move,
+    LeftDown,
+    LeftUp,
+    MiddleDown,
+    MiddleUp,
+    RightDown,
+    RightUp,
+    /// ホイールの回転量（奥へ回すと正。1 ノッチが 120）。
+    Wheel(i16),
+}
+
+impl MouseAction {
+    fn parse(text: &str) -> Option<Self> {
+        if let Some(delta) = text.strip_prefix("wheel:") {
+            return delta.parse().ok().map(Self::Wheel);
+        }
+        match text {
+            "move" => Some(Self::Move),
+            "left-down" => Some(Self::LeftDown),
+            "left-up" => Some(Self::LeftUp),
+            "middle-down" => Some(Self::MiddleDown),
+            "middle-up" => Some(Self::MiddleUp),
+            "right-down" => Some(Self::RightDown),
+            "right-up" => Some(Self::RightUp),
+            _ => None,
+        }
+    }
+}
+
+/// 操作のあいだ押しているボタンと修飾キー。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MouseHeld {
+    pub left: bool,
+    pub middle: bool,
+    pub right: bool,
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+}
+
+/// `POST /e2e/mouse` の本文の一行。形は `<操作> <x> <y> [押しているもの…]`。
+///
+/// 操作は `move`、`left-down`、`left-up`、`middle-down`、`middle-up`、`right-down`、`right-up`、`wheel:<回転量>`。
+/// `x` と `y` はクライアント領域の座標で、ウィンドウの外を指す負の値も書ける。押しているものは `left`、`middle`、
+/// `right`、`shift`、`ctrl`、`alt`。押す・離す操作の当のボタンは、押した直後・離した直後の状態になるので書かなくてよい。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MouseStep {
+    pub action: MouseAction,
+    pub x: i16,
+    pub y: i16,
+    pub held: MouseHeld,
+}
+
+impl MouseStep {
+    fn parse(line: &str) -> Result<Self, Response> {
+        let malformed = || Response::bad_request(format!("malformed mouse step: {line}"));
+        let mut words = line.split_ascii_whitespace();
+        let action = words
+            .next()
+            .and_then(MouseAction::parse)
+            .ok_or_else(malformed)?;
+        let x = parse_number(words.next().ok_or_else(malformed)?)?;
+        let y = parse_number(words.next().ok_or_else(malformed)?)?;
+        let mut held = MouseHeld::default();
+        for word in words {
+            match word {
+                "left" => held.left = true,
+                "middle" => held.middle = true,
+                "right" => held.right = true,
+                "shift" => held.shift = true,
+                "ctrl" => held.ctrl = true,
+                "alt" => held.alt = true,
+                _ => return Err(malformed()),
+            }
+        }
+        Ok(Self { action, x, y, held })
     }
 }
 
@@ -103,6 +190,8 @@ pub enum Request {
         message: WindowMessage,
         wparam: usize,
     },
+    Mouse(Vec<MouseStep>),
+    CloseMenu,
     Quit,
 }
 
@@ -305,6 +394,8 @@ fn parse_request(method: &str, path: &str, body: Vec<u8>) -> Result<Request, Res
         }),
         ("POST", ["e2e", "message", name]) => parse_message(name, 0),
         ("POST", ["e2e", "message", name, wparam]) => parse_message(name, parse_number(wparam)?),
+        ("POST", ["e2e", "mouse"]) => parse_mouse(body),
+        ("POST", ["e2e", "menu", "close"]) => Ok(Request::CloseMenu),
         ("POST", ["e2e", "quit"]) => Ok(Request::Quit),
         _ => Err(Response::text(
             STATUS_NOT_FOUND,
@@ -326,6 +417,14 @@ fn parse_message(name: &str, wparam: usize) -> Result<Request, Response> {
     let message = WindowMessage::from_name(name)
         .ok_or_else(|| Response::bad_request(format!("no such message: {name}")))?;
     Ok(Request::SendMessage { message, wparam })
+}
+
+fn parse_mouse(body: Vec<u8>) -> Result<Request, Response> {
+    parse_text(body)?
+        .lines()
+        .map(MouseStep::parse)
+        .collect::<Result<_, _>>()
+        .map(Request::Mouse)
 }
 
 fn parse_key(text: &str) -> Result<Request, Response> {
@@ -453,6 +552,52 @@ mod tests {
             "POST /e2e/message/endsession/x HTTP/1.1\r\n\r\n",
         ] {
             assert_eq!(parse(request).unwrap_err().status, STATUS_BAD_REQUEST);
+        }
+    }
+
+    #[test]
+    fn mouse_steps_are_read_line_by_line() {
+        assert_eq!(
+            parse(
+                "POST /e2e/mouse HTTP/1.1\r\nContent-Length: 47\r\n\r\nleft-down 1 2\nmove -3 4 left alt\nwheel:-120 5 6"
+            ),
+            Ok(Request::Mouse(vec![
+                MouseStep {
+                    action: MouseAction::LeftDown,
+                    x: 1,
+                    y: 2,
+                    held: MouseHeld::default(),
+                },
+                MouseStep {
+                    action: MouseAction::Move,
+                    x: -3,
+                    y: 4,
+                    held: MouseHeld {
+                        left: true,
+                        alt: true,
+                        ..MouseHeld::default()
+                    },
+                },
+                MouseStep {
+                    action: MouseAction::Wheel(-120),
+                    x: 5,
+                    y: 6,
+                    held: MouseHeld::default(),
+                },
+            ]))
+        );
+        for body in [
+            "jump 1 2",
+            "move 1",
+            "move x 2",
+            "move 1 2 meta",
+            "wheel:x 1 2",
+        ] {
+            let request = format!(
+                "POST /e2e/mouse HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            assert_eq!(parse(&request).unwrap_err().status, STATUS_BAD_REQUEST);
         }
     }
 
