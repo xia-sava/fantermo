@@ -50,7 +50,11 @@ static RUNNING: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
 /// デスクトップに許す操作（`GENERIC_ALL`）。
 const DESKTOP_GENERIC_ALL: u32 = 0x1000_0000;
 
-/// 同時に起動する fantermo の上限。
+/// 同時に起動する fantermo の上限。CPU の数によらない。
+///
+/// 起動ごとに run-hidden が利用者のログオンセッションの `WinSta0` にデスクトップを一つ作る（[`Server::launch_again`]
+/// は同じデスクトップに入るので増えない）。ヒープは run-hidden の `DESKTOP_HEAP_KB`（1024 KB）なので、同時にあるのは
+/// 合わせて 4 MB まで。対話型のデスクトップの既定の 1 つ分（64 ビットの Windows で 20 MB）より小さい。
 const MAX_RUNNING: usize = 4;
 
 /// OS のクリップボードはテスト全体で一つなので、使うテストを直列にする。
@@ -71,6 +75,9 @@ const LIFETIME_SECONDS: &str = "300";
 const WAIT_CHILDREN_SECONDS: &str = "20";
 /// 子孫のプロセスが残らなかったときに run-hidden が出す行。
 const NO_CHILDREN_REMAINED: &str = "run-hidden: no processes remained";
+/// fantermo がログに出す、メモリが足りないエラー（`ERROR_NOT_ENOUGH_MEMORY` の HRESULT）。別デスクトップのヒープが
+/// 足りないと、ウィンドウやダイアログを作るところでこれになる。
+const NOT_ENOUGH_MEMORY: &str = "0x80070008";
 /// 起動してポートの番号が書かれるまで待つ上限。
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 /// 条件が成り立つまで待つ上限。並列で起動するとシェルの起動も遅くなるので、長めに取る。
@@ -633,7 +640,13 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         if thread::panicking() {
-            eprintln!("{}", self.log());
+            let log = self.log();
+            eprintln!("{log}");
+            if log.contains(NOT_ENOUGH_MEMORY) {
+                eprintln!(
+                    "fantermo のログに {NOT_ENOUGH_MEMORY}（ERROR_NOT_ENOUGH_MEMORY）がある。run-hidden のデスクトップのヒープ（DESKTOP_HEAP_KB）が足りないのかもしれない"
+                );
+            }
         }
         // run-hidden を止めると、Job が閉じて fantermo と子孫のプロセスも終わる。
         match self.child.try_wait() {

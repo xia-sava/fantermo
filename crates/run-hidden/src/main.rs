@@ -8,7 +8,8 @@
 //! プログラムは `CreateProcessW` のコマンドラインとして渡すので、パスは Windows 形式（`\` 区切り）で書く。
 //!
 //! デスクトップの名前は `run-hidden-<この道具のプロセスの番号>`。`--desktop NAME` を付けると、すでにある別の
-//! run-hidden のデスクトップ `NAME` で起動する。
+//! run-hidden のデスクトップ `NAME` で起動する（なければその名前で作る）。デスクトップの名前とヒープの大きさを
+//! 標準エラー出力に出す。
 //!
 //! 起動したプロセスは Job に入れるので、この道具がどう終わっても一緒に終わる。
 //! プログラムが先に終われば、その終了コードを返す。時間切れなら終わらせて 0 を返す。
@@ -36,7 +37,10 @@ use windows::{
                 JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation,
                 QueryInformationJobObject, SetInformationJobObject,
             },
-            StationsAndDesktops::{CloseDesktop, CreateDesktopW, DESKTOP_CONTROL_FLAGS, HDESK},
+            StationsAndDesktops::{
+                CloseDesktop, CreateDesktopExW, DESKTOP_CONTROL_FLAGS, GetUserObjectInformationW,
+                HDESK, UOI_HEAPSIZE,
+            },
             Threading::{
                 CREATE_SUSPENDED, CreateProcessW, GetExitCodeProcess, OpenProcess,
                 PROCESS_INFORMATION, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -56,6 +60,18 @@ const TERMINATED_EXIT_CODE: u32 = 0;
 
 /// デスクトップに許す操作（`GENERIC_ALL`）。
 const DESKTOP_ACCESS: u32 = 0x1000_0000;
+
+/// 作るデスクトップのヒープの大きさ（KB）。
+///
+/// 利用者のログオンセッションの `WinSta0` に作るので、指定しなければ対話型のデスクトップの既定（64 ビットの
+/// Windows で 20480 KB）になり、利用者のアプリと同じセッションの領域から取る。fantermo の e2e（タブを複数開く、
+/// 設定ダイアログ・メニュー・文字のダイアログ・OS のファイルを選ぶダイアログと色を選ぶダイアログを開く、2 つ目の
+/// fantermo が同じデスクトップに入る）は 256 KB で通り、128 KB では OS のファイルを選ぶダイアログが開かず、
+/// 64 KB では設定ダイアログも作れなかった（`ERROR_NOT_ENOUGH_MEMORY`）。通った大きさの 4 倍にする。
+///
+/// 足りないと、ウィンドウを作るところで `ERROR_NOT_ENOUGH_MEMORY`（0x80070008）になるか、OS のダイアログが
+/// 何も言わずに開かない。どちらもダイアログを待つテストの時間切れとして見える。
+const DESKTOP_HEAP_KB: u32 = 1024;
 
 /// Job の中のプロセスの一覧を読む数の上限。
 const MAX_LISTED_PROCESSES: usize = 256;
@@ -159,6 +175,10 @@ fn run(args: &Args) -> windows::core::Result<u32> {
         .clone()
         .unwrap_or_else(|| format!("run-hidden-{}", std::process::id()));
     let desktop = HiddenDesktop::create(&desktop_name)?;
+    match desktop.heap_kb() {
+        Ok(kb) => eprintln!("run-hidden: desktop {desktop_name}, heap {kb} KB"),
+        Err(e) => eprintln!("run-hidden: failed to read the desktop heap size: {e}"),
+    }
     let job = kill_on_close_job()?;
 
     let mut desktop_wide = to_wide_nul(OsStr::new(&desktop_name));
@@ -328,21 +348,40 @@ fn kill_on_close_job() -> windows::core::Result<OwnedHandle> {
 struct HiddenDesktop(HDESK);
 
 impl HiddenDesktop {
-    /// デスクトップ `name` を作る。すでにあれば、それを開く（`CreateDesktopW` の決まり）。
+    /// デスクトップ `name` を、ヒープを [`DESKTOP_HEAP_KB`] にして作る。すでにあれば、それを開く
+    /// （`CreateDesktopExW` の決まり）。開いたときのヒープは、作ったときの大きさのまま。
     fn create(name: &str) -> windows::core::Result<Self> {
         let name = to_wide_nul(OsStr::new(name));
         // SAFETY: name は終端付きの UTF-16 で、この呼び出しの間は生きている。
         let desktop = unsafe {
-            CreateDesktopW(
+            CreateDesktopExW(
                 PCWSTR(name.as_ptr()),
                 PCWSTR::null(),
                 None,
                 DESKTOP_CONTROL_FLAGS(0),
                 DESKTOP_ACCESS,
                 None,
+                DESKTOP_HEAP_KB,
+                None,
             )?
         };
         Ok(Self(desktop))
+    }
+
+    /// デスクトップのヒープの大きさ（KB）。
+    fn heap_kb(&self) -> windows::core::Result<u32> {
+        let mut size = 0u32;
+        // SAFETY: self.0 は開いているデスクトップで、size は指定した長さの分だけ書き込める。
+        unsafe {
+            GetUserObjectInformationW(
+                HANDLE(self.0.0),
+                UOI_HEAPSIZE,
+                Some((&raw mut size).cast()),
+                size_of::<u32>() as u32,
+                None,
+            )?
+        };
+        Ok(size)
     }
 }
 
