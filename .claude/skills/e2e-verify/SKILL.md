@@ -36,13 +36,15 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
 
 | 要求 | すること |
 |---|---|
-| `GET /e2e/state` | JSON: `pid` `dpi`（ウィンドウが使っている DPI）`monitor_dpi`（`GetDpiForWindow`。OS が決める）`font_size_px` `ui_font_size_px` `cols` `rows` `client_width` `client_height` `terminal_x` `terminal_y` `cell_width` `cell_height` `active` `tabs`（`title` `profile` `cols` `rows` `bell`）`profiles`（名前）`dialogs`（`class` `title` `controls`）`images`（画面に出ている画像の数）`window`（`state.toml` と同じ `left` `top` `width` `height` `maximized` `dpi`）`background`（背景画像を敷く範囲の `x` `y` `width` `height` と、表示しているタブが選んだ画像の名前 `image`）`selection`（選択範囲の文字列。なければ `null`）`mouse_tracking`（アプリがマウスを求めているか）`scroll`（`total` `offset` `len` と、ホイール 1 ノッチの行数 `lines_per_notch`）`scroll_bar`（`x` `y` `width` `height`、つまみ `thumb` の `top` `length`（なければ `null`）、押している間だけ真の `pressed`）`tab_bar`（`menu` `new_tab` `profiles` の範囲と、描いているタブ `tabs` の `index` `area` `close`）`window_enabled`（ウィンドウが入力を受けるか。ダイアログの間は偽）`window_title` `version` `text`（スクロールバックを含む全体の文字） |
+| `GET /e2e/state` | JSON: `pid` `hwnd`（同じデスクトップからしか使えない）`dpi`（ウィンドウが使っている DPI）`monitor_dpi`（`GetDpiForWindow`。OS が決める）`font_size_px` `ui_font_size_px` `cols` `rows` `client_width` `client_height` `terminal_x` `terminal_y` `cell_width` `cell_height` `active` `tabs`（`title` `profile` `cols` `rows` `bell`）`profiles`（名前）`dialogs`（`class` `title` `controls`）`images`（画面に出ている画像の数）`window`（`state.toml` と同じ `left` `top` `width` `height` `maximized` `dpi`）`background`（背景画像を敷く範囲の `x` `y` `width` `height` と、表示しているタブが選んだ画像の名前 `image`）`selection`（選択範囲の文字列。なければ `null`）`mouse_tracking`（アプリがマウスを求めているか）`scroll`（`total` `offset` `len` と、ホイール 1 ノッチの行数 `lines_per_notch`）`scroll_bar`（`x` `y` `width` `height`、つまみ `thumb` の `top` `length`（なければ `null`）、押している間だけ真の `pressed`）`tab_bar`（`menu` `new_tab` `profiles` の範囲と、描いているタブ `tabs` の `index` `area` `close`）`window_enabled`（ウィンドウが入力を受けるか。ダイアログの間は偽）`window_title` `version` `text`（スクロールバックを含む全体の文字） |
 | `GET /e2e/frame` | いまの画面の PNG |
 | `POST /e2e/input` | 本文のバイト列をそのままバックエンドへ |
 | `POST /e2e/text` | 本文の文字を `WM_CHAR` と同じ経路で（制御文字は送らない。Enter は `key`） |
 | `POST /e2e/key/<組み合わせ>` | `enter`、`ctrl+shift+t` など。キーの割り当てと符号化を通す |
 | `POST /e2e/tab/new`、`/e2e/tab/new/<プロファイルの位置>`、`/e2e/tab/close`、`/e2e/tab/select/<位置>` | タブの操作 |
 | `POST /e2e/window/size/<桁数>/<行数>` | ウィンドウの大きさを変えて、そのあとの状態を返す |
+| `POST /e2e/window/lower` | ウィンドウを同じデスクトップの Z オーダーのいちばん下へ移す（別デスクトップのスレッドには前面に出す権利がなく、いちばん上へは移せない） |
+| `POST /e2e/window/block/<ミリ秒>` | 答えを返してから、ウィンドウのスレッドをその時間だけ止める（応答しないウィンドウの代わり） |
 | `POST /e2e/paste` | 本文の文字を、クリップボードから読んだものとして貼り付ける（`paste.confirm` と `paste.confirm_size` に従う） |
 | `POST /e2e/dialog/button/<ID>` | 開いているダイアログのボタンを押す（`TaskDialogIndirect` は `TDM_CLICK_BUTTON`、ほかは `WM_COMMAND`。メッセージボックスは押せない） |
 | `GET /e2e/dialog/controls` | いちばん上のダイアログ（無効なものとメニューを除く）の JSON: `class` `title` `dpi` `left` `top` `width` `height`（枠を含む、画面のピクセル）`client_width` `client_height` `work_area`（`left` `top` `right` `bottom`）`focus`（コントロールの ID）`controls`（子孫のすべて。`id` `class` `text` `visible` `enabled` `x` `y` `width` `height`（クライアント座標）、ボタンは `checked`、コンボボックスと一覧は `selected`（なければ `null`）と `items`）。開いていなければ 400 |
@@ -67,6 +69,7 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
 
 `Server::start(設定の TOML, fantermo の引数)` か `Server::start_cmd()`・`start_powershell()` で起動し、`type_line`・`press`・`resize`・`post` で操作して、`wait_text`・`wait_until` で待つ。`sleep` で待たない。何かが起きないことを時間の窓で見るときは `assert_holds_for`（`wait_until` と同じ間隔で読む）。`Server` が一時フォルダ（`FANTERMO_CONFIG`・`FANTERMO_STATE`・ログ・ポート）、同時に起動する数の上限、Drop での停止と片づけを受け持つので、テストは並列で衝突しない。失敗すると fantermo のログを出す。打った行に出ない文字列を待つ（`echo marker-%ERRORLEVEL%-end` で `marker-0-end`）。
 
+- 起動中の起動: `server.launch_again(引数)`・`launch_again_with(引数, &LaunchAgain { .. })` が、同じ別デスクトップで fantermo をもう一度起動する（`run-hidden --desktop`）。既存のウィンドウへ渡して終わるのは `wait_exit` が 0 で `opened_a_window` が偽（`assert_handed_over`）、ウィンドウを開くなら `wait_for_window` のあとで `Server` として操作する。ウィンドウが表示される前に起動すると見つからないので、先に `wait_text` で待つ。作業フォルダの既定は元の `Server` の一時フォルダ。足されたタブがそこにとどまるので、起動したものの一時フォルダにしない（消せなくなる）。fantermo のウィンドウへメッセージを送るのは `server.on_its_desktop` の中で（ウィンドウのハンドルは別のデスクトップからは無効で、`ERROR_INVALID_WINDOW_HANDLE` になる）。`state` の `hwnd` だけを使い、ウィンドウを探さない。
 - 長い行: `type_line` は一文字ずつ送り、Cygwin の pty では一文字に 30 ms ほどかかる。長い行は `send_line`（`/e2e/input` でまとめて送る）で。
 - 閉じる確認の前に、動かしたコマンドが動き出したのをタブごとに確認する。Cygwin では起動の途中で閉じるとコマンドが残ることがある。
 - 画像: ConPTY は APC と DCS を落とすので、ブリッジのタブで `printf` する。`images` を待ってから `picture()` で画素を読む。位置は `terminal_x` などから計算する（`cell_pixel`）。

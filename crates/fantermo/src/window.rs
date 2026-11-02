@@ -2,6 +2,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::VecDeque,
     hash::{BuildHasher, Hasher, RandomState},
     path::{Path, PathBuf},
     rc::Rc,
@@ -41,6 +42,7 @@ use windows::{
         System::{
             LibraryLoader::GetModuleHandleW,
             SystemServices::{MK_CONTROL, MK_LBUTTON, MK_MBUTTON, MK_RBUTTON, MK_SHIFT},
+            Threading::GetCurrentThreadId,
         },
         UI::{
             Controls::WM_MOUSELEAVE,
@@ -52,22 +54,23 @@ use windows::{
             WindowsAndMessaging::{
                 CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
                 DestroyWindow, DispatchMessageW, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO,
-                FlashWindowEx, GWLP_USERDATA, GetClientRect, GetForegroundWindow, GetMessageW,
-                GetWindowLongPtrW, GetWindowRect, HTCLIENT, IDC_ARROW, IDC_HAND, IsWindow,
-                KillTimer, LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostMessageW,
-                PostQuitMessage, RegisterClassExW, SPI_GETWHEELSCROLLLINES, SW_SHOWDEFAULT,
-                SW_SHOWMAXIMIZED, SWP_NOACTIVATE, SWP_NOZORDER,
-                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetCursor, SetTimer,
-                SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, SystemParametersInfoW,
-                TranslateMessage, WA_INACTIVE, WHEEL_DELTA, WINDOW_EX_STYLE, WINDOW_STYLE,
-                WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU,
-                WM_DEADCHAR, WM_DESTROY, WM_DPICHANGED, WM_ENABLE, WM_ENDSESSION,
-                WM_GETDPISCALEDSIZE, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
-                WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-                WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_QUERYENDSESSION,
-                WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_SYSCHAR, WM_SYSCOLORCHANGE,
-                WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSEXW,
-                WS_OVERLAPPEDWINDOW,
+                FlashWindowEx, GUI_INMENUMODE, GUI_POPUPMENUMODE, GUITHREADINFO, GWLP_USERDATA,
+                GetClientRect, GetForegroundWindow, GetGUIThreadInfo, GetLastActivePopup,
+                GetMessageW, GetWindowLongPtrW, GetWindowRect, HTCLIENT, IDC_ARROW, IDC_HAND,
+                IsIconic, IsWindow, KillTimer, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
+                PostMessageW, PostQuitMessage, RegisterClassExW, SPI_GETWHEELSCROLLLINES,
+                SW_RESTORE, SW_SHOWDEFAULT, SW_SHOWMAXIMIZED, SWP_NOACTIVATE, SWP_NOZORDER,
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetCursor, SetForegroundWindow,
+                SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+                SystemParametersInfoW, TranslateMessage, WA_INACTIVE, WHEEL_DELTA, WINDOW_EX_STYLE,
+                WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE,
+                WM_CONTEXTMENU, WM_COPYDATA, WM_DEADCHAR, WM_DESTROY, WM_DPICHANGED, WM_ENABLE,
+                WM_ENDSESSION, WM_EXITMENULOOP, WM_GETDPISCALEDSIZE, WM_IME_COMPOSITION,
+                WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN,
+                WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+                WM_NCDESTROY, WM_PAINT, WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP,
+                WM_SETCURSOR, WM_SIZE, WM_SYSCHAR, WM_SYSCOLORCHANGE, WM_SYSDEADCHAR,
+                WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -85,6 +88,7 @@ use crate::{
     dump::{DUMP_INTERVAL, ScreenDump},
     font::{self, Font},
     ime::{self, CursorRect},
+    instance::{self, Forwarded},
     keyboard::{self, KeyPosition, Utf16Assembler},
     link_opener,
     notice::{self, Topic},
@@ -104,7 +108,7 @@ use crate::{
 #[cfg(feature = "e2e")]
 mod e2e;
 
-const WINDOW_CLASS: PCWSTR = w!("fantermo");
+pub const WINDOW_CLASS: PCWSTR = w!("fantermo");
 const WINDOW_TITLE: &str = "fantermo";
 
 /// ウィンドウのスタイル。
@@ -126,6 +130,13 @@ const WM_APP_CLIPBOARD_PROMPT: u32 = WM_APP + 4;
 /// e2e テストの制御の口に要求が届いたと知らせるメッセージ。
 #[cfg(feature = "e2e")]
 const WM_APP_E2E: u32 = WM_APP + 5;
+
+/// 別のプロセスから渡された起動の指定を開くメッセージ。ダイアログやメニューが閉じたあとにも送る。`wparam` が
+/// [`LAUNCH_ARRIVED`] なら届いたところで、ウィンドウを前面に出す。
+const WM_APP_LAUNCH: u32 = WM_APP + 6;
+
+/// [`WM_APP_LAUNCH`] の `wparam`。届いたところ。
+const LAUNCH_ARRIVED: usize = 1;
 
 /// 画面の書き出しに使うタイマー。
 const DUMP_TIMER_ID: usize = 1;
@@ -780,6 +791,8 @@ struct App {
     clipboard_prompts: ReadPrompts<SessionId>,
     /// fantermo の引数の、タブで起動するものの指定。
     arguments: TabRequest,
+    /// 別のプロセスから渡され、まだ開いていない起動の指定。ダイアログやメニューの間は待たせる。
+    pending_launches: VecDeque<Forwarded>,
     /// 設定のプロファイル。少なくとも一つある。
     profiles: Vec<Profile>,
     /// 設定の既定のプロファイルの名前。`None` なら先頭。
@@ -938,6 +951,7 @@ impl App {
             clipboard_read: config.clipboard.read,
             clipboard_prompts: ReadPrompts::default(),
             arguments,
+            pending_launches: VecDeque::new(),
             profiles: config.profiles,
             default_profile: config.default_profile,
             sessions: vec![session],
@@ -1162,36 +1176,104 @@ impl App {
     /// `launch` の新しい端末を開き、タブの並びの最後に足して表示する。起動できなければ警告を残して
     /// 何もしない。
     fn open_session(&mut self, launch: Launch) {
-        let id = SessionId(self.next_session_id);
-        let startup = startup_for(
-            &self.arguments,
+        let startup = self.startup_of(&self.arguments, launch);
+        if let Err(e) = self.open_startup(&startup) {
+            tracing::warn!(
+                "failed to open a terminal with {:?} ({}): {e}",
+                startup.command_line,
+                startup.backend.name()
+            );
+        }
+    }
+
+    fn startup_of(&self, request: &TabRequest, launch: Launch) -> Startup {
+        startup_for(
+            request,
             &self.profiles,
             self.default_profile_index(),
             launch,
             self.config_path.as_deref().and_then(Path::parent),
-        );
+        )
+    }
+
+    /// `startup` の新しい端末を開き、タブの並びの最後に足して表示する。
+    fn open_startup(&mut self, startup: &Startup) -> Result<(), Box<dyn std::error::Error>> {
+        let id = SessionId(self.next_session_id);
         let size = grid_size(&self.font, self.terminal_area);
-        let mut session = match Session::spawn(
+        let mut session = Session::spawn(
             id,
-            &startup,
+            startup,
             size,
             &self.colors.terminal_colors(),
             Arc::new(poster(self.hwnd, WM_APP_WAKE, WPARAM(id.0))),
-        ) {
-            Ok(session) => session,
-            Err(e) => {
-                tracing::warn!(
-                    "failed to open a terminal with {:?} ({}): {e}",
-                    startup.command_line,
-                    startup.backend.name()
-                );
-                return;
-            }
-        };
+        )?;
         self.next_session_id += 1;
         session.background_image = self.choose_background_image();
         self.sessions.push(session);
         self.activate(self.sessions.len() - 1);
+        Ok(())
+    }
+
+    /// 別のプロセスから渡された `forwarded` を受け取り、あとで開くよう積む。実行ファイルか設定ファイルが違えば
+    /// 受け取らず、`false` を返す。
+    fn accept_launch(&mut self, forwarded: Forwarded) -> bool {
+        let exe = match std::env::current_exe() {
+            Ok(exe) => exe,
+            Err(e) => {
+                tracing::warn!("failed to get the path of the executable: {e}");
+                return false;
+            }
+        };
+        if !forwarded.is_for(&exe, self.config_path.as_deref()) {
+            tracing::info!(
+                "refused a launch of {} with the settings {:?}",
+                forwarded.exe.display(),
+                forwarded.config
+            );
+            return false;
+        }
+        self.pending_launches.push_back(forwarded);
+        true
+    }
+
+    /// 待っている起動の指定を開く。ダイアログやメニューの間は開かない（閉じたときの処理が表示しているタブに
+    /// 働くので、その間に替えない）。閉じたあとに [`WM_APP_LAUNCH`] で改めて呼ばれる。知らせることがあれば返す。
+    fn open_pending_launches(&mut self) -> Option<Deferred> {
+        // SAFETY: ウィンドウのハンドルを調べるだけ。
+        if !unsafe { IsWindowEnabled(self.hwnd) }.as_bool() || in_menu() {
+            return None;
+        }
+        let mut notices = Vec::new();
+        while let Some(forwarded) = self.pending_launches.pop_front() {
+            notices.extend(self.open_forwarded(&forwarded));
+        }
+        (!notices.is_empty()).then(|| Deferred::Warn {
+            topic: Topic::CommandLine,
+            text: notices.join("\n\n"),
+        })
+    }
+
+    /// `forwarded` のタブを開く。知らせることがあれば返す。
+    fn open_forwarded(&mut self, forwarded: &Forwarded) -> Option<String> {
+        let mut startup = self.startup_of(&forwarded.options.tab, Launch::Default);
+        startup.working_folder = forwarded.usable_working_folder().map(Path::to_owned);
+        let mut notice = forwarded.options.notice(&self.profiles);
+        if let Err(e) = self.open_startup(&startup) {
+            tracing::warn!(
+                "failed to open a terminal with {:?} ({}): {e}",
+                startup.command_line,
+                startup.backend.name()
+            );
+            let failed = format!(
+                "「{}」を起動できませんでした。\n\n{e}",
+                startup.command_line
+            );
+            notice = Some(match notice {
+                Some(text) => format!("{text}\n\n{failed}"),
+                None => failed,
+            });
+        }
+        notice
     }
 
     /// `sessions` の `index` の端末を閉じる（子プロセスはバックエンドを破棄して終わらせる）。最後の
@@ -3276,6 +3358,35 @@ fn take_translated_chars(hwnd: HWND) -> Option<Vec<char>> {
     (!dead).then_some(chars)
 }
 
+/// このスレッドがメニューを開いているか。
+fn in_menu() -> bool {
+    let mut info = GUITHREADINFO {
+        cbSize: size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: info は cbSize を入れてあり、書き込める。
+    let read = unsafe { GetGUIThreadInfo(GetCurrentThreadId(), &mut info) };
+    if let Err(e) = read {
+        tracing::warn!("failed to read the state of the window thread: {e}");
+        return false;
+    }
+    info.flags.contains(GUI_INMENUMODE) || info.flags.contains(GUI_POPUPMENUMODE)
+}
+
+/// ウィンドウを前面に出す。最小化していれば戻す。ダイアログを開いていれば、そちらを前面に出す。
+/// 起動したプロセスが前面に出す権利を渡していなければ、Windows がタスクバーで知らせるにとどまる。
+fn bring_to_front(hwnd: HWND) {
+    // SAFETY: hwnd は有効なウィンドウ。この場でメッセージが届くが、借用は持っていない。
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+        if !SetForegroundWindow(GetLastActivePopup(hwnd)).as_bool() {
+            tracing::debug!("the window could not come to the front");
+        }
+    }
+}
+
 /// ウィンドウに結び付けた App。WM_NCDESTROY で解放されるまで有効。
 fn app_of(hwnd: HWND) -> Option<&'static RefCell<App>> {
     // SAFETY: GWLP_USERDATA には run が入れた App のポインタか 0 が入っている。
@@ -3350,7 +3461,38 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         WM_ENABLE => {
             if wparam.0 != 0 {
                 poster(hwnd, WM_APP_CLIPBOARD_PROMPT, WPARAM(0))();
+                poster(hwnd, WM_APP_LAUNCH, WPARAM(0))();
             }
+            LRESULT(0)
+        }
+        // 別のプロセスからの起動の指定。受け取ったかどうかを答えるだけで、開くのは積んだメッセージで。受け取れなければ、
+        // 送った側が新しいウィンドウを開く。
+        WM_COPYDATA => {
+            // SAFETY: lparam は WM_COPYDATA で受け取ったもので、戻る前に呼ぶ。
+            let mut forwarded = unsafe { instance::received(lparam) };
+            let mut accepted = false;
+            with_app(&mut |app| {
+                if let Some(forwarded) = forwarded.take() {
+                    accepted = app.accept_launch(forwarded);
+                }
+            });
+            if !accepted {
+                return LRESULT(0);
+            }
+            poster(hwnd, WM_APP_LAUNCH, WPARAM(LAUNCH_ARRIVED))();
+            LRESULT(instance::ACCEPTED)
+        }
+        WM_APP_LAUNCH => {
+            if wparam.0 == LAUNCH_ARRIVED {
+                bring_to_front(hwnd);
+            }
+            let mut deferred = None;
+            with_app(&mut |app| deferred = app.open_pending_launches());
+            run_deferred(hwnd, deferred, &with_app);
+            LRESULT(0)
+        }
+        WM_EXITMENULOOP => {
+            poster(hwnd, WM_APP_LAUNCH, WPARAM(0))();
             LRESULT(0)
         }
         // 知らせが続けて届くたびにタイマーを掛け直し、止んでから一度だけ読み直す。
@@ -3595,7 +3737,12 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 _ = KillTimer(Some(hwnd), IMAGE_ANIMATION_TIMER_ID);
             };
             let mut code = 0;
-            with_app(&mut |app| code = app.exit.map_or(0, |code| code.0));
+            with_app(&mut |app| {
+                code = app.exit.map_or(0, |code| code.0);
+                for forwarded in app.pending_launches.drain(..) {
+                    forwarded.start_in_new_window();
+                }
+            });
             // SAFETY: このスレッドのメッセージループに終了を伝えるだけ。
             unsafe { PostQuitMessage(code as i32) };
             LRESULT(0)
@@ -3793,6 +3940,7 @@ mod tests {
                 distribution: Some("Ubuntu".to_owned()),
                 tab_icon: TabIcon::for_profiles(std::slice::from_ref(&wsl), None).remove(0),
                 profile_name: Some(wsl.name.clone()),
+                working_folder: None,
             }
         );
     }

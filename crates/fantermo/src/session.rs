@@ -2,7 +2,7 @@
 //! リンクの下線・タイトル・背景画像に選んだファイルなど、端末ごとに持つ状態を添える。ウィンドウ・描画・
 //! 設定は持たない（背景画像のテクスチャは描画が持つ）。
 
-use std::io;
+use std::{io, path::PathBuf};
 
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize, SpawnOptions, Wake},
@@ -44,6 +44,8 @@ pub struct Startup {
     pub tab_icon: TabIcon,
     /// プロファイルの名前。プロファイルなしで起動するなら `None`。
     pub profile_name: Option<String>,
+    /// 作業フォルダ。`None` ならこのプロセスの作業フォルダ。
+    pub working_folder: Option<PathBuf>,
 }
 
 impl Startup {
@@ -56,6 +58,7 @@ impl Startup {
             distribution: None,
             tab_icon: TabIcon::without_profile(),
             profile_name: None,
+            working_folder: None,
         }
     }
 
@@ -68,6 +71,7 @@ impl Startup {
             distribution: profile.distribution.clone(),
             tab_icon,
             profile_name: Some(profile.name.clone()),
+            working_folder: None,
         }
     }
 }
@@ -156,6 +160,7 @@ impl Session {
                 command_line: &startup.command_line,
                 env: &CHILD_ENV,
                 size,
+                working_folder: startup.working_folder.as_deref(),
             },
             wake,
         )?;

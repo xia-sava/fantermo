@@ -4,6 +4,8 @@
 //! 引数の先頭の `--profile <名前>` でプロファイルを指定できる（`command_line`）。
 //! どちらもなければ設定ファイルの既定のプロファイルを、プロファイルを書いていなければ PowerShell を起動する。
 //! 新しいタブも同じ決め方で起動する。設定ファイルは `%APPDATA%\fantermo\config.toml`（`config_file`）。
+//! すでに動いているウィンドウがあれば、新しいウィンドウを開かず、そこへタブを足して終わる（`instance`）。
+//! `--new-window` があれば新しいウィンドウを開く。
 //! ウィンドウの位置・大きさ・最大化は、閉じるときに同じフォルダの `state.toml` に書き、次に起動した
 //! ときに戻す（`window_state`）。
 //!
@@ -31,6 +33,7 @@ mod file_dialog;
 mod font;
 mod image_cache;
 mod ime;
+mod instance;
 mod key_capture;
 mod keyboard;
 mod known_folder;
@@ -66,6 +69,12 @@ fn main() {
     let log_dir = logging::init();
     tracing::info!("fantermo {}", version::display());
 
+    let options = command_line::Options::of_process();
+    let config_path = config_file::path();
+    if !options.new_window && instance::forward(&options, config_path.as_deref()) {
+        return;
+    }
+
     // SAFETY: 起動直後、ウィンドウを作る前に一度だけ呼ぶ。
     let dpi_awareness =
         unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
@@ -80,17 +89,10 @@ fn main() {
         tracing::warn!("failed to initialize COM: {e}");
     }
 
-    let config_path = config_file::path();
     let loaded = config_file::load(config_path.as_deref());
     let state_path = window_state::path();
     let state = window_state::load(state_path.as_deref());
-    match window::run(
-        command_line::Options::of_process(),
-        config_path,
-        loaded,
-        state_path,
-        state,
-    ) {
+    match window::run(options, config_path, loaded, state_path, state) {
         Ok(code) => {
             conpty::wait_for_closing_consoles();
             std::process::exit(code as i32)

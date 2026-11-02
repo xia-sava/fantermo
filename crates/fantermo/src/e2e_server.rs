@@ -13,6 +13,8 @@
 //! | `POST /e2e/key/<組み合わせ>` | `ctrl+shift+t` などを、キーを押したときと同じ経路で処理する |
 //! | `POST /e2e/tab/new`、`/e2e/tab/new/<プロファイルの位置>`、`/e2e/tab/close`、`/e2e/tab/select/<位置>` | タブの操作 |
 //! | `POST /e2e/window/size/<桁数>/<行数>` | 端末がその大きさになるようにウィンドウの大きさを変える |
+//! | `POST /e2e/window/lower` | ウィンドウを同じデスクトップの Z オーダーのいちばん下へ移す |
+//! | `POST /e2e/window/block/<ミリ秒>` | 答えを返してから、ウィンドウのスレッドをその時間だけ止める |
 //! | `POST /e2e/paste` | 本文の文字を、クリップボードから読んだものとして貼り付ける |
 //! | `POST /e2e/dialog/button/<ID>` | 開いているダイアログのそのボタンを押す |
 //! | `GET /e2e/dialog/controls` | いちばん上のダイアログの大きさと、コントロールの値の JSON |
@@ -232,6 +234,10 @@ pub enum Request {
         cols: u16,
         rows: u16,
     },
+    /// ウィンドウを同じデスクトップの Z オーダーのいちばん下へ移す。
+    LowerWindow,
+    /// ウィンドウのスレッドをこのミリ秒だけ止める。
+    BlockWindow(u64),
     Paste(String),
     PressDialogButton(i32),
     DialogControls,
@@ -486,6 +492,10 @@ fn parse_request(method: &str, path: &str, body: Vec<u8>) -> Result<Request, Res
             cols: parse_number(cols)?,
             rows: parse_number(rows)?,
         }),
+        ("POST", ["e2e", "window", "lower"]) => Ok(Request::LowerWindow),
+        ("POST", ["e2e", "window", "block", milliseconds]) => {
+            Ok(Request::BlockWindow(parse_number(milliseconds)?))
+        }
         ("POST", ["e2e", "message", name]) => parse_message(name, 0),
         ("POST", ["e2e", "message", name, wparam]) => parse_message(name, parse_number(wparam)?),
         ("POST", ["e2e", "mouse"]) => parse_mouse(body),

@@ -258,7 +258,10 @@ impl Drop for Bridge {
 
 /// `target` のブリッジを起動するコマンド。ブリッジや Cygwin が見つからなければ、その理由の文。
 fn bridge_command(target: Target, options: &SpawnOptions) -> Result<Command, String> {
-    let cwd = match env::current_dir() {
+    let cwd = match options
+        .working_folder
+        .map_or_else(env::current_dir, |folder| Ok(folder.to_owned()))
+    {
         Ok(cwd) => Some(cwd),
         Err(e) => {
             tracing::warn!("failed to get the working folder: {e}");

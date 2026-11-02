@@ -513,6 +513,9 @@ fn spawn_process(
     // CreateProcessW はコマンドラインの領域を書き換えることがあるので、書き込める領域を渡す。
     let mut command_line = to_wide_nul(OsStr::new(options.command_line));
     let environment = environment_block(options.env);
+    let working_folder = options
+        .working_folder
+        .map(|folder| to_wide_nul(folder.as_os_str()));
     let mut process_info = PROCESS_INFORMATION::default();
     // SAFETY: どのポインタもこの呼び出しの間は生きている。環境変数のブロックは UTF-16 で、
     // 終端の空文字列まで含む。
@@ -525,7 +528,9 @@ fn spawn_process(
             false,
             EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | flags,
             Some(environment.as_ptr().cast()),
-            PCWSTR::null(),
+            working_folder
+                .as_ref()
+                .map_or(PCWSTR::null(), |folder| PCWSTR(folder.as_ptr())),
             &startup_info.StartupInfo,
             &mut process_info,
         )
@@ -637,6 +642,7 @@ mod tests {
             command_line,
             env,
             size: SIZE,
+            working_folder: None,
         };
         let mut pty = ConPty::spawn(&options, Arc::new(|| {})).unwrap();
         let mut vt = Vt::new(SIZE, "xterm-256color").unwrap();
@@ -698,6 +704,7 @@ mod tests {
             command_line: "cmd.exe /c pause",
             env: &[],
             size: SIZE,
+            working_folder: None,
         };
         let mut pty = ConPty::spawn(&options, Arc::new(|| {})).unwrap();
         let deadline = Instant::now() + TIMEOUT;
@@ -728,6 +735,7 @@ mod tests {
             command_line: "cmd.exe /k prompt e2e$G",
             env: &[],
             size: SIZE,
+            working_folder: None,
         };
         let mut pty = ConPty::spawn(&shell_options, Arc::new(|| {})).unwrap();
         let mut vt = Vt::new(SIZE, "xterm-256color").unwrap();
@@ -744,6 +752,7 @@ mod tests {
             command_line: "ping.exe -t 127.0.0.1",
             env: &[],
             size: SIZE,
+            working_folder: None,
         };
         let late = spawn_process(pty.console, &late_options, CREATE_SUSPENDED).unwrap();
 

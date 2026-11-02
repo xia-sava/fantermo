@@ -1,6 +1,6 @@
 //! シェルと接続するバックエンド（ConPTY やブリッジ）の共通の形。
 
-use std::{io, sync::Arc};
+use std::{io, path::Path, sync::Arc};
 
 /// 端末の大きさ。セルの数と、1 セルのピクセル寸法。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +26,8 @@ pub struct SpawnOptions<'a> {
     pub env: &'a [(&'a str, &'a str)],
     /// 起動したときの端末の大きさ。
     pub size: GridSize,
+    /// 子プロセスの作業フォルダ。`None` ならこのプロセスの作業フォルダ。
+    pub working_folder: Option<&'a Path>,
 }
 
 /// シェルとの間の入出力を受け持つもの。

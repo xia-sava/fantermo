@@ -7,9 +7,11 @@ use fantermo_core::config::{Profile, profile_position};
 use windows::Win32::System::Environment::GetCommandLineW;
 
 /// プロファイルを指定するオプション。
-const PROFILE_OPTION: &str = "--profile";
+pub const PROFILE_OPTION: &str = "--profile";
+/// すでに動いているウィンドウがあっても新しいウィンドウを開くオプション。
+pub const NEW_WINDOW_OPTION: &str = "--new-window";
 /// オプションの終わりを示す語。
-const END_OF_OPTIONS: &str = "--";
+pub const END_OF_OPTIONS: &str = "--";
 /// オプションと同じ形の語の先頭。`--profile` の値としては受け取らない。
 const OPTION_PREFIX: &str = "--";
 
@@ -28,6 +30,8 @@ pub struct Options {
     pub tab: TabRequest,
     /// 名前のない `--profile` があった。
     pub profile_without_name: bool,
+    /// すでに動いているウィンドウがあっても新しいウィンドウを開く。
+    pub new_window: bool,
 }
 
 impl Options {
@@ -53,6 +57,10 @@ impl Options {
                 END_OF_OPTIONS => {
                     rest = after_word;
                     break;
+                }
+                NEW_WINDOW_OPTION => {
+                    options.new_window = true;
+                    rest = after_word;
                 }
                 PROFILE_OPTION => {
                     let (value, after_value) = next_word(after_word);
@@ -251,6 +259,22 @@ mod tests {
         assert_eq!(parsed(r#"--profile """#), (None, None, true));
         assert_eq!(parsed("--profile -- cmd"), (None, some("cmd"), true));
         assert_eq!(parsed("--profile --foo"), (None, some("--foo"), true));
+    }
+
+    #[test]
+    fn the_new_window_option_is_read_at_the_start() {
+        let options = Options::parse("--new-window --profile one zsh --new-window");
+        assert!(options.new_window);
+        assert_eq!(options.tab.profile.as_deref(), Some("one"));
+        assert_eq!(options.tab.command.as_deref(), Some("zsh --new-window"));
+
+        assert!(Options::parse("--profile one --new-window").new_window);
+        assert!(!Options::parse("-- --new-window").new_window);
+        assert!(!Options::parse("vim --new-window").new_window);
+        // `--profile` の名前の代わりに書かれていれば、名前がないものとして続ける。
+        let options = Options::parse("--profile --new-window");
+        assert!(options.new_window);
+        assert!(options.profile_without_name);
     }
 
     #[test]

@@ -31,12 +31,24 @@ use std::{
 };
 
 use serde_json::Value;
+use windows::{
+    Win32::System::{
+        StationsAndDesktops::{
+            CloseDesktop, DESKTOP_CONTROL_FLAGS, GetThreadDesktop, OpenDesktopW, SetThreadDesktop,
+        },
+        Threading::GetCurrentThreadId,
+    },
+    core::HSTRING,
+};
 
 /// テストの実行ファイルごとの、起動の連番。
 static SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
 /// 同時に起動する fantermo の数を数える。デスクトップのヒープと描画の負荷を抑える。
 static RUNNING: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
+
+/// デスクトップに許す操作（`GENERIC_ALL`）。
+const DESKTOP_GENERIC_ALL: u32 = 0x1000_0000;
 
 /// 同時に起動する fantermo の上限。
 const MAX_RUNNING: usize = 4;
@@ -82,6 +94,21 @@ pub struct Server {
     child: Child,
     port: u16,
     dir: PathBuf,
+    /// 動いている別デスクトップの名前。
+    desktop: String,
+    /// 同時に起動する数の枠を持っている。
+    holds_slot: bool,
+}
+
+/// [`Server::launch_again_with`] の、同じデスクトップで fantermo をもう一度起動する指定。
+#[derive(Default)]
+pub struct LaunchAgain<'a> {
+    /// 作業フォルダ。なければ元の fantermo の一時フォルダ（足されたタブの作業フォルダになる）。
+    pub working_folder: Option<&'a Path>,
+    /// 設定。なければ元の fantermo と同じ設定ファイル。
+    pub config_toml: Option<&'a str>,
+    /// 別の実行ファイルとして起動する。一時フォルダに写して起動する。
+    pub copy_of_executable: bool,
 }
 
 impl Server {
@@ -191,13 +218,124 @@ impl Server {
             .stderr(log_for_stderr)
             .spawn()
             .unwrap_or_else(|e| panic!("failed to start {}: {e}", run_hidden.display()));
+        let desktop = format!("run-hidden-{}", child.id());
         let mut server = Self {
             child,
             port: 0,
             dir,
+            desktop,
+            holds_slot: true,
         };
         server.port = server.wait_for_port();
         server
+    }
+
+    /// 同じ別デスクトップで、同じ設定ファイルで fantermo をもう一度起動する。すぐに戻る。起動したものがウィンドウを開く
+    /// なら [`Server::wait_for_window`] で待って操作し、ほかのウィンドウへ渡して終わるなら [`Server::wait_exit`] で待つ。
+    /// ウィンドウの状態・ログ・ポートの一時フォルダは別にする。
+    pub fn launch_again(&self, arguments: &[&str]) -> Self {
+        self.launch_again_with(arguments, &LaunchAgain::default())
+    }
+
+    /// [`Server::launch_again`] に、作業フォルダなどの指定を足す。
+    pub fn launch_again_with(&self, arguments: &[&str], again: &LaunchAgain) -> Self {
+        let run_hidden = sibling_of_fantermo("run-hidden.exe");
+        let dir = std::env::temp_dir().join(format!(
+            "fantermo-e2e-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("failed to create the temporary folder");
+        let config = match again.config_toml {
+            Some(config_toml) => {
+                let path = dir.join("config.toml");
+                std::fs::write(&path, config_toml).expect("failed to write the settings");
+                path
+            }
+            None => self.dir.join("config.toml"),
+        };
+        let exe = if again.copy_of_executable {
+            let copy = dir.join("fantermo-copy.exe");
+            std::fs::copy(fantermo_exe(), &copy).expect("failed to copy fantermo");
+            copy
+        } else {
+            fantermo_exe()
+        };
+        let log = File::create(log_path(&dir)).expect("failed to create the log");
+        let log_for_stderr = log.try_clone().expect("failed to duplicate the log");
+        let child = Command::new(&run_hidden)
+            .args([
+                "--seconds",
+                LIFETIME_SECONDS,
+                "--desktop",
+                &self.desktop,
+                "--",
+            ])
+            .arg(&exe)
+            .args(arguments)
+            .current_dir(again.working_folder.unwrap_or(&self.dir))
+            .env(CLIPBOARD_FILE_ENV, dir.join("clipboard.txt"))
+            .env("FANTERMO_DPI", "96")
+            .env("RUST_LOG", "info,fantermo=debug")
+            .env("NO_COLOR", "1")
+            .env_remove("HOME")
+            .env_remove("SHELL")
+            .env("FANTERMO_E2E_DIR", &dir)
+            .env("FANTERMO_CONFIG", &config)
+            .env("FANTERMO_STATE", dir.join(STATE_FILE))
+            .stdin(Stdio::null())
+            .stdout(log)
+            .stderr(log_for_stderr)
+            .spawn()
+            .unwrap_or_else(|e| panic!("failed to start {}: {e}", run_hidden.display()));
+        Self {
+            child,
+            port: 0,
+            dir,
+            desktop: self.desktop.clone(),
+            // テストは元の fantermo の枠を持ったまま呼ぶので、枠を待つと止まることがある。
+            holds_slot: false,
+        }
+    }
+
+    /// `action` を、この fantermo と同じ別デスクトップのスレッドで呼ぶ。ウィンドウのハンドルは同じデスクトップからしか
+    /// 使えない。
+    pub fn on_its_desktop<T: Send>(&self, action: impl FnOnce() -> T + Send) -> T {
+        let name = HSTRING::from(self.desktop.as_str());
+        thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    // SAFETY: name は終端付きの UTF-16 で、この呼び出しの間は生きている。
+                    let desktop = unsafe {
+                        OpenDesktopW(&name, DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_GENERIC_ALL)
+                    }
+                    .expect("failed to open the desktop");
+                    // SAFETY: このスレッドの番号を渡すだけ。返るハンドルは閉じなくてよい。
+                    let original = unsafe { GetThreadDesktop(GetCurrentThreadId()) }
+                        .expect("failed to read the desktop");
+                    // SAFETY: このスレッドはまだウィンドウもフックも持っていない。
+                    unsafe { SetThreadDesktop(desktop) }.expect("failed to change the desktop");
+                    let result = action();
+                    // SAFETY: 移す前のデスクトップに戻してから、開いたハンドルを閉じる。
+                    unsafe {
+                        SetThreadDesktop(original).expect("failed to change the desktop back");
+                        CloseDesktop(desktop).expect("failed to close the desktop");
+                    }
+                    result
+                })
+                .join()
+                .expect("the thread on the desktop failed")
+        })
+    }
+
+    /// [`Server::launch_again`] で起動したものがウィンドウを開くのを待つ。
+    pub fn wait_for_window(&mut self) {
+        self.port = self.wait_for_port();
+    }
+
+    /// 制御の口を開いたか。
+    pub fn opened_a_window(&self) -> bool {
+        self.dir.join("port").exists()
     }
 
     /// 既定の設定で、`cmd.exe` をプロンプト `e2e>` で起動する。
@@ -511,7 +649,9 @@ impl Drop for Server {
             Err(e) => eprintln!("failed to check run-hidden: {e}"),
         }
         remove_folder(&self.dir);
-        release_slot();
+        if self.holds_slot {
+            release_slot();
+        }
     }
 }
 

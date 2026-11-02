@@ -34,14 +34,15 @@ use windows::{
                 ENDSESSION_LOGOFF, EndMenu, EnumChildWindows, EnumThreadWindows, GWL_STYLE,
                 GetClassNameW, GetDlgCtrlID, GetMenuItemCount, GetMenuItemInfoW,
                 GetNextDlgGroupItem, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
-                GetWindowTextW, HMENU, IsWindow, IsWindowVisible, LB_GETCOUNT, LB_GETCURSEL,
-                LB_GETTEXT, LB_GETTEXTLEN, LB_SETCURSEL, LBN_SELCHANGE, MENUITEMINFOW, MFS_CHECKED,
-                MFS_GRAYED, MFS_HILITE, MFT_SEPARATOR, MIIM_BITMAP, MIIM_FTYPE, MIIM_STATE,
-                MIIM_STRING, MIIM_SUBMENU, MN_GETHMENU, PostMessageW, SWP_NOACTIVATE, SWP_NOMOVE,
-                SWP_NOZORDER, SendMessageW, SetWindowPos, SetWindowTextW, WM_CAPTURECHANGED,
-                WM_CLOSE, WM_COMMAND, WM_ENDSESSION, WM_GETDPISCALEDSIZE, WM_KEYDOWN, WM_KEYUP,
-                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
-                WM_MOUSEWHEEL, WM_NOTIFY, WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP,
+                GetWindowTextW, HMENU, HWND_BOTTOM, IsWindow, IsWindowVisible, LB_GETCOUNT,
+                LB_GETCURSEL, LB_GETTEXT, LB_GETTEXTLEN, LB_SETCURSEL, LBN_SELCHANGE,
+                MENUITEMINFOW, MFS_CHECKED, MFS_GRAYED, MFS_HILITE, MFT_SEPARATOR, MIIM_BITMAP,
+                MIIM_FTYPE, MIIM_STATE, MIIM_STRING, MIIM_SUBMENU, MN_GETHMENU, PostMessageW,
+                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetWindowPos,
+                SetWindowTextW, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_ENDSESSION,
+                WM_GETDPISCALEDSIZE, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+                WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NOTIFY,
+                WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP,
             },
         },
     },
@@ -142,6 +143,12 @@ fn run(hwnd: HWND, Pending { request, reply }: Pending, with_app: &WithApp) {
         Request::ResizeWindow { cols, rows } => {
             answer(resize_window(hwnd, cols, rows, with_app));
         }
+        Request::LowerWindow => answer(lower_window(hwnd)),
+        // 答えを返してから、メッセージを処理しないまま止まる。応答しないウィンドウの代わり。
+        Request::BlockWindow(milliseconds) => {
+            answer(Response::json(&json!({})));
+            std::thread::sleep(std::time::Duration::from_millis(milliseconds));
+        }
         Request::SendMessage { message, wparam } => {
             answer(send_window_message(hwnd, message, wparam));
         }
@@ -227,6 +234,27 @@ fn resize_window(hwnd: HWND, cols: u16, rows: u16, with_app: &WithApp) -> Respon
     let mut response = None;
     with_app(&mut |app| response = Some(Response::json(&app.e2e_state())));
     response.unwrap_or_else(|| Response::internal_error("the window is busy with another message"))
+}
+
+/// ウィンドウを同じデスクトップの Z オーダーのいちばん下へ移す。もう一方のウィンドウを利用者が使ったときと同じ順になる。
+/// 前面に出す権利のない別デスクトップのスレッドでは、いちばん上へ移すことはできない。
+fn lower_window(hwnd: HWND) -> Response {
+    // SAFETY: hwnd は有効なウィンドウ。大きさは変えないので WM_SIZE は届かない。
+    let lowered = unsafe {
+        SetWindowPos(
+            hwnd,
+            Some(HWND_BOTTOM),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+    };
+    match lowered {
+        Ok(()) => Response::json(&json!({})),
+        Err(e) => Response::internal_error(format!("cannot lower the window: {e}")),
+    }
 }
 
 /// ウィンドウにメッセージを送り、ウィンドウプロシージャの戻り値を返す。
@@ -1111,6 +1139,8 @@ impl App {
             }
             Request::Quit
             | Request::ResizeWindow { .. }
+            | Request::LowerWindow
+            | Request::BlockWindow(_)
             | Request::SendMessage { .. }
             | Request::Mouse(_)
             | Request::MenuItems
@@ -1253,6 +1283,7 @@ impl App {
                 "image": background_image,
             },
             "pid": std::process::id(),
+            "hwnd": self.hwnd.0 as usize,
             "dpi": self.dpi,
             // SAFETY: self.hwnd は有効なウィンドウ。
             "monitor_dpi": unsafe { GetDpiForWindow(self.hwnd) },
