@@ -1171,4 +1171,12 @@ mod tests {
         assert!(!is_device_lost(&E_FAIL.into()));
         assert!(!is_device_lost(&E_OUTOFMEMORY.into()));
     }
+
+    #[test]
+    fn a_warp_device_registers_for_its_removal_and_unregisters_on_drop() {
+        let (device, _context) = create_device_with(D3D_DRIVER_TYPE_WARP).unwrap();
+        let watch = DeviceRemovedWatch::register(&device, Box::new(|| {}));
+        assert!(watch.is_some());
+        drop(watch);
+    }
 }
