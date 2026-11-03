@@ -1098,6 +1098,7 @@ fn cygwin_clipboard_read_dialog_waits_for_the_menu_to_close() {
     wait_sh_ready(&server);
 
     // 裏に回したあとで依頼を出させるため、ファイルができるのを待ってから依頼し、タイトルで知らせる。
+    // ファイルは設定ファイルと同じフォルダに置くが、設定の監視はファイルの名前で照合して捨てる。
     let trigger = server.dir().join("clipboard-read-trigger");
     server.send_line(&format!(
         r#"t=$(cygpath -u '{}'); echo waiting-$((1+1)); while [ ! -e "$t" ]; do sleep 0.1; done; printf '\033]52;c;?\007\033]2;read-sent\007'"#,
@@ -1112,12 +1113,16 @@ fn cygwin_clipboard_read_dialog_waits_for_the_menu_to_close() {
     server.wait_until("the read from the other tab", |state| {
         state["tabs"][1]["title"] == "read-sent"
     });
-    let only_the_menu = |state: &Value| {
-        state["dialogs"].as_array().is_some_and(|dialogs| {
-            !dialogs.is_empty() && dialogs.iter().all(|dialog| dialog["class"] == MENU_CLASS)
-        })
-    };
-    server.assert_holds_for(Duration::from_secs(1), "only the menu", only_the_menu);
+    server.wait_until("the read waiting for the menu", |_| {
+        server
+            .log()
+            .contains("a clipboard read waits for the menu to close")
+    });
+    let state = server.state();
+    let only_the_menu = state["dialogs"].as_array().is_some_and(|dialogs| {
+        !dialogs.is_empty() && dialogs.iter().all(|dialog| dialog["class"] == MENU_CLASS)
+    });
+    assert!(only_the_menu, "{state:#}");
 
     server.post("/e2e/menu/close", b"");
     wait_dialog_of_class(&server, SYSTEM_DIALOG_CLASS);

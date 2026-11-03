@@ -1451,7 +1451,13 @@ impl App {
     /// タブの許可が変わったら、それに従って片づける。
     fn next_clipboard_prompt(&mut self) -> Option<Deferred> {
         // SAFETY: ウィンドウのハンドルを調べるだけ。
-        if !unsafe { IsWindowEnabled(self.hwnd) }.as_bool() || in_menu() {
+        if !unsafe { IsWindowEnabled(self.hwnd) }.as_bool() {
+            return None;
+        }
+        if in_menu() {
+            if self.clipboard_prompts.has_waiting() {
+                tracing::debug!("a clipboard read waits for the menu to close");
+            }
             return None;
         }
         while let Some((id, request)) = self.clipboard_prompts.start_next() {
@@ -3876,6 +3882,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             run_deferred(hwnd, deferred, &with_app);
             LRESULT(0)
         }
+        // メニューを閉じたら、待っていた確認と起動を見直す。
         WM_EXITMENULOOP => {
             poster(hwnd, WM_APP_CLIPBOARD_PROMPT, WPARAM(0))();
             poster(hwnd, WM_APP_LAUNCH, WPARAM(0))();
