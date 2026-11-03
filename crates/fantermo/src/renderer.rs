@@ -2,6 +2,8 @@
 
 use std::{
     collections::HashMap,
+    ffi::c_void,
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     path::{Path, PathBuf},
     rc::Rc,
 };
@@ -12,31 +14,39 @@ use fantermo_core::{
     frame::{Frame, ImageKey, ImageLayer, ImageView, Rgb, Underline},
     vt::Vt,
 };
-use windows::Win32::{
-    Foundation::{D2DERR_RECREATE_TARGET, HMODULE, HWND},
-    Graphics::{
-        Direct3D::{
-            D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL,
-            D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0,
-            D3D_FEATURE_LEVEL_11_1,
+use windows::{
+    Win32::{
+        Foundation::{D2DERR_RECREATE_TARGET, HANDLE, HMODULE, HWND, INVALID_HANDLE_VALUE},
+        Graphics::{
+            Direct3D::{
+                D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL,
+                D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0,
+                D3D_FEATURE_LEVEL_11_1,
+            },
+            Direct3D11::{
+                D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+                D3D11_RESOURCE_MISC_GENERATE_MIPS, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
+                D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device,
+                ID3D11Device4, ID3D11DeviceContext, ID3D11RenderTargetView,
+                ID3D11ShaderResourceView, ID3D11Texture2D,
+            },
+            DirectWrite::IDWriteFactory,
+            Dxgi::{
+                Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC},
+                CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_ERROR_DEVICE_REMOVED,
+                DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_DRIVER_INTERNAL_ERROR, DXGI_MWA_NO_ALT_ENTER,
+                DXGI_MWA_NO_WINDOW_CHANGES, DXGI_PRESENT, DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1,
+                DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIFactory2, IDXGISwapChain1,
+            },
         },
-        Direct3D11::{
-            D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ,
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
-            D3D11_RESOURCE_MISC_GENERATE_MIPS, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
-            D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device,
-            ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D,
-        },
-        DirectWrite::IDWriteFactory,
-        Dxgi::{
-            Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC},
-            CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_ERROR_DEVICE_REMOVED,
-            DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_DRIVER_INTERNAL_ERROR, DXGI_MWA_NO_ALT_ENTER,
-            DXGI_MWA_NO_WINDOW_CHANGES, DXGI_PRESENT, DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1,
-            DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
-            IDXGIFactory2, IDXGISwapChain1,
+        System::Threading::{
+            CreateEventW, INFINITE, RegisterWaitForSingleObject, UnregisterWaitEx,
+            WT_EXECUTEONLYONCE,
         },
     },
+    core::{Interface, PCWSTR},
 };
 
 use crate::{
@@ -76,6 +86,9 @@ const FEATURE_LEVELS: [D3D_FEATURE_LEVEL; 4] = [
 pub type Rgba = [f32; 4];
 
 pub struct Renderer {
+    /// デバイスを失ったことを知らせる登録。構造体のフィールドは書いた順に捨てるので、先頭に置いて
+    /// デバイスやスワップチェーンより先に解除する。登録できない環境では `None`。
+    _device_removed_watch: Option<DeviceRemovedWatch>,
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     swap_chain: IDXGISwapChain1,
@@ -155,6 +168,10 @@ pub struct Backdrop<'a> {
 }
 
 impl Renderer {
+    /// `hwnd` に描く `Renderer` を作る。デバイスを失うと、`on_device_removed` をスレッドプールのスレッドから
+    /// 一度だけ呼ぶ（`ID3D11Device4` を使えない環境では呼ばない）。`on_device_removed` は、`Renderer` を
+    /// 捨てるときにウィンドウのスレッドがその終わりを待つので、すぐに戻るもの（`PostMessageW` など）にする。
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         hwnd: HWND,
         width: u32,
@@ -163,8 +180,10 @@ impl Renderer {
         font: &Font,
         ui_font: Rc<UiFont>,
         wide_glyph: WideGlyph,
+        on_device_removed: DeviceRemovedNotify,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (device, context) = create_device()?;
+        let device_removed_watch = DeviceRemovedWatch::register(&device, on_device_removed);
         // SAFETY: フラグなしでファクトリを作るだけ。
         let factory: IDXGIFactory2 = unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))? };
         let desc = DXGI_SWAP_CHAIN_DESC1 {
@@ -196,6 +215,7 @@ impl Renderer {
         let atlas = GlyphAtlas::new(&device, dwrite, font, ui_font, wide_glyph)?;
         let pipeline = CellPipeline::new(&device)?;
         let mut renderer = Self {
+            _device_removed_watch: device_removed_watch,
             device,
             context,
             swap_chain,
@@ -216,10 +236,15 @@ impl Renderer {
         Ok(renderer)
     }
 
+    /// デバイスを失ったか（`GetDeviceRemovedReason`）。失っていれば、その理由をエラーで返す。
+    pub fn device_removed(&self) -> windows::core::Result<()> {
+        // SAFETY: 引数のない問い合わせ。
+        unsafe { self.device.GetDeviceRemovedReason() }
+    }
+
     /// デバイスを失った理由（`GetDeviceRemovedReason`）。失っていなければ `S_OK`。
     pub fn device_removed_reason(&self) -> String {
-        // SAFETY: 引数のない問い合わせ。
-        match unsafe { self.device.GetDeviceRemovedReason() } {
+        match self.device_removed() {
             Ok(()) => "S_OK".to_owned(),
             Err(e) => e.to_string(),
         }
@@ -228,7 +253,8 @@ impl Renderer {
     /// すべての資源を手放す。同じウィンドウに新しい `Renderer` を作る前に使う。
     ///
     /// 一つのウィンドウに flip model のスワップチェーンは一つしか持てず、Direct3D 11 はオブジェクトの解放を
-    /// 遅らせるので、スワップチェーンを手放したあとに `ClearState` と `Flush` で解放を済ませる。
+    /// 遅らせるので、スワップチェーンを手放したあとに `ClearState` と `Flush` で解放を済ませる。デバイスを
+    /// 失ったことを知らせる登録は、ほかの資源より先に解除する。
     pub fn release(self) {
         let context = self.context.clone();
         drop(self);
@@ -957,6 +983,111 @@ fn image_instance(placement: &Placement) -> Instance {
         },
         _padding: [0; 3],
     }
+}
+
+/// デバイスを失ったときに [`Renderer`] が呼ぶもの。スレッドプールのスレッドから呼ぶ。
+pub type DeviceRemovedNotify = Box<dyn Fn() + Send + Sync + 'static>;
+
+/// デバイスを失ったときにイベントをシグナルさせ（`ID3D11Device4::RegisterDeviceRemovedEvent`）、
+/// スレッドプールでイベントを待って、シグナルされたら知らせを一度だけ呼ぶ。捨てるときに、待ちを解除して
+/// 呼び出しの終わりを待ち、デバイスへの登録を解除してから、イベントと知らせを手放す。
+struct DeviceRemovedWatch {
+    device: ID3D11Device4,
+    cookie: u32,
+    wait: HANDLE,
+    /// デバイスがシグナルさせるイベント。`Drop` で登録を解除したあと、フィールドを捨てるときに閉じる。
+    _event: OwnedHandle,
+    /// 待ちのコールバックに渡したポインタの指す先。`Drop` で待ちを解除したあと、フィールドを捨てるときに
+    /// 手放す。
+    _notify: Box<DeviceRemovedNotify>,
+}
+
+impl DeviceRemovedWatch {
+    /// `device` を失ったら `notify` を呼ぶように登録する。`ID3D11Device4` を使えない環境と、登録に失敗した
+    /// ときは `None`（描くときに失ったことに気づく）。
+    fn register(device: &ID3D11Device, notify: DeviceRemovedNotify) -> Option<Self> {
+        let device: ID3D11Device4 = match device.cast() {
+            Ok(device) => device,
+            Err(e) => {
+                tracing::debug!("no ID3D11Device4; noticing a lost device only when drawing: {e}");
+                return None;
+            }
+        };
+        // SAFETY: 名前のない、手動でリセットするイベントを作るだけ。
+        let event = match unsafe { CreateEventW(None, true, false, PCWSTR::null()) } {
+            Ok(event) => event,
+            Err(e) => {
+                tracing::warn!("failed to create the event for a lost Direct3D device: {e}");
+                return None;
+            }
+        };
+        // SAFETY: event はいま作った有効なハンドルで、ほかに持ち主はいない。
+        let event = unsafe { OwnedHandle::from_raw_handle(event.0) };
+        let notify = Box::new(notify);
+        let context: *const DeviceRemovedNotify = &*notify;
+        let mut wait = HANDLE::default();
+        // SAFETY: wait は書き込める。event は有効なイベント。context の指す先は Box の中にあって動かず、
+        // Drop が待ちを解除してコールバックの終わりを待ってから手放す。失敗したときは notify をこの場で
+        // 手放すが、登録されていないのでコールバックは呼ばれない。WT_EXECUTEONLYONCE で、シグナルされた
+        // ままのイベントでもコールバックは一度だけ呼ばれる。
+        if let Err(e) = unsafe {
+            RegisterWaitForSingleObject(
+                &mut wait,
+                HANDLE(event.as_raw_handle()),
+                Some(on_device_removed),
+                Some(context.cast()),
+                INFINITE,
+                WT_EXECUTEONLYONCE,
+            )
+        } {
+            tracing::warn!("failed to wait for the event for a lost Direct3D device: {e}");
+            return None;
+        }
+        // SAFETY: event は有効なイベントで、登録を解除するまで閉じない。
+        let cookie =
+            match unsafe { device.RegisterDeviceRemovedEvent(HANDLE(event.as_raw_handle())) } {
+                Ok(cookie) => cookie,
+                Err(e) => {
+                    tracing::warn!("failed to register the event for a lost Direct3D device: {e}");
+                    unregister_wait(wait);
+                    return None;
+                }
+            };
+        tracing::debug!("registered the event for a lost Direct3D device");
+        Some(Self {
+            device,
+            cookie,
+            wait,
+            _event: event,
+            _notify: notify,
+        })
+    }
+}
+
+impl Drop for DeviceRemovedWatch {
+    fn drop(&mut self) {
+        unregister_wait(self.wait);
+        // SAFETY: cookie は self.device の RegisterDeviceRemovedEvent が返したもので、まだ解除していない。
+        // デバイスを失っていても呼べる。
+        unsafe { self.device.UnregisterDeviceRemoved(self.cookie) };
+    }
+}
+
+/// `RegisterWaitForSingleObject` の待ちを解除し、走っているコールバックの終わりまで待つ。
+fn unregister_wait(wait: HANDLE) {
+    // SAFETY: wait は RegisterWaitForSingleObject が返したもので、まだ解除していない。コールバック
+    // （`on_device_removed`）の中からは呼ばないので、終わりを待っても止まったままにならない。
+    if let Err(e) = unsafe { UnregisterWaitEx(wait, Some(INVALID_HANDLE_VALUE)) } {
+        tracing::warn!("failed to stop waiting for the event for a lost Direct3D device: {e}");
+    }
+}
+
+/// デバイスを失ったことを知らせるイベントがシグナルされた。スレッドプールのスレッドで呼ばれる。
+unsafe extern "system" fn on_device_removed(context: *mut c_void, _timed_out: bool) {
+    // SAFETY: context は DeviceRemovedWatch::register が渡した Box の中の DeviceRemovedNotify を指し、
+    // DeviceRemovedWatch の Drop がこの呼び出しの終わりを待ってから手放す。
+    let notify = unsafe { &*context.cast::<DeviceRemovedNotify>() };
+    notify();
 }
 
 /// `error` が、デバイスを失った（ドライバの更新やリセット、ドライバの内部のエラーなど）ことによるもの。

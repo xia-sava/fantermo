@@ -141,6 +141,10 @@ const WM_APP_LAUNCH: u32 = WM_APP + 6;
 /// [`WM_APP_LAUNCH`] の `wparam`。届いたところ。
 const LAUNCH_ARRIVED: usize = 1;
 
+/// Direct3D のデバイスを失ったと、スレッドプールのスレッドが知らせるメッセージ。知らせた `Renderer` を
+/// 作り直したあとに届くこともある。
+const WM_APP_DEVICE_REMOVED: u32 = WM_APP + 7;
+
 /// 画面の書き出しに使うタイマー。
 const DUMP_TIMER_ID: usize = 1;
 
@@ -170,6 +174,9 @@ const RENDERER_RETRY_DELAY: Duration = Duration::from_millis(1500);
 
 /// 出力を流しきれなかった端末の続きを、キー入力と描き直しを処理させたあとで流すタイマー。
 const OUTPUT_TIMER_ID: usize = 7;
+
+/// 借用が重なって [`WM_APP_DEVICE_REMOVED`] を飛ばしたときに、借用を手放したあとで処理し直すタイマー。
+const DEVICE_REMOVED_TIMER_ID: usize = 8;
 
 /// 画像のアニメーションで描き直す間隔の下限。
 const MIN_IMAGE_ANIMATION_INTERVAL: Duration = Duration::from_millis(8);
@@ -872,6 +879,7 @@ impl App {
             &font,
             ui_font.clone(),
             font_config.wide_glyph,
+            device_removed_poster(hwnd),
         )?;
         let first_id = SessionId(0);
         let session = Session::spawn(
@@ -2506,6 +2514,30 @@ impl App {
         }
     }
 
+    /// Direct3D のデバイスを失ったと知らされた（[`WM_APP_DEVICE_REMOVED`]）。今の `Renderer` のデバイスを
+    /// 失っていれば、描くときに気づいたときと同じく [`App::on_device_lost`] で作り直す。
+    fn on_device_removed_message(&mut self) {
+        let removed = self.renderer.as_ref().map(Renderer::device_removed);
+        match lost_device_to_recreate(removed) {
+            Some(error) => {
+                tracing::info!("notified that the Direct3D device was removed");
+                self.on_device_lost(&error);
+            }
+            None => tracing::debug!(
+                "ignored the notice of a removed Direct3D device: the current renderer is not affected"
+            ),
+        }
+    }
+
+    /// 飛ばした [`WM_APP_DEVICE_REMOVED`] を処理し直す時刻になった。タイマーを止めてから処理する。
+    fn on_device_removed_timer(&mut self) {
+        // SAFETY: self.hwnd は有効なウィンドウ。
+        if let Err(e) = unsafe { KillTimer(Some(self.hwnd), DEVICE_REMOVED_TIMER_ID) } {
+            tracing::warn!("failed to stop the timer to handle the removed Direct3D device: {e}");
+        }
+        self.on_device_removed_message();
+    }
+
     /// 失ったデバイスの代わりに `Renderer` を作り直し、各端末が選んだ背景画像を読み直す。読み直せなかった
     /// 端末と、`Renderer` がない間に開いた端末には、背景画像を選び直す。端末の中の画像とタブのアイコンの
     /// テクスチャは、描くときに作り直される。
@@ -2526,6 +2558,7 @@ impl App {
             &self.font,
             self.ui_font.clone(),
             self.font_config.wide_glyph,
+            device_removed_poster(self.hwnd),
         ) {
             Ok(renderer) => renderer,
             Err(e) if self.renderer_recreations >= MAX_RENDERER_RECREATIONS => {
@@ -3161,6 +3194,24 @@ fn poster(hwnd: HWND, message: u32, wparam: WPARAM) -> impl Fn() + Send + Sync +
     }
 }
 
+/// デバイスを失ったと知らされたときに、`Renderer` を作り直すきっかけにするエラー。`removed` は今の
+/// `Renderer` のデバイスを失ったか（[`Renderer::device_removed`]）で、`Renderer` がなければ `None`。
+///
+/// 作り直すのは、今の `Renderer` のデバイスを失っているときだけ。`Renderer` がないときは、作り直しを
+/// タイマーで待っているか描画をやめたあとで、失っていないときは、知らせたデバイスの `Renderer` を描くときに
+/// 気づいてすでに作り直したあと。
+fn lost_device_to_recreate(
+    removed: Option<windows::core::Result<()>>,
+) -> Option<windows::core::Error> {
+    removed?.err()
+}
+
+/// `Renderer` がデバイスを失ったときに呼ぶもの。`hwnd` に [`WM_APP_DEVICE_REMOVED`] を積む。ウィンドウの
+/// ハンドルの値だけを持つので、ウィンドウが壊れたあとに呼ばれても積むのに失敗するだけ。
+fn device_removed_poster(hwnd: HWND) -> renderer::DeviceRemovedNotify {
+    Box::new(poster(hwnd, WM_APP_DEVICE_REMOVED, WPARAM(0)))
+}
+
 /// 端末 `id` のバックエンドへ渡す [`Wake`]。ほかのスレッドから呼ばれ、`hwnd` に [`WM_APP_WAKE`] を積む。積めたら
 /// `true` を返す（積めなければ、バックエンドは次の出力でまた知らせる）。
 fn wake_poster(hwnd: HWND, id: SessionId) -> Wake {
@@ -3651,6 +3702,26 @@ fn repost_skipped_wakes() {
     }
 }
 
+/// 借用が重なって飛ばした [`WM_APP_DEVICE_REMOVED`] を、[`DEVICE_REMOVED_TIMER_ID`] のタイマーで処理し直す。
+/// タイマーは処理できるまで届き続け、処理したところで止める。
+fn start_device_removed_timer(hwnd: HWND) {
+    // SAFETY: hwnd は有効なウィンドウ。同じ番号のタイマーは置き換わる。
+    if unsafe {
+        SetTimer(
+            Some(hwnd),
+            DEVICE_REMOVED_TIMER_ID,
+            USER_TIMER_MINIMUM,
+            None,
+        )
+    } == 0
+    {
+        tracing::warn!(
+            "failed to start the timer to handle the removed Direct3D device: {}",
+            windows::core::Error::from_thread()
+        );
+    }
+}
+
 /// [`OUTPUT_TIMER_ID`] のタイマーを動かす。動かせなければ warn を残して `false` を返す。
 fn start_output_timer(hwnd: HWND) -> bool {
     // SAFETY: hwnd は有効なウィンドウ。同じ番号のタイマーは置き換わる。
@@ -3712,6 +3783,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 tracing::debug!("skipped reentrant message {msg:#06x}");
                 if msg == WM_APP_WAKE {
                     remember_skipped_wake(hwnd, wparam);
+                } else if msg == WM_APP_DEVICE_REMOVED {
+                    start_device_removed_timer(hwnd);
                 }
             }
         }
@@ -3837,6 +3910,14 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         WM_TIMER if wparam.0 == IMAGE_ANIMATION_TIMER_ID => {
             with_app(&mut |app| app.on_image_animation_timer());
+            LRESULT(0)
+        }
+        WM_APP_DEVICE_REMOVED => {
+            with_app(&mut |app| app.on_device_removed_message());
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == DEVICE_REMOVED_TIMER_ID => {
+            with_app(&mut |app| app.on_device_removed_timer());
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == RENDERER_RETRY_TIMER_ID => {
@@ -4042,6 +4123,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 _ = KillTimer(Some(hwnd), IMAGE_ANIMATION_TIMER_ID);
                 _ = KillTimer(Some(hwnd), RENDERER_RETRY_TIMER_ID);
                 _ = KillTimer(Some(hwnd), OUTPUT_TIMER_ID);
+                _ = KillTimer(Some(hwnd), DEVICE_REMOVED_TIMER_ID);
             };
             let mut code = 0;
             with_app(&mut |app| {
@@ -4078,6 +4160,21 @@ mod tests {
     use super::*;
 
     const NOTCH: i32 = WHEEL_DELTA as i32;
+
+    #[test]
+    fn a_notice_of_a_removed_device_recreates_only_a_renderer_that_lost_its_device() {
+        use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED};
+
+        // 作り直しをタイマーで待っているか、描画をやめたあと。
+        assert!(lost_device_to_recreate(None).is_none());
+        // 描くときに気づいて、すでに作り直したあと。
+        assert!(lost_device_to_recreate(Some(Ok(()))).is_none());
+        // 今の Renderer のデバイスを失っている。理由は描くときに気づくエラーに限らない。
+        for code in [DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_HUNG] {
+            let error = lost_device_to_recreate(Some(Err(code.into())));
+            assert_eq!(error.map(|error| error.code()), Some(code));
+        }
+    }
 
     /// コマンドだけを指定した [`TabRequest`]。
     fn command(line: Option<&str>) -> TabRequest {
