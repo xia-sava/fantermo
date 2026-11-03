@@ -7,27 +7,21 @@
 
 use std::{
     io,
+    os::windows::io::AsRawHandle,
     path::{Path, PathBuf},
 };
 
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, HANDLE},
-        System::{
-            Diagnostics::ToolHelp::{
-                CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
-                TH32CS_SNAPPROCESS,
-            },
-            Threading::{
-                OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-                QueryFullProcessImageNameW,
-            },
+        Foundation::HANDLE,
+        System::Threading::{
+            PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
         },
     },
     core::PWSTR,
 };
 
-use crate::app_files::same_path;
+use crate::{app_files::same_path, process};
 
 /// スクリプトのファイルの名前。MSI と同じフォルダに書く。
 pub const SCRIPT_NAME: &str = "apply-update.ps1";
@@ -215,7 +209,7 @@ mod launcher {
 
 /// 実行ファイルが `exe` と同じ、ほかのプロセスの ID。自分（`own`）は除く。
 pub fn other_instances(exe: &Path, own: u32) -> Vec<u32> {
-    let pids = match process_ids() {
+    let pids = match process::ids() {
         Ok(pids) => pids,
         Err(e) => {
             tracing::warn!("failed to list the processes: {e}");
@@ -228,36 +222,15 @@ pub fn other_instances(exe: &Path, own: u32) -> Vec<u32> {
         .collect()
 }
 
-/// 動いているプロセスの ID。
-fn process_ids() -> windows::core::Result<Vec<u32>> {
-    // SAFETY: プロセスの一覧のスナップショットを取るだけ。ハンドルは読み終えたら閉じる。
-    let snapshot = Owned(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)? });
-    let mut entry = PROCESSENTRY32W {
-        dwSize: size_of::<PROCESSENTRY32W>() as u32,
-        ..Default::default()
-    };
-    let mut pids = Vec::new();
-    // SAFETY: snapshot は開いたスナップショットで、entry は大きさを入れて初期化してある。
-    let mut next = unsafe { Process32FirstW(snapshot.0, &mut entry) };
-    while next.is_ok() {
-        pids.push(entry.th32ProcessID);
-        // SAFETY: 同上。
-        next = unsafe { Process32NextW(snapshot.0, &mut entry) };
-    }
-    Ok(pids)
-}
-
 /// プロセス `pid` の実行ファイルのパス。問い合わせられなければ `None`。
 fn image_of(pid: u32) -> Option<String> {
-    // SAFETY: 問い合わせだけの権限で開く。ハンドルは読み終えたら閉じる。
-    let process =
-        Owned(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?);
+    let process = process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION).ok()?;
     let mut buffer = vec![0u16; IMAGE_NAME_CAPACITY];
     let mut length = buffer.len() as u32;
     // SAFETY: process は開いたハンドルで、buffer は length 個の u16 を書き込める。
     unsafe {
         QueryFullProcessImageNameW(
-            process.0,
+            HANDLE(process.as_raw_handle()),
             PROCESS_NAME_WIN32,
             PWSTR(buffer.as_mut_ptr()),
             &mut length,
@@ -265,18 +238,6 @@ fn image_of(pid: u32) -> Option<String> {
     }
     .ok()?;
     Some(String::from_utf16_lossy(&buffer[..length as usize]))
-}
-
-/// 閉じるハンドル。
-struct Owned(HANDLE);
-
-impl Drop for Owned {
-    fn drop(&mut self) {
-        // SAFETY: 開いたハンドルで、ほかでは閉じない。
-        if let Err(e) = unsafe { CloseHandle(self.0) } {
-            tracing::warn!("failed to close a handle: {e}");
-        }
-    }
 }
 
 #[cfg(test)]

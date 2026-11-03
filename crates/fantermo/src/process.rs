@@ -1,7 +1,8 @@
-//! プロセスのハンドルを開く・待つ・終了コードを読む・終わらせる処理と、子プロセスの出力のパイプを閉じるまで
-//! 読む処理。ConPTY とブリッジのバックエンドと、起動の指定を渡す先のウィンドウを選ぶ処理が使う。
+//! プロセスのハンドルを開く・待つ・終了コードを読む・終わらせる処理、動いているプロセスの一覧、子プロセスの
+//! 出力のパイプを閉じるまで読む処理。ConPTY とブリッジのバックエンド、起動の指定を渡す先のウィンドウを選ぶ
+//! 処理、更新の適用の前にほかの fantermo を探す処理が使う。
 //!
-//! 開く・待つ・終了コードを読む・終わらせる処理は、失敗したときのログを何のプロセスかが分かる呼び出し元で
+//! 開く・待つ・終了コードを読む・終わらせる・一覧を作る処理は、失敗したときのログを何のプロセスかが分かる呼び出し元で
 //! 残すので、エラーを返すだけにする。読む処理は、読めなかったときのログを読む相手の名前を添えてここで残す。
 
 use std::{
@@ -12,9 +13,15 @@ use std::{
 
 use windows::Win32::{
     Foundation::{HANDLE, WAIT_OBJECT_0},
-    System::Threading::{
-        GetExitCodeProcess, INFINITE, OpenProcess, PROCESS_ACCESS_RIGHTS, TerminateProcess,
-        WaitForSingleObject,
+    System::{
+        Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+            TH32CS_SNAPPROCESS,
+        },
+        Threading::{
+            GetExitCodeProcess, INFINITE, OpenProcess, PROCESS_ACCESS_RIGHTS, TerminateProcess,
+            WaitForSingleObject,
+        },
     },
 };
 
@@ -55,6 +62,28 @@ pub fn exit_code(process: &OwnedHandle) -> windows::core::Result<u32> {
 pub fn terminate(process: &OwnedHandle) -> windows::core::Result<()> {
     // SAFETY: process は呼び出し元が持つ有効なプロセスのハンドル。
     unsafe { TerminateProcess(handle(process), TERMINATED_EXIT_CODE) }
+}
+
+/// 動いているプロセスの番号。このプロセスも含む。
+pub fn ids() -> windows::core::Result<Vec<u32>> {
+    // SAFETY: プロセスの一覧のスナップショットを取るだけ。
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)? };
+    // SAFETY: 成功したので、ハンドルは有効で、ほかに持ち主はいない。
+    let owned = unsafe { OwnedHandle::from_raw_handle(snapshot.0) };
+    let snapshot = HANDLE(owned.as_raw_handle());
+    let mut entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut pids = Vec::new();
+    // SAFETY: snapshot は有効で、entry は dwSize を入れてある。
+    let mut more = unsafe { Process32FirstW(snapshot, &mut entry) }.is_ok();
+    while more {
+        pids.push(entry.th32ProcessID);
+        // SAFETY: 同上。
+        more = unsafe { Process32NextW(snapshot, &mut entry) }.is_ok();
+    }
+    Ok(pids)
 }
 
 /// 子プロセスの出力のパイプ `reader` を、閉じるまで一度に `buffer_size` バイトまで読んで `on_chunk` に渡す。
@@ -158,5 +187,6 @@ mod tests {
         let process = open(std::process::id(), PROCESS_SYNCHRONIZE).unwrap();
         assert!(!wait(&process, Some(Duration::ZERO)));
         assert!(open(0, PROCESS_SYNCHRONIZE).is_err());
+        assert!(ids().unwrap().contains(&std::process::id()));
     }
 }

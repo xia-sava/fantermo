@@ -44,10 +44,6 @@ use windows::{
         Foundation::{ERROR_MORE_DATA, HANDLE},
         System::{
             Console::{COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole},
-            Diagnostics::ToolHelp::{
-                CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
-                TH32CS_SNAPPROCESS,
-            },
             JobObjects::{
                 AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
                 JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
@@ -57,7 +53,7 @@ use windows::{
             Pipes::CreatePipe,
             Threading::{
                 CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
-                DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcessId,
+                DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
                 InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
                 PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
                 PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
@@ -444,15 +440,16 @@ impl ConsoleHost {
     }
 
     fn terminate_clients(&self) {
-        let processes = match process_ids() {
+        let processes = match process::ids() {
             Ok(processes) => processes,
             Err(e) => {
                 tracing::warn!("failed to list the processes: {e}");
                 return;
             }
         };
+        let this_process = std::process::id();
         for pid in processes {
-            if console_host_of_process(pid) == Some(self.pid) {
+            if pid != this_process && console_host_of_process(pid) == Some(self.pid) {
                 tracing::warn!(
                     "ending the process {pid}, which connected to the console {} after it closed",
                     self.pid
@@ -728,32 +725,6 @@ fn terminate_process(pid: u32) {
     if let Err(e) = process::terminate(&process) {
         tracing::warn!("failed to terminate the process {pid}: {e}");
     }
-}
-
-/// 動いているプロセスの番号。このプロセスを除く。
-fn process_ids() -> windows::core::Result<Vec<u32>> {
-    // SAFETY: 引数はフラグだけ。
-    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)? };
-    // SAFETY: 成功したので、ハンドルは有効で、ほかに持ち主はいない。
-    let snapshot = unsafe { OwnedHandle::from_raw_handle(snapshot.0) };
-    let handle = HANDLE(snapshot.as_raw_handle());
-    let mut entry = PROCESSENTRY32W {
-        dwSize: size_of::<PROCESSENTRY32W>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: 引数のない問い合わせ。
-    let this_process = unsafe { GetCurrentProcessId() };
-    let mut pids = Vec::new();
-    // SAFETY: handle は有効で、entry は dwSize を入れてある。
-    let mut more = unsafe { Process32FirstW(handle, &mut entry) }.is_ok();
-    while more {
-        if entry.th32ProcessID != this_process {
-            pids.push(entry.th32ProcessID);
-        }
-        // SAFETY: 同上。
-        more = unsafe { Process32NextW(handle, &mut entry) }.is_ok();
-    }
-    Ok(pids)
 }
 
 fn create_pipe() -> io::Result<(OwnedHandle, OwnedHandle)> {
