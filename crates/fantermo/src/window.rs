@@ -828,6 +828,9 @@ struct App {
     scroll_bar_press: Option<(MouseButton, Option<ScrollBarDrag>)>,
     /// マウスがスクロールバーの上にある。変わったときだけ描き直す。
     scroll_bar_hover: bool,
+    /// マウスのキャプチャを放す。`ReleaseCapture` はこの場で `WM_CAPTURECHANGED` を送るので、借用を手放した
+    /// ところで `window_proc` の `with_app` が放す。
+    release_capture_pending: bool,
     /// 表示している端末の、最後に描いたときの表示している範囲の位置。変わったら描き直す。
     scroll_position: Option<ScrollPosition>,
     /// 設定ダイアログを開いている。開いている間は設定ファイルを読み直さない（ダイアログで編集中の
@@ -958,6 +961,7 @@ impl App {
             scroll_bar_area,
             scroll_bar_press: None,
             scroll_bar_hover: false,
+            release_capture_pending: false,
             scroll_position: None,
             settings_dialog_open: false,
             reload_pending: false,
@@ -1304,10 +1308,7 @@ impl App {
     fn leave_active(&mut self) {
         if self.session().selecting || self.scroll_bar_press.is_some() {
             self.end_scroll_bar_press();
-            // SAFETY: このスレッドがキャプチャしたマウスを放す。キャプチャしていなければ何もしない。
-            if let Err(e) = unsafe { ReleaseCapture() } {
-                tracing::warn!("failed to release the mouse capture: {e}");
-            }
+            self.release_capture_pending = true;
         }
         self.session_mut().release_pointer();
     }
@@ -1924,10 +1925,7 @@ impl App {
             deferred = Some(self.context_menu(x, y));
         }
         if held_button(wparam).is_none() {
-            // SAFETY: このスレッドがキャプチャしたマウスを放す。
-            if let Err(e) = unsafe { ReleaseCapture() } {
-                tracing::warn!("failed to release the mouse capture: {e}");
-            }
+            self.release_capture_pending = true;
         }
         deferred
     }
@@ -3771,7 +3769,15 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         match app.try_borrow_mut() {
             Ok(mut borrowed) => {
                 action(&mut borrowed);
+                let release_capture = std::mem::take(&mut borrowed.release_capture_pending);
                 drop(borrowed);
+                if release_capture {
+                    // SAFETY: このスレッドがキャプチャしたマウスを放す。キャプチャしていなければ何もしない。
+                    // この場で届く WM_CAPTURECHANGED は、借用を手放したあとなので処理される。
+                    if let Err(e) = unsafe { ReleaseCapture() } {
+                        tracing::warn!("failed to release the mouse capture: {e}");
+                    }
+                }
                 repost_skipped_messages();
             }
             Err(_) => {
@@ -3920,6 +3926,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         // ほかのウィンドウにマウスのキャプチャが移ったら（Alt+Tab など）、離したことが届かないので、
         // スクロールバーの操作と選択のドラッグを終える（選択範囲は残す）。lparam はマウスをキャプチャするウィンドウ。
+        // 自分で放したとき（lparam は 0）も届くが、そのときはどちらもボタンを離した処理で終えている。
         WM_CAPTURECHANGED if lparam.0 != hwnd.0 as isize => {
             with_app(&mut |app| {
                 app.end_scroll_bar_press();
