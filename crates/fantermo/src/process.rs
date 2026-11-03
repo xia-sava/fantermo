@@ -1,9 +1,10 @@
-//! プロセスのハンドルを開く・待つ・終了コードを読む・終わらせる処理。ConPTY とブリッジのバックエンドと、
-//! 起動の指定を渡す先のウィンドウを選ぶ処理が使う。
+//! プロセスのハンドルを開く・待つ・終了コードを読む・終わらせる処理と、子プロセスの出力のパイプを閉じるまで
+//! 読む処理。ConPTY とブリッジのバックエンドと、起動の指定を渡す先のウィンドウを選ぶ処理が使う。
 //!
 //! 失敗したときのログは、何のプロセスかが分かる呼び出し元で残すので、ここではエラーを返すだけにする。
 
 use std::{
+    io::{self, Read},
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     time::Duration,
 };
@@ -49,6 +50,33 @@ pub fn exit_code(process: &OwnedHandle) -> windows::core::Result<u32> {
 pub fn terminate(process: &OwnedHandle) -> windows::core::Result<()> {
     // SAFETY: process は呼び出し元が持つ有効なプロセスのハンドル。
     unsafe { TerminateProcess(handle(process), TERMINATED_EXIT_CODE) }
+}
+
+/// 子プロセスの出力のパイプ `reader` を、閉じるまで `buffer_size` バイトずつ読んで `on_chunk` に渡す。
+/// `on_chunk` が `false` を返したら、そこで読むのをやめる。パイプが閉じたか読めなくなって抜けたら `true`、
+/// `on_chunk` が止めたら `false`。読めなかったときは `source`（読む相手の名前）を添えてログに残す。
+pub fn read_until_closed(
+    mut reader: impl Read,
+    buffer_size: usize,
+    source: &str,
+    mut on_chunk: impl FnMut(&[u8]) -> bool,
+) -> bool {
+    let mut buf = vec![0u8; buffer_size];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => return true,
+            Ok(len) => {
+                if !on_chunk(&buf[..len]) {
+                    return false;
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return true,
+            Err(e) => {
+                tracing::warn!("failed to read from {source}: {e}");
+                return true;
+            }
+        }
+    }
 }
 
 fn handle(process: &OwnedHandle) -> HANDLE {
@@ -99,6 +127,25 @@ mod tests {
         terminate(&process).unwrap();
         assert!(wait(&process, Some(TIMEOUT)));
         assert_eq!(exit_code(&process).unwrap(), TERMINATED_EXIT_CODE);
+    }
+
+    #[test]
+    fn reading_tells_whether_the_pipe_closed_or_the_reader_stopped() {
+        let mut chunks = Vec::new();
+        let closed = read_until_closed(&b"abcde"[..], 2, "a test", |chunk| {
+            chunks.push(chunk.to_vec());
+            true
+        });
+        assert!(closed);
+        assert_eq!(chunks, [b"ab".to_vec(), b"cd".to_vec(), b"e".to_vec()]);
+
+        chunks.clear();
+        let closed = read_until_closed(&b"abcde"[..], 2, "a test", |chunk| {
+            chunks.push(chunk.to_vec());
+            false
+        });
+        assert!(!closed);
+        assert_eq!(chunks, [b"ab".to_vec()]);
     }
 
     #[test]

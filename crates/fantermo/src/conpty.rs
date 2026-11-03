@@ -964,28 +964,18 @@ fn write_input(mut input: impl Write, queued: &mpsc::Receiver<Vec<u8>>, closing:
 /// 達していれば、受け取られるまで待つ。`budget` を閉じたら（破棄したら）抜ける。`wake` は、まだ知らせて
 /// いないか、前の知らせのあとにウィンドウのスレッドが受け取り始めていたときだけ呼ぶ（[`OutputBudget::sent`]）。
 fn read_output(
-    mut output: File,
+    output: File,
     sender: &mpsc::Sender<Vec<u8>>,
     budget: &OutputBudget,
     wake: &dyn Fn() -> bool,
 ) {
-    let mut buf = vec![0u8; READ_BUFFER_SIZE];
-    loop {
-        match output.read(&mut buf) {
-            Ok(0) => return,
-            Ok(len) => {
-                if !budget.push(len) || sender.send(buf[..len].to_vec()).is_err() {
-                    return;
-                }
-                budget.sent(wake);
-            }
-            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return,
-            Err(e) => {
-                tracing::warn!("failed to read from the pseudo console: {e}");
-                return;
-            }
+    process::read_until_closed(output, READ_BUFFER_SIZE, "the pseudo console", |chunk| {
+        if !budget.push(chunk.len()) || sender.send(chunk.to_vec()).is_err() {
+            return false;
         }
-    }
+        budget.sent(wake);
+        true
+    });
 }
 
 #[cfg(test)]

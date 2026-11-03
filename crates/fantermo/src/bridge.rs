@@ -600,7 +600,7 @@ fn write_input(mut stdin: impl Write, queued: &mpsc::Receiver<Vec<u8>>, closing:
 /// `budget` の上限に達していれば、受け取られるまで待つ（[`send_all`]）。`closing` が立っていれば（破棄した
 /// あとなら）、閉じたことは知らせない。
 fn read_output(
-    mut stdout: ChildStdout,
+    stdout: ChildStdout,
     process: &OwnedHandle,
     closing: &AtomicBool,
     sender: &mpsc::Sender<Event>,
@@ -608,23 +608,14 @@ fn read_output(
     wake: &dyn Fn() -> bool,
 ) {
     let mut reader = OutputReader::default();
-    let mut buf = vec![0u8; READ_BUFFER_SIZE];
-    loop {
-        let len = match stdout.read(&mut buf) {
-            Ok(0) => break,
-            Ok(len) => len,
-            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => break,
-            Err(e) => {
-                tracing::warn!("failed to read from the bridge: {e}");
-                break;
-            }
-        };
-        let events = reader.push(&buf[..len]);
+    let closed = process::read_until_closed(stdout, READ_BUFFER_SIZE, "the bridge", |chunk| {
+        let events = reader.push(chunk);
         let done = reader.done;
         send_all(sender, budget, events, wake);
-        if done {
-            return;
-        }
+        !done
+    });
+    if !closed {
+        return;
     }
     if closing.load(Ordering::Relaxed) {
         tracing::debug!("the bridge has closed its output after the tab was closed");
