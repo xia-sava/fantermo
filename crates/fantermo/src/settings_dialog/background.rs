@@ -637,6 +637,10 @@ impl Page for BackgroundPage {
             (id, BN_CLICKED) if self.background_item_opacity_choice.owns(id) => {
                 self.on_background_item_opacity_choice(ctx);
             }
+            // 数の入力欄は、打ち終わるのを待って反映する。
+            (id, EN_CHANGE) if self.number_fields().iter().any(|field| field.owns(id)) => {
+                ctx.schedule_preview();
+            }
             _ => return false,
         }
         true

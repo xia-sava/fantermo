@@ -339,7 +339,7 @@ run-hidden は利用者のセッションのウィンドウステーション（
 2. 一覧に載らない項目（`font.family`，`default_profile`，プロファイル，背景画像の一覧，色，キーの割り当て）は，読む処理と書き戻す処理をそれぞれ書きます．読む処理は，一覧の項目のあるテーブルなら `config/read.rs` の `read_table` に，ほかは `parse` に書きます（`parse` が `read_table` で回すのは，一覧の項目のあるテーブルだけです）．書き戻す処理は `fantermo-core/src/config_edit.rs` の `update` から呼びます．
 3. `fantermo/src/window/mod.rs` と `window/settings.rs`: `App` はいま使っている設定を `Config` 一つ（`App::config`）で持つので，項目を足すと `App` の構造体と `App::new` は変わりません．使う側が `self.config.<項目>` を読み，反映に配置やアトラスの作り直しが要るかを `apply_config`（`settings.rs`）で決めます．
 4. `fantermo/src/settings_dialog/`: 項目を置くページのファイル（`appearance.rs` など．`Page` を実装した `AppearancePage` などの型）に，コントロールの ID（`ID_*`．そのページの `ID_RANGE` の中の番号．範囲がページの間で重ならないことと ID が範囲に入ることは単体のテストが見るので，ID を足したらそのページの `the_ids_are_within_the_range_of_the_page` にも足す），フィールド，`create` で作る，`fill` で値を入れる，`read` で `Config` に戻す（不正なら入力欄を返してフォーカスする），`on_command` で `WM_COMMAND` の知らせを受ける，を足します．ページからダイアログ全体（端末への反映，最後に書いた設定，DPI など）へは `DialogContext` を通します．コントロールは種類ごとの部品（`settings_dialog/widgets.rs`）で作ります．
-   - 数なら `NumberField`．読み方（`config::parse_input` に項目の名前を渡す）・見せ方・矢印での動かし方・読めないときの文を `NumberKind` の定数に書き，ページの `number_fields()` に足します．矢印での増減と矢印の配置は，すべてのページのこの一覧を回します．`EN_CHANGE` で反映を待つ処理は `on_command` に書きます．
+   - 数なら `NumberField`．読み方（`config::parse_input` に項目の名前を渡す）・見せ方・矢印での動かし方・読めないときの文を `NumberKind` の定数に書き，ページの `number_fields()` に足します．矢印での増減と矢印の配置は，すべてのページのこの一覧を回します．`number_fields()` に足せば，`on_command` の数の入力欄をまとめて受ける分岐が `EN_CHANGE` で反映を待ちます．
    - ラジオボタンの組なら `RadioGroup`．選択肢と画面の名前の配列を渡します．`BN_CLICKED` で反映する処理は，`RadioGroup::owns` で ID を見て `on_command` に書きます．
    - 固定の選択肢のコンボボックスなら `ChoiceBox`．選択肢と画面の名前を渡します．`CBN_SELCHANGE` の処理は `on_command` に書きます．
    - 変えたときに反映のほかにも処理が要るものは，`on_command` の，数の入力欄やラジオボタンをまとめて受ける分岐より上に，その ID の分岐を書きます．
