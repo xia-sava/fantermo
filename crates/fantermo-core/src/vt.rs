@@ -11,16 +11,13 @@ use libghostty_vt::{
     Terminal,
     fmt::{Format, Formatter, FormatterOptions},
     key,
-    kitty::graphics::{self, ImageFormat, RustPngDecoder},
+    kitty::graphics::{self, RustPngDecoder},
     log::{Level as LogLevel, Logger, set_logger},
     mouse,
     paste::Options as PasteOptions,
-    render::{
-        CellIterator, ImageIterator, ImageLayer as VtImageLayer, ImageProtocol, RenderState,
-        RowIterator, Snapshot,
-    },
+    render::{CellIterator, ImageIterator, RenderState, RowIterator},
+    screen::CellWide,
     screen::Screen,
-    screen::{CellWide, GridRef},
     selection::{
         FormatOptions as SelectionFormatOptions,
         gesture::{DragEvent, Geometry, Gesture, PressEvent, ReleaseEvent},
@@ -29,8 +26,7 @@ use libghostty_vt::{
     terminal::{
         ClipboardMime, ClipboardWrite, ClipboardWriteError, ConformanceLevel,
         DeviceAttributeFeature, DeviceAttributes, DeviceType, Mode, Point, PointCoordinate,
-        PointSpace, PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes,
-        SizeReportSize,
+        PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes, SizeReportSize,
     },
 };
 use std::time::Duration;
@@ -39,13 +35,19 @@ use crate::{
     backend::GridSize,
     clipboard::{self, ReadRequest, WriteRequest},
     config::TerminalColors,
-    frame::{
-        CellView, CursorView, Frame, ImageKey, ImageLayer, ImagePixels, ImageView, Rgb, Underline,
-    },
-    link::{self, LineCell, Link, LinkSpan},
+    frame::{CellView, CursorView, Frame, Rgb, Underline},
+    link::LinkSpan,
     output_scan::{OutputEvent, OutputScanner},
-    sixel::SixelImage,
 };
+
+mod images;
+mod links;
+#[cfg(test)]
+mod tests;
+
+use images::{image_views, place_sixel};
+#[cfg(test)]
+pub(crate) use links::MAX_LINK_LINE_ROWS;
 
 pub use libghostty_vt::{
     Error as VtError,
@@ -169,21 +171,9 @@ const FAINT_OPACITY: f32 = 0.5;
 /// XTVERSION の問い合わせに返す名前。
 const XTVERSION_NAME: &str = "fantermo";
 
-/// リンクを探すときに、指した行の前後へ折り返しをたどる行数の上限。
-pub(crate) const MAX_LINK_LINE_ROWS: u32 = 64;
-
-/// セルの文字（書記素クラスタ）を読むときの、コードポイントの数の初めの見込み。
-const GRAPHEME_BUFFER_LEN: usize = 16;
-
-/// OSC 8 の URI を読むときの、バイト数の初めの見込み。
-const URI_BUFFER_LEN: usize = 256;
-
 /// kitty graphics protocol の画像を保管するバイト数の上限（画面ごと）。Ghostty の既定の
 /// `image-storage-limit` と同じ。
 const IMAGE_STORAGE_LIMIT: u64 = 320 * 1000 * 1000;
-
-/// カーソルを同じ桁のまま一行下へ動かす（IND）。下端ではスクロールする。
-const INDEX: &[u8] = b"\x1bD";
 
 /// kitty graphics protocol の Unicode placeholder の文字。画像は描画の状態が一覧に載せるので、文字としては描かない。
 const KITTY_PLACEHOLDER: char = '\u{10EEEE}';
@@ -369,33 +359,6 @@ impl Vt {
         })
     }
 
-    /// 表示している範囲の `col` 桁目・`row` 行目のセルにあるリンク。OSC 8 のハイパーリンクがあれば
-    /// そちらを、なければ画面の文字から見つけた URL を返す。折り返した行はつなげて探す。
-    pub fn link_at(&self, col: u16, row: u16) -> Result<Option<Link>, VtError> {
-        let size = self.size.get();
-        if col >= size.cols || row >= size.rows {
-            return Ok(None);
-        }
-        let Some(viewport_top) =
-            self.screen_row(Point::Viewport(PointCoordinate { x: 0, y: 0 }))?
-        else {
-            return Ok(None);
-        };
-        let screen_row = viewport_top + u32::from(row);
-        let cells = self.logical_line(screen_row, size.cols)?;
-        let Some(index) = cells.iter().position(|cell| {
-            cell.screen_row == screen_row
-                && (cell.col..cell.col + u16::from(cell.width)).contains(&col)
-        }) else {
-            return Ok(None);
-        };
-        let Some((uri, range)) = link::link_in_line(&cells, index) else {
-            return Ok(None);
-        };
-        let spans = link::spans_of(&cells, range, viewport_top, size.rows);
-        Ok(Some(Link { uri, spans }))
-    }
-
     /// 既定の背景色・文字の色・16 色を決める。256 色の残りは libghostty-vt の標準の色のまま。カーソルの
     /// 色は決めず、文字の色で描く。アプリが OSC 10 / 11 / 4 で変えた色はそのまま残り、OSC 110 / 111 /
     /// 104 で戻すとこの色になる。OSC 10 / 11 / 4 の問い合わせにも、変えていなければこの色を答える。
@@ -414,76 +377,6 @@ impl Vt {
     /// `frame` で下線を引く範囲を決める。空なら引かない。
     pub fn set_link_underline(&mut self, spans: Vec<LinkSpan>) {
         self.link_underline = spans;
-    }
-
-    /// `point` のセルの、スクロールバックの先頭から数えた行。
-    fn screen_row(&self, point: Point) -> Result<Option<u32>, VtError> {
-        let grid_ref = self.terminal.grid_ref(point)?;
-        Ok(self
-            .terminal
-            .point_from_grid_ref(&grid_ref, PointSpace::Screen)?
-            .map(|point| point.y))
-    }
-
-    /// `screen_row` の行を含む論理行（折り返しでつながった行）のセルを、先頭から並べる。
-    /// たどるのは前後それぞれ [`MAX_LINK_LINE_ROWS`] 行まで。
-    fn logical_line(&self, screen_row: u32, cols: u16) -> Result<Vec<LineCell>, VtError> {
-        let row_at = |y: u32| {
-            self.terminal
-                .grid_ref(Point::Screen(PointCoordinate { x: 0, y }))
-                .and_then(|grid_ref| grid_ref.row())
-        };
-        let mut first = screen_row;
-        while first > 0
-            && screen_row - first < MAX_LINK_LINE_ROWS
-            && row_at(first)?.is_wrap_continuation()?
-        {
-            first -= 1;
-        }
-        let mut cells = Vec::new();
-        let mut y = first;
-        loop {
-            self.push_row_cells(y, cols, &mut cells)?;
-            let wrapped = row_at(y)?.is_wrapped()?;
-            if !wrapped || y.saturating_sub(screen_row) >= MAX_LINK_LINE_ROWS {
-                break;
-            }
-            y += 1;
-            // 最後の行が折り返しの印を持っていても、その先の行はない。
-            if row_at(y).is_err() {
-                break;
-            }
-        }
-        Ok(cells)
-    }
-
-    /// スクロールバックの先頭から数えて `y` 行目のセルを `cells` に足す。全角の文字の右半分と、
-    /// 行末に収まらなかった全角の文字の印は除く。
-    fn push_row_cells(&self, y: u32, cols: u16, cells: &mut Vec<LineCell>) -> Result<(), VtError> {
-        for x in 0..cols {
-            let grid_ref = self
-                .terminal
-                .grid_ref(Point::Screen(PointCoordinate { x, y }))?;
-            let cell = grid_ref.cell()?;
-            let width = match cell.wide()? {
-                CellWide::Wide => 2,
-                CellWide::SpacerTail | CellWide::SpacerHead => continue,
-                CellWide::Narrow => 1,
-            };
-            let uri = if cell.has_hyperlink()? {
-                hyperlink_uri(&grid_ref)?
-            } else {
-                None
-            };
-            cells.push(LineCell {
-                screen_row: y,
-                col: x,
-                width,
-                text: graphemes(&grid_ref)?,
-                uri,
-            });
-        }
-        Ok(())
     }
 
     /// アプリがマウスの報告を求めている（vim の `mouse=a` など）。
@@ -896,44 +789,6 @@ impl Vt {
         })
     }
 
-    /// `key` の画像のピクセル。保管にその画像がないか、`key` のあとでピクセルが変わった、または
-    /// まだ届いていなければ `None`。
-    pub fn image_pixels(&self, key: &ImageKey) -> Result<Option<ImagePixels<'_>>, VtError> {
-        let graphics = self.terminal.kitty_graphics()?;
-        let Some(image) = graphics.image(key.id) else {
-            return Ok(None);
-        };
-        if image.generation()? != key.generation {
-            return Ok(None);
-        }
-        let Some(data) = image.data()? else {
-            return Ok(None);
-        };
-        Ok(rgba_pixels(
-            image.format()?,
-            data,
-            image.width()?,
-            image.height()?,
-        ))
-    }
-
-    /// `key` の画像が、同じピクセルのまま表示している画面の保管にある。
-    pub fn image_is_stored(&self, key: &ImageKey) -> Result<bool, VtError> {
-        let graphics = self.terminal.kitty_graphics()?;
-        let Some(image) = graphics.image(key.id) else {
-            return Ok(false);
-        };
-        Ok(image.generation()? == key.generation)
-    }
-
-    /// 再生中の画像のアニメーションを進める。描き直す前に呼ぶ。`now` は同じ時計で測った時刻。次のコマ
-    /// までの時間を返す。再生中のものがなければ `None`。
-    pub fn tick_image_animations(&mut self, now: Duration) -> Result<Option<Duration>, VtError> {
-        let now_ms = u64::try_from(now.as_millis()).unwrap_or(u64::MAX);
-        let next_ms = self.terminal.kitty_graphics_animation_tick(now_ms)?;
-        Ok(next_ms.map(|next_ms| Duration::from_millis(next_ms.saturating_sub(now_ms))))
-    }
-
     /// 画面の内容をプレーンテキストで返す。行末の空白は除く。
     pub fn plain_text(&self) -> Result<String, VtError> {
         let options = FormatterOptions::new()
@@ -942,159 +797,6 @@ impl Vt {
         let text = Formatter::new(&self.terminal, options)?.format_alloc(None)?;
         Ok(String::from_utf8_lossy(&text).into_owned())
     }
-}
-
-/// sixel の画像を kitty graphics protocol の転送にして端末に置く。位置の追跡、スクロール、消去、代替画面は
-/// kitty graphics protocol の画像と同じになる。
-///
-/// 画像は文字より下に置き、あとから書いた文字が画像の上に見えるようにする。不透明な画像なら、覆うセルの
-/// 文字を消して画像を見せる。
-///
-/// xterm と違い、文字を書いてもそのセルの画像は消えない（kitty graphics protocol の画像の配置は文字に
-/// 反応しない）。空白で画像を消すアプリでは古い画像が残る。`CSI 2 J` では消える。
-///
-/// `scrolling` なら、カーソルの位置に置き、カーソルを画像の最後の行の同じ桁へ進める（xterm と同じ）。下端で
-/// は画面がスクロールする。そうでなければ（DECSDM）、画面の左上に置いてカーソルを動かさない。
-fn place_sixel(
-    terminal: &mut Terminal<'static, 'static>,
-    size: GridSize,
-    image: &SixelImage,
-    scrolling: bool,
-) {
-    let rows = image.height.div_ceil(size.cell_height_px.max(1));
-    let cols = image.width.div_ceil(size.cell_width_px.max(1));
-    let erase = image
-        .is_opaque()
-        .then(|| format!("\x1b[{cols}X").into_bytes());
-    let erase = erase.as_deref().unwrap_or_default();
-
-    if scrolling {
-        image.write_kitty_transmission(&mut |apc| terminal.vt_write(apc));
-        terminal.vt_write(erase);
-        for _ in 1..rows {
-            terminal.vt_write(INDEX);
-            terminal.vt_write(erase);
-        }
-        return;
-    }
-
-    let cursor = terminal
-        .cursor_x()
-        .and_then(|col| Ok((col, terminal.cursor_y()?)));
-    terminal.vt_write(b"\x1b[H");
-    image.write_kitty_transmission(&mut |apc| terminal.vt_write(apc));
-    for row in 0..rows.min(u32::from(size.rows)) {
-        terminal.vt_write(format!("\x1b[{};1H", row + 1).as_bytes());
-        terminal.vt_write(erase);
-    }
-    match cursor {
-        Ok((col, row)) => terminal.vt_write(format!("\x1b[{};{}H", row + 1, col + 1).as_bytes()),
-        Err(e) => tracing::warn!("failed to read the cursor before placing a sixel: {e}"),
-    }
-}
-
-/// `snapshot` の表示している範囲の画像を、層ごとに下から描く順に並べる。同じ高さなら画像の番号の順
-/// （Ghostty と同じ）。
-fn image_views(
-    images: &mut ImageIterator<'static>,
-    snapshot: &Snapshot<'static, '_>,
-) -> Result<Vec<ImageView>, VtError> {
-    let mut views = Vec::new();
-    let mut placements = images.update(snapshot)?;
-    while let Some(placement) = placements.next() {
-        // 新しいバージョンで増えた種類は、エラーとして返ることもある。読めるものだけを描く。
-        let Ok(ImageProtocol::Kitty) = placement.protocol() else {
-            continue;
-        };
-        views.push(ImageView {
-            key: ImageKey {
-                id: placement.image_id()?,
-                generation: placement.image_generation()?,
-            },
-            layer: match placement.layer()? {
-                VtImageLayer::BelowBackground => ImageLayer::BelowBackground,
-                VtImageLayer::BelowText => ImageLayer::BelowText,
-                VtImageLayer::AboveText => ImageLayer::AboveText,
-            },
-            z: placement.z()?,
-            col: placement.viewport_col()?,
-            row: placement.viewport_row()?,
-            offset_x: placement.cell_offset_x()?,
-            offset_y: placement.cell_offset_y()?,
-            width: placement.pixel_width()?,
-            height: placement.pixel_height()?,
-            source_x: placement.source_x()?,
-            source_y: placement.source_y()?,
-            source_width: placement.source_width()?,
-            source_height: placement.source_height()?,
-        });
-    }
-    views.sort_by_key(|view| (view.layer, view.z, view.key.id));
-    Ok(views)
-}
-
-/// 大きさ `width` × `height` の `format` のピクセルを RGBA にする。バイト数が足りない、または
-/// RGBA にできない形式なら `None`。
-fn rgba_pixels(
-    format: ImageFormat,
-    data: &[u8],
-    width: u32,
-    height: u32,
-) -> Option<ImagePixels<'_>> {
-    let pixels = (width as usize).checked_mul(height as usize)?;
-    let channels = match format {
-        ImageFormat::Gray => 1,
-        ImageFormat::GrayAlpha => 2,
-        ImageFormat::Rgb => 3,
-        ImageFormat::Rgba => 4,
-        _ => return None,
-    };
-    let data = data.get(..pixels.checked_mul(channels)?)?;
-    let rgba = match format {
-        ImageFormat::Rgba => Cow::Borrowed(data),
-        _ => Cow::Owned(
-            data.chunks_exact(channels)
-                .flat_map(|pixel| match *pixel {
-                    [gray] => [gray, gray, gray, u8::MAX],
-                    [gray, alpha] => [gray, gray, gray, alpha],
-                    [r, g, b] => [r, g, b, u8::MAX],
-                    _ => unreachable!("channels is 1, 2 or 3 here"),
-                })
-                .collect(),
-        ),
-    };
-    Some(ImagePixels {
-        width,
-        height,
-        rgba,
-    })
-}
-
-/// `grid_ref` のセルの文字（書記素クラスタ）。空のセルは空の文字列。
-fn graphemes(grid_ref: &GridRef) -> Result<String, VtError> {
-    let mut buf = vec!['\0'; GRAPHEME_BUFFER_LEN];
-    let len = match grid_ref.graphemes(&mut buf) {
-        Err(VtError::OutOfSpace { required }) => {
-            buf.resize(required, '\0');
-            grid_ref.graphemes(&mut buf)?
-        }
-        result => result?,
-    };
-    Ok(buf[..len].iter().collect())
-}
-
-/// `grid_ref` のセルの、OSC 8 のハイパーリンクの URI。なければ `None`。UTF-8 でないバイトは
-/// U+FFFD に置き換える。
-fn hyperlink_uri(grid_ref: &GridRef) -> Result<Option<String>, VtError> {
-    let mut buf = vec![0u8; URI_BUFFER_LEN];
-    let len = match grid_ref.hyperlink_uri(&mut buf) {
-        Err(VtError::OutOfSpace { required }) => {
-            buf.resize(required, 0);
-            grid_ref.hyperlink_uri(&mut buf)?
-        }
-        result => result?,
-    };
-    Ok((len > 0).then(|| String::from_utf8_lossy(&buf[..len]).into_owned()))
 }
 
 fn viewport_point(at: PointerPosition) -> Point {
@@ -1162,6 +864,3 @@ fn device_attributes() -> DeviceAttributes {
         tertiary: Default::default(),
     }
 }
-
-#[cfg(test)]
-mod tests;

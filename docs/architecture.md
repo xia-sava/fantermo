@@ -45,7 +45,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 
 | モジュール | 受け持つこと |
 |---|---|
-| `vt` | libghostty-vt の端末を包む．出力の流し込み（`feed`），応答（`take_replies`），キーとマウスの符号化，選択，貼り付け，スクロール，描画用の画面の取り出し（`frame`）．libghostty-vt を直接使うのはここだけで，ほかはここが再公開した型（`Key`，`Mods` など）を使う |
+| `vt` | libghostty-vt の端末を包む．出力の流し込み（`feed`），応答（`take_replies`），キーとマウスの符号化，選択，貼り付け，スクロール，描画用の画面の取り出し（`frame`）．画像（kitty graphics protocol と sixel）は `vt/images.rs`，リンクの検出は `vt/links.rs`，テストは `vt/tests/` に分けてある．libghostty-vt を直接使うのはここだけで，ほかはここが再公開した型（`Key`，`Mods` など）を使う |
 | `output_scan` | 出力を端末エミュレーションへ流す前に見て，sixel の DCS と OSC 52 の読み取りの依頼を取り出す（理由は先頭のコメント） |
 | `sixel` | sixel のデコーダ．`vt` が kitty graphics protocol の画像にして端末に置く |
 | `frame` | 描画のために取り出した画面．libghostty-vt の型に依存しない |

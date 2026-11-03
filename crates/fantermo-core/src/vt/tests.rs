@@ -1,4 +1,7 @@
-use super::*;
+use libghostty_vt::kitty::graphics::ImageFormat;
+
+use super::{images::rgba_pixels, links::URI_BUFFER_LEN, *};
+use crate::frame::ImageLayer;
 
 mod clipboard;
 mod colors;
