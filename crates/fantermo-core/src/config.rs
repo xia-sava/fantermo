@@ -797,7 +797,7 @@ pub struct ImageKeys {
 pub const IMAGE_KEYS: ImageKeys = ImageKeys {
     path: "path",
     fit: "fit",
-    image_opacity: IMAGE_OPACITY_KEY,
+    image_opacity: "image_opacity",
 };
 
 /// `background.images` の一つの項目。
@@ -1304,14 +1304,15 @@ const COLORS_TABLE: &str = "colors";
 /// `[background]` のテーブルの名前。
 const BACKGROUND_TABLE: &str = "background";
 
-/// 数か名前一つだけの設定の項目。読む処理（[`parse`]）、書き戻す処理
-/// （[`config_edit::update`](crate::config_edit::update)）、設定ダイアログの入力欄から読む処理
-/// （[`parse_input`]）は、どれも [`SCALARS`] を上から順に処理する。
+/// 数か名前一つだけの設定の項目。読む処理（[`parse`]）と書き戻す処理
+/// （[`config_edit::update`](crate::config_edit::update)）は [`SCALARS`] を上から順に処理し、設定
+/// ダイアログの入力欄から読む処理（[`parse_input`]）は項目を名前で引く。
 pub struct Scalar {
     /// 項目を置く最上位のテーブルの名前（`font` など）。
     pub table: &'static str,
     /// テーブルの中のキー。
     pub key: &'static str,
+    /// 値の種類と、読み書きするフィールド。
     pub kind: ScalarKind,
 }
 
@@ -1319,6 +1320,11 @@ impl Scalar {
     /// テーブルとキーを点でつないだ名前（`font.size` など）。
     pub fn name(&self) -> String {
         key_path(Some(self.table), self.key)
+    }
+
+    /// 名前（`font.size` など）が `name` か。
+    pub fn is_named(&self, name: &str) -> bool {
+        name.split_once('.') == Some((self.table, self.key))
     }
 }
 
@@ -1345,7 +1351,7 @@ pub enum ScalarKind {
     },
 }
 
-/// 名前 `name` の値 `value` があれば `field` に入れて `true`。なければ `false`。
+/// `value` があれば `field` に入れて `true`。なければ `false`。
 fn set_named<T>(field: &mut T, value: Option<T>) -> bool {
     let Some(value) = value else {
         return false;
@@ -1434,7 +1440,7 @@ pub const SCALARS: &[Scalar] = &[
     },
     Scalar {
         table: BACKGROUND_TABLE,
-        key: IMAGE_OPACITY_KEY,
+        key: IMAGE_KEYS.image_opacity,
         kind: ScalarKind::Float {
             range: IMAGE_OPACITY_RANGE,
             get: |config| config.background.image_opacity,
@@ -1453,9 +1459,6 @@ pub const SCALARS: &[Scalar] = &[
         },
     },
 ];
-
-/// `[background]` と `[[background.images]]` のテーブルの、画像の不透明度のキー。
-const IMAGE_OPACITY_KEY: &str = "image_opacity";
 
 /// 設定ダイアログの入力欄に書ける数の型。
 pub trait InputNumber: Copy + PartialOrd + FromStr {
@@ -1485,7 +1488,7 @@ impl InputNumber for u32 {
 /// 読む。前後の空白は除く。`T` の数として読めないか、項目の範囲の外なら `None`。項目が `T` の数の
 /// 項目でなくても `None`。
 pub fn parse_input<T: InputNumber>(name: &str, text: &str) -> Option<T> {
-    let scalar = SCALARS.iter().find(|scalar| scalar.name() == name)?;
+    let scalar = SCALARS.iter().find(|scalar| scalar.is_named(name))?;
     let range = T::range(&scalar.kind)?;
     let value: T = text.trim().parse().ok()?;
     range.contains(&value).then_some(value)
@@ -1626,13 +1629,7 @@ pub fn parse(text: &str, previous: &Config) -> Parsed {
     let mut config = previous.clone();
     let defaults = Config::default();
     read_profiles(&mut reader, &mut root, &mut config);
-    let mut tables: Vec<&str> = Vec::new();
-    for scalar in SCALARS {
-        if !tables.contains(&scalar.table) {
-            tables.push(scalar.table);
-        }
-    }
-    for name in tables {
+    for name in scalar_tables() {
         // 書いていないテーブルは、どの項目も書いていない空のテーブルとして読み、既定値にする。
         // テーブルでなければ、どの項目も前の値のまま。
         let mut table = match reader.take::<Table>(&mut root, None, name) {
@@ -1887,6 +1884,18 @@ fn read_profile_backend(reader: &mut Reader, table: &mut Table, path: &str) -> O
     }
 }
 
+/// [`parse`] が [`read_table`] で読む最上位のテーブル。[`SCALARS`] に出てくる順。一覧の項目を持たない
+/// テーブル（`[keys]` など）は入らないので、[`parse`] に別に書く。
+fn scalar_tables() -> Vec<&'static str> {
+    let mut tables: Vec<&'static str> = Vec::new();
+    for scalar in SCALARS {
+        if !tables.contains(&scalar.table) {
+            tables.push(scalar.table);
+        }
+    }
+    tables
+}
+
 /// 最上位のテーブル `name` の中身 `table` を読む。[`SCALARS`] の項目のほかに、一覧に載らない項目も、
 /// 設定ファイルの説明と同じ順に読む（`font.family` と `background.images` は一覧の項目より前、`[colors]`
 /// の色は後）。最後に、残ったキーを知らないものとして警告する。
@@ -2011,7 +2020,7 @@ fn read_background_images(
         Item::Absent => Item::Absent,
         Item::Invalid => Item::Invalid,
     };
-    images_item.apply(images, Vec::new());
+    images_item.apply(images, BackgroundConfig::default().images);
 }
 
 /// `background.images`（`[[background.images]]` のテーブルの配列）を読む。読めないテーブルは、警告して

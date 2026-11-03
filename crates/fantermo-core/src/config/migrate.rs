@@ -15,9 +15,6 @@ use crate::{
     },
 };
 
-/// `[background]` の、画像の不透明度のキー。
-const IMAGE_OPACITY: &str = IMAGE_KEYS.image_opacity;
-
 /// 読み替えの手順一つ。
 pub struct Step {
     /// 手順の名前。
@@ -125,10 +122,11 @@ fn background_opacity(doc: &mut DocumentMut) -> Option<Change> {
     let value = background.get(OPACITY)?.as_value()?;
     let opacity = number_of(value)?;
     let written = bare_repr(value);
-    if background.contains_key(IMAGE_OPACITY) {
+    let image_opacity_key = IMAGE_KEYS.image_opacity;
+    if background.contains_key(image_opacity_key) {
         config_edit::replace_line(doc, BACKGROUND_PATH, OPACITY, None);
         return Some(Change::new(format!(
-            "removed background.{OPACITY} = {written}; background.{IMAGE_OPACITY} is also written and is used"
+            "removed background.{OPACITY} = {written}; background.{image_opacity_key} is also written and is used"
         )));
     }
     let background = config_edit::table_at_mut(doc, BACKGROUND_PATH)?;
@@ -142,10 +140,10 @@ fn background_opacity(doc: &mut DocumentMut) -> Option<Change> {
         *image_opacity.decor_mut() = old.decor().clone();
     }
     let new = bare_repr(&image_opacity);
-    let key = Key::new(IMAGE_OPACITY).with_leaf_decor(key.leaf_decor().clone());
+    let key = Key::new(image_opacity_key).with_leaf_decor(key.leaf_decor().clone());
     config_edit::insert_at(background, index, key, image_opacity);
     Some(Change::new(format!(
-        "read background.{OPACITY} = {written} as background.{IMAGE_OPACITY} = {new} (1 - {OPACITY})"
+        "read background.{OPACITY} = {written} as background.{image_opacity_key} = {new} (1 - {OPACITY})"
     )))
 }
 

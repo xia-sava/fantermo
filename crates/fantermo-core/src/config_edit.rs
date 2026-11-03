@@ -24,8 +24,6 @@
 //!
 //! 書き換える前に、古い書き方を今の書き方に読み替える（[`config::migrate`]）。
 
-use std::slice;
-
 use toml_edit::{Array, ArrayOfTables, Decor, DocumentMut, InlineTable, Item, Key, Table, Value};
 
 use crate::{
@@ -439,7 +437,7 @@ pub fn update(text: &str, base: &Config, edited: &Config) -> Result<String, Stri
         Some(families_value(&config.font.families))
     })?;
     for scalar in SCALARS {
-        configs.update_value(doc, slice::from_ref(&scalar.table), scalar.key, |config| {
+        configs.update_value(doc, &[scalar.table], scalar.key, |config| {
             Some(scalar_value(scalar, config))
         })?;
     }
