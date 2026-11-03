@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn text_has_own_and_third_party_licenses() {
-        let own = TEXT.find("Copyright (c) 2026 ISIGE, Akira").unwrap();
+        let own = TEXT.find(copyright()).unwrap();
         let notices = TEXT
             .find("fantermo が使っている第三者のソフトウェアと、そのライセンス")
             .unwrap();
@@ -196,6 +196,7 @@ mod tests {
 
     #[test]
     fn copyright_is_the_line_of_the_license() {
-        assert_eq!(copyright(), "Copyright (c) 2026 ISIGE, Akira");
+        assert!(copyright().starts_with("Copyright"));
+        assert!(LICENSE.contains(copyright()));
     }
 }
