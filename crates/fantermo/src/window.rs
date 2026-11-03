@@ -301,21 +301,17 @@ pub fn run(
     if let Some(window) = &restored {
         window_state::restore_hidden(hwnd, window);
     }
-    let mut app = App::new(
+    let app = App::new(
         hwnd,
         dwrite,
         font,
         system_dpi,
         config_path,
         config,
+        notice_key,
+        state_path,
         options.tab,
     )?;
-    app.state_path = state_path;
-    app.settings_notice_key = notice_key;
-    #[cfg(feature = "e2e")]
-    {
-        app.e2e = crate::e2e_server::start(poster(hwnd, WM_APP_E2E, WPARAM(0)));
-    }
     let app = Box::into_raw(Box::new(RefCell::new(app)));
     // SAFETY: hwnd はこのスレッドが作ったウィンドウ。ポインタは WM_NCDESTROY で取り戻して解放する。
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, app as isize) };
@@ -850,6 +846,9 @@ struct App {
 }
 
 impl App {
+    /// `config_path` から読んだ設定が `config` で、その警告の中身を比べる文が `notice_key`
+    /// （[`Loaded::notice_key`]）。`state_path` はウィンドウの状態ファイルの場所。
+    #[allow(clippy::too_many_arguments)]
     fn new(
         hwnd: HWND,
         dwrite: IDWriteFactory,
@@ -857,6 +856,8 @@ impl App {
         dpi: u32,
         config_path: Option<PathBuf>,
         config: Config,
+        notice_key: Option<String>,
+        state_path: Option<PathBuf>,
         arguments: TabRequest,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let font_config = config.font;
@@ -919,7 +920,7 @@ impl App {
             ui_font,
             dpi,
             config_path,
-            state_path: None,
+            state_path,
             font_config,
             paste_config: config.paste,
             clipboard_read: config.clipboard.read,
@@ -962,12 +963,12 @@ impl App {
             release_capture_pending: false,
             settings_dialog_open: false,
             reload_pending: false,
-            settings_notice_key: None,
+            settings_notice_key: notice_key,
             update_busy: false,
             update_sender,
             update_events,
             #[cfg(feature = "e2e")]
-            e2e: None,
+            e2e: crate::e2e_server::start(poster(hwnd, WM_APP_E2E, WPARAM(0))),
         };
         app.sessions[0].background_image = app.choose_background_image();
         Ok(app)
