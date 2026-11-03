@@ -103,10 +103,10 @@ fn families_value(families: &[String]) -> Value {
 }
 
 /// `[background]` のテーブルのキーのパス。
-pub(crate) const BACKGROUND_PATH: &[&str] = &["background"];
+const BACKGROUND_PATH: &[&str] = &["background"];
 
 /// `[background]` の、背景画像の一覧（`[[background.images]]`）のキー。
-pub(crate) const IMAGES: &str = "images";
+const IMAGES: &str = "images";
 
 /// `[[background.images]]` のテーブル一つ。書かない値（全体の値に従う表示方法と不透明度）は入れない。
 fn image_table(image: &BackgroundImage) -> Table {
@@ -148,7 +148,7 @@ fn written_image_settings(table: &Table) -> (Option<BackgroundFit>, Option<f32>)
 }
 
 /// 数の値（整数か小数）。
-pub(crate) fn number_of(value: &Value) -> Option<f64> {
+fn number_of(value: &Value) -> Option<f64> {
     value
         .as_float()
         .or_else(|| value.as_integer().map(|integer| integer as f64))
@@ -182,7 +182,7 @@ fn update_background_images(
         .iter()
         .map(|image| (String::new(), image_table(image)))
         .collect();
-    insert_image_tables(doc, tables, String::new())
+    insert_image_tables(doc, tables)
 }
 
 /// 書いてある `[[background.images]]` のテーブルを、一覧 `images` に合わせる。テーブルはパスで照合し
@@ -270,15 +270,10 @@ fn merge_image_tables(doc: &mut DocumentMut, images: &[BackgroundImage]) {
 /// `[background]` の値の後ろに、`[[background.images]]` のテーブル `tables` を置く（テーブルはまだ
 /// 書いていないものとする）。`tables` はそれぞれ、テーブルの前に置くコメントの行とテーブル。
 /// `[background]` がなければ作る。続くテーブルの前のコメントのうち、空行で見出しと離れたところまでを
-/// 最初のテーブルの前に移す（[`TEMPLATE`] の一覧の説明の下にテーブルが入る）。`trailing` は最後の
-/// テーブルの後ろに置くコメントの行。
+/// 最初のテーブルの前に移す（[`TEMPLATE`] の一覧の説明の下にテーブルが入る）。
 ///
 /// [`TEMPLATE`]: crate::config::TEMPLATE
-pub(crate) fn insert_image_tables(
-    doc: &mut DocumentMut,
-    tables: Vec<(String, Table)>,
-    trailing: String,
-) -> Result<(), String> {
+fn insert_image_tables(doc: &mut DocumentMut, tables: Vec<(String, Table)>) -> Result<(), String> {
     let background = section_mut(doc, BACKGROUND_PATH, true)?.expect("created");
     if !is_standard(background) {
         return Err("background is not written as a [background] table".to_owned());
@@ -291,19 +286,13 @@ pub(crate) fn insert_image_tables(
         "\n".to_owned()
     };
     let following = following(doc, BACKGROUND_PATH);
-    match following {
-        Following::Table(_) => {
-            let after = following_prefix(doc, &following);
-            let (moved, rest) = split_after_last_blank_line(&after);
-            if !moved.is_empty() {
-                first = moved;
-            }
-            set_following_prefix(doc, &following, format!("{trailing}\n{rest}"));
+    if let Following::Table(_) = following {
+        let after = following_prefix(doc, &following);
+        let (moved, rest) = split_after_last_blank_line(&after);
+        if !moved.is_empty() {
+            first = moved;
         }
-        Following::End => {
-            let after = following_prefix(doc, &following);
-            set_following_prefix(doc, &following, format!("{trailing}{after}"));
-        }
+        set_following_prefix(doc, &following, format!("\n{rest}"));
     }
     let mut array = ArrayOfTables::new();
     for (index, (comments, mut table)) in tables.into_iter().enumerate() {
@@ -362,7 +351,7 @@ fn remove_table_value(table: &mut Table, key: &str) {
 
 /// フォントの大きさや画像の不透明度の数。整数なら整数で、そうでなければ小数で書く（`f32` を `f64` に
 /// 広げた端数を出さないように、`f32` の短い表記から読み直す）。
-pub(crate) fn number_value(number: f32) -> Value {
+fn number_value(number: f32) -> Value {
     if number.fract() == 0.0 {
         return Value::from(number as i64);
     }
@@ -376,7 +365,7 @@ fn action_value(action: Option<Action>) -> Value {
 }
 
 /// 値を書いたときの文字列。前後の空白やコメントは含めない。
-pub(crate) fn bare_repr(value: &Value) -> String {
+fn bare_repr(value: &Value) -> String {
     let mut value = value.clone();
     value.decor_mut().clear();
     value.to_string()
@@ -817,7 +806,7 @@ fn set_table_value(table: &mut Table, key: &str, mut value: Value) {
 /// テーブルのうち、ほかのテーブルのヘッダーとファイルの最後との位置関係で扱えるもの（`[font]` の形の
 /// ヘッダーを持つテーブルと最上位）か。`font.size = 9` のような点で区切ったキーや、インラインテーブルは
 /// 違う。
-pub(crate) fn is_standard(table: &Table) -> bool {
+fn is_standard(table: &Table) -> bool {
     !table.is_dotted()
 }
 
@@ -826,7 +815,7 @@ fn path_name(path: &[&str]) -> String {
 }
 
 /// キーのパス `path` のテーブル。
-pub(crate) fn table_at<'a>(doc: &'a DocumentMut, path: &[&str]) -> Option<&'a Table> {
+fn table_at<'a>(doc: &'a DocumentMut, path: &[&str]) -> Option<&'a Table> {
     let mut table = doc.as_table();
     for name in path {
         table = table.get(name)?.as_table()?;
@@ -834,7 +823,7 @@ pub(crate) fn table_at<'a>(doc: &'a DocumentMut, path: &[&str]) -> Option<&'a Ta
     Some(table)
 }
 
-pub(crate) fn table_at_mut<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> Option<&'a mut Table> {
+fn table_at_mut<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> Option<&'a mut Table> {
     let mut table = doc.as_table_mut();
     for name in path {
         table = table.get_mut(name)?.as_table_mut()?;
@@ -1034,7 +1023,7 @@ fn set_following_prefix(doc: &mut DocumentMut, following: &Following, prefix: St
     }
 }
 
-pub(crate) fn decor_prefix(decor: &Decor) -> String {
+fn decor_prefix(decor: &Decor) -> String {
     decor
         .prefix()
         .and_then(|prefix| prefix.as_str())
@@ -1051,7 +1040,7 @@ fn decor_suffix(decor: &Decor) -> String {
 }
 
 /// テーブルの値の行のキーと、その行の前に書いたもの（コメントと空行）。行の順。
-pub(crate) fn value_prefixes(table: &Table) -> Vec<(String, String)> {
+fn value_prefixes(table: &Table) -> Vec<(String, String)> {
     table
         .iter()
         .filter(|(_, item)| item.is_value())
@@ -1181,7 +1170,7 @@ fn key_with_prefix(key: Key, prefix: String) -> Key {
 }
 
 /// テーブルの値の行の `index` 番目の前に、`key` の行を入れる。
-pub(crate) fn insert_at(table: &mut Table, index: usize, key: Key, value: Value) {
+fn insert_at(table: &mut Table, index: usize, key: Key, value: Value) {
     let later: Vec<String> = value_prefixes(table)
         .into_iter()
         .skip(index)
@@ -1254,7 +1243,7 @@ fn comment_line(key: &str, value: &Value, old: &Value) -> String {
 
 /// テーブル `path` の値の行 `name` を消し、その行の前に書いたもの（コメントと空行）と `line` を、次の
 /// 値の行の前（なければテーブルの後ろ）に置く。
-pub(crate) fn replace_line(doc: &mut DocumentMut, path: &[&str], name: &str, line: Option<String>) {
+fn replace_line(doc: &mut DocumentMut, path: &[&str], name: &str, line: Option<String>) {
     let Some(table) = table_at_mut(doc, path) else {
         return;
     };
@@ -1728,20 +1717,6 @@ mod tests {
         assert_eq!(
             updated,
             "[font]\nsize = 9\n\n[background]\nimage_opacity = 0.5\n\n[[background.images]]\npath = 'a'\n\n[keys]\n"
-        );
-        assert_reads_as(&updated, &edited);
-    }
-
-    #[test]
-    fn old_forms_are_read_in_the_current_form_before_writing() {
-        let text = "[background]\nimages = ['C:\\a.png'] # mine\nopacity = 0.7\n";
-        let base = config::parse(&migrate::migrate(text).text, &Config::default()).config;
-        let mut edited = base.clone();
-        edited.background.images[0].fit = Some(BackgroundFit::Tile);
-        let updated = update(text, &base, &edited).unwrap();
-        assert_eq!(
-            updated,
-            "[background]\nimage_opacity = 0.3\n\n[[background.images]]\npath = 'C:\\a.png'\nfit = \"tile\"\n# mine\n"
         );
         assert_reads_as(&updated, &edited);
     }

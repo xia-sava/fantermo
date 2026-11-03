@@ -2404,8 +2404,8 @@ mod tests {
                 image_opacity: Some(1.0),
             }]
         );
-        // 前の書き方（文字列やインラインテーブルの配列、文字列一つ）は読み替えてから読む。
-        for (old, warning) in [
+        // テーブルでない書き方（文字列や文字列の配列）は警告して読まない。
+        for (text, warning) in [
             (
                 "[background]\nimages = 'C:\\one.png'\n",
                 "ignoring background.images: expected [[background.images]] tables",
@@ -2415,16 +2415,9 @@ mod tests {
                 "ignoring background.images[0]: expected a table",
             ),
         ] {
-            assert_eq!(parse(old).warnings, [warning]);
-            let migrated = migrate::migrate(old);
-            let parsed = parse(&migrated.text);
-            assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
-            assert_eq!(
-                parsed.config.background.images,
-                [BackgroundImage::new(r"C:\one.png")]
-            );
+            assert_eq!(parse(text).warnings, [warning]);
         }
-        // `opacity` は知らないキー（読み替える前）。
+        // `opacity` は知らないキー。
         let parsed = parse("[background]\nopacity = 0.8\n");
         assert_eq!(parsed.config.background, BackgroundConfig::default());
         assert_eq!(

@@ -559,44 +559,6 @@ mod tests {
     }
 
     #[test]
-    fn old_forms_are_rewritten_in_the_file() {
-        let dir = scratch_dir("migrate");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        let old = "# mine\n[background]\nimages = ['a.png']\nopacity = 0.8\n";
-        let current =
-            "# mine\n[background]\nimage_opacity = 0.2\n\n[[background.images]]\npath = 'a.png'\n";
-        std::fs::write(&path, old).unwrap();
-        let loaded = load(Some(&path));
-        assert_eq!(loaded.notice, None);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), current);
-        assert_eq!(loaded.config.background.images[0].path, "a.png");
-        assert_eq!(loaded.config.background.image_opacity, 0.2);
-        // 今の書き方なら書かない。
-        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
-        let again = reload(Some(&path), &loaded.config);
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().modified().unwrap(),
-            modified
-        );
-        assert_eq!(again.config, loaded.config);
-
-        // 書けなければファイルはそのままで、読み替えた中身で動く。
-        std::fs::write(&path, old).unwrap();
-        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
-        permissions.set_readonly(true);
-        std::fs::set_permissions(&path, permissions.clone()).unwrap();
-        let loaded = load(Some(&path));
-        assert_eq!(loaded.notice, None);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
-        assert_eq!(loaded.config, again.config);
-        #[allow(clippy::permissions_set_readonly_false)]
-        permissions.set_readonly(false);
-        std::fs::set_permissions(&path, permissions).unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
     fn notice_names_the_file_and_the_lines() {
         let path = Path::new(r"C:\settings\config.toml");
         let parsed = config::parse("shell = 1\n[font]\nsize = 0\n", &Config::default());
