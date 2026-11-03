@@ -127,6 +127,9 @@ pub struct LaunchAgain<'a> {
     pub config_toml: Option<&'a str>,
     /// 別の実行ファイルとして起動する。一時フォルダに写して起動する。
     pub copy_of_executable: bool,
+    /// 付ける環境変数。[`Server::start_with_environment`] と同じく `FANTERMO_DPI` などを上書きでき、一時フォルダを指す
+    /// `FANTERMO_E2E_DIR`・`FANTERMO_CONFIG`・`FANTERMO_STATE` は上書きできない。
+    pub environment: Vec<(&'static str, OsString)>,
 }
 
 impl Server {
@@ -201,44 +204,20 @@ impl Server {
         );
         // 準備や起動で panic しても、枠は破棄で戻る。
         let slot = Slot::acquire();
-        let dir = std::env::temp_dir().join(format!(
-            "fantermo-e2e-{}-{}",
-            std::process::id(),
-            SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("failed to create the temporary folder");
+        let dir = new_folder();
         let config = dir.join("config.toml");
         std::fs::write(&config, config_toml).expect("failed to write the settings");
         let environment = prepare(&dir);
-        let log = File::create(log_path(&dir)).expect("failed to create the log");
-        let log_for_stderr = log.try_clone().expect("failed to duplicate the log");
-        let mut launcher = Command::new(&run_hidden);
-        if !os_clipboard {
-            launcher.env(CLIPBOARD_FILE_ENV, dir.join("clipboard.txt"));
-        }
-        let child = launcher
-            .args(["--seconds", LIFETIME_SECONDS])
-            .args(run_hidden_args)
-            .arg("--")
-            .arg(&exe)
-            .args(command)
-            .current_dir(&dir)
-            .env("FANTERMO_DPI", "96")
-            .env("RUST_LOG", "info,fantermo=debug")
-            .env("NO_COLOR", "1")
-            // git bash から実行したときの値を、端末の中のシェルへ渡さない。
-            .env_remove("HOME")
-            .env_remove("SHELL")
-            .envs(environment)
-            // 一時フォルダの外を読み書きしないよう、テストからも上書きさせない。
-            .env("FANTERMO_E2E_DIR", &dir)
-            .env("FANTERMO_CONFIG", &config)
-            .env("FANTERMO_STATE", dir.join(STATE_FILE))
-            .stdin(Stdio::null())
-            .stdout(log)
-            .stderr(log_for_stderr)
-            .spawn()
-            .unwrap_or_else(|e| panic!("failed to start {}: {e}", run_hidden.display()));
+        let child = spawn_fantermo(&Launch {
+            run_hidden_args,
+            exe: &exe,
+            arguments: command,
+            dir: &dir,
+            config: &config,
+            working_folder: &dir,
+            os_clipboard,
+            environment,
+        });
         let desktop = format!("run-hidden-{}", child.id());
         let mut server = Self {
             child,
@@ -262,13 +241,7 @@ impl Server {
 
     /// [`Server::launch_again`] に、作業フォルダなどの指定を足す。
     pub fn launch_again_with(&self, arguments: &[&str], again: &LaunchAgain) -> Self {
-        let run_hidden = sibling_of_fantermo("run-hidden.exe");
-        let dir = std::env::temp_dir().join(format!(
-            "fantermo-e2e-{}-{}",
-            std::process::id(),
-            SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("failed to create the temporary folder");
+        let dir = new_folder();
         let config = match again.config_toml {
             Some(config_toml) => {
                 let path = dir.join("config.toml");
@@ -284,33 +257,16 @@ impl Server {
         } else {
             fantermo_exe()
         };
-        let log = File::create(log_path(&dir)).expect("failed to create the log");
-        let log_for_stderr = log.try_clone().expect("failed to duplicate the log");
-        let child = Command::new(&run_hidden)
-            .args([
-                "--seconds",
-                LIFETIME_SECONDS,
-                "--desktop",
-                &self.desktop,
-                "--",
-            ])
-            .arg(&exe)
-            .args(arguments)
-            .current_dir(again.working_folder.unwrap_or(&self.dir))
-            .env(CLIPBOARD_FILE_ENV, dir.join("clipboard.txt"))
-            .env("FANTERMO_DPI", "96")
-            .env("RUST_LOG", "info,fantermo=debug")
-            .env("NO_COLOR", "1")
-            .env_remove("HOME")
-            .env_remove("SHELL")
-            .env("FANTERMO_E2E_DIR", &dir)
-            .env("FANTERMO_CONFIG", &config)
-            .env("FANTERMO_STATE", dir.join(STATE_FILE))
-            .stdin(Stdio::null())
-            .stdout(log)
-            .stderr(log_for_stderr)
-            .spawn()
-            .unwrap_or_else(|e| panic!("failed to start {}: {e}", run_hidden.display()));
+        let child = spawn_fantermo(&Launch {
+            run_hidden_args: &["--desktop", &self.desktop],
+            exe: &exe,
+            arguments,
+            dir: &dir,
+            config: &config,
+            working_folder: again.working_folder.unwrap_or(&self.dir),
+            os_clipboard: false,
+            environment: again.environment.clone(),
+        });
         Self {
             child,
             port: 0,
@@ -489,9 +445,10 @@ impl Server {
         self.post("/e2e/input", format!("{line}\r").as_bytes());
     }
 
-    /// 端末が `cols` × `rows` になるようにウィンドウの大きさを変える。
-    pub fn resize(&self, cols: u16, rows: u16) {
-        self.post(&format!("/e2e/window/size/{cols}/{rows}"), b"");
+    /// 端末が `cols` × `rows` になるようにウィンドウの大きさを変えて、そのあとの状態を返す。
+    pub fn resize(&self, cols: u16, rows: u16) -> Value {
+        let answer = self.post(&format!("/e2e/window/size/{cols}/{rows}"), b"");
+        serde_json::from_slice(&answer).expect("the answer is not JSON")
     }
 
     /// ウィンドウを最小化して、そのあとの状態を返す。
@@ -907,6 +864,68 @@ fn remove_folder(dir: &Path) {
     if let Some(e) = last_error {
         eprintln!("failed to remove {}: {e}", dir.display());
     }
+}
+
+/// 起動ごとの一時フォルダを作る。
+fn new_folder() -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "fantermo-e2e-{}-{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("failed to create the temporary folder");
+    dir
+}
+
+/// run-hidden 経由での fantermo の起動の指定。
+struct Launch<'a> {
+    /// run-hidden への、`--seconds` のあとに足す引数（`--desktop` など）。
+    run_hidden_args: &'a [&'a str],
+    exe: &'a Path,
+    /// fantermo の引数。
+    arguments: &'a [&'a str],
+    /// 制御の口・ウィンドウの状態・ログ・クリップボードのファイルを置く一時フォルダ。
+    dir: &'a Path,
+    config: &'a Path,
+    working_folder: &'a Path,
+    /// OS のクリップボードを使う（一時フォルダのファイルを渡さない）。
+    os_clipboard: bool,
+    /// 付ける環境変数。一時フォルダを指すものより先に付けるので、それらは上書きできない。
+    environment: Vec<(&'static str, OsString)>,
+}
+
+/// run-hidden を起動する。標準出力と標準エラー出力は一時フォルダのログへ書く。
+fn spawn_fantermo(launch: &Launch) -> Child {
+    let run_hidden = sibling_of_fantermo("run-hidden.exe");
+    let log = File::create(log_path(launch.dir)).expect("failed to create the log");
+    let log_for_stderr = log.try_clone().expect("failed to duplicate the log");
+    let mut command = Command::new(&run_hidden);
+    if !launch.os_clipboard {
+        command.env(CLIPBOARD_FILE_ENV, launch.dir.join("clipboard.txt"));
+    }
+    command
+        .args(["--seconds", LIFETIME_SECONDS])
+        .args(launch.run_hidden_args)
+        .arg("--")
+        .arg(launch.exe)
+        .args(launch.arguments)
+        .current_dir(launch.working_folder)
+        .env("FANTERMO_DPI", "96")
+        .env("RUST_LOG", "info,fantermo=debug")
+        .env("NO_COLOR", "1")
+        // git bash から実行したときの値を、端末の中のシェルへ渡さない。
+        .env_remove("HOME")
+        .env_remove("SHELL")
+        .envs(launch.environment.iter().cloned())
+        // 一時フォルダの外を読み書きしないよう、テストからも上書きさせない。
+        .env("FANTERMO_E2E_DIR", launch.dir)
+        .env("FANTERMO_CONFIG", launch.config)
+        .env("FANTERMO_STATE", launch.dir.join(STATE_FILE))
+        .stdin(Stdio::null())
+        .stdout(log)
+        .stderr(log_for_stderr)
+        .spawn()
+        .unwrap_or_else(|e| panic!("failed to start {}: {e}", run_hidden.display()))
 }
 
 fn log_path(dir: &Path) -> PathBuf {
