@@ -1,5 +1,6 @@
 //! DirectWrite でフォントを探し、セルの寸法を測る。
 
+use fantermo_core::config::{DEFAULT_FONT_FAMILIES, FontConfig};
 use windows::{
     Win32::Graphics::{
         DirectWrite::{
@@ -87,6 +88,23 @@ pub fn find(
         }
     }
     Err(last_error.unwrap_or_else(windows::core::Error::empty))
+}
+
+/// 設定のフォントを先頭から探し、`dpi` で測る。どれも見つからなければ、既定のフォントから探す。
+pub fn find_or_default(
+    factory: &IDWriteFactory,
+    settings: &FontConfig,
+    dpi: u32,
+) -> windows::core::Result<Font> {
+    let families: Vec<&str> = settings.families.iter().map(String::as_str).collect();
+    match find(factory, &families, settings.size_pt, dpi) {
+        Ok(font) => Ok(font),
+        Err(e) if families != DEFAULT_FONT_FAMILIES => {
+            tracing::warn!("none of the fonts {families:?} is available, trying the defaults: {e}");
+            find(factory, &DEFAULT_FONT_FAMILIES, settings.size_pt, dpi)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 pub fn create_factory() -> windows::core::Result<IDWriteFactory> {

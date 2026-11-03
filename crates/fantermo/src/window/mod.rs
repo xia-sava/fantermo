@@ -77,8 +77,7 @@ mod tabs;
 mod update;
 
 use dpi::{
-    change_dpi_keeping_grid, change_dpi_keeping_window, dpi_from_env, load_font, log_font,
-    log_ui_font,
+    change_dpi_keeping_grid, change_dpi_keeping_window, dpi_from_env, log_font, log_ui_font,
 };
 use layout::{
     Insets, backdrop_area_in_client, client_size, client_size_for_terminal, grid_pixels, grid_size,
@@ -174,7 +173,7 @@ pub fn run(
     let dwrite = font::create_factory()?;
     // SAFETY: 引数のない問い合わせ。
     let system_dpi = unsafe { GetDpiForSystem() };
-    let font = load_font(&dwrite, &config.font, system_dpi)?;
+    let font = font::find_or_default(&dwrite, &config.font, system_dpi)?;
     log_font(&font, system_dpi);
 
     let hwnd = create_window(

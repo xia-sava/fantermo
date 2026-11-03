@@ -9,7 +9,6 @@ use windows::Win32::Foundation::HWND;
 
 use super::{
     App,
-    dpi::load_font,
     proc::{Deferred, WithApp, run_deferred},
     tab_bar::system_colors,
 };
@@ -116,7 +115,7 @@ impl App {
             self.set_wide_glyph(font.wide_glyph);
             return None;
         }
-        let measured = match load_font(&self.dwrite, &font, self.dpi) {
+        let measured = match font::find_or_default(&self.dwrite, &font, self.dpi) {
             Ok(measured) => measured,
             Err(e) => {
                 tracing::warn!("keeping the current font: {e}");

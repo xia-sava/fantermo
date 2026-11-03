@@ -116,7 +116,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `window/mod.rs` | メッセージの定数（`WM_APP_WAKE`（出力と子プロセスの終了），`WM_APP_CONFIG_CHANGED`，`WM_APP_UPDATE`，`WM_APP_CLIPBOARD_PROMPT`，`WM_APP_E2E`，`WM_APP_LAUNCH`，`WM_APP_DEVICE_REMOVED`）とタイマーの番号．`run` がウィンドウと `App` を作り，メッセージループを回します．`App` の構造体と `App::new`（端末の並び（`sessions` と `active`），フォント，`Renderer`，いま使っている設定の値，マウスとタブバーとスクロールバーの操作の途中の状態など）．ウィンドウにメッセージを積む `post`・`poster`・`wake_poster` |
 | `window/proc.rs` | `window_proc`（メッセージごとの振り分けと，`App` を借りる `with_app`），借用の外ですること（`Deferred` と `run_deferred`，`destroy_window`，`save_window_state`），借用が重なって飛ばしたメッセージの積み直し（`is_repostable`，`repost_skipped_messages`），`app_of` |
 | `window/layout.rs` | 配置の関数（`Insets`，`terminal_area_in_client`，`scroll_bar_area_in_client`，`backdrop_area_in_client`，`grid_size`）．クライアント領域を，タブバー，端末を描く領域，余白，スクロールバー，背景画像を敷く領域に分けます．座標の変換と，大きさ（`on_resize`，`layout`，`resize_sessions`） |
-| `window/dpi.rs` | DPI とフォント（`apply_dpi`，`apply_font`，`load_font`），起動したときの DPI の変更（`change_dpi_keeping_window`，`change_dpi_keeping_grid`） |
+| `window/dpi.rs` | DPI とフォント（`apply_dpi`，`apply_font`．フォントは `font::find_or_default` で探す），起動したときの DPI の変更（`change_dpi_keeping_window`，`change_dpi_keeping_grid`） |
 | `window/keys.rs` | キー（`on_key`，`on_key_input`，`run_bound_action`），IME，端末へ送る入力（`send`） |
 | `window/tabs.rs` | タブ（`run_tab_command`，`open_startup`，`close_session`，`activate`），起動中の起動（`accept_launch`，`open_pending_launches`），出力（`on_wake`，`continue_output`），タイトルとベル，最初の端末で起動するもの（`startup_for`） |
 | `window/mouse.rs` | マウスのボタンと動きとホイール，選択，リンク，アプリへの報告 |

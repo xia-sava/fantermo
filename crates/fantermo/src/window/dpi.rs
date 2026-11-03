@@ -3,10 +3,8 @@
 
 use std::rc::Rc;
 
-use fantermo_core::config::{DEFAULT_FONT_FAMILIES, FontConfig};
 use windows::Win32::{
     Foundation::{HWND, LPARAM, RECT, SIZE, WPARAM},
-    Graphics::DirectWrite::IDWriteFactory,
     UI::WindowsAndMessaging::{SendMessageW, WM_DPICHANGED},
 };
 
@@ -24,23 +22,6 @@ use crate::{
 /// 開発用。起動したときのウィンドウの DPI を、この環境変数の値とみなす。倍率の違うモニタへ移したときの
 /// 作り直しを、モニタを使わずに確認するために使う。
 const DPI_ENV: &str = "FANTERMO_DPI";
-
-/// 設定のフォントを先頭から探し、`dpi` で測る。どれも見つからなければ、既定のフォントから探す。
-pub(super) fn load_font(
-    dwrite: &IDWriteFactory,
-    settings: &FontConfig,
-    dpi: u32,
-) -> windows::core::Result<Font> {
-    let families: Vec<&str> = settings.families.iter().map(String::as_str).collect();
-    match font::find(dwrite, &families, settings.size_pt, dpi) {
-        Ok(font) => Ok(font),
-        Err(e) if families != DEFAULT_FONT_FAMILIES => {
-            tracing::warn!("none of the fonts {families:?} is available, trying the defaults: {e}");
-            font::find(dwrite, &DEFAULT_FONT_FAMILIES, settings.size_pt, dpi)
-        }
-        Err(e) => Err(e),
-    }
-}
 
 pub(super) fn log_ui_font(font: &UiFont, dpi: u32) {
     tracing::info!(
@@ -124,7 +105,7 @@ impl App {
     /// 前のフォントのまま描く。
     pub(super) fn apply_dpi(&mut self, dpi: u32) {
         self.dpi = dpi;
-        let font = match load_font(&self.dwrite, &self.font_config, dpi) {
+        let font = match font::find_or_default(&self.dwrite, &self.font_config, dpi) {
             Ok(font) => font,
             Err(e) => {
                 tracing::warn!("failed to measure the font for {dpi} DPI: {e}");
@@ -177,7 +158,7 @@ impl App {
 
     /// DPI が `dpi` に変わったときに、いまの桁数と行数がそのまま収まるクライアント領域の大きさ。
     fn scaled_client_size(&self, dpi: u32) -> windows::core::Result<SIZE> {
-        let font = load_font(&self.dwrite, &self.font_config, dpi)?;
+        let font = font::find_or_default(&self.dwrite, &self.font_config, dpi)?;
         let size = self.session().vt.size();
         Ok(client_size_for_terminal(
             grid_pixels(&font, size.cols, size.rows),
