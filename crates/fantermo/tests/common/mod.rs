@@ -73,6 +73,9 @@ const LIFETIME_SECONDS: &str = "300";
 /// fantermo が終わったあと、run-hidden が子孫のプロセスの終わりを待つ秒数。タブを閉じるときに子プロセスを
 /// 終わらせるまで待つ 5 秒より長くする。
 const WAIT_CHILDREN_SECONDS: &str = "20";
+/// 子孫のプロセスを長く動かしたいテストが、[`Server::start_watching_children_for`] に渡す秒数。run-hidden は子孫が
+/// 空になればすぐ終わるので、通常の所要時間は変わらない。テストの寿命の [`LIFETIME_SECONDS`] と同じにする。
+pub const LONG_WAIT_CHILDREN_SECONDS: &str = LIFETIME_SECONDS;
 /// 子孫のプロセスが残らなかったときに run-hidden が出す行。
 const NO_CHILDREN_REMAINED: &str = "run-hidden: no processes remained";
 /// fantermo がログに出す、メモリが足りないエラー（`ERROR_NOT_ENOUGH_MEMORY` の HRESULT）。別デスクトップのヒープが
@@ -128,11 +131,13 @@ impl Server {
     /// [`Server::start`] に加えて、fantermo が終わったあとに子孫のプロセスが残ったかを
     /// [`Server::assert_no_children_remained`] で確認できるようにする。
     pub fn start_watching_children(config_toml: &str, command: &[&str]) -> Self {
-        Self::start_with(
-            config_toml,
-            command,
-            &["--wait-children", WAIT_CHILDREN_SECONDS],
-        )
+        Self::start_watching_children_for(config_toml, command, WAIT_CHILDREN_SECONDS)
+    }
+
+    /// [`Server::start_watching_children`] で、子孫のプロセスの終わりを待つ秒数を `seconds` にする。fantermo が
+    /// 終わったあとにも、起動し直したウィンドウなど子孫のプロセスを長く動かしたいテストが使う。
+    pub fn start_watching_children_for(config_toml: &str, command: &[&str], seconds: &str) -> Self {
+        Self::start_with(config_toml, command, &["--wait-children", seconds])
     }
 
     /// [`Server::start`] と同じだが、一時フォルダのファイルではなく OS のクリップボードを使う。

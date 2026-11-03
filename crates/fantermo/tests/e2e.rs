@@ -29,7 +29,7 @@ use std::{
 };
 
 use common::{
-    LaunchAgain, OsClipboard, RestoreClipboard, Server,
+    LONG_WAIT_CHILDREN_SECONDS, LaunchAgain, OsClipboard, RestoreClipboard, Server,
     processes::{self, Process},
     release_host::{Gate, ReleaseHost, Reply, unused_port},
     signing::{SigningKey, der_signature, hex, sha256, sha256_hex},
@@ -8809,9 +8809,12 @@ fn a_launch_opens_its_own_window_when_the_window_does_not_respond() {
 
 #[test]
 fn a_launch_waiting_for_a_dialog_is_not_lost_when_the_window_closes() {
-    let mut server = Server::start_watching_children(
+    // 閉じたあとに開き直したウィンドウは run-hidden の Job の中にいるので、run-hidden が子孫を待っているあいだだけ
+    // 生きる。ウィンドウが開いてからの操作を終えるまで生かすため、待つ秒数を長くする。
+    let mut server = Server::start_watching_children_for(
         TWO_PROMPT_PROFILES,
         &["--profile", "none", "cmd.exe", "/k", "prompt", "e2e$G"],
+        LONG_WAIT_CHILDREN_SECONDS,
     );
     // 警告のメッセージボックスの間に届いた起動は、開かれるのを待つ。
     wait_message_box_with(&server, "「none」");
