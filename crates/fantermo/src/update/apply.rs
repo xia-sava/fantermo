@@ -69,7 +69,7 @@ pub struct Plan<'a> {
 ///
 /// 待つプロセスがすべて終わる（か上限を過ぎる）のを待ち、MSI の SHA-256 を照合してから、
 /// `msiexec /i <MSI> /qn /norestart` で入れる。照合できないか合わなければ、入れずに終わる。
-/// 終了コードが 0（成功）か 3010（成功。再起動で反映するものがある）なら一時フォルダを消して
+/// 終了コードが 0（成功）か 3010（成功。再起動で反映するものがある）なら（終了コードを読めなければ -1 で失敗）一時フォルダを消して
 /// 起動し直し、ほかなら起動し直さずに終わる。どちらも結果のファイルに書く。
 pub fn script(plan: &Plan) -> String {
     let pids = plan
@@ -116,7 +116,7 @@ if ($actual -ne {msi_sha256}) {{
 Write-Result ("installing {{0}}" -f {msi})
 try {{
     $installer = Start-Process -FilePath $msiexec -ArgumentList @('/i', {msi_argument}, '/qn', '/norestart', '/l*v', {msiexec_log_argument}) -Wait -PassThru
-    $code = $installer.ExitCode
+    $code = if ($null -eq $installer.ExitCode) {{ -1 }} else {{ $installer.ExitCode }}
 }} catch {{
     Write-Result "msiexec could not be started: $_"
     exit 1
@@ -341,6 +341,17 @@ mod tests {
         let exit = script[mismatch..].find("exit 1").unwrap() + mismatch;
         let installs = script.find("Start-Process -FilePath $msiexec").unwrap();
         assert!(waits < hashes && hashes < mismatch && exit < installs);
+    }
+
+    #[test]
+    fn script_treats_a_missing_exit_code_as_a_failure() {
+        let script = plan_script(&[1]);
+        assert!(script.contains(
+            "$code = if ($null -eq $installer.ExitCode) { -1 } else { $installer.ExitCode }"
+        ));
+        let code = script.find("$code = if").unwrap();
+        let check = script.find("if ($code -ne 0 -and $code -ne 3010)").unwrap();
+        assert!(code < check);
     }
 
     #[test]
