@@ -3,15 +3,15 @@ use crate::common::CMD_COMMAND;
 use crate::common::CMD_PROMPT;
 use crate::common::Server;
 use crate::ui::{
-    BAND_BOTTOM, BAND_TOP, BANDS_IMAGE, BUTTON_CANCEL, BackdropArea, EMPTY_COL, EMPTY_ROWS_BELOW,
-    ID_CANCEL, ID_NO, ID_OK, ID_YES, MENU_POLL_INTERVAL, MENU_TIMEOUT, ONE_PROFILE,
-    PAGE_APPEARANCE, SETTINGS_DIALOG_CLASS, SYSTEM_DIALOG_CLASS, TERMINAL_BACKGROUND,
-    TEXT_DIALOG_CLASS, assert_cell_is_drawn, assert_controls_fit, assert_layout_fits_the_client,
-    cell_pixel, check_terminal_still_works, click, close_message_box, config_path, control,
-    control_enabled, current_window, dialog_text, find_cell, number, number_of, open_settings,
-    over_terminal_background, press_cancel, read_controls, solid_image, start_settings_test,
-    start_uneven, start_with_background, tab_count, wait_dialog_of_class, wait_message_box,
-    wait_pixels, wait_tabs, wait_top_dialog,
+    BAND_BOTTOM, BAND_TOP, BANDS_IMAGE, BUTTON_CANCEL, BackdropArea, ID_CANCEL, ID_NO, ID_OK,
+    ID_YES, MENU_POLL_INTERVAL, MENU_TIMEOUT, ONE_PROFILE, PAGE_APPEARANCE, SETTINGS_DIALOG_CLASS,
+    SYSTEM_DIALOG_CLASS, TERMINAL_BACKGROUND, TEXT_DIALOG_CLASS, assert_cell_is_drawn,
+    assert_controls_fit, assert_layout_fits_the_client, cell_pixel, check_terminal_still_works,
+    click, close_message_box, config_path, control, control_enabled, current_window, dialog_text,
+    empty_cell_below, find_cell, number, number_of, open_settings, over_terminal_background,
+    press_cancel, read_controls, solid_image, start_settings_test, start_uneven,
+    start_with_background, tab_count, wait_dialog_of_class, wait_message_box, wait_pixels,
+    wait_tabs, wait_top_dialog,
 };
 use fantermo_core::config;
 use fantermo_core::config::BackendKind;
@@ -1386,7 +1386,8 @@ fn the_file_dialogs_add_a_background_image_and_a_profile_icon() {
 fn the_colors_page_changes_the_scheme_and_the_colors() {
     let server = start_settings_test(ONE_PROFILE);
     let state = server.state();
-    let at = cell_pixel(&state, EMPTY_COL, EMPTY_ROWS_BELOW, 0, 0);
+    let (col, row) = empty_cell_below(&state, 0);
+    let at = cell_pixel(&state, col, row, 0, 0);
     wait_pixels(&server, &[(at, [0, 0, 0])]);
     let choose = color_control(COLOR_ROW_BACKGROUND, COLOR_CHOOSE);
     let reset = color_control(COLOR_ROW_BACKGROUND, COLOR_RESET);

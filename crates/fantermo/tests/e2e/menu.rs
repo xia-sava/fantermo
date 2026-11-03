@@ -5,10 +5,10 @@ use crate::ui::{
     BUTTON_CANCEL, BUTTON_OK, DIALOG_CLOSE_BUTTON, SETTINGS_DIALOG_CLASS,
     TERMINAL_BACKGROUND_SETTING, TEXT_DIALOG_CLASS, accelerator, area_center, assert_cell_is_drawn,
     button_click, cell_left, cell_right, check_terminal_still_works, click_main_menu, close_menu,
-    echo_lines, find_cell, highlight_position, left_click, left_drag, menu_position, on_scroll_bar,
-    on_tab, open_menu, read_menu, right_click_terminal, scroll_bar_middle, select_item,
-    select_position, selection, tab_count, wait_dialog_of_class, wait_menu, wait_tabs,
-    wait_text_dialog,
+    echo_lines, find_cell, highlight_position, left_click, left_drag, menu_position,
+    on_blank_of_tab_bar, on_scroll_bar, on_tab, open_menu, read_menu, right_click_terminal,
+    scroll_bar_middle, select_item, select_position, selection, tab_count, wait_dialog_of_class,
+    wait_menu, wait_tabs, wait_text_dialog,
 };
 use serde_json::Value;
 
@@ -18,9 +18,6 @@ const CONTEXT_MENU_WITH_SELECTION: &str = "C P | A | T W";
 /// ≡ のメニューの並び。
 const MAIN_MENU: &str = "T W | C- P A | S F B | X";
 const MAIN_MENU_WITH_SELECTION: &str = "T W | C P A | S F B | X";
-
-/// タブバーの右の、何もないところを選ぶときの、プロファイルの一覧のボタンからの距離。
-const BESIDE_THE_TAB_BAR_BUTTONS: i64 = 40;
 
 /// メニューの並びの短い形。項目はアクセラレータ（なければ `.`）で、押せなければ `-`、印があれば `*` を続け、区切りは
 /// `|`。項目の文字の言い回しによらず、順番と押せるかを比べる。
@@ -86,10 +83,7 @@ fn the_context_menu_has_the_same_items_wherever_it_opens_and_copy_follows_the_se
     let server = Server::start_cmd();
     server.wait_text(CMD_PROMPT);
     let state = echo_lines(&server, "alpha", "other");
-    let blank_of_tab_bar = {
-        let (x, y) = area_center(&state["tab_bar"]["profiles"]);
-        (x + BESIDE_THE_TAB_BAR_BUTTONS, y)
-    };
+    let blank_of_tab_bar = on_blank_of_tab_bar(&state);
     let check_every_way_to_open = |expected: &str| {
         for steps in [
             right_click_terminal(&state),

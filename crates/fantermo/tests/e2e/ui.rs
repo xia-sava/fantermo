@@ -584,16 +584,24 @@ pub type Point = (i64, i64);
 /// メニューのウィンドウのクラス。
 pub const MENU_CLASS: &str = "#32768";
 
-/// 文字のない桁。テストの行はここまで届かない。
-pub const EMPTY_COL: u32 = 40;
 /// 文字のない行が続く位置を選ぶときの、行からの距離。
-pub const EMPTY_ROWS_BELOW: u32 = 3;
+const EMPTY_ROWS_BELOW: u32 = 3;
+
+/// `row` の行から [`EMPTY_ROWS_BELOW`] 行下の、右端の桁のセル。テストの行は右端まで届かない。ウィンドウが小さくて
+/// 下端を越えるときは、下端の行にする。
+pub fn empty_cell_below(state: &Value, row: u32) -> (u32, u32) {
+    let last = |size: &str| u32::try_from(number(&state[size]) - 1).expect("the size fits");
+    (last("cols"), (row + EMPTY_ROWS_BELOW).min(last("rows")))
+}
+
+/// [`empty_cell_below`] のセルの真ん中。
+pub fn on_empty_cell_below(state: &Value, row: u32) -> Point {
+    let (col, row) = empty_cell_below(state, row);
+    cell_center(state, col, row)
+}
 
 /// スクロールバーをドラッグするピクセル数。
 pub const DRAG_PIXELS: i64 = 100;
-
-/// タブの左端からタブの本体の位置までのピクセル数。閉じるボタンより左。
-pub const TAB_BODY_OFFSET: i64 = 8;
 
 /// `(col, row)` のセルの真ん中。
 pub fn cell_center(state: &Value, col: u32, row: u32) -> Point {
@@ -766,13 +774,53 @@ pub fn area_center(area: &Value) -> Point {
     )
 }
 
-/// `state` のタブバーの `index` 番目のタブの本体（閉じるボタンの外）の位置。
+/// 範囲の左端と右端（右端は含まない）。
+fn span_of(area: &Value) -> (i64, i64) {
+    let left = area["x"].as_i64().expect("no x");
+    (left, left + area["width"].as_i64().expect("no width"))
+}
+
+/// `state` のタブバーの `index` 番目のタブの本体（閉じるボタンの外）の位置。閉じるボタンの左右のうち、広いほうの
+/// 真ん中。
 pub fn on_tab(state: &Value, index: usize) -> Point {
-    let area = &state["tab_bar"]["tabs"][index]["area"];
-    (
-        i64::try_from(number(&area["x"])).expect("the position fits") + TAB_BODY_OFFSET,
-        area_center(area).1,
-    )
+    let slot = &state["tab_bar"]["tabs"][index];
+    let (left, right) = span_of(&slot["area"]);
+    let (close_left, close_right) = span_of(&slot["close"]);
+    let x = if close_left - left >= right - close_right {
+        (left + close_left) / 2
+    } else {
+        (close_right + right) / 2
+    };
+    (x, area_center(&slot["area"]).1)
+}
+
+/// `state` のタブバーの、ボタンにもタブにも当たらない位置。ボタンとタブの間と端のうち、いちばん広い隙間の真ん中。
+pub fn on_blank_of_tab_bar(state: &Value) -> Point {
+    let bar = &state["tab_bar"];
+    let mut spans = vec![
+        span_of(&bar["menu"]),
+        span_of(&bar["new_tab"]),
+        span_of(&bar["profiles"]),
+    ];
+    spans.extend(
+        bar["tabs"]
+            .as_array()
+            .expect("no tabs")
+            .iter()
+            .map(|slot| span_of(&slot["area"])),
+    );
+    spans.sort_unstable();
+    let width = i64::try_from(number(&state["client_width"])).expect("the width fits");
+    let mut widest = (0, 0);
+    let mut covered = 0;
+    for (left, right) in spans.into_iter().chain([(width, width)]) {
+        if left - covered > widest.1 - widest.0 {
+            widest = (covered, left);
+        }
+        covered = covered.max(right);
+    }
+    assert!(widest.1 > widest.0, "no blank in the tab bar: {bar:#}");
+    ((widest.0 + widest.1) / 2, area_center(&bar["menu"]).1)
 }
 
 pub fn on_close_button(state: &Value, index: usize) -> Point {
@@ -874,7 +922,7 @@ pub fn select_item(server: &Server, items: &[Value], accelerator_of: char) {
 }
 
 pub fn on_terminal(state: &Value) -> Point {
-    cell_center(state, EMPTY_COL, EMPTY_ROWS_BELOW)
+    on_empty_cell_below(state, 0)
 }
 
 /// ≡ を押すマウスの操作。

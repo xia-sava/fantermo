@@ -1,11 +1,12 @@
 use crate::common::CMD_PROMPT;
 use crate::common::Server;
 use crate::ui::{
-    DRAG_PIXELS, EMPTY_COL, EMPTY_ROWS_BELOW, Point, area_center, button_click, cell_center,
-    cell_left, cell_right, close_menu, echo_lines, fill_scrollback, find_cell, left_click,
-    left_drag, left_press_and_move, newest_offset, number, on_close_button, on_scroll_bar, on_tab,
-    on_thumb, run_with_cygwin, run_with_wsl, scroll_bar_middle, scroll_offset, selection, step,
-    tab_count, thumb_length, thumb_top, wait_menu, wait_sh_ready, wait_tabs,
+    DRAG_PIXELS, Point, area_center, button_click, cell_center, cell_left, cell_right, close_menu,
+    echo_lines, fill_scrollback, find_cell, left_click, left_drag, left_press_and_move,
+    newest_offset, number, on_blank_of_tab_bar, on_close_button, on_empty_cell_below,
+    on_scroll_bar, on_tab, on_thumb, run_with_cygwin, run_with_wsl, scroll_bar_middle,
+    scroll_offset, selection, step, tab_count, thumb_length, thumb_top, wait_menu, wait_sh_ready,
+    wait_tabs,
 };
 use serde_json::Value;
 use std::sync::atomic::AtomicU32;
@@ -139,11 +140,7 @@ fn alt_drag_selects_a_rectangle() {
     assert_eq!(selection(&server.state()), Some("bc\nhi"));
 
     // 同じ位置をすぐ押すとダブルクリックになるので、間に別の位置を押す。
-    server.mouse(&left_click(cell_center(
-        &state,
-        EMPTY_COL,
-        row + EMPTY_ROWS_BELOW,
-    )));
+    server.mouse(&left_click(on_empty_cell_below(&state, row)));
     server.mouse(&left_drag(from, to, ""));
     assert_eq!(selection(&server.state()), Some("bcdef-0-end\nghi"));
 }
@@ -162,11 +159,7 @@ fn a_click_and_input_clear_the_selection() {
 
     server.mouse(&select);
     assert_eq!(selection(&server.state()), Some("alpha"));
-    server.mouse(&left_click(cell_center(
-        &state,
-        EMPTY_COL,
-        row + EMPTY_ROWS_BELOW,
-    )));
+    server.mouse(&left_click(on_empty_cell_below(&state, row)));
     assert_eq!(selection(&server.state()), None);
 
     server.mouse(&select);
@@ -470,8 +463,7 @@ fn the_tab_bar_switches_and_opens_tabs() {
     );
 
     // タブバーの何もないところは何もしない。
-    let right = i64::try_from(number(&state["client_width"])).expect("the width fits") - 2;
-    server.mouse(&left_click((right, on_tab(&state, 0).1)));
+    server.mouse(&left_click(on_blank_of_tab_bar(&state)));
     let state = server.state();
     assert_eq!(tab_count(&state), 2, "{state:#}");
     assert_eq!(state["active"], 1, "{state:#}");
