@@ -62,7 +62,7 @@ use crate::{
     },
     keyboard::{self, KeyPosition},
     paint::Area,
-    scroll_bar, version, window_state,
+    version, window_state,
 };
 use fantermo_core::{
     keymap::KeyCombo,
@@ -1255,17 +1255,8 @@ impl App {
             tracing::warn!("failed to read the mouse mode: {e}");
             false
         });
-        // 描き直すかを決める覚えの値（`App::scroll_position`）を、状態を読むだけで変えないよう、端末から直に読む。
-        let position = self.session().vt.scroll_position().map_or_else(
-            |e| {
-                tracing::warn!("failed to read the scroll position: {e}");
-                None
-            },
-            Some,
-        );
-        let thumb = position.and_then(|position| {
-            scroll_bar::thumb_in(self.scroll_bar_area, self.scroll_bar_metrics(), position)
-        });
+        let position = self.scroll_position();
+        let thumb = position.and_then(|position| self.scroll_bar_thumb_at(position));
         let layout = self.tab_bar_layout();
         let (new_tab, profile_list) = layout.new_tab_buttons();
         let tab_slots: Vec<serde_json::Value> = layout

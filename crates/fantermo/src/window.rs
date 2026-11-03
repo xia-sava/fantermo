@@ -831,8 +831,6 @@ struct App {
     /// マウスのキャプチャを放す。`ReleaseCapture` はこの場で `WM_CAPTURECHANGED` を送るので、借用を手放した
     /// ところで `window_proc` の `with_app` が放す。
     release_capture_pending: bool,
-    /// 表示している端末の、最後に描いたときの表示している範囲の位置。変わったら描き直す。
-    scroll_position: Option<ScrollPosition>,
     /// 設定ダイアログを開いている。開いている間は設定ファイルを読み直さない（ダイアログで編集中の
     /// 設定を、書く前の中身で上書きしないため）。
     settings_dialog_open: bool,
@@ -962,7 +960,6 @@ impl App {
             scroll_bar_press: None,
             scroll_bar_hover: false,
             release_capture_pending: false,
-            scroll_position: None,
             settings_dialog_open: false,
             reload_pending: false,
             settings_notice_key: None,
@@ -1674,13 +1671,13 @@ impl App {
     }
 
     /// 表示している範囲を示す、いまのつまみ。スクロールバックがなければ `None`。
-    fn scroll_bar_thumb(&mut self) -> Option<scroll_bar::Thumb> {
-        self.update_scroll_position();
-        scroll_bar::thumb_in(
-            self.scroll_bar_area,
-            self.scroll_bar_metrics(),
-            self.scroll_position?,
-        )
+    fn scroll_bar_thumb(&self) -> Option<scroll_bar::Thumb> {
+        self.scroll_bar_thumb_at(self.scroll_position()?)
+    }
+
+    /// 表示している範囲が `position` のときのつまみ。スクロールバックがなければ `None`。
+    fn scroll_bar_thumb_at(&self, position: ScrollPosition) -> Option<scroll_bar::Thumb> {
+        scroll_bar::thumb_in(self.scroll_bar_area, self.scroll_bar_metrics(), position)
     }
 
     /// スクロールバーの上で左ボタンを押した。つまみの上ならドラッグを始め、つまみの外なら、その向きへ
@@ -1715,10 +1712,10 @@ impl App {
         };
         match drag {
             ScrollBarDrag::Thumb { grab } => {
-                let Some(thumb) = self.scroll_bar_thumb() else {
+                let Some(position) = self.scroll_position() else {
                     return;
                 };
-                let Some(position) = self.scroll_position else {
+                let Some(thumb) = self.scroll_bar_thumb_at(position) else {
                     return;
                 };
                 let track = scroll_bar::track(self.scroll_bar_area, self.scroll_bar_metrics());
@@ -2247,11 +2244,8 @@ impl App {
             return;
         }
         self.session_mut().vt.scroll_to_bottom();
-        // シェルが何も返さないキーでも、戻した範囲を描き、つまみを合わせる。
-        if self.update_scroll_position() {
-            self.invalidate();
-        }
         self.refresh_hovered_link_now();
+        // 選択を消して描き直すので、シェルが何も返さないキーでも、戻した範囲を描き、つまみを合わせる。
         self.clear_selection();
         self.session_mut().write(data);
     }
@@ -2323,25 +2317,16 @@ impl App {
     /// 表示する範囲を動かした。マウスを載せているリンクを探し直し、描き直す。
     fn on_viewport_moved(&mut self) {
         self.refresh_hovered_link_now();
-        self.update_scroll_position();
         self.invalidate();
     }
 
-    /// 表示している端末の表示している範囲の位置を読み直す。最後に描いたときから変わったら `true` を
-    /// 返す。
-    fn update_scroll_position(&mut self) -> bool {
-        let position = match self.session().vt.scroll_position() {
-            Ok(position) => position,
-            Err(e) => {
-                tracing::warn!("failed to read the scroll position: {e}");
-                return false;
-            }
-        };
-        if self.scroll_position == Some(position) {
-            return false;
-        }
-        self.scroll_position = Some(position);
-        true
+    /// 表示している端末の、表示している範囲の位置。読めなければ警告を残して `None`。
+    fn scroll_position(&self) -> Option<ScrollPosition> {
+        self.session()
+            .vt
+            .scroll_position()
+            .inspect_err(|e| tracing::warn!("failed to read the scroll position: {e}"))
+            .ok()
     }
 
     /// 端末 `id` に出力が届いたか、子プロセスが終わった。出力を流し込み、タイトルとベルを反映する。
@@ -2921,12 +2906,12 @@ impl App {
         self.render_to(Some(&frame_path));
     }
 
-    /// 表示している端末を端末を描く領域に、タブバーをその上に描いて表示する。表示している範囲の位置も
-    /// 読み直す（出力、ウィンドウの大きさの変更、タブの切り替えなど、描き直すことはどれも位置を動かし
-    /// うる）。
+    /// 表示している端末を端末を描く領域に、タブバーをその上に描いて表示する。スクロールバーは、描くたびに
+    /// 読んだ表示している範囲の位置で描く（出力、ウィンドウの大きさの変更、タブの切り替えなど、描き直す
+    /// ことはどれも位置を動かしうる）。
     /// `capture` を渡すと、表示する前の画面を PNG で書き出す。
     fn render_to(&mut self, capture: Option<&std::path::Path>) {
-        self.update_scroll_position();
+        let position = self.scroll_position();
         self.tick_image_animations();
         let mut frame = match self.session_mut().vt.frame() {
             Ok(frame) => frame,
@@ -2944,7 +2929,9 @@ impl App {
             scroll_bar::Palette::from_terminal(frame.background, frame.foreground)
                 .with_colors(&self.colors.scroll_bar);
         let over_image = self.session().background_image.is_some();
-        paints.extend(self.scroll_bar_paints(&scroll_bar_colors, over_image));
+        if let Some(position) = position {
+            paints.extend(self.scroll_bar_paints(position, &scroll_bar_colors, over_image));
+        }
         let backdrop = self.sessions[self.active]
             .background_image
             .as_ref()
@@ -3002,11 +2989,14 @@ impl App {
         )
     }
 
-    /// スクロールバーに描くもの。色は `colors`。`over_image` なら、背景画像の上に描く。
-    fn scroll_bar_paints(&self, colors: &scroll_bar::Palette, over_image: bool) -> Vec<Paint> {
-        let Some(position) = self.scroll_position else {
-            return Vec::new();
-        };
+    /// 表示している範囲が `position` のときに、スクロールバーに描くもの。色は `colors`。`over_image` なら、
+    /// 背景画像の上に描く。
+    fn scroll_bar_paints(
+        &self,
+        position: ScrollPosition,
+        colors: &scroll_bar::Palette,
+        over_image: bool,
+    ) -> Vec<Paint> {
         let drag = self.scroll_bar_press.and_then(|(_, drag)| drag);
         let dragging = matches!(drag, Some(ScrollBarDrag::Thumb { .. }));
         // つまみの外を押し続けている間は、マウスがスクロールバーの外へ出ても、載せているときの形にする。
