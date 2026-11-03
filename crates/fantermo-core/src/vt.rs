@@ -161,7 +161,7 @@ const FAINT_OPACITY: f32 = 0.5;
 const XTVERSION_NAME: &str = "fantermo";
 
 /// リンクを探すときに、指した行の前後へ折り返しをたどる行数の上限。
-const MAX_LINK_LINE_ROWS: u32 = 64;
+pub(crate) const MAX_LINK_LINE_ROWS: u32 = 64;
 
 /// セルの文字（書記素クラスタ）を読むときの、コードポイントの数の初めの見込み。
 const GRAPHEME_BUFFER_LEN: usize = 16;

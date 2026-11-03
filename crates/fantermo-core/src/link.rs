@@ -12,7 +12,7 @@ const URL_PREFIXES: [&str; 4] = ["http://", "https://", "file://", "mailto:"];
 const TRAILING_PUNCTUATION: &[char] = &['.', ',', ':', ';', '!', '?', '\'', '"', '*'];
 
 /// URL の終わりに付いていて、対になる開き括弧が URL の中になければ含めない閉じ括弧。
-const CLOSING_BRACKETS: [(char, char); 3] = [(')', '('), (']', '['), ('}', '{')];
+const CLOSING_BRACKETS: [(char, char); 2] = [(')', '('), (']', '[')];
 
 /// 開いてよい scheme。小文字で比べる。
 const ALLOWED_SCHEMES: [&str; 4] = ["http", "https", "mailto", "file"];
@@ -149,7 +149,7 @@ fn url_prefix_at(chars: &[char], start: usize) -> Option<&'static str> {
 /// 句読点と、対になっていない閉じ括弧を除く。
 fn url_end(chars: &[char], start: usize, prefix_len: usize) -> usize {
     let body = start + prefix_len;
-    // 括弧の種類ごとの、URL の中の閉じと開きの数。末尾を外すたびに数え直さないよう、進みながら数える。
+    // 括弧の種類ごとの、URL の中の閉じと開きの数。進みながら数え、末尾を外すたびに閉じの数を減らす。
     let mut closing_counts = [0usize; CLOSING_BRACKETS.len()];
     let mut opening_counts = [0usize; CLOSING_BRACKETS.len()];
     let mut end = start;
@@ -424,6 +424,10 @@ mod tests {
             ),
             ("[https://example.com/]", "https://example.com/"),
             ("https://example.com/[1]", "https://example.com/[1]"),
+            ("https://example.com/(a)]).", "https://example.com/(a)"),
+            ("https://example.com/[a])", "https://example.com/[a]"),
+            ("https://example.com/(a).)", "https://example.com/(a)"),
+            ("https://example.com/(", "https://example.com/("),
         ] {
             assert_eq!(url_in(line).as_deref(), Some(url), "{line}");
         }
@@ -431,8 +435,9 @@ mod tests {
 
     #[test]
     fn a_long_run_of_closing_brackets_is_handled_at_once() {
-        // 129 行 × 300 桁の論理行に当たる長さ。
-        let length = 129 * 300;
+        // たどれる行数の上限の前後を合わせた行数（129 行）が、幅の広い画面で並んだ長さ。
+        const WIDE_SCREEN_COLUMNS: usize = 300;
+        let length = (2 * crate::vt::MAX_LINK_LINE_ROWS as usize + 1) * WIDE_SCREEN_COLUMNS;
         let line = format!("https://example.com/a{}", ")".repeat(length));
         assert_eq!(url_in(&line).as_deref(), Some("https://example.com/a"));
         let line = format!("https://example.com/({}", ")".repeat(length));

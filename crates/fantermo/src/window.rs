@@ -2539,6 +2539,8 @@ impl App {
         self.resize_sessions();
         self.update_tab_bar_hover();
         self.update_scroll_bar_hover();
+        // 余白やスクロールバーの幅だけが変わると、マウスの下のセルが変わる。
+        self.refresh_hovered_link_now();
     }
 
     /// すべての端末の大きさを、端末を描く領域に合わせる。表示していない端末も同じ大きさにする。
