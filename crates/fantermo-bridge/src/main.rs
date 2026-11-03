@@ -85,8 +85,7 @@ fn run() -> i32 {
         return EXIT_IO_ERROR;
     }
 
-    let mut decoder = Decoder::new();
-    match receive_blocking(&mut decoder) {
+    match receive_blocking() {
         Ok(Some(ToBridge::Hello { version })) => {
             if let Err(mismatch) = protocol::check_version(version) {
                 report_error(&mismatch.to_string());
@@ -105,7 +104,7 @@ fn run() -> i32 {
             return EXIT_PROTOCOL_ERROR;
         }
     }
-    let size = match receive_blocking(&mut decoder) {
+    let size = match receive_blocking() {
         Ok(Some(ToBridge::Resize(size))) => size,
         Ok(Some(ToBridge::Quit) | None) => return EXIT_OK,
         Ok(Some(other)) => {
@@ -147,7 +146,7 @@ fn run() -> i32 {
         size.cols,
         size.rows
     );
-    match Relay::new(child, decoder) {
+    match Relay::new(child) {
         Ok(relay) => relay.run(),
         Err(error) => {
             report_error(&format!("pty へ書き込むスレッドを起動できません: {error}"));
@@ -591,11 +590,11 @@ enum Flow {
 }
 
 impl Relay {
-    fn new(child: Child, decoder: Decoder) -> io::Result<Self> {
+    fn new(child: Child) -> io::Result<Self> {
         let input = PtyWriter::spawn(child.master)?;
         Ok(Self {
             child,
-            decoder,
+            decoder: Decoder::new(),
             input,
             buf: vec![0; READ_BUF_LEN],
             exit: None,
@@ -810,22 +809,12 @@ fn hang_up_foreground_wait(child: &Child, limit_ms: u32) {
 }
 
 /// 標準入力から単位を一つ受け取るまで待つ。標準入力が単位の切れ目で閉じたら `None`。
-fn receive_blocking(decoder: &mut Decoder) -> Result<Option<ToBridge>, String> {
-    let mut buf = vec![0; READ_BUF_LEN];
-    loop {
-        if let Some(message) = decoder.next_message().map_err(|error| error.to_string())? {
-            return Ok(Some(message));
-        }
-        let n = read_fd(STDIN, &mut buf)
-            .map_err(|error| format!("標準入力から読み取れません: {error}"))?;
-        if n == 0 {
-            if decoder.pending_len() > 0 {
-                return Err("標準入力がデータの途中で閉じました".to_string());
-            }
-            return Ok(None);
-        }
-        decoder.push(&buf[..n]);
-    }
+fn receive_blocking() -> Result<Option<ToBridge>, String> {
+    protocol::read_message(&mut Fd(STDIN)).map_err(|error| match error.kind() {
+        io::ErrorKind::UnexpectedEof => "標準入力がデータの途中で閉じました".to_string(),
+        io::ErrorKind::InvalidData => error.to_string(),
+        _ => format!("標準入力から読み取れません: {error}"),
+    })
 }
 
 /// エラーをログに残し、fantermo にも送る。
@@ -838,9 +827,36 @@ fn report_error(message: &str) {
 
 /// 単位を標準出力へ書く。
 fn send(message: &FromBridge) -> io::Result<()> {
-    let bytes = protocol::encode(message)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    write_all_fd(STDOUT, &bytes)
+    protocol::write_message(&mut Fd(STDOUT), message)
+}
+
+/// ファイル記述子を `Read` と `Write` として扱う。閉じない。
+struct Fd(c_int);
+
+impl io::Read for Fd {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        read_fd(self.0, buf)
+    }
+}
+
+impl io::Write for Fd {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        loop {
+            // SAFETY: `bytes` は有効な読み取り元。
+            let n = unsafe { libc::write(self.0, bytes.as_ptr().cast(), bytes.len()) };
+            if n >= 0 {
+                return Ok(n as usize);
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn read_fd(fd: c_int, buf: &mut [u8]) -> io::Result<usize> {
@@ -855,23 +871,6 @@ fn read_fd(fd: c_int, buf: &mut [u8]) -> io::Result<usize> {
             return Err(error);
         }
     }
-}
-
-fn write_all_fd(fd: c_int, mut bytes: &[u8]) -> io::Result<()> {
-    while !bytes.is_empty() {
-        // SAFETY: `bytes` は有効な読み取り元。
-        let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
-        if n > 0 {
-            bytes = &bytes[n as usize..];
-            continue;
-        }
-        let error = io::Error::last_os_error();
-        if n < 0 && error.kind() == io::ErrorKind::Interrupted {
-            continue;
-        }
-        return Err(error);
-    }
-    Ok(())
 }
 
 #[cfg(test)]
