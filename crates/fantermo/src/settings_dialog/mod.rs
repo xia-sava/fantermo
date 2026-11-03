@@ -40,7 +40,7 @@ use windows::{
 };
 
 use crate::{
-    dialog::{self, DialogState, OwnedFont, scale},
+    dialog::{self, DialogState, OwnedFont, scale, set_text},
     file_dialog, modal,
     paint::BASE_DPI,
 };
@@ -59,7 +59,7 @@ use behavior::BehaviorPage;
 use colors::ColorsPage;
 use keys::KeysPage;
 use profiles::ProfilesPage;
-use widgets::{Builder, DipRect, ListBox, NumberInput, set_text};
+use widgets::{Builder, DipRect, ListBox, NumberInput};
 
 const CLASS: PCWSTR = w!("fantermo-settings-dialog");
 const TITLE: &str = "設定";
@@ -406,14 +406,14 @@ fn create<'a>(
 
 /// ダイアログを、DPI が `dpi` のときの大きさにして、呼び出し元のウィンドウの真ん中に置く。
 fn place(owner: HWND, hwnd: HWND, dpi: u32) -> windows::core::Result<()> {
-    let (width, height) = dialog::window_size(
+    let (left, top, width, height) = dialog::centered_on(
+        owner,
         CLIENT_WIDTH,
         CLIENT_HEIGHT,
         WS_POPUP | WS_CAPTION | WS_SYSMENU,
         WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
         dpi,
     )?;
-    let (left, top) = dialog::center_in(&dialog::window_rect(owner)?, width, height);
     let (left, top) = match dialog::work_area(owner) {
         Some(work) => (
             dialog::keep_within(left, width, work.left, work.right),

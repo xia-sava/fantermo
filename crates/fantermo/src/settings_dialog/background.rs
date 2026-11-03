@@ -17,11 +17,9 @@ use windows::Win32::{
 use super::{
     BUTTON_GAP, BUTTON_HEIGHT, DialogContext, LABEL_OFFSET, NUMBER_WIDTH, PAGE_LEFT, PAGE_WIDTH,
     Page, ROW_HEIGHT, filters_for, row,
-    widgets::{
-        Builder, ChoiceBox, ListBox, NumberField, NumberInput, NumberKind, RadioGroup, set_text,
-    },
+    widgets::{Builder, ChoiceBox, ListBox, NumberField, NumberInput, NumberKind, RadioGroup},
 };
-use crate::file_dialog;
+use crate::{dialog::set_text, file_dialog};
 
 /// このページのコントロールの ID の範囲。範囲がページの間で重ならないことと、このページの ID が範囲に
 /// 入ることを単体のテストで見る。

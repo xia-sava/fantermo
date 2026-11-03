@@ -43,7 +43,7 @@ use crate::{paint::BASE_DPI, ui_font};
 const SELECT_FROM_START: usize = 0;
 const SELECT_TO_END: isize = -1;
 
-/// ダイアログに結び付ける状態。
+/// ダイアログに結び付ける状態。[`attach_state`] で結び付けたのと同じ型で [`state_of`] から読む。
 pub trait DialogState {
     /// 閉じた印。`WM_DESTROY` で立てる。
     fn closed(&self) -> &Cell<bool>;
@@ -111,7 +111,7 @@ pub unsafe fn attach_state<S: DialogState>(dialog: HWND, state: &S) {
 /// # Safety
 ///
 /// `dialog` に [`attach_state`] で結び付けたのは `S` の状態か、何も結び付けていない。
-pub unsafe fn state_of<'a, S>(dialog: HWND) -> Option<&'a S> {
+pub unsafe fn state_of<'a, S: DialogState>(dialog: HWND) -> Option<&'a S> {
     // SAFETY: GWLP_USERDATA には attach_state が入れた S のポインタか 0 が入っている。
     let pointer = unsafe { GetWindowLongPtrW(dialog, GWLP_USERDATA) } as *const S;
     // SAFETY: 0 でなければ、attach_state の約束で、WM_DESTROY までは生きている状態を指す。
@@ -171,7 +171,7 @@ impl Unfinished {
 
     /// 作り終えたダイアログを返す。以後、捨てても壊さない。
     pub fn finish(mut self) -> HWND {
-        self.0.take().unwrap_or_default()
+        self.0.take().expect("a dialog is finished only once")
     }
 }
 
@@ -185,12 +185,32 @@ impl Drop for Unfinished {
 
 /// 96 DPI のときの `value` ピクセルを、DPI が `dpi` のときのピクセルにする。
 pub fn scale(value: i32, dpi: u32) -> i32 {
-    (value as f32 * dpi as f32 / BASE_DPI as f32).round() as i32
+    scale_between(value, BASE_DPI, dpi)
+}
+
+/// DPI が `from` のときの長さ `value` を、DPI が `to` のときの長さにする（四捨五入）。`from` は 0 でない。
+pub fn scale_between(value: i32, from: u32, to: u32) -> i32 {
+    (value as f32 * to as f32 / from as f32).round() as i32
+}
+
+/// クライアント領域が 96 DPI のときに `width` × `height` のダイアログを、DPI が `dpi` のときの大きさ（枠を含む）で
+/// ウィンドウ `owner` の真ん中に置くときの左上と大きさ（左、上、幅、高さ）。
+pub fn centered_on(
+    owner: HWND,
+    width: i32,
+    height: i32,
+    style: WINDOW_STYLE,
+    ex_style: WINDOW_EX_STYLE,
+    dpi: u32,
+) -> windows::core::Result<(i32, i32, i32, i32)> {
+    let (width, height) = window_size(width, height, style, ex_style, dpi)?;
+    let (left, top) = center_in(&window_rect(owner)?, width, height);
+    Ok((left, top, width, height))
 }
 
 /// クライアント領域が 96 DPI のときに `width` × `height` のダイアログの、DPI が `dpi` のときのウィンドウの
 /// 大きさ（枠を含む）。
-pub fn window_size(
+fn window_size(
     width: i32,
     height: i32,
     style: WINDOW_STYLE,

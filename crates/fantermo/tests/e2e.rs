@@ -765,7 +765,7 @@ fn paste_commands(bytes: usize, tail: &str) -> String {
 /// 編集のダイアログが一つ開くのを待ち、そのコントロールの文字を返す。
 #[track_caller]
 fn wait_text_dialog(server: &Server) -> Vec<String> {
-    // メニューから開いたときは、閉じかけのメニューのウィンドウ（`#32768`）がしばらく並ぶので、文字のダイアログ
+    // メニューから開いたときは、閉じかけのメニューのウィンドウ（`#32768`）がしばらく並ぶので、編集のダイアログ
     // だけになるまで待つ。
     let state = server.wait_until("the text dialog", |state| {
         state["dialogs"]

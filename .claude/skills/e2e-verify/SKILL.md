@@ -108,7 +108,7 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
   - 別デスクトップでは本物のカーソルがウィンドウの上にないので、`TrackMouseEvent` の `WM_MOUSELEAVE` がすぐ届く。マウスを載せている間の絵は見られない。リンクの Ctrl+クリックは既定のブラウザを開くので通さない。
 - DPI: `Server` は既定で `FANTERMO_DPI=96` を付ける。別の DPI で起動するのは `Server::start_with_environment`（返した環境変数が優先する）か `start_at_dpi`。起動のあとに変えるのは `change_dpi`（`POST /e2e/message/dpichanged/<DPI>`。この場で終わるので待たない）。
   - モニターの DPI で起動するのは、`start_with_environment` で `FANTERMO_DPI` を空にする（読めない値は無視する）。
-  - モニターの DPI は変えられない。変わるのは `WM_DPICHANGED` に反応する部分（セル、フォント、余白、タブバー、スクロールバー、アイコン）だけで、ウィンドウの枠と、`GetDpiForWindow` を読むダイアログ（設定、文字のダイアログ）はモニターの DPI のまま。ダイアログの追従は、ダイアログへ送る `POST /e2e/dialog/dpichanged/<DPI>` で見る（`the_text_dialog_follows_a_dpi_change`）。`monitor_dpi` と `dpi` の両方を見る。手元は 192、ランナーは 96 なので、`monitor_dpi` と同じ DPI のときだけ成り立つことは、それで分ける。
+  - モニターの DPI は変えられない。変わるのは `WM_DPICHANGED` に反応する部分（セル、フォント、余白、タブバー、スクロールバー、アイコン）だけで、ウィンドウの枠と、`GetDpiForWindow` を読むダイアログ（設定ダイアログ、入力欄のダイアログ）はモニターの DPI のまま。ダイアログの追従は、ダイアログへ送る `POST /e2e/dialog/dpichanged/<DPI>` で見る（`the_text_dialog_follows_a_dpi_change`）。`monitor_dpi` と `dpi` の両方を見る。手元は 192、ランナーは 96 なので、`monitor_dpi` と同じ DPI のときだけ成り立つことは、それで分ける。
   - 寸法は固定せず、状態の値から求める（タブバーの高さは `background` の `y`、余白は `terminal_x`）。比べるときの基準は 96 DPI で読んだ値。フォントの測り直しは `at <DPI> DPI: cell` のログの行で分かる。
   - 192 DPI でも 1024×768 に収まるよう、先に `resize(DPI_TEST_GRID)` で小さくする。`change_dpi` が収まることを確認する。既定の 100×30 のままだと手元で通ってランナーで OS がウィンドウを切り詰める。
   - DPI を変えるとウィンドウは DPI の比で拡大・縮小し、桁数と行数はその中に入る数になる（セルの丸め方はフォントで違うので、変わる数は固定しない）。設定でフォント・スクロールバーの幅・余白を変えてもウィンドウは動かない。どちらも `assert_layout_fits_the_client`（桁数と行数がクライアント領域から求めた数）で見る。セルで割り切れない大きさは `start_uneven`（`state.toml` に `UNEVEN_WINDOW`）で起動する。

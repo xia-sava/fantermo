@@ -369,7 +369,7 @@ fn font_height_at(height: i32, from: u32, to: u32) -> i32 {
     if from == 0 {
         return height;
     }
-    (height as f32 * to as f32 / from as f32).round() as i32
+    dialog::scale_between(height, from, to)
 }
 
 /// 入力欄とボタンに、入力欄のフォントを付ける。
@@ -450,9 +450,10 @@ fn widen_for_columns(
         }
     };
     let width = window.right - window.left + shortfall;
-    let left = owner_rect.left + (owner_rect.right - owner_rect.left - width) / 2;
-    let (left, width) = fit_horizontally(owner, left, width);
     let height = window.bottom - window.top;
+    // 横だけ置き直し、上端は動かさない。
+    let (left, _) = dialog::center_in(owner_rect, width, height);
+    let (left, width) = fit_horizontally(owner, left, width);
     // SAFETY: dialog は有効なウィンドウ。WM_SIZE で子を並べ直す。
     let moved =
         unsafe { SetWindowPos(dialog, None, left, window.top, width, height, SWP_NOZORDER) };

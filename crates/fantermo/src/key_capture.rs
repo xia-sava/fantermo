@@ -168,9 +168,14 @@ fn register_class() -> windows::core::Result<()> {
 /// ダイアログを作り、`owner` の真ん中に置く。ダイアログと、その中の文のウィンドウを返す。
 fn create(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> windows::core::Result<(HWND, HWND)> {
     let style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
-    let (width, height) =
-        dialog::window_size(CLIENT_WIDTH, CLIENT_HEIGHT, style, WS_EX_DLGMODALFRAME, dpi)?;
-    let (left, top) = dialog::center_in(&dialog::window_rect(owner)?, width, height);
+    let (left, top, width, height) = dialog::centered_on(
+        owner,
+        CLIENT_WIDTH,
+        CLIENT_HEIGHT,
+        style,
+        WS_EX_DLGMODALFRAME,
+        dpi,
+    )?;
     // SAFETY: 自分のモジュールのハンドルを問い合わせるだけ。
     let instance = unsafe { GetModuleHandleW(None)? };
     // SAFETY: クラスは登録済みで、文字列はこの呼び出しの間は生きている。

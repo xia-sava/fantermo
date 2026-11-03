@@ -28,7 +28,7 @@ use windows::{
     core::{HSTRING, PCWSTR, w},
 };
 
-pub(super) use crate::dialog::{get_text, set_text};
+use crate::dialog::{get_text, set_text};
 
 /// 見出しや説明の文字。押せないので同じ ID でよい。
 const ID_LABEL: i32 = -1;

@@ -26,9 +26,12 @@ use super::{
     BUTTON_GAP, BUTTON_HEIGHT, BUTTON_WIDTH, CONTROL_LEFT, CONTROL_WIDTH, DialogContext,
     LABEL_OFFSET, MARGIN, PAGE_LEFT, PAGE_WIDTH, Page, ROW_HEIGHT, filters_for, label_rect, row,
     scale,
-    widgets::{Builder, ChoiceBox, ListBox, get_text, set_text},
+    widgets::{Builder, ChoiceBox, ListBox},
 };
-use crate::{dialog, file_dialog};
+use crate::{
+    dialog::{self, get_text, set_text},
+    file_dialog,
+};
 
 /// このページのコントロールの ID の範囲。範囲がページの間で重ならないことと、このページの ID が範囲に
 /// 入ることを単体のテストで見る。

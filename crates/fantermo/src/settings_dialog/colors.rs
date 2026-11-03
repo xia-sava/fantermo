@@ -19,9 +19,9 @@ use windows::Win32::{
 use super::{
     BUTTON_GAP, CONTROL_LEFT, DialogContext, LABEL_OFFSET, LABEL_WIDTH, MARGIN, PAGE_LEFT,
     PAGE_WIDTH, Page,
-    widgets::{Builder, RadioGroup, set_text},
+    widgets::{Builder, RadioGroup},
 };
-use crate::scroll_bar;
+use crate::{dialog::set_text, scroll_bar};
 
 /// このページのコントロールの ID の範囲。範囲がページの間で重ならないことと、このページの ID が範囲に
 /// 入ることを単体のテストで見る。

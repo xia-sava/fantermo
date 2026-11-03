@@ -563,17 +563,19 @@ fn parse_number<T: std::str::FromStr>(text: &str) -> Result<T, Response> {
 fn parse_message(name: &str, wparam: usize) -> Result<Request, Response> {
     let message = WindowMessage::from_name(name)
         .ok_or_else(|| Response::bad_request(format!("no such message: {name}")))?;
-    if message.takes_dpi() && !(1..=MAX_DPI).contains(&wparam) {
-        return Err(Response::bad_request(format!(
-            "{name} takes a DPI from 1 to {MAX_DPI}: {wparam}"
-        )));
+    if message.takes_dpi() {
+        check_dpi(wparam)?;
     }
     Ok(Request::SendMessage { message, wparam })
 }
 
-/// ダイアログに知らせる DPI。1 から [`MAX_DPI`] まで。
+/// ダイアログに知らせる DPI。
 fn parse_dpi(text: &str) -> Result<u32, Response> {
-    let dpi: usize = parse_number(text)?;
+    check_dpi(parse_number(text)?)
+}
+
+/// 受ける DPI か（1 から [`MAX_DPI`] まで）。
+fn check_dpi(dpi: usize) -> Result<u32, Response> {
     if !(1..=MAX_DPI).contains(&dpi) {
         return Err(Response::bad_request(format!(
             "a DPI from 1 to {MAX_DPI} is expected: {dpi}"
