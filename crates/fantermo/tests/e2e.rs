@@ -6433,6 +6433,21 @@ fn versions_are_compared_as_numbers() {
     check_terminal_still_works(&server, "after-versions");
 }
 
+/// 更新の確認の結果を見せている間に最後のシェルが終わると、ウィンドウが閉じて落ちずに終わる。結果を閉じた
+/// あとの処理は、ウィンドウがもうないので飛ばす。
+#[test]
+fn a_shell_ending_while_an_update_result_is_shown_closes_the_window() {
+    let source = ReleaseSource::new();
+    source.publish(CURRENT_VERSION, DUMMY_MSI);
+    let mut server = source.start_fantermo(CURRENT_VERSION);
+    open_about(&server);
+    assert_contains(&check_for_update(&server), UP_TO_DATE_TEXT);
+    server.send_line("exit");
+    assert_eq!(server.wait_exit(), 0, "{}", server.log());
+    let log = server.log();
+    assert!(log.contains("the window is gone; skipped message"), "{log}");
+}
+
 /// 署名を検証できなければ、中身が新しいバージョンでも更新を出さず、配布物を取得せず、署名のせいだと分かる文を出す。
 #[test]
 fn a_manifest_that_does_not_verify_offers_nothing() {

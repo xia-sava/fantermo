@@ -57,9 +57,9 @@ use windows::{
                 FlashWindowEx, GUI_INMENUMODE, GUI_POPUPMENUMODE, GUITHREADINFO, GWLP_USERDATA,
                 GetClientRect, GetForegroundWindow, GetGUIThreadInfo, GetLastActivePopup,
                 GetMessageW, GetWindowLongPtrW, GetWindowRect, HTCLIENT, IDC_ARROW, IDC_HAND,
-                IsIconic, IsWindow, KillTimer, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
-                PostMessageW, PostQuitMessage, RegisterClassExW, SPI_GETWHEELSCROLLLINES,
-                SW_RESTORE, SW_SHOWDEFAULT, SW_SHOWMAXIMIZED, SWP_NOACTIVATE, SWP_NOZORDER,
+                IsIconic, KillTimer, LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostMessageW,
+                PostQuitMessage, RegisterClassExW, SPI_GETWHEELSCROLLLINES, SW_RESTORE,
+                SW_SHOWDEFAULT, SW_SHOWMAXIMIZED, SWP_NOACTIVATE, SWP_NOZORDER,
                 SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetCursor, SetForegroundWindow,
                 SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
                 SystemParametersInfoW, TranslateMessage, WA_INACTIVE, WHEEL_DELTA, WINDOW_EX_STYLE,
@@ -2913,7 +2913,9 @@ fn client_size(hwnd: HWND) -> (u32, u32) {
     )
 }
 
-/// ウィンドウに結び付けた App を借りて `action` を呼ぶもの。借りられなければ呼ばない。
+/// ウィンドウに結び付けた App を借りて `action` を呼ぶもの。呼ばれるたびに App を読み直すので、ダイアログや
+/// メッセージボックスの間にウィンドウが閉じたあとでも呼んでよい。ウィンドウがもうないときや、借りられない
+/// ときは呼ばない。
 type WithApp<'a> = dyn Fn(&mut dyn FnMut(&mut App)) + 'a;
 
 /// ウィンドウの借用を手放した状態で、入力の処理が残したことをする。その結果さらに残ったことも続けてする
@@ -2946,11 +2948,7 @@ fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &WithApp) {
             }
             Deferred::AskClipboardRead { text } => {
                 let choice = clipboard_prompt::ask(hwnd, &text);
-                // ダイアログの間に最後の端末が終わると、ウィンドウはもうなく、App も解放されている。
-                // SAFETY: ウィンドウのハンドルを調べるだけ。
-                if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
-                    with_app(&mut |app| app.finish_clipboard_prompt(choice));
-                }
+                with_app(&mut |app| app.finish_clipboard_prompt(choice));
             }
         }
     }
@@ -3094,10 +3092,6 @@ fn edit_settings(hwnd: HWND, with_app: &WithApp) {
         saved: false,
     };
     settings_dialog::run(hwnd, request, &mut host);
-    // 開いている間に最後の端末が終わってウィンドウが閉じたら、App はもう無い。
-    if app_of(hwnd).is_none() {
-        return;
-    }
     let mut pending = false;
     with_app(&mut |app| {
         app.settings_dialog_open = false;
@@ -3326,24 +3320,48 @@ fn bring_to_front(hwnd: HWND) {
     }
 }
 
-/// ウィンドウに結び付けた App。WM_NCDESTROY で解放されるまで有効。
+/// `hwnd` の `GWLP_USERDATA` に入っている値を、App のポインタとして読む。参照は作らないので、App を結び付けて
+/// いないウィンドウや、破棄したウィンドウ（0 が返る）のハンドルでもよい。
+fn app_pointer(hwnd: HWND) -> *const RefCell<App> {
+    // SAFETY: 値を読むだけ。無効なハンドルには 0 が返る。
+    unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const RefCell<App> }
+}
+
+/// ウィンドウに結び付けた App。`'static` は形だけで、参照を使ってよいのは、この場でメッセージを回すもの
+/// （ダイアログ、メニュー、メッセージボックス、`DestroyWindow`）を呼ぶまで。その間に WM_NCDESTROY で
+/// 解放されうるので、呼んだあとは読み直す。`hwnd` は App を結び付けたウィンドウか、0 を返すハンドルに限る。
 fn app_of(hwnd: HWND) -> Option<&'static RefCell<App>> {
-    // SAFETY: GWLP_USERDATA には run が入れた App のポインタか 0 が入っている。
-    let pointer = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const RefCell<App>;
-    // SAFETY: 0 でなければ、WM_NCDESTROY で解放するまで有効なポインタ。
+    let pointer = app_pointer(hwnd);
+    // SAFETY: GWLP_USERDATA には run が入れた App のポインタか 0 が入っている。0 でなければ、WM_NCDESTROY が
+    // 0 に戻してから解放するので、まだ解放されていない。
     unsafe { pointer.as_ref() }
 }
 
 extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    let Some(app) = app_of(hwnd) else {
+    // 入口で読んだ App は、この場でメッセージを回すものを呼ぶと解放されうるので、ポインタとしてだけ持つ。
+    let app = app_pointer(hwnd);
+    if app.is_null() {
         // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
-    };
+    }
 
-    // 処理の途中で別のメッセージがこの場で届くと、借用が重なる。そのときは処理を飛ばす。
-    let with_app = |action: &mut dyn FnMut(&mut App)| match app.try_borrow_mut() {
-        Ok(mut app) => action(&mut app),
-        Err(_) => tracing::debug!("skipped reentrant message {msg:#06x}"),
+    // 呼ばれるたびに GWLP_USERDATA を読み直す。処理の途中でメッセージを回し、その間にウィンドウが破棄されると App は
+    // 解放され、同じハンドルの値がほかのウィンドウに使われることもある。入口で取ったポインタがまだ結び付いて
+    // いるときだけ借りる。ポインタで比べてから参照にするのは、ほかのウィンドウが GWLP_USERDATA に入れた
+    // ポインタを App の参照にしないため。
+    // 処理の途中で別のメッセージがこの場で届くと、借用が重なる。そのときも処理を飛ばす。
+    let with_app = |action: &mut dyn FnMut(&mut App)| {
+        if !std::ptr::eq(app_pointer(hwnd), app) {
+            tracing::debug!("the window is gone; skipped message {msg:#06x}");
+            return;
+        }
+        // SAFETY: GWLP_USERDATA にまだ run が入れたポインタが入っているので、WM_NCDESTROY で解放されていない。
+        // 借りている間は DestroyWindow を呼ばないので、action の間も解放されない。
+        let app = unsafe { &*app };
+        match app.try_borrow_mut() {
+            Ok(mut app) => action(&mut app),
+            Err(_) => tracing::debug!("skipped reentrant message {msg:#06x}"),
+        }
     };
 
     match msg {
@@ -3674,7 +3692,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         WM_NCDESTROY => {
             // SAFETY: hwnd は有効なウィンドウで、ポインタを外すのはここだけ。
             let pointer = unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) } as *mut RefCell<App>;
-            // SAFETY: pointer は run が Box::into_raw で作ったもので、ほかに参照は残っていない。
+            // SAFETY: pointer は run が Box::into_raw で作ったもの。入れ子のループの外側の window_proc が
+            // ポインタを持っていることはあるが、with_app は GWLP_USERDATA（いま 0 にした）と比べてから参照にする
+            // ので、これより後には使わない。DestroyWindow は借用の外で呼ぶので、借用も残っていない。
             drop(unsafe { Box::from_raw(pointer) });
             // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
