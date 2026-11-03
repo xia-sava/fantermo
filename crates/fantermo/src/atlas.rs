@@ -390,8 +390,11 @@ impl GlyphAtlas {
         let (layout, extent) = match self.ui_font.layout(text) {
             Ok(measured) => measured,
             Err(e) => {
+                // 空の場所を覚えて、同じタイトルで毎フレーム場所を取って警告を出すのを避ける。
                 tracing::warn!("failed to lay out the title {text:?}: {e}");
-                return self.allocate_area(1, height);
+                let slot = self.allocate_area(1, height)?;
+                self.label_slots.insert(text.to_owned(), slot);
+                return Ok(slot);
             }
         };
         let margin = |outside: f32| (outside - INK_EPSILON_PX).ceil().max(0.0) as u32;
