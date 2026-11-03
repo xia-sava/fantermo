@@ -394,6 +394,12 @@ const TABS_CLOSED_WHILE_STARTING: usize = 6;
 const CONSOLE_CLIENT_TIMEOUT: Duration = Duration::from_secs(60);
 /// コンソールの外のプロセスができたかを確認する間隔。
 const CONSOLE_CLIENT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// 新しいプロセスができたのを見つけるまでの間隔。できるだけ早く見つけたいが、スナップショットを間を置かずに取り
+/// 続けて CPU を占有しないよう、短く置く。
+const NEW_DESCENDANT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// Cygwin の `sleep` の印を `/proc` で確認する間隔。確認のたびに Cygwin の `sh.exe` と `grep` を起動するので、
+/// 間を置かないと、並列に動くほかのテストの Cygwin のプロセスの生成を妨げる。
+const CYGWIN_SLEEP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// どのコンソールにも接続せずに動き続ける、窓を出さないプログラム。
 const GUI_PROCESS: &str = "wscript.exe";
 /// 閉じたあと、起動の途中だった Cygwin の `sleep` が `/proc` に見えるようになるまで置く時間。
@@ -466,6 +472,7 @@ fn wait_new_descendant(root: u32, name: &str, known: &[Process]) -> Vec<Process>
             return new;
         }
         assert!(Instant::now() < deadline, "no new {name} under {root}");
+        thread::sleep(NEW_DESCENDANT_POLL_INTERVAL);
     }
 }
 
@@ -662,6 +669,7 @@ fn wait_cygwin_sleep(marker: &str, running: bool) {
             Instant::now() < deadline,
             "sleep {marker} did not become running={running}"
         );
+        thread::sleep(CYGWIN_SLEEP_POLL_INTERVAL);
     }
 }
 
