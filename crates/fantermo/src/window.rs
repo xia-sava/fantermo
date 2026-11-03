@@ -1178,6 +1178,9 @@ impl App {
     /// そのエラーを返す。
     fn open_startup(&mut self, startup: &Startup) -> Result<(), Box<dyn std::error::Error>> {
         let id = SessionId(self.next_session_id);
+        // 起動に失敗しても番号を進める。失敗する前に動き出したバックエンドのスレッドが、この番号の知らせを
+        // 積んでいることがあるため。
+        self.next_session_id += 1;
         let size = grid_size(&self.font, self.terminal_area);
         let spawned = Session::spawn(
             id,
@@ -1197,7 +1200,6 @@ impl App {
                 return Err(e);
             }
         };
-        self.next_session_id += 1;
         session.background_image = self.choose_background_image();
         self.sessions.push(session);
         self.activate(self.sessions.len() - 1);
