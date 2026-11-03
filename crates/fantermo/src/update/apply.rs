@@ -49,6 +49,8 @@ const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
 pub struct Plan<'a> {
     /// 入れる MSI。
     pub msi: &'a Path,
+    /// 入れる MSI の SHA-256（16 進）。スクリプトが入れる直前に照合する。
+    pub msi_sha256: &'a str,
     /// 入れ終えたら起動し直す実行ファイル。
     pub exe: &'a Path,
     /// 結果を書くファイル。
@@ -65,7 +67,8 @@ pub struct Plan<'a> {
 
 /// 更新を適用する PowerShell のスクリプト。
 ///
-/// 待つプロセスがすべて終わる（か上限を過ぎる）のを待ち、`msiexec /i <MSI> /qn /norestart` で入れる。
+/// 待つプロセスがすべて終わる（か上限を過ぎる）のを待ち、MSI の SHA-256 を照合してから、
+/// `msiexec /i <MSI> /qn /norestart` で入れる。照合できないか合わなければ、入れずに終わる。
 /// 終了コードが 0（成功）か 3010（成功。再起動で反映するものがある）なら一時フォルダを消して
 /// 起動し直し、ほかなら起動し直さずに終わる。どちらも結果のファイルに書く。
 pub fn script(plan: &Plan) -> String {
@@ -85,6 +88,7 @@ pub fn script(plan: &Plan) -> String {
     let work_dir = literal(&plan.work_dir.to_string_lossy());
     let msiexec_under_root = literal(MSIEXEC_UNDER_SYSTEM_ROOT);
     let msi = literal(&msi);
+    let msi_sha256 = literal(plan.msi_sha256);
     let wait_seconds = plan.wait_seconds;
     format!(
         r#"$ErrorActionPreference = 'Stop'
@@ -99,6 +103,16 @@ foreach ($id in @({pids})) {{
     Wait-Process -Id $id -Timeout $left -ErrorAction SilentlyContinue
 }}
 $msiexec = Join-Path $env:SystemRoot {msiexec_under_root}
+try {{
+    $actual = (Get-FileHash -LiteralPath {msi} -Algorithm SHA256).Hash
+}} catch {{
+    Write-Result "could not read the SHA-256 of the installer: $_"
+    exit 1
+}}
+if ($actual -ne {msi_sha256}) {{
+    Write-Result ("the SHA-256 of the installer is {{0}}, not {{1}}" -f $actual, {msi_sha256})
+    exit 1
+}}
 Write-Result ("installing {{0}}" -f {msi})
 try {{
     $installer = Start-Process -FilePath $msiexec -ArgumentList @('/i', {msi_argument}, '/qn', '/norestart', '/l*v', {msiexec_log_argument}) -Wait -PassThru
@@ -263,9 +277,12 @@ impl Drop for Owned {
 mod tests {
     use super::*;
 
+    const MSI_SHA256: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
     fn plan_script(wait_pids: &[u32]) -> String {
         script(&Plan {
             msi: Path::new(r"C:\Users\o'brien\AppData\Local\Temp\fantermo-update-1\fantermo.msi"),
+            msi_sha256: MSI_SHA256,
             exe: Path::new(r"C:\Users\o'brien\AppData\Local\Programs\fantermo\fantermo.exe"),
             result_log: Path::new(r"C:\Users\o'brien\AppData\Local\fantermo\logs\update-apply.log"),
             msiexec_log: Path::new(
@@ -309,6 +326,21 @@ mod tests {
         let installs = script.find("Start-Process -FilePath $msiexec").unwrap();
         let restarts = script.find("Start-Process -FilePath 'C:").unwrap();
         assert!(waits < installs && installs < restarts);
+    }
+
+    #[test]
+    fn script_checks_the_installer_just_before_installing() {
+        let script = plan_script(&[1]);
+        assert!(script.contains(
+            r"Get-FileHash -LiteralPath 'C:\Users\o''brien\AppData\Local\Temp\fantermo-update-1\fantermo.msi' -Algorithm SHA256"
+        ));
+        assert!(script.contains(&format!("if ($actual -ne '{MSI_SHA256}')")));
+        let waits = script.find("Wait-Process").unwrap();
+        let hashes = script.find("Get-FileHash").unwrap();
+        let mismatch = script.find("if ($actual -ne").unwrap();
+        let exit = script[mismatch..].find("exit 1").unwrap() + mismatch;
+        let installs = script.find("Start-Process -FilePath $msiexec").unwrap();
+        assert!(waits < hashes && hashes < mismatch && exit < installs);
     }
 
     #[test]

@@ -420,6 +420,7 @@ impl Downloaded {
         wait_pids.extend_from_slice(others);
         let script = apply::script(&apply::Plan {
             msi: &self.msi,
+            msi_sha256: &signature::hex(&self.sha256),
             exe: &exe,
             result_log: &log_dir.join(apply::RESULT_LOG_NAME),
             msiexec_log: &log_dir.join(apply::MSIEXEC_LOG_NAME),
