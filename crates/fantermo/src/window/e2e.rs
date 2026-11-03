@@ -51,10 +51,11 @@ use windows::{
 };
 
 use super::{
-    App, Deferred, Launch, TabCommand, WithApp, destroy_window,
+    App, Deferred, WithApp, destroy_window,
     dpi::send_dpi_changed,
     layout::{client_size, client_size_for_terminal, grid_pixels, window_frame, window_rect},
-    run_deferred, tab_title,
+    run_deferred,
+    tabs::{Launch, TabCommand, tab_title},
 };
 use crate::{
     clipboard,

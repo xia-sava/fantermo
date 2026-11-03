@@ -11,7 +11,7 @@ use windows::Win32::{
     },
 };
 
-use super::{App, MAIN_WINDOW_STYLE, client_position};
+use super::{App, MAIN_WINDOW_STYLE, mouse::client_position};
 use crate::{
     font::Font,
     paint::{Area, scale},
