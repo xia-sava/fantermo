@@ -1339,6 +1339,7 @@ mod tests {
             window: gray(0xff),
             window_text: gray(0),
         });
+        // バーの背景（#cccccc）はコントロールの背景より少し濃く、ホバー中のタブ（#e6e6e6）はバーより明るい。
         let examples: Vec<String> = COLOR_FIELDS
             .iter()
             .map(|(_, field)| fantermo_core::config::format_color(field(&windows_11)))
@@ -1369,20 +1370,6 @@ mod tests {
         assert_eq!(colors.bell, BELL_COLOR);
         // マウスを載せているタブは、背景とウィンドウの背景の間。
         assert!(colors.hovered_tab.r > colors.bar.r && colors.hovered_tab.r < WINDOW.r);
-    }
-
-    #[test]
-    fn windows_11_colours_make_a_darker_bar() {
-        let colors = Palette::from_system(SystemColors {
-            face: gray(0xf0),
-            text: gray(0x00),
-            gray_text: gray(0x6d),
-            shadow: gray(0xa0),
-            window: gray(0xff),
-            window_text: gray(0x00),
-        });
-        assert_eq!(colors.bar, gray(0xcc));
-        assert_eq!(colors.hovered_tab, gray(0xe6));
     }
 
     #[test]
