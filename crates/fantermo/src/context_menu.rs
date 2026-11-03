@@ -38,62 +38,43 @@ pub enum MenuCommand {
     Exit,
 }
 
-impl MenuCommand {
-    const ALL: [MenuCommand; 9] = [
-        MenuCommand::Copy,
-        MenuCommand::Paste,
-        MenuCommand::SelectAll,
-        MenuCommand::NewTab,
+/// 項目の一覧。並びは [`MenuCommand`] の宣言の順で、組は（項目、名前、同じことをするキーの割り当ての
+/// 動作）。
+const COMMANDS: [(MenuCommand, &str, Option<Action>); 9] = [
+    (MenuCommand::Copy, "コピー(&C)", Some(Action::Copy)),
+    (MenuCommand::Paste, "貼り付け(&P)", Some(Action::Paste)),
+    (MenuCommand::SelectAll, "すべて選択(&A)", None),
+    (MenuCommand::NewTab, "新しいタブ(&T)", Some(Action::NewTab)),
+    (
         MenuCommand::CloseTab,
-        MenuCommand::EditSettings,
-        MenuCommand::OpenSettings,
-        MenuCommand::ShowAbout,
-        MenuCommand::Exit,
-    ];
+        "タブを閉じる(&W)",
+        Some(Action::CloseTab),
+    ),
+    (MenuCommand::EditSettings, "設定(&S)…", None),
+    (MenuCommand::OpenSettings, "設定ファイルを開く(&F)", None),
+    (MenuCommand::ShowAbout, "fantermo について(&B)…", None),
+    (MenuCommand::Exit, "終了(&X)", None),
+];
 
-    /// メニューの項目の ID。0 は「何も選ばれなかった」に使われるので避ける。
+impl MenuCommand {
+    /// メニューの項目の ID。一覧の位置 + 1 で、0（「何も選ばれなかった」に使われる）にならない。
     fn id(self) -> usize {
-        match self {
-            MenuCommand::Copy => 1,
-            MenuCommand::Paste => 2,
-            MenuCommand::SelectAll => 3,
-            MenuCommand::NewTab => 4,
-            MenuCommand::CloseTab => 5,
-            MenuCommand::OpenSettings => 6,
-            MenuCommand::Exit => 7,
-            MenuCommand::ShowAbout => 8,
-            MenuCommand::EditSettings => 9,
-        }
+        self as usize + 1
     }
 
     fn from_id(id: usize) -> Option<Self> {
-        Self::ALL.into_iter().find(|command| command.id() == id)
+        let index = id.checked_sub(1)?;
+        COMMANDS.get(index).map(|(command, ..)| *command)
     }
 
     /// 項目の名前。
     fn name(self) -> &'static str {
-        match self {
-            MenuCommand::Copy => "コピー(&C)",
-            MenuCommand::Paste => "貼り付け(&P)",
-            MenuCommand::SelectAll => "すべて選択(&A)",
-            MenuCommand::NewTab => "新しいタブ(&T)",
-            MenuCommand::CloseTab => "タブを閉じる(&W)",
-            MenuCommand::EditSettings => "設定(&S)…",
-            MenuCommand::OpenSettings => "設定ファイルを開く(&F)",
-            MenuCommand::ShowAbout => "fantermo について(&B)…",
-            MenuCommand::Exit => "終了(&X)",
-        }
+        COMMANDS[self as usize].1
     }
 
     /// 同じことをするキーの割り当ての動作。
     fn action(self) -> Option<Action> {
-        match self {
-            MenuCommand::Copy => Some(Action::Copy),
-            MenuCommand::Paste => Some(Action::Paste),
-            MenuCommand::NewTab => Some(Action::NewTab),
-            MenuCommand::CloseTab => Some(Action::CloseTab),
-            _ => None,
-        }
+        COMMANDS[self as usize].2
     }
 
     /// 項目の表示。キーを割り当てていれば、タブの後ろに最初の組み合わせを書く（ショートカットとして
@@ -410,13 +391,40 @@ mod tests {
         ItemBitmaps(vec![bitmap]);
     }
 
+    fn all_commands() -> impl Iterator<Item = MenuCommand> {
+        COMMANDS.iter().map(|(command, ..)| *command)
+    }
+
+    fn request(menu: Menu, can_copy: bool, can_open_settings: bool) -> MenuRequest {
+        MenuRequest {
+            keys: Keymap::default(),
+            menu,
+            x: 0,
+            y: 0,
+            exclude: None,
+            can_copy,
+            can_open_settings,
+            profiles: Vec::new(),
+            default_profile: 0,
+            profile_icons: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_command_table_follows_the_declaration_order() {
+        for (index, (command, ..)) in COMMANDS.iter().enumerate() {
+            assert_eq!(*command as usize, index, "{command:?}");
+        }
+    }
+
     #[test]
     fn ids_round_trip_and_avoid_zero() {
-        for command in MenuCommand::ALL {
+        for command in all_commands() {
             assert_ne!(command.id(), 0);
             assert_eq!(MenuCommand::from_id(command.id()), Some(command));
         }
         assert_eq!(MenuCommand::from_id(0), None);
+        assert_eq!(MenuCommand::from_id(COMMANDS.len() + 1), None);
         assert_eq!(Chosen::from_id(0), None);
         assert_eq!(
             Chosen::from_id(MenuCommand::Copy.id()),
@@ -426,7 +434,7 @@ mod tests {
             Chosen::from_id(PROFILE_ID_BASE + 2),
             Some(Chosen::Profile(2))
         );
-        assert!(MenuCommand::ALL.iter().all(|c| c.id() < PROFILE_ID_BASE));
+        assert!(all_commands().all(|c| c.id() < PROFILE_ID_BASE));
     }
 
     #[test]
@@ -461,7 +469,7 @@ mod tests {
 
     #[test]
     fn every_command_is_in_the_main_menu() {
-        for command in MenuCommand::ALL {
+        for command in all_commands() {
             assert!(Menu::Main.items().contains(&Some(command)), "{command:?}");
         }
         // コンテキストメニューには、設定、「fantermo について」、終了を入れない。
@@ -473,5 +481,61 @@ mod tests {
         ] {
             assert!(!Menu::Context.items().contains(&Some(command)));
         }
+    }
+
+    #[test]
+    fn menu_items_keep_their_order_and_separators() {
+        use MenuCommand::*;
+        assert_eq!(
+            Menu::Context.items(),
+            [
+                Some(Copy),
+                Some(Paste),
+                None,
+                Some(SelectAll),
+                None,
+                Some(NewTab),
+                Some(CloseTab),
+            ]
+        );
+        assert_eq!(
+            Menu::Main.items(),
+            [
+                Some(NewTab),
+                Some(CloseTab),
+                None,
+                Some(Copy),
+                Some(Paste),
+                Some(SelectAll),
+                None,
+                Some(EditSettings),
+                Some(OpenSettings),
+                Some(ShowAbout),
+                None,
+                Some(Exit),
+            ]
+        );
+        assert!(Menu::Profiles.items().is_empty());
+    }
+
+    #[test]
+    fn only_copy_and_the_settings_items_can_be_disabled() {
+        for command in all_commands() {
+            let all_off = request(Menu::Main, false, false);
+            let all_on = request(Menu::Main, true, true);
+            assert!(enabled(command, &all_on), "{command:?}");
+            let expected = !matches!(
+                command,
+                MenuCommand::Copy | MenuCommand::EditSettings | MenuCommand::OpenSettings
+            );
+            assert_eq!(enabled(command, &all_off), expected, "{command:?}");
+        }
+        let no_selection = request(Menu::Main, false, true);
+        assert!(!enabled(MenuCommand::Copy, &no_selection));
+        assert!(enabled(MenuCommand::OpenSettings, &no_selection));
+        let no_settings_file = request(Menu::Main, true, false);
+        assert!(enabled(MenuCommand::Copy, &no_settings_file));
+        assert!(!enabled(MenuCommand::EditSettings, &no_settings_file));
+        assert!(!enabled(MenuCommand::OpenSettings, &no_settings_file));
     }
 }
