@@ -15,8 +15,9 @@ pub struct GridSize {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExitCode(pub u32);
 
-/// 出力が届いたときと、子プロセスが終了したときに、別のスレッドから呼ばれる。
-pub type Wake = Arc<dyn Fn() + Send + Sync>;
+/// 出力が届いたときと、子プロセスが終了したときに、別のスレッドから呼ばれる。知らせを積めたら `true` を返す。
+/// 積めなかったとき、バックエンドは次の出力でまた知らせる。
+pub type Wake = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// バックエンドを起動するときに渡すもの。どの種類のバックエンドにも共通。
 pub struct SpawnOptions<'a> {

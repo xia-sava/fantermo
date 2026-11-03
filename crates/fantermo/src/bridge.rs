@@ -183,9 +183,12 @@ impl Bridge {
         wake: &Wake,
     ) -> Self {
         tracing::warn!("{message}");
-        if send_all(&sender, &budget, vec![Event::Output(error_text(message))]) {
-            wake();
-        }
+        send_all(
+            &sender,
+            &budget,
+            vec![Event::Output(error_text(message))],
+            &**wake,
+        );
         Self {
             input: None,
             process: None,
@@ -592,7 +595,7 @@ fn read_output(
     closing: &AtomicBool,
     sender: &mpsc::Sender<Event>,
     budget: &OutputBudget,
-    wake: &dyn Fn(),
+    wake: &dyn Fn() -> bool,
 ) {
     let mut reader = OutputReader::default();
     let mut buf = vec![0u8; READ_BUFFER_SIZE];
@@ -608,9 +611,7 @@ fn read_output(
         };
         let events = reader.push(&buf[..len]);
         let done = reader.done;
-        if send_all(sender, budget, events) {
-            wake();
-        }
+        send_all(sender, budget, events, wake);
         if done {
             return;
         }
@@ -621,29 +622,32 @@ fn read_output(
     }
     // 終わりの単位もエラーもなく閉じた。ブリッジの終了コードを添えて知らせる。
     let code = wait_for(process, Some(QUIT_TIMEOUT)).then(|| exit_code(process));
-    if send_all(sender, budget, reader.closed(code.flatten())) {
-        wake();
-    }
+    send_all(sender, budget, reader.closed(code.flatten()), wake);
 }
 
-/// `events` を `sender` へ渡す。一つでも渡し、ウィンドウのスレッドへ知らせるべきなら（[`OutputBudget::sent`]）
-/// `true`。端末に流すものは `budget` に数え、上限に達していれば受け取られるまで待つ。`budget` を閉じたら
-/// （破棄したら）、待たずに残りを捨てて `false` を返す。
-fn send_all(sender: &mpsc::Sender<Event>, budget: &OutputBudget, events: Vec<Event>) -> bool {
+/// `events` を `sender` へ渡し、すべて渡せたら `wake` で知らせる（まとめ方は [`OutputBudget::sent`]）。端末に
+/// 流すものは `budget` に数え、上限に達していれば受け取られるまで待つ。`budget` を閉じたら（破棄したら）、
+/// 待たずに残りを捨てる。
+fn send_all(
+    sender: &mpsc::Sender<Event>,
+    budget: &OutputBudget,
+    events: Vec<Event>,
+    wake: &dyn Fn() -> bool,
+) {
     if events.is_empty() {
-        return false;
+        return;
     }
     for event in events {
         if let Event::Output(data) = &event
             && !budget.push(data.len())
         {
-            return false;
+            return;
         }
         if sender.send(event).is_err() {
-            return false;
+            return;
         }
     }
-    budget.sent()
+    budget.sent(wake);
 }
 
 /// ブリッジの標準出力を単位に分け、端末に流すものと子プロセスの終了にする。
@@ -860,7 +864,7 @@ mod tests {
     fn the_exit_is_taken_only_after_the_output_before_it() {
         let (sender, events) = mpsc::channel();
         let budget = Arc::new(OutputBudget::new(MAX_PENDING_OUTPUT));
-        assert!(send_all(
+        send_all(
             &sender,
             &budget,
             vec![
@@ -868,7 +872,8 @@ mod tests {
                 Event::Output(b"second".to_vec()),
                 Event::Exit(ExitCode(3)),
             ],
-        ));
+            &|| true,
+        );
         let mut bridge = Bridge {
             input: None,
             process: None,

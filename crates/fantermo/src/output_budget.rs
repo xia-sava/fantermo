@@ -60,11 +60,15 @@ impl OutputBudget {
         true
     }
 
-    /// 読むためのスレッドが、[`push`](Self::push) した分をチャネルに入れ終えた。ウィンドウのスレッドへ知らせる
-    /// べきなら `true` を返し、受け取り始めるまでは `false` を返す。
-    pub fn sent(&self) -> bool {
+    /// 読むためのスレッドが、[`push`](Self::push) した分をチャネルに入れ終えた。まだ知らせていなければ `wake` で
+    /// 知らせる。`wake` は積めたら `true` を返す。積めなければ、次の `sent` でまた知らせる。知らせたあとは、
+    /// ウィンドウのスレッドが受け取り始めるまで知らせない。
+    pub fn sent(&self, wake: impl FnOnce() -> bool) {
         let mut state = self.lock();
-        !std::mem::replace(&mut state.notified, true)
+        if !state.notified {
+            // 知らせを積むだけで待たないので、ロックを持ったまま呼んでよい。
+            state.notified = wake();
+        }
     }
 
     /// ウィンドウのスレッドがチャネルから受け取り始める。チャネルを読む前に呼ぶ。このあとに入れたものは
@@ -121,18 +125,38 @@ mod tests {
         assert!(budget.push(LIMIT * 3));
     }
 
+    /// `sent` が知らせたかどうかを返す。知らせは `posted` の値で積めたことにする。
+    fn sent_with(budget: &OutputBudget, posted: bool) -> bool {
+        let mut woken = false;
+        budget.sent(|| {
+            woken = true;
+            posted
+        });
+        woken
+    }
+
     #[test]
     fn a_wake_is_asked_for_once_until_receiving_starts() {
         let budget = OutputBudget::new(LIMIT);
         assert!(budget.push(1));
-        assert!(budget.sent());
+        assert!(sent_with(&budget, true));
         assert!(budget.push(1));
-        assert!(!budget.sent());
+        assert!(!sent_with(&budget, true));
         budget.receiving();
         // 受け取り始めたあとに入れたものは、また知らせる。
         assert!(budget.push(1));
-        assert!(budget.sent());
-        assert!(!budget.sent());
+        assert!(sent_with(&budget, true));
+        assert!(!sent_with(&budget, true));
+    }
+
+    #[test]
+    fn a_wake_that_could_not_be_posted_is_asked_for_again() {
+        let budget = OutputBudget::new(LIMIT);
+        assert!(budget.push(1));
+        assert!(sent_with(&budget, false));
+        assert!(budget.push(1));
+        assert!(sent_with(&budget, true));
+        assert!(!sent_with(&budget, true));
     }
 
     #[test]

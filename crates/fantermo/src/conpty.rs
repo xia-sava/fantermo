@@ -994,13 +994,13 @@ fn write_input(mut input: impl Write, queued: &mpsc::Receiver<Vec<u8>>, closing:
 }
 
 /// 出力のパイプが閉じるまで読み、読めた分をチャネルで渡す。まだ受け取られていない分が `budget` の上限に
-/// 達していれば、受け取られるまで待つ。`budget` を閉じたら（破棄したら）抜ける。`wake` は、前の知らせの
-/// あとにウィンドウのスレッドが受け取り始めていたときだけ呼ぶ（[`OutputBudget::sent`]）。
+/// 達していれば、受け取られるまで待つ。`budget` を閉じたら（破棄したら）抜ける。`wake` は、まだ知らせて
+/// いないか、前の知らせのあとにウィンドウのスレッドが受け取り始めていたときだけ呼ぶ（[`OutputBudget::sent`]）。
 fn read_output(
     mut output: File,
     sender: &mpsc::Sender<Vec<u8>>,
     budget: &OutputBudget,
-    wake: &dyn Fn(),
+    wake: &dyn Fn() -> bool,
 ) {
     let mut buf = vec![0u8; READ_BUFFER_SIZE];
     loop {
@@ -1010,9 +1010,7 @@ fn read_output(
                 if !budget.push(len) || sender.send(buf[..len].to_vec()).is_err() {
                     return;
                 }
-                if budget.sent() {
-                    wake();
-                }
+                budget.sent(wake);
             }
             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return,
             Err(e) => {
@@ -1064,7 +1062,7 @@ mod tests {
 
     /// [`run_until`] と同じだが、起動の指定を `options` で渡す。
     fn run_options_until(options: &SpawnOptions, expected: &str) -> (String, ExitCode) {
-        let mut pty = ConPty::spawn(options, Arc::new(|| {})).unwrap();
+        let mut pty = ConPty::spawn(options, Arc::new(|| true)).unwrap();
         let mut vt = Vt::new(SIZE, "xterm-256color").unwrap();
         let deadline = Instant::now() + TIMEOUT;
         loop {
@@ -1131,7 +1129,7 @@ mod tests {
             size: SIZE,
             working_folder: None,
         };
-        let Err(e) = ConPty::spawn(&options, Arc::new(|| {})) else {
+        let Err(e) = ConPty::spawn(&options, Arc::new(|| true)) else {
             panic!("a missing program started");
         };
         assert_eq!(e.kind(), io::ErrorKind::NotFound);
@@ -1221,7 +1219,7 @@ mod tests {
             size: SIZE,
             working_folder: None,
         };
-        let mut pty = ConPty::spawn(&options, Arc::new(|| {})).unwrap();
+        let mut pty = ConPty::spawn(&options, Arc::new(|| true)).unwrap();
         let deadline = Instant::now() + TIMEOUT;
         loop {
             let mut output = Vec::new();
@@ -1248,7 +1246,7 @@ mod tests {
             size: SIZE,
             working_folder: None,
         };
-        let mut pty = ConPty::spawn(&options, Arc::new(|| {})).unwrap();
+        let mut pty = ConPty::spawn(&options, Arc::new(|| true)).unwrap();
         let job = pty.job.take().expect("the child is not in a job");
         let deadline = Instant::now() + TIMEOUT;
         let all = loop {
@@ -1302,7 +1300,7 @@ mod tests {
             size: SIZE,
             working_folder: None,
         };
-        let mut pty = ConPty::spawn(&shell_options, Arc::new(|| {})).unwrap();
+        let mut pty = ConPty::spawn(&shell_options, Arc::new(|| true)).unwrap();
         let mut vt = Vt::new(SIZE, "xterm-256color").unwrap();
         let deadline = Instant::now() + TIMEOUT;
         loop {

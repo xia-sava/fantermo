@@ -11,7 +11,7 @@ use std::{
 };
 
 use fantermo_core::{
-    backend::{ExitCode, GridSize},
+    backend::{ExitCode, GridSize, Wake},
     background::{Candidate, Random},
     clipboard::{ReadDecision, ReadPrompts, ReadRequest, WriteRequest, read_decision},
     config::{
@@ -885,7 +885,7 @@ impl App {
             ),
             size,
             &config.colors.terminal_colors(),
-            Arc::new(poster(hwnd, WM_APP_WAKE, WPARAM(first_id.0))),
+            wake_poster(hwnd, first_id),
         )?;
         if let Some(path) = &config_path {
             config_file::watch(path, poster(hwnd, WM_APP_CONFIG_CHANGED, WPARAM(0)));
@@ -1178,7 +1178,7 @@ impl App {
             startup,
             size,
             &self.colors.terminal_colors(),
-            Arc::new(poster(self.hwnd, WM_APP_WAKE, WPARAM(id.0))),
+            wake_poster(self.hwnd, id),
         )?;
         self.next_session_id += 1;
         session.background_image = self.choose_background_image();
@@ -3157,6 +3157,22 @@ fn poster(hwnd: HWND, message: u32, wparam: WPARAM) -> impl Fn() + Send + Sync +
             warn_post_failed(message, &e);
         }
     }
+}
+
+/// 端末 `id` のバックエンドへ渡す [`Wake`]。ほかのスレッドから呼ばれ、`hwnd` に [`WM_APP_WAKE`] を積む。積めたら
+/// `true` を返す（積めなければ、バックエンドは次の出力でまた知らせる）。
+fn wake_poster(hwnd: HWND, id: SessionId) -> Wake {
+    // HWND はスレッドをまたいで渡せないので、値だけを持たせる。
+    let hwnd_value = hwnd.0 as isize;
+    Arc::new(
+        move || match post(HWND(hwnd_value as *mut _), WM_APP_WAKE, WPARAM(id.0)) {
+            Ok(()) => true,
+            Err(e) => {
+                warn_post_failed(WM_APP_WAKE, &e);
+                false
+            }
+        },
+    )
 }
 
 /// [`post`] が、宛先のウィンドウが壊れていて失敗した。
