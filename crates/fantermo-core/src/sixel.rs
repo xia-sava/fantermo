@@ -213,6 +213,9 @@ impl SixelDecoder {
 
     /// 読み終えた画像。何も描いていない、または上限を超えて捨てたなら `None`。
     pub fn finish(mut self) -> Option<SixelImage> {
+        if self.overflow.is_some() {
+            return None;
+        }
         self.finish_command();
         if self.overflow.is_some() {
             return None;
@@ -407,6 +410,8 @@ impl SixelDecoder {
         tracing::warn!("sixel: discarded an image over the limit: {overflow:?}");
         self.overflow = Some(overflow);
         self.pixels = Vec::new();
+        self.capacity_width = 0;
+        self.capacity_height = 0;
     }
 }
 
@@ -612,6 +617,20 @@ mod tests {
         // 同じ場所を 4 回まで塗り直す出力は通る。
         let layered = "!4096~$".repeat(4 * rows);
         assert!(decode(1, layered.as_bytes()).is_some());
+    }
+
+    #[test]
+    fn a_discarded_image_holds_no_pixels() {
+        let mut decoder = SixelDecoder::new(1);
+        decoder.feed(b"\"1;1;100;100@");
+        assert!(decoder.capacity_width > 0);
+        decoder.feed(format!("!{}@", MAX_IMAGE_WIDTH + 1).as_bytes());
+        assert_eq!(decoder.overflow, Some(Overflow::Size));
+        assert_eq!((decoder.capacity_width, decoder.capacity_height), (0, 0));
+        assert_eq!(decoder.pixels.capacity(), 0);
+        assert_eq!(decoder.finish(), None);
+        // 読み終える時点で読みかけだったコマンドが上限を超えた場合も捨てる。
+        assert_eq!(decode(1, b"@\"1;1;5000;1"), None);
     }
 
     #[test]
