@@ -55,7 +55,10 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `config::colors` | 配色，端末・タブバー・スクロールバーの色のキー，`"#rrggbb"` の読み書き |
 | `config::read` | 設定ファイルの中身の解釈（`parse`）．警告にエラーのある行を添える |
 | `config::migrate` | 古い書き方を今の書き方に読み替える手順 `STEPS` |
-| `config_edit` | 設定ダイアログで変えた項目だけを設定ファイルに書き戻す（`update`）．コメントと並びを残す |
+| `config_edit` | 設定ダイアログで変えた項目だけを設定ファイルに書き戻す（`update`）．コメントと並びを残す．下の 3 つのモジュールに分けてある |
+| `config_edit::document` | ほかのモジュールが使う，`toml_edit` の文書を書き換える共通の処理．文書の読み書き（`Document`），テーブルとその位置を探す処理，項目の行を書く（`set`）・既定値に戻す（`reset`）処理 |
+| `config_edit::images` | 背景画像の一覧（`[[background.images]]`）の書き戻し |
+| `config_edit::profiles` | プロファイル（`[[profiles]]`）の書き戻し |
 | `keymap` | fantermo が受け持つキーの割り当て（`Action`，`KeyCombo`，`Keymap`）と名前の解釈 |
 | `link` | OSC 8 と画面の文字の URL．開いてよいリンクかの判断 |
 | `clipboard` | アプリからのクリップボードの読み書きの決まり（`clipboard.read` とタブごとの許可，確認を待つ `ReadPrompts`） |
