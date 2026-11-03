@@ -68,6 +68,9 @@ windows = { workspace = true, features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[dev-dependencies]
+toml_edit.workspace = true
+
 [build-dependencies]
 embed-resource.workspace = true
 

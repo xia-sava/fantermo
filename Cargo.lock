@@ -99,6 +99,7 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
+ "toml_edit",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",

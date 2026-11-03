@@ -17,7 +17,7 @@ use std::{
 };
 
 use fantermo_core::{
-    config::{self, Config, Parsed, Warning},
+    config::{self, Config, Parsed, Warning, migrate::Step},
     config_edit,
 };
 use windows::{
@@ -220,7 +220,12 @@ fn warn_windows_programs_in_bridges(path: &Path, config: &Config) {
 /// ログに残してファイルに書き戻す。読み替えた中身を返す。書けなければ警告をログに残し、読み替えた中身で
 /// 動く（ファイルは前のまま）。
 fn migrate(path: &Path, text: String) -> String {
-    let migrated = config::migrate::migrate(&text);
+    migrate_with(path, text, config::migrate::STEPS)
+}
+
+/// [`migrate`] を、手順 `steps` で行う。
+fn migrate_with(path: &Path, text: String, steps: &'static [Step]) -> String {
+    let migrated = config::migrate::migrate_with(&text, steps);
     if !migrated.changed() {
         return text;
     }
@@ -441,6 +446,8 @@ fn changed_names(bytes: &[u8]) -> impl Iterator<Item = String> + '_ {
 
 #[cfg(test)]
 mod tests {
+    use fantermo_core::config::migrate::Change as MigrationChange;
+
     use super::*;
 
     /// `FILE_NOTIFY_INFORMATION` の一つ分。`last` でなければ、次の位置を 4 バイトの境界に合わせて指す。
@@ -555,6 +562,60 @@ mod tests {
 
         std::fs::write(&path, "").unwrap();
         assert_eq!(reload(Some(&path), &startup.config).notice_key, None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `[font]` の `old_size` を `size` に替える手順。
+    fn rename_old_size(doc: &mut toml_edit::DocumentMut) -> Option<MigrationChange> {
+        let font = doc.get_mut("font")?.as_table_mut()?;
+        let (key, item) = font.remove_entry("old_size")?;
+        let key = toml_edit::Key::new("size").with_leaf_decor(key.leaf_decor().clone());
+        font.insert_formatted(&key, item);
+        Some(MigrationChange {
+            message: "read font.old_size as font.size".to_owned(),
+            dropped: Vec::new(),
+        })
+    }
+
+    static RENAME_STEPS: [Step; 1] = [Step::new(
+        "old_size",
+        "font.old_size を font.size にする",
+        rename_old_size,
+    )];
+
+    #[test]
+    fn old_forms_are_rewritten_in_the_file() {
+        let dir = scratch_dir("migrate");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let old = "# mine\n[font]\nold_size = 14\n";
+        let current = "# mine\n[font]\nsize = 14\n";
+        std::fs::write(&path, old).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(migrate_with(&path, text, &RENAME_STEPS), current);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), current);
+        // 今の書き方なら書かない。
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(
+            migrate_with(&path, current.to_owned(), &RENAME_STEPS),
+            current
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            modified
+        );
+
+        // 書けなければファイルはそのままで、読み替えた中身で動く。
+        std::fs::write(&path, old).unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions.clone()).unwrap();
+        assert_eq!(migrate_with(&path, old.to_owned(), &RENAME_STEPS), current);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&path, permissions).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

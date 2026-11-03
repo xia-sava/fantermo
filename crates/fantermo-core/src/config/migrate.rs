@@ -19,6 +19,21 @@ pub struct Step {
     apply: fn(&mut DocumentMut) -> Option<Change>,
 }
 
+impl Step {
+    /// 手順を作る。
+    pub const fn new(
+        name: &'static str,
+        description: &'static str,
+        apply: fn(&mut DocumentMut) -> Option<Change>,
+    ) -> Self {
+        Self {
+            name,
+            description,
+            apply,
+        }
+    }
+}
+
 /// 手順を当てて変えたこと。
 #[derive(Clone, Debug, PartialEq)]
 pub struct Change {
@@ -66,7 +81,7 @@ pub fn migrate(text: &str) -> Migrated {
 }
 
 /// 設定ファイルの中身 `text` に `steps` を順に当てる。
-fn migrate_with(text: &str, steps: &'static [Step]) -> Migrated {
+pub fn migrate_with(text: &str, steps: &'static [Step]) -> Migrated {
     let unchanged = || Migrated {
         text: text.to_owned(),
         changes: Vec::new(),
