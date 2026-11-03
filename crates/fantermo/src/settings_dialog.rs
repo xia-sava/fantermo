@@ -1325,7 +1325,7 @@ const ITEM_OPACITY_CHOICES: [bool; 2] = [false, true];
 
 /// `font.size_pt` の入力欄。
 const FONT_SIZE_KIND: NumberKind<f32> = NumberKind {
-    parse: config::parse_font_size,
+    parse: |text| config::parse_input("font.size", text),
     format: format_size,
     step: step_size,
     start: |config| config.font.size_pt,
@@ -1334,7 +1334,7 @@ const FONT_SIZE_KIND: NumberKind<f32> = NumberKind {
 
 /// `scroll_bar.width` の入力欄。
 const SCROLL_BAR_WIDTH_KIND: NumberKind<u32> = NumberKind {
-    parse: config::parse_scroll_bar_width,
+    parse: |text| config::parse_input("scroll_bar.width", text),
     format: format_integer,
     step: |current, delta| step_integer(current, delta, &config::SCROLL_BAR_WIDTH_RANGE),
     start: |config| config.scroll_bar.width,
@@ -1343,7 +1343,7 @@ const SCROLL_BAR_WIDTH_KIND: NumberKind<u32> = NumberKind {
 
 /// `window.padding` の入力欄。
 const PADDING_KIND: NumberKind<u32> = NumberKind {
-    parse: config::parse_padding,
+    parse: |text| config::parse_input("window.padding", text),
     format: format_integer,
     step: |current, delta| step_integer(current, delta, &config::PADDING_RANGE),
     start: |config| config.window.padding,
@@ -1352,7 +1352,7 @@ const PADDING_KIND: NumberKind<u32> = NumberKind {
 
 /// `paste.confirm_size` の入力欄。
 const PASTE_CONFIRM_SIZE_KIND: NumberKind<u32> = NumberKind {
-    parse: config::parse_paste_confirm_size,
+    parse: |text| config::parse_input("paste.confirm_size", text),
     format: format_integer,
     step: |current, delta| step_integer(current, delta, &config::PASTE_CONFIRM_SIZE_RANGE),
     start: |config| config.paste.confirm_size,
@@ -1361,7 +1361,7 @@ const PASTE_CONFIRM_SIZE_KIND: NumberKind<u32> = NumberKind {
 
 /// `background.image_opacity` の入力欄。
 const BACKGROUND_OPACITY_KIND: NumberKind<f32> = NumberKind {
-    parse: config::parse_image_opacity,
+    parse: |text| config::parse_input("background.image_opacity", text),
     format: format_opacity,
     step: step_opacity,
     start: |config| config.background.image_opacity,
@@ -1372,7 +1372,7 @@ const BACKGROUND_OPACITY_KIND: NumberKind<f32> = NumberKind {
 /// （[`State::step`] が渡す設定では、`background.image_opacity` を編集中の既定の不透明度に差し替えて
 /// ある）。
 const BACKGROUND_ITEM_OPACITY_KIND: NumberKind<f32> = NumberKind {
-    parse: config::parse_image_opacity,
+    parse: |text| config::parse_input("background.image_opacity", text),
     format: format_opacity,
     step: step_opacity,
     start: |config| config.background.image_opacity,
@@ -3702,6 +3702,25 @@ mod tests {
         assert_eq!(step_integer(4, -1, &padding), 3);
         assert_eq!(step_integer(0, -1, &padding), 0);
         assert_eq!(step_integer(64, 1, &padding), 64);
+    }
+
+    #[test]
+    fn number_fields_read_what_they_show() {
+        fn reads_back<T: Copy + PartialEq + std::fmt::Debug>(kind: &NumberKind<T>) {
+            let value = (kind.start)(&Config::default());
+            assert_eq!(
+                (kind.parse)(&(kind.format)(value)),
+                Some(value),
+                "{}",
+                kind.message
+            );
+        }
+        reads_back(&FONT_SIZE_KIND);
+        reads_back(&SCROLL_BAR_WIDTH_KIND);
+        reads_back(&PADDING_KIND);
+        reads_back(&PASTE_CONFIRM_SIZE_KIND);
+        reads_back(&BACKGROUND_OPACITY_KIND);
+        reads_back(&BACKGROUND_ITEM_OPACITY_KIND);
     }
 
     #[test]

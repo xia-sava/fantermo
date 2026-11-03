@@ -50,7 +50,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `sixel` | sixel のデコーダ．`vt` が kitty graphics protocol の画像にして端末に置く |
 | `frame` | 描画のために取り出した画面．libghostty-vt の型に依存しない |
 | `backend` | `Backend` trait，`SpawnOptions`，`GridSize`，`Wake` |
-| `config` | 設定ファイルの型，既定値，解釈（`parse`），ひな形 `TEMPLATE`．プロファイル，Cygwin のフォルダを探す処理（`find_cygwin_root`），名前だけのコマンドを `PATH` から探す処理（`find_program_on_path`）もここ |
+| `config` | 設定ファイルの型，既定値，解釈（`parse`），ひな形 `TEMPLATE`．数か名前一つだけの項目の一覧 `SCALARS` は，読む処理，書き戻す処理，設定ダイアログが使う．プロファイル，Cygwin のフォルダを探す処理（`find_cygwin_root`），名前だけのコマンドを `PATH` から探す処理（`find_program_on_path`）もここ |
 | `config::migrate` | 古い書き方を今の書き方に読み替える手順 `STEPS` |
 | `config_edit` | 設定ダイアログで変えた項目だけを設定ファイルに書き戻す（`update`）．コメントと並びを残す |
 | `keymap` | fantermo が受け持つキーの割り当て（`Action`，`KeyCombo`，`Keymap`）と名前の解釈 |
@@ -315,11 +315,11 @@ run-hidden は利用者のセッションのウィンドウステーション（
 
 `[window] padding` が一通りそろった例です（`grep -rn padding crates/` でたどれます）．
 
-1. `fantermo-core/src/config.rs`: 型にフィールドを足し，`Default` に既定値を入れます．既定値と範囲は `DEFAULT_*`・`*_RANGE` の定数にします．`parse` の中で `reader.take(…).check(…).apply(…)` の形で読みます（型が違う・範囲外なら警告を残してその項目だけ前の値）．設定ダイアログの入力欄から読む `parse_*` も置きます．`TEMPLATE` に説明と `# キー = 既定値` の行を足します．
-2. `fantermo-core/src/config_edit.rs`: `Setting` に足し，`Setting::ALL`（配列の長さも）・`path`・`key`・`value` に足します．プロファイルや背景画像の一覧のようなテーブルの配列は，別の処理（`update` の中）です．
+1. `fantermo-core/src/config.rs`: 型にフィールドを足し，`Default` に既定値を入れます．既定値と範囲は `DEFAULT_*`・`*_RANGE` の定数にします．数か名前一つだけの項目なら，項目の一覧 `SCALARS` に 1 行（テーブル，キー，値の種類 `ScalarKind` と範囲，フィールドを読み書きする `get`・`set`）を足します．読む処理（`parse`），書き戻す処理（`config_edit::update`），設定ダイアログの入力欄から読む処理（`parse_input`）は，どれもこの一覧を上から順に処理します（型が違う・範囲外・知らない名前なら警告を残してその項目だけ前の値）．名前で書く値は，その型に値と名前の表 `NAMES` を置き，`ALL`・`name`・`from_name` をそこから作ります．`TEMPLATE` に説明と `# キー = 既定値` の行を足します．
+2. 一覧に載らない項目（`font.family`，`default_profile`，プロファイル，背景画像の一覧，色，キーの割り当て）は，`config.rs` の `parse` から呼ぶ読む処理と，`fantermo-core/src/config_edit.rs` の `update` から呼ぶ書き戻す処理を，それぞれ書きます．
 3. `fantermo/src/window.rs`: `App` に値を持たせ，`App::new`・`apply_config`・**`config_in_use`** に足します．`config_in_use` に足し忘れると，読み直しと設定ダイアログで値が戻ります．反映に配置やアトラスの作り直しが要るかを `apply_config` で決めます．
 4. `fantermo/src/settings_dialog.rs`: コントロールの ID（`ID_*`），`Controls` のフィールド，`create` で作る，`fill` で値を入れる，`read` で `Config` に戻す（不正なら入力欄を返してフォーカスする）．コントロールは種類ごとの部品で作ります．
-   - 数なら `NumberField`．読み方・見せ方・矢印での動かし方・読めないときの文を `NumberKind` の定数に書き，`Controls::number_fields()` に足します．矢印での増減，矢印の配置，`EN_CHANGE` の振り分けはこの一覧を回します．
+   - 数なら `NumberField`．読み方（`config::parse_input` に項目の名前を渡す）・見せ方・矢印での動かし方・読めないときの文を `NumberKind` の定数に書き，`Controls::number_fields()` に足します．矢印での増減，矢印の配置，`EN_CHANGE` の振り分けはこの一覧を回します．
    - ラジオボタンの組なら `RadioGroup`．選択肢と画面の名前の配列を渡し，`Controls::radio_groups()` に足します．`BN_CLICKED` の振り分けはこの一覧を回します．
    - 固定の選択肢のコンボボックスなら `ChoiceBox`．選択肢と画面の名前を渡します．`CBN_SELCHANGE` の処理は `dialog_proc` に書きます．
    - 変えたときに反映のほかにも処理が要るものは，`dialog_proc` の一覧を回す分岐より上に，その ID の分岐を書きます．

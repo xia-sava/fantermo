@@ -24,12 +24,14 @@
 //!
 //! 書き換える前に、古い書き方を今の書き方に読み替える（[`config::migrate`]）。
 
+use std::slice;
+
 use toml_edit::{Array, ArrayOfTables, Decor, DocumentMut, InlineTable, Item, Key, Table, Value};
 
 use crate::{
     config::{
-        self, BackendKind, BackgroundFit, BackgroundImage, ColorTable, Config, Profile,
-        format_color, migrate,
+        self, BackendKind, BackgroundFit, BackgroundImage, ColorTable, Config, Profile, SCALARS,
+        Scalar, ScalarKind, format_color, migrate,
     },
     keymap::{self, Action, KeyCombo},
 };
@@ -71,88 +73,20 @@ impl Document {
     }
 }
 
-/// 書き換える項目。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Setting {
-    DefaultProfile,
-    FontFamily,
-    FontSize,
-    WideGlyph,
-    PasteConfirm,
-    PasteConfirmSize,
-    ClipboardRead,
-    ScrollBarWidth,
-    WindowPadding,
-    ColorScheme,
-    BackgroundImageOpacity,
-    BackgroundFit,
-}
-
-impl Setting {
-    const ALL: [Setting; 12] = [
-        Setting::DefaultProfile,
-        Setting::FontFamily,
-        Setting::FontSize,
-        Setting::WideGlyph,
-        Setting::PasteConfirm,
-        Setting::PasteConfirmSize,
-        Setting::ClipboardRead,
-        Setting::ScrollBarWidth,
-        Setting::WindowPadding,
-        Setting::ColorScheme,
-        Setting::BackgroundImageOpacity,
-        Setting::BackgroundFit,
-    ];
-
-    /// 項目を置くテーブルのキーのパス。最上位なら空。
-    fn path(self) -> &'static [&'static str] {
-        match self {
-            Setting::DefaultProfile => &[],
-            Setting::FontFamily | Setting::FontSize | Setting::WideGlyph => &["font"],
-            Setting::PasteConfirm | Setting::PasteConfirmSize => &["paste"],
-            Setting::ClipboardRead => &["clipboard"],
-            Setting::ScrollBarWidth => &["scroll_bar"],
-            Setting::WindowPadding => &["window"],
-            Setting::ColorScheme => &["colors"],
-            Setting::BackgroundImageOpacity | Setting::BackgroundFit => BACKGROUND_PATH,
-        }
-    }
-
-    fn key(self) -> &'static str {
-        match self {
-            Setting::DefaultProfile => DEFAULT_PROFILE_KEY,
-            Setting::FontFamily => "family",
-            Setting::FontSize => "size",
-            Setting::WideGlyph => "wide_glyph",
-            Setting::PasteConfirm => "confirm",
-            Setting::PasteConfirmSize => "confirm_size",
-            Setting::ClipboardRead => "read",
-            Setting::ScrollBarWidth => "width",
-            Setting::WindowPadding => "padding",
-            Setting::ColorScheme => "scheme",
-            Setting::BackgroundImageOpacity => IMAGE_OPACITY,
-            Setting::BackgroundFit => "fit",
-        }
-    }
-
-    /// `config` でのこの項目の値。書かないことを表す値（`default_profile` の `None`）なら `None`。
-    fn value(self, config: &Config) -> Option<Value> {
-        match self {
-            Setting::DefaultProfile => config.default_profile.as_deref().map(Value::from),
-            Setting::FontFamily => Some(families_value(&config.font.families)),
-            Setting::FontSize => Some(number_value(config.font.size_pt)),
-            Setting::WideGlyph => Some(Value::from(config.font.wide_glyph.name())),
-            Setting::PasteConfirm => Some(Value::from(config.paste.confirm.name())),
-            Setting::PasteConfirmSize => Some(Value::from(i64::from(config.paste.confirm_size))),
-            Setting::ClipboardRead => Some(Value::from(config.clipboard.read.name())),
-            Setting::ScrollBarWidth => Some(Value::from(i64::from(config.scroll_bar.width))),
-            Setting::WindowPadding => Some(Value::from(i64::from(config.window.padding))),
-            Setting::ColorScheme => Some(Value::from(config.colors.scheme.name())),
-            Setting::BackgroundImageOpacity => Some(number_value(config.background.image_opacity)),
-            Setting::BackgroundFit => Some(Value::from(config.background.fit.name())),
-        }
+/// 一覧の項目 `scalar` の、`config` での値。
+fn scalar_value(scalar: &Scalar, config: &Config) -> Value {
+    match &scalar.kind {
+        ScalarKind::Float { get, .. } => number_value(get(config)),
+        ScalarKind::Int { get, .. } => Value::from(i64::from(get(config))),
+        ScalarKind::Name { get, .. } => Value::from(get(config)),
     }
 }
+
+/// `[font]` のテーブルのキーのパス。
+const FONT_PATH: &[&str] = &["font"];
+
+/// `[font]` の、フォントの名前のキー。
+const FONT_FAMILY_KEY: &str = "family";
 
 /// `[keys]` のテーブルのキーのパス。
 const KEYS_PATH: &[&str] = &["keys"];
@@ -501,37 +435,69 @@ pub fn update(text: &str, base: &Config, edited: &Config) -> Result<String, Stri
     let migrated = migrate::migrate(text);
     let mut document = Document::parse(&migrated.text)?;
     let doc = &mut document.doc;
-    let defaults = Config::default();
-    for setting in Setting::ALL {
-        let new = setting.value(edited);
-        if same(&setting.value(base), &new) {
-            continue;
-        }
-        let key = setting.key();
-        let matches = |name: &str| name == key;
-        let target = Target {
-            name: key.to_owned(),
-            matches: &matches,
-        };
-        let default = setting.value(&defaults);
-        match new {
-            Some(value) if !same(&Some(value.clone()), &default) => {
-                set(doc, setting.path(), &target, value)?;
-            }
-            _ => {
-                let reset = match default {
-                    Some(default) => Reset::Comment(default),
-                    None => Reset::CommentOld,
-                };
-                self::reset(doc, setting.path(), &target, reset)?;
-            }
-        }
+    let configs = Configs {
+        base,
+        edited,
+        defaults: &Config::default(),
+    };
+    configs.update_value(doc, &[], DEFAULT_PROFILE_KEY, |config| {
+        config.default_profile.as_deref().map(Value::from)
+    })?;
+    configs.update_value(doc, FONT_PATH, FONT_FAMILY_KEY, |config| {
+        Some(families_value(&config.font.families))
+    })?;
+    for scalar in SCALARS {
+        configs.update_value(doc, slice::from_ref(&scalar.table), scalar.key, |config| {
+            Some(scalar_value(scalar, config))
+        })?;
     }
     update_background_images(doc, base, edited)?;
     update_profiles(doc, base, edited)?;
     update_colors(doc, base, edited)?;
     update_keys(doc, base, edited)?;
     Ok(document.finish())
+}
+
+/// 書き換える前と後の設定と、既定値。
+struct Configs<'a> {
+    /// 編集を始めたときの設定。
+    base: &'a Config,
+    edited: &'a Config,
+    defaults: &'a Config,
+}
+
+impl Configs<'_> {
+    /// テーブル `path` のキー `key` の項目を、`base` と `edited` で値が違えば書き換える。`value` は設定
+    /// でのその項目の値で、書かないことを表す値（`default_profile` の `None`）なら `None`。既定値に
+    /// 戻したら既定値をコメントにした行にし、既定値が `None` ならそれまでの値をコメントにする。
+    fn update_value(
+        &self,
+        doc: &mut DocumentMut,
+        path: &[&str],
+        key: &str,
+        value: impl Fn(&Config) -> Option<Value>,
+    ) -> Result<(), String> {
+        let new = value(self.edited);
+        if same(&value(self.base), &new) {
+            return Ok(());
+        }
+        let matches = |name: &str| name == key;
+        let target = Target {
+            name: key.to_owned(),
+            matches: &matches,
+        };
+        let default = value(self.defaults);
+        match new {
+            Some(value) if !same(&Some(value.clone()), &default) => set(doc, path, &target, value),
+            _ => {
+                let reset = match default {
+                    Some(default) => Reset::Comment(default),
+                    None => Reset::CommentOld,
+                };
+                self::reset(doc, path, &target, reset)
+            }
+        }
+    }
 }
 
 /// `[colors]` と `[colors.…]` のテーブルで、`base` と `edited` で違う色を書き換える。既定の色に戻した

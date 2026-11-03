@@ -13,8 +13,10 @@ use std::{
     collections::HashMap,
     env,
     ffi::OsStr,
+    fmt::Display,
     ops::RangeInclusive,
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 use serde::{Deserialize, de::DeserializeOwned};
@@ -1209,39 +1211,234 @@ impl WideGlyph {
     }
 }
 
-/// 入力された文字列を、フォントの大きさ（ポイント）として読む。前後の空白は除く。数でないか、
-/// [`FONT_SIZE_RANGE_PT`] の外なら `None`。
+/// 名前で書く値の表 `names` の名前。表の順。
+const fn names_of<T: Copy, const N: usize>(names: &[(T, &'static str); N]) -> [&'static str; N] {
+    let mut list = [""; N];
+    let mut index = 0;
+    while index < N {
+        list[index] = names[index].1;
+        index += 1;
+    }
+    list
+}
+
+/// `[font]` のテーブルの名前。
+const FONT_TABLE: &str = "font";
+/// `[colors]` のテーブルの名前。
+const COLORS_TABLE: &str = "colors";
+/// `[background]` のテーブルの名前。
+const BACKGROUND_TABLE: &str = "background";
+
+/// 数か名前一つだけの設定の項目。読む処理（[`parse`]）、書き戻す処理
+/// （[`config_edit::update`](crate::config_edit::update)）、設定ダイアログの入力欄から読む処理
+/// （[`parse_input`]）は、どれも [`SCALARS`] を上から順に処理する。
+pub struct Scalar {
+    /// 項目を置く最上位のテーブルの名前（`font` など）。
+    pub table: &'static str,
+    /// テーブルの中のキー。
+    pub key: &'static str,
+    pub kind: ScalarKind,
+}
+
+impl Scalar {
+    /// テーブルとキーを点でつないだ名前（`font.size` など）。
+    pub fn name(&self) -> String {
+        key_path(Some(self.table), self.key)
+    }
+}
+
+/// 設定の項目の値の種類と、[`Config`] のどのフィールドに入れるか。既定値は `Config::default()` の
+/// そのフィールドの値。
+pub enum ScalarKind {
+    /// 小数でもよい数。`range` の外は読めない。
+    Float {
+        range: RangeInclusive<f32>,
+        get: fn(&Config) -> f32,
+        set: fn(&mut Config, f32),
+    },
+    /// 0 以上の整数。`range` の外は読めない。
+    Int {
+        range: RangeInclusive<u32>,
+        get: fn(&Config) -> u32,
+        set: fn(&mut Config, u32),
+    },
+    /// 名前で書く値。`names` は書ける名前で、`set` は知らない名前なら何もせずに `false` を返す。
+    Name {
+        names: &'static [&'static str],
+        get: fn(&Config) -> &'static str,
+        set: fn(&mut Config, &str) -> bool,
+    },
+}
+
+/// 名前 `name` の値 `value` があれば `field` に入れて `true`。なければ `false`。
+fn set_named<T>(field: &mut T, value: Option<T>) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    *field = value;
+    true
+}
+
+/// 数か名前一つだけの設定の項目。設定ファイルの説明と同じ順。ここに載らない項目（`font.family`、
+/// `default_profile`、`profiles`、`background.images`、`[colors]` の色、`[keys]`）は、読む処理と
+/// 書き戻す処理にそれぞれ書く。
+pub const SCALARS: &[Scalar] = &[
+    Scalar {
+        table: FONT_TABLE,
+        key: "size",
+        kind: ScalarKind::Float {
+            range: FONT_SIZE_RANGE_PT,
+            get: |config| config.font.size_pt,
+            set: |config, size| config.font.size_pt = size,
+        },
+    },
+    Scalar {
+        table: FONT_TABLE,
+        key: "wide_glyph",
+        kind: ScalarKind::Name {
+            names: &names_of(&WideGlyph::NAMES),
+            get: |config| config.font.wide_glyph.name(),
+            set: |config, name| set_named(&mut config.font.wide_glyph, WideGlyph::from_name(name)),
+        },
+    },
+    Scalar {
+        table: "paste",
+        key: "confirm",
+        kind: ScalarKind::Name {
+            names: &names_of(&PasteConfirm::NAMES),
+            get: |config| config.paste.confirm.name(),
+            set: |config, name| set_named(&mut config.paste.confirm, PasteConfirm::from_name(name)),
+        },
+    },
+    Scalar {
+        table: "paste",
+        key: "confirm_size",
+        kind: ScalarKind::Int {
+            range: PASTE_CONFIRM_SIZE_RANGE,
+            get: |config| config.paste.confirm_size,
+            set: |config, size| config.paste.confirm_size = size,
+        },
+    },
+    Scalar {
+        table: "clipboard",
+        key: "read",
+        kind: ScalarKind::Name {
+            names: &names_of(&ClipboardRead::NAMES),
+            get: |config| config.clipboard.read.name(),
+            set: |config, name| {
+                set_named(&mut config.clipboard.read, ClipboardRead::from_name(name))
+            },
+        },
+    },
+    Scalar {
+        table: "scroll_bar",
+        key: "width",
+        kind: ScalarKind::Int {
+            range: SCROLL_BAR_WIDTH_RANGE,
+            get: |config| config.scroll_bar.width,
+            set: |config, width| config.scroll_bar.width = width,
+        },
+    },
+    Scalar {
+        table: "window",
+        key: "padding",
+        kind: ScalarKind::Int {
+            range: PADDING_RANGE,
+            get: |config| config.window.padding,
+            set: |config, padding| config.window.padding = padding,
+        },
+    },
+    Scalar {
+        table: COLORS_TABLE,
+        key: "scheme",
+        kind: ScalarKind::Name {
+            names: &names_of(&ColorScheme::NAMES),
+            get: |config| config.colors.scheme.name(),
+            set: |config, name| set_named(&mut config.colors.scheme, ColorScheme::from_name(name)),
+        },
+    },
+    Scalar {
+        table: BACKGROUND_TABLE,
+        key: IMAGE_OPACITY_KEY,
+        kind: ScalarKind::Float {
+            range: IMAGE_OPACITY_RANGE,
+            get: |config| config.background.image_opacity,
+            set: |config, opacity| config.background.image_opacity = opacity,
+        },
+    },
+    Scalar {
+        table: BACKGROUND_TABLE,
+        key: "fit",
+        kind: ScalarKind::Name {
+            names: &names_of(&BackgroundFit::NAMES),
+            get: |config| config.background.fit.name(),
+            set: |config, name| {
+                set_named(&mut config.background.fit, BackgroundFit::from_name(name))
+            },
+        },
+    },
+];
+
+/// `[background]` と `[[background.images]]` のテーブルの、画像の不透明度のキー。
+const IMAGE_OPACITY_KEY: &str = "image_opacity";
+
+/// 設定ダイアログの入力欄に書ける数の型。
+pub trait InputNumber: Copy + PartialOrd + FromStr {
+    /// 項目の種類 `kind` がこの型の数なら、その範囲。
+    fn range(kind: &ScalarKind) -> Option<&RangeInclusive<Self>>;
+}
+
+impl InputNumber for f32 {
+    fn range(kind: &ScalarKind) -> Option<&RangeInclusive<Self>> {
+        match kind {
+            ScalarKind::Float { range, .. } => Some(range),
+            _ => None,
+        }
+    }
+}
+
+impl InputNumber for u32 {
+    fn range(kind: &ScalarKind) -> Option<&RangeInclusive<Self>> {
+        match kind {
+            ScalarKind::Int { range, .. } => Some(range),
+            _ => None,
+        }
+    }
+}
+
+/// 設定ダイアログの入力欄の文字列 `text` を、[`SCALARS`] の項目 `name`（`font.size` など）の値として
+/// 読む。前後の空白は除く。`T` の数として読めないか、項目の範囲の外なら `None`。項目が `T` の数の
+/// 項目でなくても `None`。
+pub fn parse_input<T: InputNumber>(name: &str, text: &str) -> Option<T> {
+    let scalar = SCALARS.iter().find(|scalar| scalar.name() == name)?;
+    let range = T::range(&scalar.kind)?;
+    let value: T = text.trim().parse().ok()?;
+    range.contains(&value).then_some(value)
+}
+
+/// 入力された文字列を、フォントの大きさ（ポイント）として読む（[`parse_input`]）。
 pub fn parse_font_size(text: &str) -> Option<f32> {
-    let size: f32 = text.trim().parse().ok()?;
-    FONT_SIZE_RANGE_PT.contains(&size).then_some(size)
+    parse_input("font.size", text)
 }
 
-/// 入力された文字列を、スクロールバーの幅として読む。前後の空白は除く。整数でないか、
-/// [`SCROLL_BAR_WIDTH_RANGE`] の外なら `None`。
+/// 入力された文字列を、スクロールバーの幅として読む（[`parse_input`]）。
 pub fn parse_scroll_bar_width(text: &str) -> Option<u32> {
-    let width: u32 = text.trim().parse().ok()?;
-    SCROLL_BAR_WIDTH_RANGE.contains(&width).then_some(width)
+    parse_input("scroll_bar.width", text)
 }
 
-/// 入力された文字列を、余白として読む。前後の空白は除く。整数でないか、[`PADDING_RANGE`] の外なら
-/// `None`。
+/// 入力された文字列を、余白として読む（[`parse_input`]）。
 pub fn parse_padding(text: &str) -> Option<u32> {
-    let padding: u32 = text.trim().parse().ok()?;
-    PADDING_RANGE.contains(&padding).then_some(padding)
+    parse_input("window.padding", text)
 }
 
-/// 入力された文字列を、大きな貼り付けとして確認する大きさ（KiB）として読む。前後の空白は除く。整数でないか、
-/// [`PASTE_CONFIRM_SIZE_RANGE`] の外なら `None`。
+/// 入力された文字列を、大きな貼り付けとして確認する大きさ（KiB）として読む（[`parse_input`]）。
 pub fn parse_paste_confirm_size(text: &str) -> Option<u32> {
-    let size: u32 = text.trim().parse().ok()?;
-    PASTE_CONFIRM_SIZE_RANGE.contains(&size).then_some(size)
+    parse_input("paste.confirm_size", text)
 }
 
-/// 入力された文字列を、背景画像の不透明度として読む。前後の空白は除く。数でないか、
-/// [`IMAGE_OPACITY_RANGE`] の外なら `None`。
+/// 入力された文字列を、背景画像の不透明度として読む（[`parse_input`]）。
 pub fn parse_image_opacity(text: &str) -> Option<f32> {
-    let opacity: f32 = text.trim().parse().ok()?;
-    IMAGE_OPACITY_RANGE.contains(&opacity).then_some(opacity)
+    parse_input("background.image_opacity", text)
 }
 
 /// 解釈した設定と、読めなかった項目についての警告。
@@ -1278,6 +1475,15 @@ impl<T> Item<T> {
             Item::Absent => *field = default,
             Item::Invalid => {}
             Item::Valid(value) => *field = value,
+        }
+    }
+
+    /// 入れる値。読めた値か、書いていなければ `default`。読めなければ `None`。
+    fn value_or(self, default: T) -> Option<T> {
+        match self {
+            Item::Absent => Some(default),
+            Item::Invalid => None,
+            Item::Valid(value) => Some(value),
         }
     }
 
@@ -1368,104 +1574,23 @@ pub fn parse(text: &str, previous: &Config) -> Parsed {
         warnings: Vec::new(),
     };
     let mut config = previous.clone();
-    match reader.take::<Table>(&mut root, None, "font") {
-        Item::Absent => config.font = FontConfig::default(),
-        Item::Invalid => {}
-        Item::Valid(mut font) => {
-            read_font(&mut reader, &mut font, &mut config.font);
-            reader.warn_unknown(&font, Some("font"));
-        }
-    }
+    let defaults = Config::default();
     read_profiles(&mut reader, &mut root, &mut config);
-    match reader.take::<Table>(&mut root, None, "paste") {
-        Item::Absent => config.paste = PasteConfig::default(),
-        Item::Invalid => {}
-        Item::Valid(mut paste) => {
-            const SECTION: Option<&str> = Some("paste");
-            reader
-                .take_named(&mut paste, SECTION, "confirm", &PasteConfirm::NAMES)
-                .apply(&mut config.paste.confirm, PasteConfirm::default());
-            reader
-                .take::<u32>(&mut paste, SECTION, "confirm_size")
-                .check(&mut reader, "paste.confirm_size", |size| {
-                    (!PASTE_CONFIRM_SIZE_RANGE.contains(size)).then(|| {
-                        format!(
-                            "ignoring paste.confirm_size = {size}: must be between {} and {}",
-                            PASTE_CONFIRM_SIZE_RANGE.start(),
-                            PASTE_CONFIRM_SIZE_RANGE.end()
-                        )
-                    })
-                })
-                .apply(&mut config.paste.confirm_size, DEFAULT_PASTE_CONFIRM_SIZE);
-            reader.warn_unknown(&paste, SECTION);
+    let mut tables: Vec<&str> = Vec::new();
+    for scalar in SCALARS {
+        if !tables.contains(&scalar.table) {
+            tables.push(scalar.table);
         }
     }
-    match reader.take::<Table>(&mut root, None, "clipboard") {
-        Item::Absent => config.clipboard = ClipboardConfig::default(),
-        Item::Invalid => {}
-        Item::Valid(mut clipboard) => {
-            const SECTION: Option<&str> = Some("clipboard");
-            reader
-                .take_named(&mut clipboard, SECTION, "read", &ClipboardRead::NAMES)
-                .apply(&mut config.clipboard.read, ClipboardRead::default());
-            reader.warn_unknown(&clipboard, SECTION);
-        }
-    }
-    match reader.take::<Table>(&mut root, None, "scroll_bar") {
-        Item::Absent => config.scroll_bar = ScrollBarConfig::default(),
-        Item::Invalid => {}
-        Item::Valid(mut scroll_bar) => {
-            const SECTION: Option<&str> = Some("scroll_bar");
-            reader
-                .take::<u32>(&mut scroll_bar, SECTION, "width")
-                .check(&mut reader, "scroll_bar.width", |width| {
-                    (!SCROLL_BAR_WIDTH_RANGE.contains(width)).then(|| {
-                        format!(
-                            "ignoring scroll_bar.width = {width}: must be between {} and {}",
-                            SCROLL_BAR_WIDTH_RANGE.start(),
-                            SCROLL_BAR_WIDTH_RANGE.end()
-                        )
-                    })
-                })
-                .apply(&mut config.scroll_bar.width, DEFAULT_SCROLL_BAR_WIDTH);
-            reader.warn_unknown(&scroll_bar, SECTION);
-        }
-    }
-    match reader.take::<Table>(&mut root, None, "window") {
-        Item::Absent => config.window = WindowConfig::default(),
-        Item::Invalid => {}
-        Item::Valid(mut window) => {
-            const SECTION: Option<&str> = Some("window");
-            reader
-                .take::<u32>(&mut window, SECTION, "padding")
-                .check(&mut reader, "window.padding", |padding| {
-                    (!PADDING_RANGE.contains(padding)).then(|| {
-                        format!(
-                            "ignoring window.padding = {padding}: must be between {} and {}",
-                            PADDING_RANGE.start(),
-                            PADDING_RANGE.end()
-                        )
-                    })
-                })
-                .apply(&mut config.window.padding, DEFAULT_PADDING);
-            reader.warn_unknown(&window, SECTION);
-        }
-    }
-    match reader.take::<Table>(&mut root, None, "colors") {
-        Item::Absent => config.colors = ColorsConfig::default(),
-        Item::Invalid => {}
-        Item::Valid(mut colors) => {
-            read_colors(&mut reader, &mut colors, &mut config.colors);
-            reader.warn_unknown(&colors, Some("colors"));
-        }
-    }
-    match reader.take::<Table>(&mut root, None, "background") {
-        Item::Absent => config.background = BackgroundConfig::default(),
-        Item::Invalid => {}
-        Item::Valid(mut background) => {
-            read_background(&mut reader, &mut background, &mut config.background);
-            reader.warn_unknown(&background, Some("background"));
-        }
+    for name in tables {
+        // 書いていないテーブルは、どの項目も書いていない空のテーブルとして読み、既定値にする。
+        // テーブルでなければ、どの項目も前の値のまま。
+        let mut table = match reader.take::<Table>(&mut root, None, name) {
+            Item::Absent => Table::new(),
+            Item::Invalid => continue,
+            Item::Valid(table) => table,
+        };
+        read_table(&mut reader, name, &mut table, &mut config, &defaults);
     }
     match reader.take::<Table>(&mut root, None, "keys") {
         Item::Absent => config.keys = Keymap::default(),
@@ -1705,70 +1830,136 @@ fn read_profile_backend(reader: &mut Reader, table: &mut Table, path: &str) -> O
     }
 }
 
-fn read_font(reader: &mut Reader, table: &mut Table, font: &mut FontConfig) {
-    const SECTION: Option<&str> = Some("font");
-    let defaults = FontConfig::default();
-    reader
-        .take::<Strings>(table, SECTION, "family")
-        .map(Strings::into_vec)
-        .check(reader, "font.family", |families| {
-            (families.is_empty() || families.iter().any(|family| family.trim().is_empty()))
-                .then(|| format!("ignoring font.family = {families:?}: names must not be empty"))
-        })
-        .apply(&mut font.families, defaults.families);
-    reader
-        .take::<f32>(table, SECTION, "size")
-        .check(reader, "font.size", |size| {
-            (!FONT_SIZE_RANGE_PT.contains(size)).then(|| {
-                format!(
-                    "ignoring font.size = {size}: must be between {} and {}",
-                    FONT_SIZE_RANGE_PT.start(),
-                    FONT_SIZE_RANGE_PT.end()
-                )
-            })
-        })
-        .apply(&mut font.size_pt, defaults.size_pt);
-    reader
-        .take_named(table, SECTION, "wide_glyph", &WideGlyph::NAMES)
-        .apply(&mut font.wide_glyph, defaults.wide_glyph);
+/// 最上位のテーブル `name` の中身 `table` を読む。[`SCALARS`] の項目のほかに、一覧に載らない項目も、
+/// 設定ファイルの説明と同じ順に読む（`font.family` と `background.images` は一覧の項目より前、`[colors]`
+/// の色は後）。最後に、残ったキーを知らないものとして警告する。
+fn read_table(
+    reader: &mut Reader,
+    name: &str,
+    table: &mut Table,
+    config: &mut Config,
+    defaults: &Config,
+) {
+    match name {
+        FONT_TABLE => read_font_family(reader, table, &mut config.font.families),
+        BACKGROUND_TABLE => read_background_images(reader, table, &mut config.background.images),
+        _ => {}
+    }
+    for scalar in SCALARS.iter().filter(|scalar| scalar.table == name) {
+        read_scalar(reader, table, scalar, config, defaults);
+    }
+    if name == COLORS_TABLE {
+        read_colors(reader, table, &mut config.colors);
+    }
+    reader.warn_unknown(table, Some(name));
 }
 
-fn read_background(reader: &mut Reader, table: &mut Table, background: &mut BackgroundConfig) {
-    const SECTION: Option<&str> = Some("background");
-    let defaults = BackgroundConfig::default();
-    let images = match reader.take::<Value>(table, SECTION, "images") {
-        Item::Valid(value) => read_background_images(reader, value),
-        Item::Absent => Item::Absent,
-        Item::Invalid => Item::Invalid,
-    };
-    images.apply(&mut background.images, defaults.images);
-    read_image_opacity(reader, table, SECTION)
-        .apply(&mut background.image_opacity, defaults.image_opacity);
+/// テーブル `table` から一覧の項目 `scalar` を読んで `config` に入れる。書いていなければ `defaults` の値、
+/// 型が違うか範囲の外か知らない名前なら、警告して `config` の値のまま。
+fn read_scalar(
+    reader: &mut Reader,
+    table: &mut Table,
+    scalar: &Scalar,
+    config: &mut Config,
+    defaults: &Config,
+) {
+    let section = Some(scalar.table);
+    let path = scalar.name();
+    match &scalar.kind {
+        ScalarKind::Float { range, get, set } => {
+            let value =
+                reader
+                    .take::<f32>(table, section, scalar.key)
+                    .check(reader, &path, |value| out_of_range(&path, value, range));
+            if let Some(value) = value.value_or(get(defaults)) {
+                set(config, value);
+            }
+        }
+        ScalarKind::Int { range, get, set } => {
+            let value =
+                reader
+                    .take::<u32>(table, section, scalar.key)
+                    .check(reader, &path, |value| out_of_range(&path, value, range));
+            if let Some(value) = value.value_or(get(defaults)) {
+                set(config, value);
+            }
+        }
+        ScalarKind::Name { names, get, set } => {
+            let Some(name) = reader
+                .take::<String>(table, section, scalar.key)
+                .value_or(get(defaults).to_owned())
+            else {
+                return;
+            };
+            if !set(config, &name) {
+                reader.warn(&path, unknown_name(&path, &name, names));
+            }
+        }
+    }
+}
+
+/// 値 `value` が範囲 `range` の外なら、キー `path` についての警告の文。
+fn out_of_range<T: PartialOrd + Display>(
+    path: &str,
+    value: &T,
+    range: &RangeInclusive<T>,
+) -> Option<String> {
+    (!range.contains(value)).then(|| {
+        format!(
+            "ignoring {path} = {value}: must be between {} and {}",
+            range.start(),
+            range.end()
+        )
+    })
+}
+
+/// キー `path` に知らない名前 `name` を書いたことの警告の文。`known` は書ける名前。
+fn unknown_name(path: &str, name: &str, known: &[&str]) -> String {
+    format!("ignoring {path}: unknown name {name:?}, expected one of {known:?}")
+}
+
+/// `[font]` の `family` を読む。
+fn read_font_family(reader: &mut Reader, table: &mut Table, families: &mut Vec<String>) {
+    const KEY: &str = "family";
+    let path = key_path(Some(FONT_TABLE), KEY);
     reader
-        .take_named(table, SECTION, "fit", &BackgroundFit::NAMES)
-        .apply(&mut background.fit, defaults.fit);
+        .take::<Strings>(table, Some(FONT_TABLE), KEY)
+        .map(Strings::into_vec)
+        .check(reader, &path, |families| {
+            (families.is_empty() || families.iter().any(|family| family.trim().is_empty()))
+                .then(|| format!("ignoring {path} = {families:?}: names must not be empty"))
+        })
+        .apply(families, FontConfig::default().families);
 }
 
 /// テーブル `table`（キーのパスは `section`）の `image_opacity` を読む。範囲の外は警告して読めなかったことに
 /// する。
 fn read_image_opacity(reader: &mut Reader, table: &mut Table, section: Option<&str>) -> Item<f32> {
-    let path = key_path(section, "image_opacity");
+    let path = key_path(section, IMAGE_OPACITY_KEY);
     reader
-        .take::<f32>(table, section, "image_opacity")
+        .take::<f32>(table, section, IMAGE_OPACITY_KEY)
         .check(reader, &path, |opacity| {
-            (!IMAGE_OPACITY_RANGE.contains(opacity)).then(|| {
-                format!(
-                    "ignoring {path} = {opacity}: must be between {} and {}",
-                    IMAGE_OPACITY_RANGE.start(),
-                    IMAGE_OPACITY_RANGE.end()
-                )
-            })
+            out_of_range(&path, opacity, &IMAGE_OPACITY_RANGE)
         })
+}
+
+/// `[background]` の `images`（`[[background.images]]` のテーブルの配列）を読む。
+fn read_background_images(
+    reader: &mut Reader,
+    table: &mut Table,
+    images: &mut Vec<BackgroundImage>,
+) {
+    let images_item = match reader.take::<Value>(table, Some(BACKGROUND_TABLE), "images") {
+        Item::Valid(value) => read_background_image_tables(reader, value),
+        Item::Absent => Item::Absent,
+        Item::Invalid => Item::Invalid,
+    };
+    images_item.apply(images, Vec::new());
 }
 
 /// `background.images`（`[[background.images]]` のテーブルの配列）を読む。読めないテーブルは、警告して
 /// そのテーブルだけを飛ばす。テーブルの配列でなければ、全体を読めなかったことにする。
-fn read_background_images(reader: &mut Reader, value: Value) -> Item<Vec<BackgroundImage>> {
+fn read_background_image_tables(reader: &mut Reader, value: Value) -> Item<Vec<BackgroundImage>> {
     const PATH: &str = "background.images";
     let Value::Array(items) = value else {
         reader.warn(PATH, format!("ignoring {PATH}: expected [[{PATH}]] tables"));
@@ -1825,12 +2016,9 @@ fn read_background_image(reader: &mut Reader, path: &str, value: Value) -> Optio
     })
 }
 
-/// `[colors]` の配色と、その中の色のテーブルを読む。
+/// `[colors]` の端末の色と、その中の色のテーブルを読む。
 fn read_colors(reader: &mut Reader, colors: &mut Table, config: &mut ColorsConfig) {
-    const SECTION: Option<&str> = Some("colors");
-    reader
-        .take_named(colors, SECTION, "scheme", &ColorScheme::NAMES)
-        .apply(&mut config.scheme, ColorScheme::default());
+    const SECTION: Option<&str> = Some(COLORS_TABLE);
     for table in ColorTable::ALL {
         let section = table.path().join(".");
         let slots = config.table_mut(table);
@@ -1971,7 +2159,7 @@ impl Reader {
             .parse(self, &path, |name| {
                 value_named(names, &name).ok_or_else(|| {
                     let known: Vec<&str> = names.iter().map(|(_, name)| *name).collect();
-                    format!("ignoring {path}: unknown name {name:?}, expected one of {known:?}")
+                    unknown_name(&path, &name, &known)
                 })
             })
     }
