@@ -197,12 +197,12 @@ pub fn run(
         notice_key,
         options.tab,
     )?;
-    let window = Box::into_raw(Box::new(Window {
+    let data = Box::into_raw(Box::new(WindowData {
         state_path,
         app: RefCell::new(app),
     }));
     // SAFETY: hwnd はこのスレッドが作ったウィンドウ。ポインタは WM_NCDESTROY で取り戻して解放する。
-    unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, window as isize) };
+    unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, data as isize) };
 
     // ウィンドウを置いたモニタの DPI がシステムの DPI と違えば、DPI が変わったときと同じように作り直す。
     // 覚えていた大きさがあればそのままにして、桁数と行数をその DPI のセルで決め直す。なければ、既定の
@@ -313,10 +313,9 @@ fn message_loop() -> u32 {
 /// 止まる間など）では、ほかのスレッドから送られたメッセージがこの場で処理され、そのときは借用が重なるので
 /// `app` を読むことも書くこともできない。`RefCell` の外に置いた値は作ったあと変えないので、借用が重なっていても
 /// 読める。借用の外でも中でもすることに要る値は、ここに置く。
-struct Window {
-    /// ウィンドウの状態ファイルの場所。`None` なら書かない。ウィンドウを閉じるときと、ログオフ・シャットダウンの
-    /// ときに書く。ログオフの `WM_QUERYENDSESSION`・`WM_ENDSESSION` は借用の中で届くこともあるので、`App` の外に
-    /// 置く。書く中身（ウィンドウの位置・大きさ・最大化）も `App` ではなく Win32 から読む。
+struct WindowData {
+    /// ウィンドウの状態ファイルの場所。`None` なら書かない。借用の中でも書くので `App` の外に置く
+    /// （`proc::save_window_state`）。
     state_path: Option<PathBuf>,
     app: RefCell<App>,
 }
