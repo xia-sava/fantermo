@@ -212,8 +212,8 @@ mod tests {
     use crate::{
         config::{
             self, BackendKind, BackgroundConfig, BackgroundFit, BackgroundImage, ClipboardConfig,
-            ClipboardRead, ColorScheme, ColorsConfig, FontConfig, PasteConfig, PasteConfirm,
-            Profile, ScrollBarConfig, TEMPLATE, WideGlyph, WindowConfig,
+            ClipboardRead, ClipboardWrite, ColorScheme, ColorsConfig, FontConfig, PasteConfig,
+            PasteConfirm, Profile, ScrollBarConfig, TEMPLATE, WideGlyph, WindowConfig,
         },
         frame::Rgb,
         keymap::Keymap,
@@ -366,6 +366,7 @@ mod tests {
             },
             clipboard: ClipboardConfig {
                 read: ClipboardRead::Deny,
+                write: ClipboardWrite::Deny,
             },
             scroll_bar: ScrollBarConfig { width: 20 },
             window: WindowConfig { padding: 0 },
@@ -428,6 +429,7 @@ mod tests {
             .replace(r#"# confirm = "unsafe""#, r#"confirm = "never""#)
             .replace("# confirm_size = 8", "confirm_size = 64")
             .replace(r#"# read = "ask""#, r#"read = "deny""#)
+            .replace(r#"# write = "allow""#, r#"write = "deny""#)
             .replace("# width = 12", "width = 20")
             .replace("# padding = 4", "padding = 0")
             .replace("# image_opacity = 0.2", "image_opacity = 0.65")

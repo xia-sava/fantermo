@@ -345,7 +345,7 @@ run-hidden は利用者のセッションのウィンドウステーション（
    - 固定の選択肢のコンボボックスなら `ChoiceBox`．選択肢と画面の名前を渡します．`CBN_SELCHANGE` の処理は `on_command` に書きます．
    - 変えたときに反映のほかにも処理が要るものは，`on_command` の，数の入力欄やラジオボタンをまとめて受ける分岐より上に，その ID の分岐を書きます．
 5. 書き方を改めるとき（キーの名前を変える，型を変える）は，`config::migrate` の `STEPS` の最後に手順を足します．今の書き方には何もしない手順にします．
-6. テスト: `config/read.rs` の `template_shows_every_setting_with_its_default`・`all_items_are_read` と範囲のテスト（`SCALARS` の項目は，ひな形の項目，入力欄の範囲，既定値に戻す書き戻しのテストが一覧から数えます．`invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults` は設定の文字列に読めない値を 1 行足すまで落ちます．`all_items_are_read` と `config_edit.rs` の `customized()` は手で書いた値なので，足さなくても落ちませんが，既定値と違う値を足します），`config_edit.rs` の書き戻しのテスト，設定ダイアログの e2e（`crates/fantermo/tests/e2e.rs`）．利用者に見える項目なら README も．
+6. テスト: `config/read.rs` の `template_shows_every_setting_with_its_default`・`all_items_are_read` と範囲のテスト（`SCALARS` の項目は，ひな形の項目，入力欄の範囲，既定値に戻す書き戻しのテストが一覧から数えます．`invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults` は設定の文字列に読めない値を 1 行足すまで落ちます．`all_items_are_read` と `config_edit.rs` の `customized()` は手で書いた値なので，足さなくても落ちませんが，既定値と違う値を足します．`customized()` に足すと，`settings_replace_the_commented_lines_of_the_template` の期待値にもその行の置き換えが要ります），`config_edit.rs` の書き戻しのテスト，設定ダイアログの e2e（`crates/fantermo/tests/e2e.rs`）．利用者に見える項目なら README も．
 
 ### キーの割り当てを足す
 

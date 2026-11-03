@@ -870,6 +870,7 @@ mod tests {
             },
             clipboard: ClipboardConfig {
                 read: ClipboardRead::Deny,
+                write: ClipboardWrite::Deny,
             },
             scroll_bar: ScrollBarConfig { width: 20 },
             window: WindowConfig { padding: 10 },
@@ -1524,7 +1525,7 @@ mod tests {
     fn invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults() {
         let previous = customized();
         let parsed = super::parse(
-            "shell = ' '\ndefault_profile = 3\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\nconfirm_size = 'big'\n[clipboard]\nread = 1\n[scroll_bar]\nwidth = 2\n[window]\npadding = 65\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors]\nscheme = 'sepia'\nforeground = 'blue'\n[colors.tab_bar]\nbar = 'red'\n[background]\nimages = ''\nimage_opacity = 2\nfit = 0\n",
+            "shell = ' '\ndefault_profile = 3\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\nconfirm_size = 'big'\n[clipboard]\nread = 1\nwrite = 1\n[scroll_bar]\nwidth = 2\n[window]\npadding = 65\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors]\nscheme = 'sepia'\nforeground = 'blue'\n[colors.tab_bar]\nbar = 'red'\n[background]\nimages = ''\nimage_opacity = 2\nfit = 0\n",
             &previous,
         );
         assert!(!parsed.syntax_error);
@@ -1879,6 +1880,36 @@ mod tests {
         assert_eq!(
             super::parse("", &previous).config.clipboard.read,
             ClipboardRead::Ask
+        );
+    }
+
+    #[test]
+    fn clipboard_write_takes_each_name() {
+        assert_eq!(parse("").config.clipboard.write, ClipboardWrite::Allow);
+        for write in ClipboardWrite::ALL {
+            let parsed = parse(&format!("[clipboard]\nwrite = '{}'\n", write.name()));
+            assert_eq!(parsed.warnings, Vec::<String>::new());
+            assert_eq!(parsed.config.clipboard.write, write);
+        }
+    }
+
+    #[test]
+    fn an_invalid_clipboard_write_warns_and_keeps_the_previous_value() {
+        let previous = customized();
+        let parsed = super::parse("[clipboard]\nwrite = 'never'\n", &previous);
+        assert_eq!(parsed.config.clipboard.write, ClipboardWrite::Deny);
+        assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
+        assert!(
+            parsed.warnings[0]
+                .message
+                .starts_with("ignoring clipboard.write:"),
+            "{:?}",
+            parsed.warnings
+        );
+        // 消したら既定に戻す。
+        assert_eq!(
+            super::parse("", &previous).config.clipboard.write,
+            ClipboardWrite::Allow
         );
     }
 

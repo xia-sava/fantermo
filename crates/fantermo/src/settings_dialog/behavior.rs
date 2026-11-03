@@ -1,6 +1,6 @@
-//! 設定ダイアログの動作のページ。貼り付け前の確認、大きなテキストの確認、クリップボードの読み取り。
+//! 設定ダイアログの動作のページ。貼り付け前の確認、大きなテキストの確認、クリップボードの読み取りと書き込み。
 
-use fantermo_core::config::{self, ClipboardRead, Config, PasteConfirm};
+use fantermo_core::config::{self, ClipboardRead, ClipboardWrite, Config, PasteConfirm};
 use windows::Win32::{
     Foundation::HWND,
     UI::WindowsAndMessaging::{BN_CLICKED, EN_CHANGE},
@@ -22,6 +22,8 @@ pub(super) const ID_RANGE: std::ops::RangeInclusive<i32> = 300..=329;
 const ID_PASTE_CONFIRM: i32 = 300;
 /// `clipboard.read` のラジオボタン。[`ClipboardRead::ALL`] の順に ID が続く。
 const ID_CLIPBOARD_READ: i32 = 310;
+/// `clipboard.write` のラジオボタン。[`ClipboardWrite::ALL`] の順に ID が続く。
+const ID_CLIPBOARD_WRITE: i32 = 315;
 const ID_PASTE_CONFIRM_SIZE: i32 = 320;
 const ID_PASTE_CONFIRM_SIZE_SPIN: i32 = 321;
 
@@ -36,6 +38,9 @@ const PASTE_CONFIRM_LABELS: [&str; PasteConfirm::ALL.len()] = [
 const CLIPBOARD_READ_LABELS: [&str; ClipboardRead::ALL.len()] =
     ["確認する", "常に許可する", "常に拒否する"];
 
+/// `clipboard.write` の選択肢の表示。[`ClipboardWrite::ALL`] の順。
+const CLIPBOARD_WRITE_LABELS: [&str; ClipboardWrite::ALL.len()] = ["許可する", "拒否する"];
+
 /// `paste.confirm_size` の入力欄。
 pub(super) const PASTE_CONFIRM_SIZE_KIND: NumberKind<u32> = NumberKind {
     parse: |text| config::parse_input("paste.confirm_size", text),
@@ -45,12 +50,13 @@ pub(super) const PASTE_CONFIRM_SIZE_KIND: NumberKind<u32> = NumberKind {
     message: "大きなテキストの確認の大きさは、0 から 1048576 までの整数を入力してください。",
 };
 
-/// 動作のページ。貼り付け前の確認、大きなテキストの確認、クリップボードの読み取り。
+/// 動作のページ。貼り付け前の確認、大きなテキストの確認、クリップボードの読み取りと書き込み。
 pub(super) struct BehaviorPage {
     controls: Vec<HWND>,
     paste_confirm: RadioGroup<PasteConfirm>,
     paste_confirm_size: NumberField<u32>,
     clipboard_read: RadioGroup<ClipboardRead>,
+    clipboard_write: RadioGroup<ClipboardWrite>,
 }
 
 impl BehaviorPage {
@@ -119,12 +125,38 @@ impl BehaviorPage {
         )?;
         controls.extend_from_slice(clipboard_read.buttons());
         controls.push(b.label(
-            "アプリがクリップボードの内容を読み取ろうとしたとき（OSC 52）。アプリからの書き込みは、この設定に関係なく受け付ける。",
+            "アプリがクリップボードの内容を読み取ろうとしたとき（OSC 52）。",
             [
                 PAGE_LEFT,
                 clipboard_row + 3 * ROW_HEIGHT + MARGIN,
                 PAGE_WIDTH,
-                2 * ROW_HEIGHT,
+                ROW_HEIGHT,
+            ],
+        )?);
+        let write_row = clipboard_row + 4 * ROW_HEIGHT + 2 * MARGIN;
+        controls.push(b.label("クリップボードの書き込み(&W):", label_rect(write_row))?);
+        let clipboard_write = RadioGroup::create(
+            b,
+            ID_CLIPBOARD_WRITE,
+            &ClipboardWrite::ALL,
+            &CLIPBOARD_WRITE_LABELS,
+            |index| {
+                [
+                    CONTROL_LEFT,
+                    write_row + index * ROW_HEIGHT,
+                    CONTROL_WIDTH,
+                    ROW_HEIGHT,
+                ]
+            },
+        )?;
+        controls.extend_from_slice(clipboard_write.buttons());
+        controls.push(b.label(
+            "アプリがクリップボードへ書き込もうとしたとき（OSC 52 など）。",
+            [
+                PAGE_LEFT,
+                write_row + 2 * ROW_HEIGHT + MARGIN,
+                PAGE_WIDTH,
+                ROW_HEIGHT,
             ],
         )?);
         Ok(Self {
@@ -132,6 +164,7 @@ impl BehaviorPage {
             paste_confirm,
             paste_confirm_size,
             clipboard_read,
+            clipboard_write,
         })
     }
 }
@@ -149,6 +182,7 @@ impl Page for BehaviorPage {
         self.paste_confirm.fill(config.paste.confirm);
         self.paste_confirm_size.fill(config.paste.confirm_size);
         self.clipboard_read.fill(config.clipboard.read);
+        self.clipboard_write.fill(config.clipboard.write);
     }
 
     fn read(
@@ -163,13 +197,20 @@ impl Page for BehaviorPage {
         if let Some(read) = self.clipboard_read.read() {
             config.clipboard.read = read;
         }
+        if let Some(write) = self.clipboard_write.read() {
+            config.clipboard.write = write;
+        }
         Ok(())
     }
 
     fn on_command(&self, ctx: &dyn DialogContext, id: i32, code: u32) -> bool {
         match (id, code) {
             // ラジオボタンは、押したらすぐ反映する。
-            (id, BN_CLICKED) if self.paste_confirm.owns(id) || self.clipboard_read.owns(id) => {
+            (id, BN_CLICKED)
+                if self.paste_confirm.owns(id)
+                    || self.clipboard_read.owns(id)
+                    || self.clipboard_write.owns(id) =>
+            {
                 ctx.preview();
             }
             // 数の入力欄は、打ち終わるのを待って反映する。
@@ -190,11 +231,14 @@ mod tests {
     fn the_ids_are_within_the_range_of_the_page() {
         let last_paste_confirm = ID_PASTE_CONFIRM + PasteConfirm::ALL.len() as i32 - 1;
         let last_clipboard_read = ID_CLIPBOARD_READ + ClipboardRead::ALL.len() as i32 - 1;
+        let last_clipboard_write = ID_CLIPBOARD_WRITE + ClipboardWrite::ALL.len() as i32 - 1;
         for id in [
             ID_PASTE_CONFIRM,
             last_paste_confirm,
             ID_CLIPBOARD_READ,
             last_clipboard_read,
+            ID_CLIPBOARD_WRITE,
+            last_clipboard_write,
             ID_PASTE_CONFIRM_SIZE,
             ID_PASTE_CONFIRM_SIZE_SPIN,
         ] {

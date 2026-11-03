@@ -139,8 +139,11 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 [clipboard]
 # アプリがクリップボードの内容を読み取ろうとしたとき（OSC 52）。
 # "ask" は確認のダイアログを出す、"allow" は確認せずに渡す、"deny" は何も返さない。
-# アプリからクリップボードへの書き込みは、この設定に関係なく受け付ける。
 # read = "ask"
+
+# アプリがクリップボードへ書き込もうとしたとき（OSC 52 など）。
+# "allow" は書き込む、"deny" は書き込まない。
+# write = "allow"
 
 [scroll_bar]
 # 端末の右のスクロールバーの幅（96 DPI でのピクセル。画面の拡大率に合わせて広げる）。4 から 64 まで。
@@ -523,6 +526,39 @@ impl PasteConfirm {
 pub struct ClipboardConfig {
     /// アプリがクリップボードの内容を読み取ろうとしたとき。
     pub read: ClipboardRead,
+    /// アプリがクリップボードへ書き込もうとしたとき。
+    pub write: ClipboardWrite,
+}
+
+/// アプリがクリップボードへ書き込もうとしたときにどうするか（`clipboard.write`）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ClipboardWrite {
+    /// 書き込む。
+    #[default]
+    Allow,
+    /// 書き込まない。
+    Deny,
+}
+
+impl ClipboardWrite {
+    /// 値と、設定ファイルに書く名前。設定ファイルの説明と同じ順。
+    const NAMES: [(ClipboardWrite, &'static str); 2] = [
+        (ClipboardWrite::Allow, "allow"),
+        (ClipboardWrite::Deny, "deny"),
+    ];
+
+    /// 書ける値のすべて。設定ファイルの説明と同じ順。
+    pub const ALL: [ClipboardWrite; 2] = named_values(&Self::NAMES);
+
+    /// 設定ファイルに書く名前。
+    pub fn name(self) -> &'static str {
+        name_of(&Self::NAMES, self)
+    }
+
+    /// 設定ファイルに書く名前 `name` の値。
+    pub fn from_name(name: &str) -> Option<Self> {
+        value_named(&Self::NAMES, name)
+    }
 }
 
 /// アプリがクリップボードの内容を読み取ろうとしたときにどうするか（`clipboard.read`）。
@@ -740,6 +776,17 @@ pub const SCALARS: &[Scalar] = &[
             get: |config| config.clipboard.read.name(),
             set: |config, name| {
                 set_named(&mut config.clipboard.read, ClipboardRead::from_name(name))
+            },
+        },
+    },
+    Scalar {
+        table: "clipboard",
+        key: "write",
+        kind: ScalarKind::Name {
+            names: &names_of(&ClipboardWrite::NAMES),
+            get: |config| config.clipboard.write.name(),
+            set: |config, name| {
+                set_named(&mut config.clipboard.write, ClipboardWrite::from_name(name))
             },
         },
     },

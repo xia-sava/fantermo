@@ -2,7 +2,7 @@
 
 use fantermo_core::{
     clipboard::{ReadDecision, ReadRequest, WriteRequest, read_decision},
-    config::{ClipboardRead, PasteConfig, PasteConfirm},
+    config::{ClipboardRead, ClipboardWrite, PasteConfig, PasteConfirm},
     vt::{self, PasteOutcome},
 };
 use windows::Win32::{Foundation::WPARAM, UI::Input::KeyboardAndMouse::IsWindowEnabled};
@@ -89,6 +89,10 @@ impl App {
     /// `sessions` の `index` の端末のアプリからの、クリップボードの書き込みと読み取りの依頼を処理する。
     pub(super) fn on_clipboard_requests(&mut self, index: usize) {
         for write in self.sessions[index].vt.take_clipboard_writes() {
+            if self.config.clipboard.write == ClipboardWrite::Deny {
+                tracing::debug!("refused a clipboard write");
+                continue;
+            }
             let result = match write {
                 WriteRequest::Set(text) => clipboard::set_text(self.hwnd, &text),
                 WriteRequest::Clear => clipboard::clear(self.hwnd),

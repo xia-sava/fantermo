@@ -36,8 +36,8 @@ use common::{
 };
 use fantermo_core::{
     config::{
-        self, BackendKind, BackgroundFit, BackgroundImage, ClipboardRead, ColorScheme, Config,
-        PasteConfirm, WideGlyph,
+        self, BackendKind, BackgroundFit, BackgroundImage, ClipboardRead, ClipboardWrite,
+        ColorScheme, Config, PasteConfirm, WideGlyph,
     },
     frame::Rgb,
     keymap::{Action, KeyCombo, Keymap},
@@ -1212,6 +1212,30 @@ fn cygwin_clipboard_write_from_an_application_reaches_the_clipboard() {
         r"printf '\033]52;c;{}\007'",
         common::base64(CLIPBOARD_TEXT.as_bytes())
     ));
+    server.wait_clipboard(CLIPBOARD_TEXT);
+}
+
+#[test]
+fn cygwin_clipboard_write_denied_by_the_setting_leaves_the_clipboard() {
+    let Some(config) = cygwin_config("cygwin_clipboard_write_denied") else {
+        return;
+    };
+    let config = format!("[clipboard]\nread = \"allow\"\nwrite = \"deny\"\n{config}");
+    let server = Server::start(&config, &[]);
+    wait_sh_ready(&server);
+    server.set_clipboard(CLIPBOARD_TEXT);
+    let written = format!("{CLIPBOARD_TEXT}-written");
+    server.send_line(&format!(
+        r"printf '\033]52;c;{}\007'",
+        common::base64(written.as_bytes())
+    ));
+    // 書き込みのあとの読み取りの答えが元の内容なら、書き込みは処理されたうえで捨てられている。
+    start_clipboard_read(&server, "after-write");
+    let answer = finish_clipboard_read(&server, "after-write");
+    assert!(
+        answer.contains(&clipboard_answer(CLIPBOARD_TEXT)),
+        "{answer}"
+    );
     server.wait_clipboard(CLIPBOARD_TEXT);
 }
 
@@ -4446,6 +4470,7 @@ const ID_SCROLL_BAR_WIDTH_SPIN: i32 = 221;
 const ID_PADDING: i32 = 230;
 const ID_PASTE_CONFIRM: i32 = 300;
 const ID_CLIPBOARD_READ: i32 = 310;
+const ID_CLIPBOARD_WRITE: i32 = 315;
 const ID_PASTE_CONFIRM_SIZE: i32 = 320;
 const ID_PASTE_CONFIRM_SIZE_SPIN: i32 = 321;
 const ID_PROFILES: i32 = 400;
@@ -4727,6 +4752,7 @@ confirm_size = 16
 
 [clipboard]
 read = "deny"
+write = "deny"
 
 [scroll_bar]
 width = 20
@@ -4837,6 +4863,7 @@ fn every_settings_page_opens_and_shows_the_values_of_the_file() {
     // 動作
     assert!(radio_checked(&dialog, ID_PASTE_CONFIRM + 1), "{dialog:#}");
     assert!(radio_checked(&dialog, ID_CLIPBOARD_READ + 2), "{dialog:#}");
+    assert!(radio_checked(&dialog, ID_CLIPBOARD_WRITE + 1), "{dialog:#}");
     assert_eq!(control(&dialog, ID_PASTE_CONFIRM_SIZE)["text"], "16");
 
     // プロファイル。開くと既定のプロファイルを選んでいる。
@@ -4909,7 +4936,12 @@ fn every_settings_page_opens_and_shows_the_values_of_the_file() {
         ),
         (
             PAGE_BEHAVIOR,
-            &[ID_PASTE_CONFIRM, ID_CLIPBOARD_READ, ID_PASTE_CONFIRM_SIZE],
+            &[
+                ID_PASTE_CONFIRM,
+                ID_CLIPBOARD_READ,
+                ID_CLIPBOARD_WRITE,
+                ID_PASTE_CONFIRM_SIZE,
+            ],
         ),
         (
             PAGE_PROFILES,
@@ -5429,12 +5461,14 @@ fn the_behavior_page_changes_how_pastes_are_confirmed() {
     assert!(radio_checked(&dialog, ID_PASTE_CONFIRM + 1));
     assert!(!radio_checked(&dialog, ID_PASTE_CONFIRM + 2));
     choose_radio(&server, ID_CLIPBOARD_READ + 1);
+    choose_radio(&server, ID_CLIPBOARD_WRITE + 1);
     spin(&server, ID_PASTE_CONFIRM_SIZE_SPIN, 1);
     press_ok(&server);
     let saved = saved_config(&server);
     assert_eq!(saved.paste.confirm, PasteConfirm::Multiline);
     assert_eq!(saved.paste.confirm_size, 9);
     assert_eq!(saved.clipboard.read, ClipboardRead::Allow);
+    assert_eq!(saved.clipboard.write, ClipboardWrite::Deny);
 
     server.paste("rem third\r\nrem fourth\r\n");
     wait_dialog_of_class(&server, TEXT_DIALOG_CLASS);
