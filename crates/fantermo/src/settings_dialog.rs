@@ -159,7 +159,7 @@ const PROFILE_LIST_HEIGHT: i32 = 98;
 /// プロファイルのページの下の説明の文の高さ。
 const PROFILE_NOTE_HEIGHT: i32 = 3 * ROW_HEIGHT;
 /// プロファイルの接続方式の選択肢。[`BackendKind::ALL`] の順。
-const PROFILE_BACKEND_LABELS: [&str; 3] = [
+const PROFILE_BACKEND_LABELS: [&str; BackendKind::ALL.len()] = [
     "ConPTY（Windows の疑似コンソール）",
     "Cygwin（ブリッジ）",
     "WSL（ブリッジ）",
@@ -332,7 +332,7 @@ const CUSTOM_OPACITY_WIDTH: i32 = 56;
 const OPACITY_STEP: f32 = 0.05;
 
 /// `background.fit` の選択肢の表示。[`BackgroundFit::ALL`] の順。Windows の壁紙の設定と同じ語。
-const BACKGROUND_FIT_LABELS: [&str; 5] = [
+const BACKGROUND_FIT_LABELS: [&str; BackgroundFit::ALL.len()] = [
     "ページ幅に合わせる",
     "画面のサイズに合わせる",
     "拡大して表示",
@@ -405,20 +405,20 @@ const CHOOSE_WIDTH: i32 = 72;
 const COLOR_RESET_WIDTH: i32 = 88;
 
 /// 色の表の見出し。[`ColorTable::ALL`] の順。
-const COLOR_TABLE_LABELS: [&str; 3] = ["端末", "タブバー", "スクロールバー"];
+const COLOR_TABLE_LABELS: [&str; ColorTable::ALL.len()] = ["端末", "タブバー", "スクロールバー"];
 
 /// `colors.scheme` のラジオボタン。[`ColorScheme::ALL`] の順に ID が続く。
 const ID_COLOR_SCHEME: i32 = 590;
 /// `colors.scheme` の選択肢の表示。[`ColorScheme::ALL`] の順。
-const COLOR_SCHEME_LABELS: [&str; 2] = ["ダーク", "ライト"];
+const COLOR_SCHEME_LABELS: [&str; ColorScheme::ALL.len()] = ["ダーク", "ライト"];
 /// 配色のラジオボタン一つの幅。
 const COLOR_SCHEME_WIDTH: i32 = 96;
 
 /// 端末の色の表示。[`config::TERMINAL_COLOR_KEYS`] の順。
-const TERMINAL_COLOR_LABELS: [&str; 2] = ["背景色", "文字色"];
+const TERMINAL_COLOR_LABELS: [&str; config::TERMINAL_COLOR_KEYS.len()] = ["背景色", "文字色"];
 
 /// タブバーの色の表示。[`config::TAB_BAR_COLOR_KEYS`] の順。
-const TAB_BAR_COLOR_LABELS: [&str; 9] = [
+const TAB_BAR_COLOR_LABELS: [&str; config::TAB_BAR_COLOR_KEYS.len()] = [
     "背景",
     "表示しているタブ",
     "表示しているタブの縁",
@@ -431,7 +431,7 @@ const TAB_BAR_COLOR_LABELS: [&str; 9] = [
 ];
 
 /// スクロールバーの色の表示。[`config::SCROLL_BAR_COLOR_KEYS`] の順。
-const SCROLL_BAR_COLOR_LABELS: [&str; 4] = [
+const SCROLL_BAR_COLOR_LABELS: [&str; config::SCROLL_BAR_COLOR_KEYS.len()] = [
     "トラック",
     "つまみ",
     "マウスを載せているつまみ",
@@ -500,20 +500,21 @@ const WIDE_GLYPH_LABELS: [&str; WideGlyph::ALL.len()] = [
 ];
 
 /// `paste.confirm` の選択肢の表示。[`PasteConfirm::ALL`] の順。
-const PASTE_CONFIRM_LABELS: [&str; 3] = [
+const PASTE_CONFIRM_LABELS: [&str; PasteConfirm::ALL.len()] = [
     "コマンドとして実行される可能性があるとき",
     "改行を含むとき",
     "確認しない",
 ];
 
 /// `clipboard.read` の選択肢の表示。[`ClipboardRead::ALL`] の順。
-const CLIPBOARD_READ_LABELS: [&str; 3] = ["確認する", "常に許可する", "常に拒否する"];
+const CLIPBOARD_READ_LABELS: [&str; ClipboardRead::ALL.len()] =
+    ["確認する", "常に許可する", "常に拒否する"];
 
 /// キーの割り当ての一覧の、組み合わせの列の位置（ダイアログの単位）。
 const KEY_COLUMN_TAB_STOP: i32 = 110;
 
 /// キーの割り当ての動作の表示。[`Action::ALL`] の順。
-const ACTION_LABELS: [&str; 7] = [
+const ACTION_LABELS: [&str; Action::ALL.len()] = [
     "コピー",
     "貼り付け",
     "コンテキストメニュー",
@@ -725,10 +726,10 @@ struct Controls {
     scroll_bar_width_spin: HWND,
     padding: HWND,
     padding_spin: HWND,
-    paste_confirm: [HWND; 3],
+    paste_confirm: [HWND; PasteConfirm::ALL.len()],
     paste_confirm_size: HWND,
     paste_confirm_size_spin: HWND,
-    clipboard_read: [HWND; 3],
+    clipboard_read: [HWND; ClipboardRead::ALL.len()],
     /// プロファイルの一覧。
     profiles_list: HWND,
     /// 削除・既定にするのボタン。
@@ -1400,7 +1401,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         ID_LABEL,
         Some(rect),
     )?);
-    let mut paste_confirm = [HWND::default(); 3];
+    let mut paste_confirm = [HWND::default(); PasteConfirm::ALL.len()];
     for (index, text) in PASTE_CONFIRM_LABELS.iter().enumerate() {
         let top = row(0) + index as i32 * ROW_HEIGHT;
         paste_confirm[index] = child(
@@ -1485,7 +1486,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         ID_LABEL,
         Some(rect),
     )?);
-    let mut clipboard_read = [HWND::default(); 3];
+    let mut clipboard_read = [HWND::default(); ClipboardRead::ALL.len()];
     for (index, text) in CLIPBOARD_READ_LABELS.iter().enumerate() {
         let top = clipboard_row + index as i32 * ROW_HEIGHT;
         clipboard_read[index] = child(
@@ -3600,8 +3601,12 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 (id, BN_CLICKED)
                     if (ID_WIDE_GLYPH..ID_WIDE_GLYPH + WideGlyph::ALL.len() as i32)
                         .contains(&id)
-                        || (ID_PASTE_CONFIRM..ID_PASTE_CONFIRM + 3).contains(&id)
-                        || (ID_CLIPBOARD_READ..ID_CLIPBOARD_READ + 3).contains(&id) =>
+                        || (ID_PASTE_CONFIRM
+                            ..ID_PASTE_CONFIRM + PasteConfirm::ALL.len() as i32)
+                            .contains(&id)
+                        || (ID_CLIPBOARD_READ
+                            ..ID_CLIPBOARD_READ + ClipboardRead::ALL.len() as i32)
+                            .contains(&id) =>
                 {
                     state.preview();
                 }
