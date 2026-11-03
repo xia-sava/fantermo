@@ -446,13 +446,32 @@ fn color_labels(table: ColorTable) -> &'static [&'static str] {
     }
 }
 
-/// 色のページの色の並び。テーブルと、テーブルの中の位置。
-fn color_items() -> Vec<(ColorTable, usize)> {
-    ColorTable::ALL
-        .iter()
-        .flat_map(|&table| (0..table.keys().len()).map(move |index| (table, index)))
-        .collect()
-}
+/// 色のページの色の数。
+const COLOR_ITEM_COUNT: usize = config::TERMINAL_COLOR_KEYS.len()
+    + config::TAB_BAR_COLOR_KEYS.len()
+    + config::SCROLL_BAR_COLOR_KEYS.len();
+
+/// 色のページの色の並び。テーブルと、テーブルの中の位置。テーブルは [`ColorTable::ALL`] の順。
+const COLOR_ITEMS: [(ColorTable, usize); COLOR_ITEM_COUNT] = {
+    let tables = [
+        (ColorTable::Terminal, config::TERMINAL_COLOR_KEYS.len()),
+        (ColorTable::TabBar, config::TAB_BAR_COLOR_KEYS.len()),
+        (ColorTable::ScrollBar, config::SCROLL_BAR_COLOR_KEYS.len()),
+    ];
+    let mut items = [(ColorTable::Terminal, 0); COLOR_ITEM_COUNT];
+    let mut item = 0;
+    let mut table = 0;
+    while table < tables.len() {
+        let mut index = 0;
+        while index < tables[table].1 {
+            items[item] = (tables[table].0, index);
+            item += 1;
+            index += 1;
+        }
+        table += 1;
+    }
+    items
+};
 
 /// 色を Win32 の `COLORREF`（`0x00BBGGRR`）にする。
 fn colorref(color: Rgb) -> COLORREF {
@@ -640,7 +659,7 @@ pub fn run(owner: HWND, request: Request, host: &mut dyn Host) {
         key_rows: RefCell::new(Vec::new()),
         colors: RefCell::new(current.colors.clone()),
         tab_bar_defaults: tab_bar_colors,
-        swatch_brushes: RefCell::new(vec![HBRUSH::default(); color_items().len()]),
+        swatch_brushes: RefCell::new(vec![HBRUSH::default(); COLOR_ITEMS.len()]),
         custom_colors: Cell::new([COLORREF(0); CUSTOM_COLORS]),
         font: Cell::new(HFONT::default()),
         dpi: Cell::new(BASE_DPI),
@@ -771,7 +790,7 @@ struct Controls {
     keys_list: HWND,
     /// 追加・変更・外す・既定に戻すのボタン。
     key_buttons: [HWND; 4],
-    /// 色のページの行。[`color_items`] の順。
+    /// 色のページの行。[`COLOR_ITEMS`] の順。
     color_rows: Vec<ColorRow>,
     error: HWND,
     /// すべてのコントロールと、96 DPI のときの矩形。上下の矢印のボタンは入れない（相手の入力欄に
@@ -812,7 +831,7 @@ struct State<'a> {
     colors: RefCell<ColorsConfig>,
     /// 書いていないタブバーの色として見せる色。
     tab_bar_defaults: [Rgb; config::TAB_BAR_COLOR_KEYS.len()],
-    /// 色の見本を塗るブラシ。[`color_items`] の順。
+    /// 色の見本を塗るブラシ。[`COLOR_ITEMS`] の順。
     swatch_brushes: RefCell<Vec<HBRUSH>>,
     /// 色を選ぶダイアログの「作成した色」。ダイアログを開いている間は覚えておく。
     custom_colors: Cell<[COLORREF; CUSTOM_COLORS]>,
@@ -2157,7 +2176,7 @@ impl State<'_> {
 
     /// 色のページの `item` 番目の色の、見本・値・既定に戻すボタンを、編集中の色に合わせる。
     fn refresh_color(&self, item: usize) {
-        let (table, index) = color_items()[item];
+        let (table, index) = COLOR_ITEMS[item];
         let written = self.colors.borrow().table(table)[index];
         let color = written.unwrap_or(self.default_color(table, index));
         let row = &self.controls.color_rows[item];
@@ -2185,7 +2204,7 @@ impl State<'_> {
     fn on_color_button(&self, id: i32) {
         let offset = id - ID_COLORS;
         let item = (offset / COLOR_ID_STRIDE) as usize;
-        let Some(&(table, index)) = color_items().get(item) else {
+        let Some(&(table, index)) = COLOR_ITEMS.get(item) else {
             return;
         };
         let new = match offset % COLOR_ID_STRIDE {
@@ -3933,7 +3952,12 @@ mod tests {
         }
         assert_eq!(COLOR_TABLE_LABELS.len(), ColorTable::ALL.len());
         assert_eq!(COLOR_SCHEME_LABELS.len(), ColorScheme::ALL.len());
-        let items = color_items();
+        let items = COLOR_ITEMS;
+        let expected: Vec<(ColorTable, usize)> = ColorTable::ALL
+            .iter()
+            .flat_map(|&table| (0..table.keys().len()).map(move |index| (table, index)))
+            .collect();
+        assert_eq!(items.to_vec(), expected);
         assert_eq!(items.len(), 15);
         assert_eq!(items[0], (ColorTable::Terminal, 0));
         assert_eq!(items[11], (ColorTable::ScrollBar, 0));
