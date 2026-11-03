@@ -5,10 +5,15 @@ use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
 use windows::{
     Win32::{
         System::Com::CoTaskMemFree,
-        UI::Shell::{KF_FLAG_DEFAULT, SHGetKnownFolderPath},
+        UI::Shell::{FOLDERID_System, KF_FLAG_DEFAULT, SHGetKnownFolderPath},
     },
     core::GUID,
 };
+
+/// システムのフォルダ（`C:\Windows\System32`）。求められなければ `None`。
+pub fn system() -> Option<PathBuf> {
+    path(&FOLDERID_System)
+}
 
 /// いまの利用者の、`id` が指す既知のフォルダ。求められなければ `None`。
 pub fn path(id: &GUID) -> Option<PathBuf> {
@@ -25,4 +30,16 @@ pub fn path(id: &GUID) -> Option<PathBuf> {
     // SAFETY: SHGetKnownFolderPath が CoTaskMemAlloc で確保した文字列で、ほかからは使わない。
     unsafe { CoTaskMemFree(Some(path.0 as *const _)) };
     Some(PathBuf::from(wide))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_system_folder_is_an_existing_absolute_path() {
+        let system = system().unwrap();
+        assert!(system.is_absolute());
+        assert!(system.join("notepad.exe").is_file());
+    }
 }

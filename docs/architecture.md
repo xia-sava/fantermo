@@ -197,7 +197,7 @@ ConPTY は起動してすぐ mode 9001（win32-input-mode）を求めますが�
 fantermo は `std::process::Command` でブリッジを起動し（`CREATE_NO_WINDOW`，標準入出力と標準エラー出力はパイプ），開始の通知とリサイズを続けて送ります．書き込みは書くためのスレッドに任せるので，ブリッジが標準入力を読むのを止めていてもウィンドウのスレッドは止まりません．データは 1 MiB ずつに分けます．標準エラー出力はログへ流します．
 
 - **Cygwin**: `<cygwin_root>\bin` を PATH の先頭に置き，`HOME` を消し，作業フォルダを `--cwd` と `CHERE_INVOKING=1` で渡します．利用者のコマンドラインは引数に入れず，環境変数 `FANTERMO_BRIDGE_COMMAND` に入れて `/bin/sh -c` で実行させます（理由は `COMMAND_VARIABLE` のコメント）．`cygwin_root` を書かなければ `config::find_cygwin_root` で探します．
-- **WSL**: `wsl.exe [-d <distribution>] --cd <作業フォルダ> --exec /mnt/<ドライブ>/…/fantermo-bridge [-- /bin/sh -c <command>]`．ブリッジの Linux のパスは自前で `/mnt/<ドライブ>/…` に直します（`wslpath` を呼ぶと WSL をもう一度起動して待つため）．環境変数は `WSLENV` に名前を足して届けます．
+- **WSL**: `<System32>\wsl.exe [-d <distribution>] --cd <作業フォルダ> --exec /mnt/<ドライブ>/…/fantermo-bridge [-- /bin/sh -c <command>]`．ブリッジの Linux のパスは自前で `/mnt/<ドライブ>/…` に直します（`wslpath` を呼ぶと WSL をもう一度起動して待つため）．`wsl.exe` は名前だけで探さず，`known_folder::system` が返すシステムのフォルダ（`System32`）の絶対パスで起動します．環境変数は `WSLENV` に名前を足して届けます．
 - **共通**: 一つのコマンドなら `exec` を前に付けます（`shell_command`）．シェルを親として残さず，Ctrl+C のあとの終了コードがアプリのものになるようにするためです．`command` が空なら相手のログインシェルを起動します．
 - **ブリッジの探し方**: fantermo の exe と同じフォルダ，なければ `<exe のフォルダ>\..\bridge\<ターゲット>\<debug|release>\`（`target/bridge/…`）．
 - **起動できないとき**: ブリッジや Cygwin が見つからない，起動できない，エラーで終わったときは，理由を `fantermo: …` の赤い文字で端末に出し，タブは開いたままにします．

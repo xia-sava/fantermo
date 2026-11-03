@@ -166,18 +166,22 @@ mod launcher {
     use std::{
         io,
         os::windows::process::CommandExt,
-        path::{Path, PathBuf},
+        path::Path,
         process::{Command, Stdio},
     };
 
     use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
-    /// `%SystemRoot%` からの PowerShell の場所。PATH から探さない。
-    const POWERSHELL_UNDER_SYSTEM_ROOT: &str = r"System32\WindowsPowerShell\v1.0\powershell.exe";
+    use crate::known_folder;
+
+    /// システムのフォルダ（`System32`）からの PowerShell の場所。PATH から探さない。
+    const POWERSHELL_UNDER_SYSTEM: &str = r"WindowsPowerShell\v1.0\powershell.exe";
 
     /// スクリプト `path` を、ウィンドウを出さない PowerShell で起動する。終わるのは待たない。
     pub fn launch(path: &Path) -> io::Result<()> {
-        let powershell = system_root()?.join(POWERSHELL_UNDER_SYSTEM_ROOT);
+        let powershell = known_folder::system()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the System folder is unknown"))?
+            .join(POWERSHELL_UNDER_SYSTEM);
         Command::new(powershell)
             .args([
                 "-NoProfile",
@@ -195,14 +199,6 @@ mod launcher {
             .creation_flags(CREATE_NO_WINDOW.0)
             .spawn()
             .map(drop)
-    }
-
-    /// `%SystemRoot%`。
-    fn system_root() -> io::Result<PathBuf> {
-        std::env::var_os("SystemRoot")
-            .map(PathBuf::from)
-            .filter(|root| root.is_absolute())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "SystemRoot is not set"))
     }
 }
 

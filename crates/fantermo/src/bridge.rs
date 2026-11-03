@@ -39,7 +39,10 @@ use windows::Win32::{
     },
 };
 
-use crate::output_budget::{MAX_PENDING_OUTPUT, OutputBudget};
+use crate::{
+    known_folder,
+    output_budget::{MAX_PENDING_OUTPUT, OutputBudget},
+};
 
 /// Cygwin 向けのブリッジの実行ファイルの名前と、開発中にビルドしたものを探すときのターゲット。
 const CYGWIN_BRIDGE: (&str, &str) = ("fantermo-bridge.exe", "x86_64-pc-cygwin");
@@ -57,7 +60,7 @@ const CYGWIN_COMMAND_SCRIPT: &str =
 /// Cygwin のログインシェルの設定に、作業フォルダのまま始めるよう伝える環境変数（chere と同じ）。
 const CHERE_INVOKING: &str = "CHERE_INVOKING";
 
-/// WSL のブリッジの起動に使うプログラム。
+/// WSL のブリッジの起動に使うプログラム。システムのフォルダの中にある。
 const WSL_EXE: &str = "wsl.exe";
 
 /// 破棄したあと、ブリッジが自分で終わるのを待つ時間。過ぎたら止める。
@@ -360,7 +363,11 @@ fn wsl_command(
             exe.display()
         )
     })?;
-    let mut command = Command::new(WSL_EXE);
+    // 名前だけで渡すと作業フォルダから探されるので、システムのフォルダの中のものを場所で指す。
+    let wsl = known_folder::system()
+        .ok_or("システムのフォルダの場所が分かりません。")?
+        .join(WSL_EXE);
+    let mut command = Command::new(wsl);
     if let Some(distribution) = distribution {
         command.arg("-d").arg(distribution);
     }

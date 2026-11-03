@@ -12,10 +12,7 @@ use windows::{
             COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
         },
         UI::{
-            Shell::{
-                FOLDERID_System, FOLDERID_Windows, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW,
-                ShellExecuteExW,
-            },
+            Shell::{FOLDERID_Windows, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW},
             WindowsAndMessaging::SW_SHOWNORMAL,
         },
     },
@@ -57,7 +54,7 @@ pub fn open_settings(path: PathBuf) {
         if let Err(e) = shell_execute(&path, None) {
             tracing::info!("opening the settings file with Notepad: {e}");
             // Windows のパスに `"` は入らないので、引用符で囲めば一つの引数になる。
-            let notepad = known_folder::path(&FOLDERID_System)
+            let notepad = known_folder::system()
                 .ok_or("the System folder is unknown")?
                 .join(NOTEPAD);
             shell_execute(&notepad.to_string_lossy(), Some(&format!("\"{path}\"")))?;
