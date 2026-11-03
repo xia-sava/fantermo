@@ -4,24 +4,21 @@
 
 use std::{cell::RefCell, collections::HashMap};
 
-use windows::{
-    Win32::{
-        Graphics::DirectWrite::{
-            DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
-            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP,
-            IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
-        },
-        Graphics::Gdi::LOGFONTW,
-        UI::{
-            HiDpi::SystemParametersInfoForDpi, WindowsAndMessaging::NONCLIENTMETRICSW,
-            WindowsAndMessaging::SPI_GETNONCLIENTMETRICS,
-        },
+use windows::Win32::{
+    Graphics::DirectWrite::{
+        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_NORMAL,
+        DWRITE_TEXT_METRICS, IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
     },
-    core::{HSTRING, w},
+    Graphics::Gdi::LOGFONTW,
+    UI::{
+        HiDpi::SystemParametersInfoForDpi, WindowsAndMessaging::NONCLIENTMETRICSW,
+        WindowsAndMessaging::SPI_GETNONCLIENTMETRICS,
+    },
 };
 
 use crate::{
     atlas::{self, TextExtent},
+    font::{self, POINTS_PER_INCH},
     tab_bar,
 };
 
@@ -33,12 +30,6 @@ const FALLBACK_SIZE_PT: f32 = 9.0;
 
 /// メッセージのフォントの大きさに対する、タブのタイトルの大きさの割合。
 const TITLE_SIZE_RATIO: f32 = 0.85;
-
-/// 1 インチあたりのポイント数。
-const POINTS_PER_INCH: f32 = 72.0;
-
-/// 文字を組むときのロケール。和文の字形を選ばせる。
-const LOCALE: windows::core::PCWSTR = w!("ja-jp");
 
 /// 行の高さを測るときに組む文字。
 const LINE_HEIGHT_REFERENCE: &str = "Mg";
@@ -76,7 +67,7 @@ impl UiFont {
             }
         };
         let size_px = message_size_px * TITLE_SIZE_RATIO;
-        let format = text_format(dwrite, &family, size_px, weight)?;
+        let format = font::text_format(dwrite, &family, size_px, weight, DWRITE_FONT_STYLE_NORMAL)?;
         let height_px = line_height(dwrite, &format)?;
         Ok(Self {
             dwrite: dwrite.clone(),
@@ -166,29 +157,6 @@ fn message_font(dpi: u32) -> windows::core::Result<(String, f32, DWRITE_FONT_WEI
         DWRITE_FONT_WEIGHT_NORMAL
     };
     Ok((family, size_px, weight))
-}
-
-fn text_format(
-    dwrite: &IDWriteFactory,
-    family: &str,
-    size_px: f32,
-    weight: DWRITE_FONT_WEIGHT,
-) -> windows::core::Result<IDWriteTextFormat> {
-    // SAFETY: 文字列はこの呼び出しの間は生きている。
-    let format = unsafe {
-        dwrite.CreateTextFormat(
-            &HSTRING::from(family),
-            None,
-            weight,
-            DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL,
-            size_px,
-            LOCALE,
-        )?
-    };
-    // SAFETY: format は有効な書式。
-    unsafe { format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
-    Ok(format)
 }
 
 /// `format` で 1 行を組んだときの高さ（ピクセル、切り上げ）。

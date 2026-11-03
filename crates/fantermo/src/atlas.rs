@@ -30,24 +30,24 @@ use windows::{
             D3D11_USAGE_DEFAULT, ID3D11Device, ID3D11ShaderResourceView, ID3D11Texture2D,
         },
         DirectWrite::{
-            DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE, DWRITE_FONT_STYLE_ITALIC,
-            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD,
-            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_LINE_METRICS, DWRITE_TEXT_METRICS,
-            DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
+            DWRITE_FONT_STYLE, DWRITE_FONT_STYLE_ITALIC, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_LINE_METRICS, DWRITE_TEXT_METRICS, IDWriteFactory, IDWriteTextFormat,
+            IDWriteTextLayout,
         },
         Dxgi::{
             Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
             IDXGIDevice, IDXGISurface,
         },
     },
-    core::{HSTRING, Interface, w},
+    core::Interface,
 };
 use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::{
     boxdraw::{self, Shape},
     decoration::{self, Decoration, Placement},
-    font::Font,
+    font::{self, Font},
     paint::Icon,
     ui_font::UiFont,
 };
@@ -95,10 +95,7 @@ const MAX_INK_MARGIN_FACTOR: f32 = 1.0;
 const INK_EPSILON_PX: f32 = 1.0 / 64.0;
 
 /// Direct2D の座標をピクセルと同じにする DPI。
-const PIXEL_DPI: f32 = 96.0;
-
-/// 文字を組むときのロケール。和文の字形を選ばせる。
-const LOCALE: windows::core::PCWSTR = w!("ja-jp");
+pub const PIXEL_DPI: f32 = 96.0;
 
 /// アトラスの中の場所（ピクセル）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -908,21 +905,7 @@ fn text_format(
     weight: DWRITE_FONT_WEIGHT,
     style: DWRITE_FONT_STYLE,
 ) -> windows::core::Result<IDWriteTextFormat> {
-    // SAFETY: 文字列はこの呼び出しの間は生きている。
-    let format = unsafe {
-        dwrite.CreateTextFormat(
-            &HSTRING::from(font.family.as_str()),
-            None,
-            weight,
-            style,
-            DWRITE_FONT_STRETCH_NORMAL,
-            font.size_px,
-            LOCALE,
-        )?
-    };
-    // SAFETY: format は有効な書式。
-    unsafe { format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
-    Ok(format)
+    font::text_format(dwrite, &font.family, font.size_px, weight, style)
 }
 
 /// `texture` を描画先にした Direct2D のデバイスコンテキストと、それを作ったファクトリ。
@@ -966,11 +949,11 @@ mod tests {
     use super::*;
 
     use windows::{
-        Win32::Graphics::DirectWrite::{DWRITE_GLYPH_METRICS, IDWriteFontFace},
-        core::BOOL,
+        Win32::Graphics::DirectWrite::{
+            DWRITE_FONT_STRETCH_NORMAL, DWRITE_GLYPH_METRICS, IDWriteFontFace,
+        },
+        core::{BOOL, w},
     };
-
-    use crate::font;
 
     const CELL_WIDTH: f32 = 16.0;
 

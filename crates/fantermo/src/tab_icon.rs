@@ -33,19 +33,21 @@ use windows::{
                 ID2D1SolidColorBrush,
             },
             DirectWrite::{
-                DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD,
-                DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteFactory, IDWriteTextLayout,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD, IDWriteFactory,
+                IDWriteTextLayout,
             },
             Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
             Imaging::{GUID_WICPixelFormat32bppPBGRA, IWICImagingFactory, WICBitmapCacheOnDemand},
         },
         UI::Shell::ExtractIconExW,
     },
-    core::{HSTRING, w},
+    core::HSTRING,
 };
 use windows_numerics::{Matrix3x2, Vector2};
 
-use crate::{app_files::path_key, atlas, background::Decoded, boxdraw::Shape, bridge, paint::arc};
+use crate::{
+    app_files::path_key, atlas, background::Decoded, boxdraw::Shape, bridge, font, paint::arc,
+};
 
 /// プロファイル名から選ぶ背景の色。青・水色・青緑・緑・藍・紫の淡い色で、警告に使う赤・橙・黄は入れない。
 /// 濃い色の絵と頭文字が読め、明るいタブの白と灰色のどちらからも、暗いタブからも分かれる明るさの色だけを
@@ -95,12 +97,6 @@ const INITIAL_INSET: f32 = 0.04;
 /// 頭文字のインクを範囲に合わせて広げるときの、フォントの大きさの上限（範囲の一辺に対する割合）。
 /// 「.」のようにインクの小さい文字が大きくなりすぎないようにする。
 const MAX_INITIAL_FONT_RATIO: f32 = 1.5;
-
-/// Direct2D の座標をピクセルと同じにする DPI。
-const PIXEL_DPI: f32 = 96.0;
-
-/// 文字を組むときのロケール。和文の字形を選ばせる。
-const LOCALE: windows::core::PCWSTR = w!("ja-jp");
 
 /// Cygwin のフォルダにあるアイコンのファイル。
 const CYGWIN_ICON_FILE: &str = "Cygwin.ico";
@@ -511,8 +507,8 @@ pub fn draw_generated(
             format: DXGI_FORMAT_B8G8R8A8_UNORM,
             alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
         },
-        dpiX: PIXEL_DPI,
-        dpiY: PIXEL_DPI,
+        dpiX: atlas::PIXEL_DPI,
+        dpiY: atlas::PIXEL_DPI,
         usage: D2D1_RENDER_TARGET_USAGE_NONE,
         minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
     };
@@ -574,8 +570,8 @@ fn draw_picture(
             format: DXGI_FORMAT_B8G8R8A8_UNORM,
             alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
         },
-        dpiX: PIXEL_DPI,
-        dpiY: PIXEL_DPI,
+        dpiX: atlas::PIXEL_DPI,
+        dpiY: atlas::PIXEL_DPI,
     };
     let size = D2D_SIZE_U {
         width: picture.width(),
@@ -668,20 +664,15 @@ fn initial_layout(
     font_size: f32,
 ) -> windows::core::Result<IDWriteTextLayout> {
     let utf16: Vec<u16> = text.encode_utf16().collect();
-    // SAFETY: 文字列はこの呼び出しの間は生きている。
-    unsafe {
-        let format = dwrite.CreateTextFormat(
-            &HSTRING::from(family),
-            None,
-            DWRITE_FONT_WEIGHT_BOLD,
-            DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL,
-            font_size,
-            LOCALE,
-        )?;
-        format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
-        dwrite.CreateTextLayout(&utf16, &format, font_size, font_size)
-    }
+    let format = font::text_format(
+        dwrite,
+        family,
+        font_size,
+        DWRITE_FONT_WEIGHT_BOLD,
+        DWRITE_FONT_STYLE_NORMAL,
+    )?;
+    // SAFETY: utf16 と format はこの呼び出しの間は生きている。
+    unsafe { dwrite.CreateTextLayout(&utf16, &format, font_size, font_size) }
 }
 
 /// インクの幅と高さが `ink` のとき、一辺 `side` に収めるフォントの大きさ。`font_size` で測った値。

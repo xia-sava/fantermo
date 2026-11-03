@@ -4,17 +4,21 @@ use windows::{
     Win32::Graphics::{
         DirectWrite::{
             DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_METRICS, DWRITE_FONT_STRETCH_NORMAL,
-            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_GLYPH_METRICS,
+            DWRITE_FONT_STYLE, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
+            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_GLYPH_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP,
             DWriteCreateFactory, IDWriteFactory, IDWriteFont1, IDWriteFontCollection,
-            IDWriteFontFace, IDWriteFontFamily,
+            IDWriteFontFace, IDWriteFontFamily, IDWriteTextFormat,
         },
         Gdi::{DEFAULT_CHARSET, LOGFONTW},
     },
-    core::{BOOL, HSTRING, Interface},
+    core::{BOOL, HSTRING, Interface, PCWSTR, w},
 };
 
 /// 1 インチあたりのポイント数。
-const POINTS_PER_INCH: f32 = 72.0;
+pub const POINTS_PER_INCH: f32 = 72.0;
+
+/// 文字を組むときのロケール。和文の字形を選ばせる。
+pub const LOCALE: PCWSTR = w!("ja-jp");
 
 /// セルの幅を決めるときに測る文字。
 const CELL_WIDTH_REFERENCE: char = 'M';
@@ -195,6 +199,31 @@ fn find_family(collection: &IDWriteFontCollection, family: &str) -> windows::cor
         ));
     }
     Ok(index)
+}
+
+/// 折り返さない 1 行の書式。大きさは `size_px` ピクセル。
+pub fn text_format(
+    dwrite: &IDWriteFactory,
+    family: &str,
+    size_px: f32,
+    weight: DWRITE_FONT_WEIGHT,
+    style: DWRITE_FONT_STYLE,
+) -> windows::core::Result<IDWriteTextFormat> {
+    // SAFETY: 文字列はこの呼び出しの間は生きている。
+    let format = unsafe {
+        dwrite.CreateTextFormat(
+            &HSTRING::from(family),
+            None,
+            weight,
+            style,
+            DWRITE_FONT_STRETCH_NORMAL,
+            size_px,
+            LOCALE,
+        )?
+    };
+    // SAFETY: format は有効な書式。
+    unsafe { format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
+    Ok(format)
 }
 
 fn font_face(factory: &IDWriteFactory, family: &str) -> windows::core::Result<IDWriteFontFace> {
