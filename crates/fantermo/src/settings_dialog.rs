@@ -1032,7 +1032,9 @@ struct NumberKind<T> {
 struct NumberField<T> {
     /// 入力欄の ID。
     id: i32,
+    /// 入力欄。
     edit: HWND,
+    /// 入力欄の右に付ける上下の矢印。
     spin: HWND,
     kind: NumberKind<T>,
 }
@@ -1209,6 +1211,9 @@ impl<T> RadioInput for RadioGroup<T> {
     }
 }
 
+/// `CB_SETCURSEL` の位置で、どれも選ばないこと（-1）。
+const CB_NO_SELECTION: usize = usize::MAX;
+
 /// 固定の選択肢のコンボボックス。選択肢の順に表示が並ぶ。
 struct ChoiceBox<T: 'static> {
     combo: HWND,
@@ -1244,8 +1249,15 @@ impl<T: Copy + PartialEq> ChoiceBox<T> {
 
     /// どれも選ばない。
     fn clear(&self) {
-        // SAFETY: コンボボックスはダイアログの子の有効なウィンドウ。位置に -1 を渡すと選択を外す。
-        unsafe { SendMessageW(self.combo, CB_SETCURSEL, Some(WPARAM(usize::MAX)), None) };
+        // SAFETY: コンボボックスはダイアログの子の有効なウィンドウ。
+        unsafe {
+            SendMessageW(
+                self.combo,
+                CB_SETCURSEL,
+                Some(WPARAM(CB_NO_SELECTION)),
+                None,
+            )
+        };
     }
 
     /// 選んでいる選択肢。選んでいなければ `None`。
@@ -1298,7 +1310,7 @@ const ITEM_FIT_CHOICES: [Option<BackgroundFit>; BackgroundFit::ALL.len() + 1] = 
 const ITEM_OPACITY_CHOICES: [bool; 2] = [false, true];
 
 /// `font.size_pt` の入力欄。
-const FONT_SIZE_FIELD: NumberKind<f32> = NumberKind {
+const FONT_SIZE_KIND: NumberKind<f32> = NumberKind {
     parse: config::parse_font_size,
     format: format_size,
     step: step_size,
@@ -1307,7 +1319,7 @@ const FONT_SIZE_FIELD: NumberKind<f32> = NumberKind {
 };
 
 /// `scroll_bar.width` の入力欄。
-const SCROLL_BAR_WIDTH_FIELD: NumberKind<u32> = NumberKind {
+const SCROLL_BAR_WIDTH_KIND: NumberKind<u32> = NumberKind {
     parse: config::parse_scroll_bar_width,
     format: format_integer,
     step: |current, delta| step_integer(current, delta, &config::SCROLL_BAR_WIDTH_RANGE),
@@ -1316,7 +1328,7 @@ const SCROLL_BAR_WIDTH_FIELD: NumberKind<u32> = NumberKind {
 };
 
 /// `window.padding` の入力欄。
-const PADDING_FIELD: NumberKind<u32> = NumberKind {
+const PADDING_KIND: NumberKind<u32> = NumberKind {
     parse: config::parse_padding,
     format: format_integer,
     step: |current, delta| step_integer(current, delta, &config::PADDING_RANGE),
@@ -1325,7 +1337,7 @@ const PADDING_FIELD: NumberKind<u32> = NumberKind {
 };
 
 /// `paste.confirm_size` の入力欄。
-const PASTE_CONFIRM_SIZE_FIELD: NumberKind<u32> = NumberKind {
+const PASTE_CONFIRM_SIZE_KIND: NumberKind<u32> = NumberKind {
     parse: config::parse_paste_confirm_size,
     format: format_integer,
     step: |current, delta| step_integer(current, delta, &config::PASTE_CONFIRM_SIZE_RANGE),
@@ -1334,7 +1346,7 @@ const PASTE_CONFIRM_SIZE_FIELD: NumberKind<u32> = NumberKind {
 };
 
 /// `background.image_opacity` の入力欄。
-const BACKGROUND_OPACITY_FIELD: NumberKind<f32> = NumberKind {
+const BACKGROUND_OPACITY_KIND: NumberKind<f32> = NumberKind {
     parse: config::parse_image_opacity,
     format: format_opacity,
     step: step_opacity,
@@ -1342,8 +1354,10 @@ const BACKGROUND_OPACITY_FIELD: NumberKind<f32> = NumberKind {
     message: "不透明度は、0 から 1 までの数値を入力してください。",
 };
 
-/// 背景画像の一覧で選んでいる項目の不透明度の入力欄。読めなければ、既定の不透明度から動かす。
-const BACKGROUND_ITEM_OPACITY_FIELD: NumberKind<f32> = NumberKind {
+/// 背景画像の一覧で選んでいる項目の不透明度の入力欄。読めなければ、既定の不透明度から動かす
+/// （[`State::step`] が渡す設定では、`background.image_opacity` を編集中の既定の不透明度に差し替えて
+/// ある）。
+const BACKGROUND_ITEM_OPACITY_KIND: NumberKind<f32> = NumberKind {
     parse: config::parse_image_opacity,
     format: format_opacity,
     step: step_opacity,
@@ -1375,7 +1389,7 @@ struct Controls {
     /// コマンドラインの入力欄の下の警告の文と、文があるとその高さの分だけ下がるコントロール。
     profile_command_warning: HWND,
     profile_below_command_warning: [HWND; 4],
-    /// 一覧で選んでいるプロファイルの接続方式（[`BackendKind::ALL`] の順）と、Cygwin のフォルダか
+    /// 一覧で選んでいるプロファイルの接続方式と、Cygwin のフォルダか
     /// ディストリビューションの入力欄とその見出し。
     profile_backend: ChoiceBox<BackendKind>,
     profile_location_label: HWND,
@@ -1410,7 +1424,9 @@ struct Controls {
 }
 
 impl Controls {
-    /// 数の入力欄。上下の矢印の配置と、矢印と入力の知らせの振り分けは、これを順に回す。
+    /// 数の入力欄。上下の矢印の配置と、矢印と入力の知らせの振り分けは、これを順に回す。入力の知らせに
+    /// 自前の処理を持つもの（既定の不透明度と項目の不透明度の入力欄）は、`dialog_proc` でこれを回す腕より
+    /// 上で受ける。
     fn number_fields(&self) -> impl Iterator<Item = &dyn NumberInput> {
         [
             &self.size as &dyn NumberInput,
@@ -1423,7 +1439,8 @@ impl Controls {
         .into_iter()
     }
 
-    /// ラジオボタンの組。押したときの知らせの振り分けは、これを順に回す。
+    /// ラジオボタンの組。押したときの知らせの振り分けは、これを順に回す。自前の処理を持つもの（項目の
+    /// 不透明度の「既定」と「指定」、配色）は、`dialog_proc` でこれを回す腕より上で受ける。
     fn radio_groups(&self) -> impl Iterator<Item = &dyn RadioInput> {
         [
             &self.wide_glyph as &dyn RadioInput,
@@ -1543,7 +1560,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         ID_SIZE,
         ID_SIZE_SPIN,
         [control_left, row(1), NUMBER_WIDTH, ROW_HEIGHT],
-        FONT_SIZE_FIELD,
+        FONT_SIZE_KIND,
     )?;
     appearance.extend(size.controls());
     appearance.push(b.label(
@@ -1578,7 +1595,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         ID_SCROLL_BAR_WIDTH,
         ID_SCROLL_BAR_WIDTH_SPIN,
         [control_left, width_row, NUMBER_WIDTH, ROW_HEIGHT],
-        SCROLL_BAR_WIDTH_FIELD,
+        SCROLL_BAR_WIDTH_KIND,
     )?;
     appearance.extend(scroll_bar_width.controls());
     appearance.push(b.label(
@@ -1597,7 +1614,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         ID_PADDING,
         ID_PADDING_SPIN,
         [control_left, padding_row, NUMBER_WIDTH, ROW_HEIGHT],
-        PADDING_FIELD,
+        PADDING_KIND,
     )?;
     appearance.extend(padding.controls());
     appearance.push(b.label(
@@ -1671,7 +1688,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             NUMBER_WIDTH,
             ROW_HEIGHT,
         ],
-        BACKGROUND_OPACITY_FIELD,
+        BACKGROUND_OPACITY_KIND,
     )?;
     background_page.extend(background_opacity.controls());
     background_page.push(b.label(
@@ -1779,7 +1796,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             NUMBER_WIDTH,
             ROW_HEIGHT,
         ],
-        BACKGROUND_ITEM_OPACITY_FIELD,
+        BACKGROUND_ITEM_OPACITY_KIND,
     )?;
     background_page.extend(background_item_opacity.controls());
     background_page.push(b.label(
@@ -1830,7 +1847,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         ID_PASTE_CONFIRM_SIZE,
         ID_PASTE_CONFIRM_SIZE_SPIN,
         [control_left, paste_size_row, NUMBER_WIDTH, ROW_HEIGHT],
-        PASTE_CONFIRM_SIZE_FIELD,
+        PASTE_CONFIRM_SIZE_KIND,
     )?;
     behavior.extend(paste_confirm_size.controls());
     behavior.push(b.label(
