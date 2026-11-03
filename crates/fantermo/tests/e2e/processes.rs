@@ -194,7 +194,8 @@ const CYGWIN_CLOSE_DELAYS_MS: [u64; 6] = [10, 20, 30, 40, 50, 70];
 /// 動き出すのを待たずにタブを閉じても、コマンドは残らない。
 #[test]
 fn cygwin_closing_tabs_right_after_typing_a_command_ends_it() {
-    let Some(config) = cygwin_config("cygwin_closing_tabs_right_after_typing") else {
+    let Some(config) = cygwin_config("cygwin_closing_tabs_right_after_typing_a_command_ends_it")
+    else {
         return;
     };
     let server = Server::start(&config, &[]);
@@ -221,7 +222,9 @@ fn cygwin_closing_tabs_right_after_typing_a_command_ends_it() {
 /// 動き出すのを待たずにウィンドウを閉じても、コマンドは残らない。ブリッジの標準入力と標準エラー出力が同時に閉じる。
 #[test]
 fn cygwin_closing_the_window_right_after_typing_a_command_ends_it() {
-    let Some(config) = cygwin_config("cygwin_closing_the_window_right_after_typing") else {
+    let Some(config) =
+        cygwin_config("cygwin_closing_the_window_right_after_typing_a_command_ends_it")
+    else {
         return;
     };
     for delay in CYGWIN_CLOSE_DELAYS_MS {
@@ -237,7 +240,9 @@ fn cygwin_closing_the_window_right_after_typing_a_command_ends_it() {
 
 #[test]
 fn cygwin_closing_the_window_ends_the_child_processes_of_every_tab() {
-    let Some(setup) = cygwin_setup("cygwin_closing_the_window") else {
+    let Some(setup) =
+        cygwin_setup("cygwin_closing_the_window_ends_the_child_processes_of_every_tab")
+    else {
         return;
     };
     exercise_closing_the_window(&setup);
@@ -245,7 +250,7 @@ fn cygwin_closing_the_window_ends_the_child_processes_of_every_tab() {
 
 #[test]
 fn cygwin_closing_a_tab_ends_its_child_processes_only() {
-    let Some(config) = cygwin_config("cygwin_closing_a_tab") else {
+    let Some(config) = cygwin_config("cygwin_closing_a_tab_ends_its_child_processes_only") else {
         return;
     };
     let server = Server::start(&config, &[]);
@@ -270,7 +275,8 @@ fn cygwin_closing_a_tab_ends_its_child_processes_only() {
 /// WSL の中のプロセスは見えないので、Windows の側の `wsl.exe` までを見る。
 #[test]
 fn wsl_closing_the_window_ends_the_child_processes_of_every_tab() {
-    let Some(setup) = wsl_setup("wsl_closing_the_window") else {
+    let Some(setup) = wsl_setup("wsl_closing_the_window_ends_the_child_processes_of_every_tab")
+    else {
         return;
     };
     exercise_closing_the_window(&setup);

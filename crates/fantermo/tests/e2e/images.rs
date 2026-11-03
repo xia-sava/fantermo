@@ -1,7 +1,8 @@
 use crate::common;
 use crate::common::Server;
 use crate::ui::{
-    assert_cell_is_drawn, cell_pixel, cygwin_config, find_cell, number, wait_sh_ready, wsl_config,
+    assert_cell_is_drawn, cell_pixel, find_cell, number, run_with_cygwin, run_with_wsl,
+    wait_sh_ready,
 };
 
 /// 画像の左上のセルの位置（1 から数える）。
@@ -68,34 +69,30 @@ fn exercise_sixel_image(server: &Server) {
 
 #[test]
 fn cygwin_kitty_image_is_drawn() {
-    let Some(config) = cygwin_config("cygwin_kitty_image_is_drawn") else {
-        return;
-    };
-    exercise_kitty_image(&Server::start(&config, &[]));
+    run_with_cygwin("cygwin_kitty_image_is_drawn", |server| {
+        exercise_kitty_image(&server);
+    });
 }
 
 #[test]
 fn cygwin_sixel_image_is_drawn() {
-    let Some(config) = cygwin_config("cygwin_sixel_image_is_drawn") else {
-        return;
-    };
-    exercise_sixel_image(&Server::start(&config, &[]));
+    run_with_cygwin("cygwin_sixel_image_is_drawn", |server| {
+        exercise_sixel_image(&server);
+    });
 }
 
 #[test]
 fn wsl_kitty_image_is_drawn() {
-    let Some(config) = wsl_config("wsl_kitty_image_is_drawn") else {
-        return;
-    };
-    exercise_kitty_image(&Server::start(&config, &[]));
+    run_with_wsl("wsl_kitty_image_is_drawn", |server| {
+        exercise_kitty_image(&server);
+    });
 }
 
 #[test]
 fn wsl_sixel_image_is_drawn() {
-    let Some(config) = wsl_config("wsl_sixel_image_is_drawn") else {
-        return;
-    };
-    exercise_sixel_image(&Server::start(&config, &[]));
+    run_with_wsl("wsl_sixel_image_is_drawn", |server| {
+        exercise_sixel_image(&server);
+    });
 }
 
 /// グリフアトラスの一辺を小さくする環境変数。

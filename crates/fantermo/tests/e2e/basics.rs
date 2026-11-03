@@ -1,7 +1,7 @@
 use crate::common::CMD_COMMAND;
 use crate::common::CMD_PROMPT;
 use crate::common::Server;
-use crate::ui::{assert_the_shell_sees_the_grid, cygwin_config, number, tab_count, wsl_config};
+use crate::ui::{assert_the_shell_sees_the_grid, number, run_with_cygwin, run_with_wsl, tab_count};
 use std::io::Cursor;
 use std::path::PathBuf;
 
@@ -240,18 +240,12 @@ fn exercise_bridge_profile(mut server: Server) {
 
 #[test]
 fn cygwin_bridge_runs_a_shell() {
-    let Some(config) = cygwin_config("cygwin_bridge_runs_a_shell") else {
-        return;
-    };
-    exercise_bridge_profile(Server::start(&config, &[]));
+    run_with_cygwin("cygwin_bridge_runs_a_shell", exercise_bridge_profile);
 }
 
 #[test]
 fn wsl_bridge_runs_a_shell() {
-    let Some(config) = wsl_config("wsl_bridge_runs_a_shell") else {
-        return;
-    };
-    exercise_bridge_profile(Server::start(&config, &[]));
+    run_with_wsl("wsl_bridge_runs_a_shell", exercise_bridge_profile);
 }
 
 #[test]

@@ -83,7 +83,9 @@ fn the_session_end_saves_the_state_and_leaves_no_child_processes() {
 
 #[test]
 fn cygwin_the_session_end_saves_the_state_and_leaves_no_child_processes() {
-    let Some(setup) = cygwin_setup("cygwin_the_session_end") else {
+    let Some(setup) =
+        cygwin_setup("cygwin_the_session_end_saves_the_state_and_leaves_no_child_processes")
+    else {
         return;
     };
     exercise_session_end(&setup);
@@ -92,7 +94,9 @@ fn cygwin_the_session_end_saves_the_state_and_leaves_no_child_processes() {
 /// WSL の中のプロセスは見えないので、Windows の側の `wsl.exe` までを見る。
 #[test]
 fn wsl_the_session_end_saves_the_state_and_leaves_no_child_processes() {
-    let Some(setup) = wsl_setup("wsl_the_session_end") else {
+    let Some(setup) =
+        wsl_setup("wsl_the_session_end_saves_the_state_and_leaves_no_child_processes")
+    else {
         return;
     };
     exercise_session_end(&setup);

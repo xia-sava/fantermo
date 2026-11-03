@@ -63,6 +63,22 @@ command = "/bin/sh"
     ))
 }
 
+/// Cygwin のブリッジのタブで起動して `body` を実行する。環境変数がなければスキップしたと知らせて何もしない。
+/// `test` はテストの関数の名前にする。
+pub fn run_with_cygwin(test: &str, body: impl FnOnce(Server)) {
+    if let Some(config) = cygwin_config(test) {
+        body(Server::start(&config, &[]));
+    }
+}
+
+/// WSL のブリッジのタブで起動して `body` を実行する。環境変数がなければスキップしたと知らせて何もしない。
+/// `test` はテストの関数の名前にする。
+pub fn run_with_wsl(test: &str, body: impl FnOnce(Server)) {
+    if let Some(config) = wsl_config(test) {
+        body(Server::start(&config, &[]));
+    }
+}
+
 /// `ping -t` は止めるまで動く。
 pub const CMD_LONG_COMMAND: &str = "ping -t 127.0.0.1";
 pub const CMD_LONG_PROCESS: &str = "ping.exe";

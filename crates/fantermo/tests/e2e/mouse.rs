@@ -2,10 +2,10 @@ use crate::common::CMD_PROMPT;
 use crate::common::Server;
 use crate::ui::{
     DRAG_PIXELS, EMPTY_COL, EMPTY_ROWS_BELOW, Point, area_center, button_click, cell_center,
-    cell_left, cell_right, close_menu, cygwin_config, echo_lines, fill_scrollback, find_cell,
-    left_click, left_drag, left_press_and_move, newest_offset, number, on_close_button,
-    on_scroll_bar, on_tab, on_thumb, scroll_bar_middle, scroll_offset, selection, step, tab_count,
-    thumb_length, thumb_top, wait_menu, wait_sh_ready, wait_tabs, wsl_config,
+    cell_left, cell_right, close_menu, echo_lines, fill_scrollback, find_cell, left_click,
+    left_drag, left_press_and_move, newest_offset, number, on_close_button, on_scroll_bar, on_tab,
+    on_thumb, run_with_cygwin, run_with_wsl, scroll_bar_middle, scroll_offset, selection, step,
+    tab_count, thumb_length, thumb_top, wait_menu, wait_sh_ready, wait_tabs,
 };
 use serde_json::Value;
 use std::sync::atomic::AtomicU32;
@@ -730,18 +730,16 @@ fn mouse_reports_reach_an_application_through_conpty() {
 
 #[test]
 fn cygwin_clicks_reach_the_application() {
-    let Some(config) = cygwin_config("cygwin_clicks_reach_the_application") else {
-        return;
-    };
-    exercise_clicks_reach_the_application(&Server::start(&config, &[]));
+    run_with_cygwin("cygwin_clicks_reach_the_application", |server| {
+        exercise_clicks_reach_the_application(&server);
+    });
 }
 
 #[test]
 fn wsl_clicks_reach_the_application() {
-    let Some(config) = wsl_config("wsl_clicks_reach_the_application") else {
-        return;
-    };
-    exercise_clicks_reach_the_application(&Server::start(&config, &[]));
+    run_with_wsl("wsl_clicks_reach_the_application", |server| {
+        exercise_clicks_reach_the_application(&server);
+    });
 }
 
 /// ドラッグと動きの報告、古い形の報告。モードごとにタブを開く。
@@ -788,18 +786,16 @@ fn exercise_motion_reaches_the_application(server: &Server) {
 
 #[test]
 fn cygwin_motion_reaches_the_application() {
-    let Some(config) = cygwin_config("cygwin_motion_reaches_the_application") else {
-        return;
-    };
-    exercise_motion_reaches_the_application(&Server::start(&config, &[]));
+    run_with_cygwin("cygwin_motion_reaches_the_application", |server| {
+        exercise_motion_reaches_the_application(&server);
+    });
 }
 
 #[test]
 fn wsl_motion_reaches_the_application() {
-    let Some(config) = wsl_config("wsl_motion_reaches_the_application") else {
-        return;
-    };
-    exercise_motion_reaches_the_application(&Server::start(&config, &[]));
+    run_with_wsl("wsl_motion_reaches_the_application", |server| {
+        exercise_motion_reaches_the_application(&server);
+    });
 }
 
 /// アプリがマウスを求めているときと代替画面の、ホイールの振る舞い。
@@ -909,16 +905,14 @@ fn exercise_wheel_with_applications(server: &Server) {
 
 #[test]
 fn cygwin_the_wheel_reaches_the_application() {
-    let Some(config) = cygwin_config("cygwin_the_wheel_reaches_the_application") else {
-        return;
-    };
-    exercise_wheel_with_applications(&Server::start(&config, &[]));
+    run_with_cygwin("cygwin_the_wheel_reaches_the_application", |server| {
+        exercise_wheel_with_applications(&server);
+    });
 }
 
 #[test]
 fn wsl_the_wheel_reaches_the_application() {
-    let Some(config) = wsl_config("wsl_the_wheel_reaches_the_application") else {
-        return;
-    };
-    exercise_wheel_with_applications(&Server::start(&config, &[]));
+    run_with_wsl("wsl_the_wheel_reaches_the_application", |server| {
+        exercise_wheel_with_applications(&server);
+    });
 }

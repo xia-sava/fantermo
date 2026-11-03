@@ -42,7 +42,8 @@ fn clipboard_answer(text: &str) -> String {
 
 #[test]
 fn cygwin_clipboard_read_denied_by_the_setting_gets_no_answer() {
-    let Some(config) = cygwin_config("cygwin_clipboard_read_denied") else {
+    let Some(config) = cygwin_config("cygwin_clipboard_read_denied_by_the_setting_gets_no_answer")
+    else {
         return;
     };
     let config = format!("[clipboard]\nread = \"deny\"\n{config}");
@@ -58,7 +59,8 @@ fn cygwin_clipboard_read_denied_by_the_setting_gets_no_answer() {
 
 #[test]
 fn cygwin_clipboard_read_allowed_by_the_setting_is_answered() {
-    let Some(config) = cygwin_config("cygwin_clipboard_read_allowed") else {
+    let Some(config) = cygwin_config("cygwin_clipboard_read_allowed_by_the_setting_is_answered")
+    else {
         return;
     };
     let config = format!("[clipboard]\nread = \"allow\"\n{config}");
@@ -75,7 +77,8 @@ fn cygwin_clipboard_read_allowed_by_the_setting_is_answered() {
 
 #[test]
 fn cygwin_clipboard_read_follows_the_answer_to_the_dialog() {
-    let Some(config) = cygwin_config("cygwin_clipboard_read_asks") else {
+    let Some(config) = cygwin_config("cygwin_clipboard_read_follows_the_answer_to_the_dialog")
+    else {
         return;
     };
     let server = Server::start(&config, &[]);
@@ -124,7 +127,9 @@ fn cygwin_clipboard_read_follows_the_answer_to_the_dialog() {
 /// 残って答えを受ける。
 #[test]
 fn cygwin_clipboard_read_dialog_stays_when_the_settings_warning_is_withdrawn() {
-    let Some(config) = cygwin_config("cygwin_clipboard_read_dialog_stays") else {
+    let Some(config) =
+        cygwin_config("cygwin_clipboard_read_dialog_stays_when_the_settings_warning_is_withdrawn")
+    else {
         return;
     };
     let server = Server::start(&config, &[]);
@@ -157,7 +162,8 @@ fn cygwin_clipboard_read_dialog_stays_when_the_settings_warning_is_withdrawn() {
 /// メニューを開いている間に裏のタブから読み取りの依頼が届いても、確認のダイアログはメニューを閉じてから開く。
 #[test]
 fn cygwin_clipboard_read_dialog_waits_for_the_menu_to_close() {
-    let Some(config) = cygwin_config("cygwin_clipboard_read_dialog_waits_for_the_menu") else {
+    let Some(config) = cygwin_config("cygwin_clipboard_read_dialog_waits_for_the_menu_to_close")
+    else {
         return;
     };
     let server = Server::start(&config, &[]);
@@ -201,7 +207,9 @@ fn cygwin_clipboard_read_dialog_waits_for_the_menu_to_close() {
 
 #[test]
 fn cygwin_clipboard_write_from_an_application_reaches_the_clipboard() {
-    let Some(config) = cygwin_config("cygwin_clipboard_write") else {
+    let Some(config) =
+        cygwin_config("cygwin_clipboard_write_from_an_application_reaches_the_clipboard")
+    else {
         return;
     };
     let server = Server::start(&config, &[]);
@@ -215,7 +223,9 @@ fn cygwin_clipboard_write_from_an_application_reaches_the_clipboard() {
 
 #[test]
 fn cygwin_clipboard_write_denied_by_the_setting_leaves_the_clipboard() {
-    let Some(config) = cygwin_config("cygwin_clipboard_write_denied") else {
+    let Some(config) =
+        cygwin_config("cygwin_clipboard_write_denied_by_the_setting_leaves_the_clipboard")
+    else {
         return;
     };
     let config = format!("[clipboard]\nread = \"allow\"\nwrite = \"deny\"\n{config}");
@@ -256,7 +266,9 @@ fn clipboard_write_through_conpty_reaches_the_clipboard() {
 /// OS のクリップボードを実際に変える（環境変数があるときだけ）。
 #[test]
 fn os_clipboard_is_written_by_an_application_and_read_back() {
-    let Some(clipboard) = OsClipboard::take("os_clipboard_is_written") else {
+    let Some(clipboard) =
+        OsClipboard::take("os_clipboard_is_written_by_an_application_and_read_back")
+    else {
         return;
     };
     let server = Server::start_with_os_clipboard(
