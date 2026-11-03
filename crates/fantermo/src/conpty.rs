@@ -246,9 +246,12 @@ impl ConPty {
             .name("conpty-exit-watcher".into())
             .spawn({
                 let process = Arc::clone(&pty.process);
+                let budget = Arc::clone(&pty.budget);
                 move || {
                     process::wait(&process, None);
-                    wake();
+                    // 出力の知らせと同じくまとめる。知らせを積んであれば、それを受け取ったウィンドウのスレッドが
+                    // 出力を受け取ったあとで終了を見る。
+                    budget.sent(&*wake);
                 }
             })?;
         Ok(pty)

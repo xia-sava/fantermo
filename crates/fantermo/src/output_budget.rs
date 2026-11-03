@@ -63,10 +63,12 @@ impl OutputBudget {
 
     /// 読むためのスレッドが、[`push`](Self::push) した分をチャネルに入れ終えた。まだ知らせていなければ `wake` で
     /// 知らせる。`wake` は積めたら `true` を返す。積めなければ、次の `sent` でまた知らせる。知らせたあとは、
-    /// ウィンドウのスレッドが受け取り始めるまで知らせない。
+    /// ウィンドウのスレッドが受け取り始めるまで知らせない。[`close`](Self::close) したあとは知らせない。
+    /// 受け取る端末はもうなく、知らせの宛先のウィンドウも残っているとは限らないため。`close` と同じロックの中で
+    /// 見るので、`close` から戻ったあとに `wake` が呼ばれることはない。
     pub fn sent(&self, wake: impl FnOnce() -> bool) {
         let mut state = self.lock();
-        if !state.notified {
+        if !state.closed && !state.notified {
             // 知らせを積むだけで待たないので、ロックを持ったまま呼んでよい。
             state.notified = wake();
         }
@@ -85,7 +87,8 @@ impl OutputBudget {
         self.changed.notify_all();
     }
 
-    /// 破棄する。上限で待っているスレッドを起こし、このあとの [`push`](Self::push) は待たずに `false` を返す。
+    /// 破棄する。上限で待っているスレッドを起こし、このあとの [`push`](Self::push) は待たずに `false` を返し、
+    /// [`sent`](Self::sent) は知らせない。
     pub fn close(&self) {
         self.lock().closed = true;
         self.changed.notify_all();
@@ -157,6 +160,14 @@ mod tests {
         assert!(sent_with(&budget, false));
         assert!(budget.push(1));
         assert!(sent_with(&budget, true));
+        assert!(!sent_with(&budget, true));
+    }
+
+    #[test]
+    fn no_wake_is_asked_for_after_closing() {
+        let budget = OutputBudget::new(LIMIT);
+        assert!(budget.push(1));
+        budget.close();
         assert!(!sent_with(&budget, true));
     }
 

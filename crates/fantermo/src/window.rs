@@ -3220,6 +3220,11 @@ fn device_removed_poster(hwnd: HWND) -> renderer::DeviceRemovedNotify {
 
 /// 端末 `id` のバックエンドへ渡す [`Wake`]。ほかのスレッドから呼ばれ、`hwnd` に [`WM_APP_WAKE`] を積む。積めたら
 /// `true` を返す（積めなければ、バックエンドは次の出力でまた知らせる）。
+///
+/// バックエンドは、破棄したあとはこれを呼ばない（`OutputBudget::sent`）。端末を閉じたときと、`WM_NCDESTROY` で
+/// App を解放するときにバックエンドを破棄し、どちらもウィンドウのハンドルを解放する前なので、壊れたウィンドウの
+/// ハンドルの値（ほかのウィンドウに使い回されうる）へ積むことはない。閉じる前に積んだ知らせが閉じたあとに届いても、
+/// [`App::on_wake`] は知らない番号として捨てる（番号は使い回さない）。
 fn wake_poster(hwnd: HWND, id: SessionId) -> Wake {
     // HWND はスレッドをまたいで渡せないので、値だけを持たせる。
     let hwnd_value = hwnd.0 as isize;
@@ -3241,7 +3246,8 @@ fn window_is_gone(error: &windows::core::Error) -> bool {
 
 /// `hwnd` に `message` を `wparam` を添えて積む。どのスレッドから呼んでもよい。
 fn post(hwnd: HWND, message: u32, wparam: WPARAM) -> windows::core::Result<()> {
-    // SAFETY: ウィンドウがすでに壊れていれば失敗するだけで、害はない。
+    // SAFETY: PostMessageW はハンドルの値を調べるだけで、このプロセスのメモリを指す引数はない（`lparam` は 0）。
+    // ウィンドウがすでに壊れていれば失敗するだけ。
     unsafe { PostMessageW(Some(hwnd), message, wparam, LPARAM(0)) }
 }
 
