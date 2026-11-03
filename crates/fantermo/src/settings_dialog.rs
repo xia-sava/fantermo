@@ -3214,21 +3214,26 @@ impl State<'_> {
         Ok(config)
     }
 
-    /// 編集中の設定を読み、読めれば端末に反映する（前に反映したものと同じなら何もしない）。読めた
-    /// 設定を返す。読めなければエラーを見せる。
-    fn preview(&self) -> Option<Config> {
+    /// 編集中の設定を読み、読めれば端末に反映する（前に反映したものと同じなら何もしない）。読めな
+    /// ければエラーを見せる。
+    fn preview(&self) {
+        _ = self.preview_edited();
+    }
+
+    /// [`Self::preview`] をして、読めた設定を返す。読めなければ、見せた文と入力欄を返す。
+    fn preview_edited(&self) -> Result<Config, (&'static str, HWND)> {
         // SAFETY: hwnd は有効なウィンドウ。掛けていないタイマーを止めても害はない。
         unsafe { _ = KillTimer(Some(self.hwnd), PREVIEW_TIMER_ID) };
         let config = match self.read() {
             Ok(config) => config,
-            Err((message, _)) => {
+            Err((message, control)) => {
                 set_text(self.controls.error, message);
-                return None;
+                return Err((message, control));
             }
         };
         set_text(self.controls.error, "");
         self.preview_config(&config);
-        Some(config)
+        Ok(config)
     }
 
     fn preview_config(&self, config: &Config) {
@@ -3245,9 +3250,11 @@ impl State<'_> {
 
     /// 編集中の設定を反映して設定ファイルに書く。書けたら `true`。
     fn apply(&self) -> bool {
-        let Some(edited) = self.preview() else {
-            // 読めない入力欄のページを見せて、その入力欄へ移る。エラーメッセージは preview が見せている。
-            if let Err((_, control)) = self.read() {
+        let edited = match self.preview_edited() {
+            Ok(edited) => edited,
+            Err((_, control)) => {
+                // 読めない入力欄のページを見せて、その入力欄へ移る。エラーメッセージは preview_edited が
+                // 見せている。
                 if let Some(page) = self
                     .controls
                     .page_controls
@@ -3258,8 +3265,8 @@ impl State<'_> {
                 }
                 // SAFETY: control はダイアログの子の有効なウィンドウ。
                 unsafe { _ = SetFocus(Some(control)) };
+                return false;
             }
-            return false;
         };
         let base = self.base.borrow().clone();
         let saved = match self.host.try_borrow_mut() {
