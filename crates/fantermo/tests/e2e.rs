@@ -3619,6 +3619,43 @@ fn assert_cell_is_drawn(server: &Server, state: &Value, col: u32, row: u32) {
     assert!(drawn, "the cell ({col}, {row}) is blank: {state:#}");
 }
 
+/// グリフアトラスの一辺を小さくする環境変数。
+const ATLAS_SIDE_ENV: &str = "FANTERMO_E2E_ATLAS_SIDE";
+/// アトラスに入りきらない小ささにする一辺。
+const TINY_ATLAS_SIDE: &str = "256";
+/// 画面に出す漢字の最初と最後（U+4E00〜U+4FFF の 512 字。小さなアトラスには入りきらない）。
+const FIRST_KANJI: char = '\u{4E00}';
+const LAST_KANJI: char = '\u{4FFF}';
+
+/// アトラスに入りきらない文字を出しても、入った文字（先頭の行）は描かれる。
+#[test]
+fn the_glyphs_that_fit_the_atlas_are_drawn_when_a_frame_has_more() {
+    let server = Server::start_with_environment(
+        "[font]\nsize = 10\n",
+        &["powershell.exe", "-NoLogo", "-NoProfile"],
+        |_| vec![(ATLAS_SIDE_ENV, TINY_ATLAS_SIDE.into())],
+    );
+    server.wait_text("PS ");
+    server.resize(100, 30);
+    // 先頭の行の印は、コマンドの文字列に現れない形で組み立てる。
+    server.send_line(&format!(
+        "Clear-Host; 'HEAD'+'LINE'; -join ((0x{:X}..0x{:X}) | ForEach-Object {{ [char]$_ }})",
+        u32::from(FIRST_KANJI),
+        u32::from(LAST_KANJI)
+    ));
+    let state = server.wait_text(&LAST_KANJI.to_string());
+    let (col, row) = find_cell(&state, "HEADLINE");
+    // 見出しは漢字の行より上にあり、先に場所を取る。
+    let (_, kanji_row) = find_cell(&state, &FIRST_KANJI.to_string());
+    assert!(row < kanji_row, "{state:#}");
+    assert_cell_is_drawn(&server, &state, col, row);
+    let log = server.log();
+    assert!(
+        log.contains("the glyph atlas cannot hold one frame, skipped"),
+        "the atlas did not overflow: {log}"
+    );
+}
+
 /// どの開き方でもコンテキストメニューの並びが同じで、コピーだけが選択範囲に従う。スクロールバーの上の右クリックでは
 /// 開かない。
 #[test]

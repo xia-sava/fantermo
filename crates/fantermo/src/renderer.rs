@@ -94,6 +94,46 @@ pub struct Renderer {
     terminal_images: ImageCache<Option<ImageTexture>>,
     /// タブのアイコンと一辺ごとのテクスチャ。作れなかったものは `None` で覚え、作り直さない。
     tab_icons: HashMap<(TabIcon, u32), Option<ImageTexture>>,
+    /// 前のフレームでアトラスに入らず飛ばした数。0 は全部入った。
+    skipped_last_frame: usize,
+}
+
+/// アトラスに入らないものの扱いと、飛ばした数。
+struct Fit {
+    /// 入らないものを飛ばして続ける。偽なら `AtlasFull` で止める。
+    skip: bool,
+    skipped: usize,
+}
+
+impl Fit {
+    /// 入らないものがあれば `AtlasFull` で止める。
+    fn stopping() -> Self {
+        Self {
+            skip: false,
+            skipped: 0,
+        }
+    }
+
+    /// 入らないものを飛ばして続ける。
+    fn skipping() -> Self {
+        Self {
+            skip: true,
+            skipped: 0,
+        }
+    }
+
+    /// 場所が取れたらそれを返す。入らなかったときは、飛ばす指定なら数えて `None`、そうでなければ
+    /// `AtlasFull`。
+    fn place(&mut self, slot: Result<Slot, AtlasFull>) -> Result<Option<Slot>, AtlasFull> {
+        match slot {
+            Ok(slot) => Ok(Some(slot)),
+            Err(AtlasFull) if self.skip => {
+                self.skipped += 1;
+                Ok(None)
+            }
+            Err(AtlasFull) => Err(AtlasFull),
+        }
+    }
 }
 
 /// 背景画像と端末の中の画像とタブのアイコンのテクスチャ（ミップマップつき）。
@@ -170,6 +210,7 @@ impl Renderer {
             images: HashMap::new(),
             terminal_images: ImageCache::new(TERMINAL_IMAGE_TEXTURE_LIMIT),
             tab_icons: HashMap::new(),
+            skipped_last_frame: 0,
         };
         renderer.create_target()?;
         Ok(renderer)
@@ -420,6 +461,9 @@ impl Renderer {
     ///
     /// 画面の中の画像は [`Renderer::prepare_terminal_images`] で揃えたものを描く。
     ///
+    /// 1 フレームの文字がアトラスに入りきらないときは、アトラスを空にして組み直し、それでも入らない
+    /// ものだけを飛ばして、入ったものを描く。
+    ///
     /// `capture` を渡すと、表示する前のバックバッファを PNG で書き出す。
     pub fn render(
         &mut self,
@@ -459,15 +503,17 @@ impl Renderer {
         };
         let fill_areas = placed.is_none();
         let mut list = backdrop_list();
-        if let Err(AtlasFull) = self.push_layers(&mut list, layers, paints, fill_areas) {
+        let mut fit = Fit::stopping();
+        if let Err(AtlasFull) = self.push_layers(&mut list, layers, paints, fill_areas, &mut fit) {
             // 描きかけのフレームの場所は捨てたアトラスを指すので、空にしてから組み直す。
+            // 組み直しても入らない分は飛ばして、入った分だけ描く。
             self.atlas.clear()?;
             list = backdrop_list();
-            if let Err(AtlasFull) = self.push_layers(&mut list, layers, paints, fill_areas) {
-                tracing::warn!("the glyph atlas cannot hold one frame");
-                list = backdrop_list();
-            }
+            fit = Fit::skipping();
+            let rebuilt = self.push_layers(&mut list, layers, paints, fill_areas, &mut fit);
+            debug_assert!(rebuilt.is_ok(), "skipping never stops at AtlasFull");
         }
+        self.warn_if_skipped(fit.skipped);
         if let Some(target) = &self.target {
             // SAFETY: target は現在のバックバッファのビュー。
             unsafe {
@@ -497,23 +543,33 @@ impl Renderer {
         }
     }
 
+    /// アトラスに入らず飛ばした数が前のフレームと変わったときだけ、警告を残す。入らないフレームが続く間、
+    /// 毎フレーム同じ警告を出さないためで、全部入ったフレームで数を 0 に戻す。
+    fn warn_if_skipped(&mut self, skipped: usize) {
+        if skipped != 0 && skipped != self.skipped_last_frame {
+            tracing::warn!("the glyph atlas cannot hold one frame, skipped {skipped} items");
+        }
+        self.skipped_last_frame = skipped;
+    }
+
     /// 画面ごとに、領域の背景（`fill_areas` のときだけ）と画面の中身を `list` に並べ、続けて `paints` を
-    /// 並べる。
+    /// 並べる。アトラスに入らないものは、`fit` の指定に従って、止めるか飛ばす。
     fn push_layers(
         &mut self,
         list: &mut DrawList,
         layers: &[(&Frame, Area)],
         paints: &[Paint],
         fill_areas: bool,
+        fit: &mut Fit,
     ) -> Result<(), AtlasFull> {
         for &(frame, area) in layers {
             if fill_areas {
                 list.push(solid(area_rect(area), frame.background));
             }
-            self.push_frame(list, frame, area)?;
+            self.push_frame(list, frame, area, fit)?;
         }
         for paint in paints {
-            self.push_paint(list, paint)?;
+            self.push_paint(list, paint, fit)?;
         }
         Ok(())
     }
@@ -636,7 +692,12 @@ impl Renderer {
     }
 
     /// `paint` を描く四角形を `list` に並べる。
-    fn push_paint(&mut self, list: &mut DrawList, paint: &Paint) -> Result<(), AtlasFull> {
+    fn push_paint(
+        &mut self,
+        list: &mut DrawList,
+        paint: &Paint,
+        fit: &mut Fit,
+    ) -> Result<(), AtlasFull> {
         match paint {
             Paint::Fill { area, color } => list.push(solid(area_rect(*area), *color)),
             Paint::Translucent {
@@ -645,7 +706,10 @@ impl Renderer {
                 opacity,
             } => list.push(translucent(area_rect(*area), *color, *opacity)),
             Paint::Icon { icon, area, color } => {
-                let slot = self.atlas.icon_slot(*icon, area.width, area.height)?;
+                let Some(slot) = fit.place(self.atlas.icon_slot(*icon, area.width, area.height))?
+                else {
+                    return Ok(());
+                };
                 list.push(glyph(
                     [
                         area.x as f32,
@@ -658,7 +722,9 @@ impl Renderer {
                 ));
             }
             Paint::Label { x, y, text, color } => {
-                let slot = self.atlas.label_slot(text)?;
+                let Some(slot) = fit.place(self.atlas.label_slot(text))? else {
+                    return Ok(());
+                };
                 list.push(glyph(
                     [
                         *x as f32 - slot.left as f32,
@@ -678,11 +744,13 @@ impl Renderer {
     /// 背景より下の画像、背景、文字より下の画像、カーソル、グリフ、装飾、文字より上の画像の順に
     /// 四角形を並べる。カーソルの上の文字は背景色で描く。
     /// 取り消し線と上線は文字と同じ色、下線は指定された色（なければ文字と同じ色）で描く。
+    /// アトラスに入らない文字と装飾は、`fit` の指定に従って、止めるか飛ばす。
     fn push_frame(
         &mut self,
         list: &mut DrawList,
         frame: &Frame,
         area: Area,
+        fit: &mut Fit,
     ) -> Result<(), AtlasFull> {
         let mut backgrounds = Vec::new();
         let mut glyphs = Vec::new();
@@ -701,34 +769,40 @@ impl Renderer {
                 cell.fg
             };
             if !cell.text.is_empty() && cell.text != " " {
-                let slot = self
+                let placed = self
                     .atlas
-                    .slot(&cell.text, cell.bold, cell.italic, cell.width)?;
-                // 左右のセルへはみ出して描くグリフは、場所がセルより広い。
-                let [x, y, _, height] = rect;
-                glyphs.push(glyph(
-                    [x - slot.left as f32, y, slot.width as f32, height],
-                    slot,
-                    color,
-                ));
+                    .slot(&cell.text, cell.bold, cell.italic, cell.width);
+                if let Some(slot) = fit.place(placed)? {
+                    // 左右のセルへはみ出して描くグリフは、場所がセルより広い。
+                    let [x, y, _, height] = rect;
+                    glyphs.push(glyph(
+                        [x - slot.left as f32, y, slot.width as f32, height],
+                        slot,
+                        color,
+                    ));
+                }
             }
             if cell.underline != Underline::None {
-                let slot = self
+                let placed = self
                     .atlas
-                    .decoration_slot(Decoration::Underline(cell.underline), cell.width)?;
-                decorations.push(glyph(rect, slot, cell.underline_color.unwrap_or(color)));
+                    .decoration_slot(Decoration::Underline(cell.underline), cell.width);
+                if let Some(slot) = fit.place(placed)? {
+                    decorations.push(glyph(rect, slot, cell.underline_color.unwrap_or(color)));
+                }
             }
             if cell.strikethrough {
-                let slot = self
+                let placed = self
                     .atlas
-                    .decoration_slot(Decoration::Strikethrough, cell.width)?;
-                decorations.push(glyph(rect, slot, color));
+                    .decoration_slot(Decoration::Strikethrough, cell.width);
+                if let Some(slot) = fit.place(placed)? {
+                    decorations.push(glyph(rect, slot, color));
+                }
             }
             if cell.overline {
-                let slot = self
-                    .atlas
-                    .decoration_slot(Decoration::Overline, cell.width)?;
-                decorations.push(glyph(rect, slot, color));
+                let placed = self.atlas.decoration_slot(Decoration::Overline, cell.width);
+                if let Some(slot) = fit.place(placed)? {
+                    decorations.push(glyph(rect, slot, color));
+                }
             }
         }
         self.push_terminal_images(list, frame, area, ImageLayer::BelowBackground);

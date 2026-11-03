@@ -55,6 +55,35 @@ use crate::{
 /// アトラスの一辺（ピクセル）。
 const ATLAS_SIZE: u32 = 2048;
 
+/// アトラスの一辺をテストが指定する環境変数。feature `e2e` のときだけ読む。配布物には入らない。
+#[cfg(feature = "e2e")]
+const SIDE_ENV: &str = "FANTERMO_E2E_ATLAS_SIDE";
+
+/// 作るアトラスの一辺（ピクセル）。
+#[cfg(not(feature = "e2e"))]
+fn atlas_side() -> u32 {
+    ATLAS_SIZE
+}
+
+/// 作るアトラスの一辺（ピクセル）。テストが指定していれば、その値。1 以上でテクスチャの上限以下の整数でなければ警告して既定の値。
+#[cfg(feature = "e2e")]
+fn atlas_side() -> u32 {
+    use crate::background::MAX_TEXTURE_SIDE;
+
+    let Ok(text) = std::env::var(SIDE_ENV) else {
+        return ATLAS_SIZE;
+    };
+    match text.parse::<u32>() {
+        Ok(side) if (1..=MAX_TEXTURE_SIDE).contains(&side) => side,
+        _ => {
+            tracing::warn!(
+                "ignoring {SIDE_ENV}={text:?}: not an integer from 1 to {MAX_TEXTURE_SIDE}"
+            );
+            ATLAS_SIZE
+        }
+    }
+}
+
 /// [`WideGlyph::Overflow`] と [`WideGlyph::OverflowCenter`] で、文字に割り当てたセルの何倍の幅まで
 /// 広げて描くか。
 const MAX_OVERFLOW_FACTOR: u8 = 2;
@@ -109,29 +138,31 @@ impl Shelves {
         }
     }
 
-    /// 幅 `width`、高さ `height` の場所。いまの棚の右に入らなければ、次の棚の左端に置く。
+    /// 幅 `width`、高さ `height` の場所。いまの棚の右に入らなければ、次の棚の左端に置く。取れなかった
+    /// ときは何も変えないので、あとで取る、いまの棚の残りに入るものは取れる。
     fn allocate(&mut self, width: u32, height: u32) -> Result<Slot, AtlasFull> {
         if width > self.size || height > self.size {
             return Err(AtlasFull);
         }
-        if self.next_x + width > self.size {
-            self.next_x = 0;
-            self.next_y += self.shelf_height;
-            self.shelf_height = 0;
+        let (mut x, mut y, mut shelf_height) = (self.next_x, self.next_y, self.shelf_height);
+        if x + width > self.size {
+            x = 0;
+            y += shelf_height;
+            shelf_height = 0;
         }
-        if self.next_y + height > self.size {
+        if y + height > self.size {
             return Err(AtlasFull);
         }
-        let slot = Slot {
-            x: self.next_x,
-            y: self.next_y,
+        self.next_x = x + width;
+        self.next_y = y;
+        self.shelf_height = shelf_height.max(height);
+        Ok(Slot {
+            x,
+            y,
             width,
             height,
             left: 0,
-        };
-        self.next_x += width;
-        self.shelf_height = self.shelf_height.max(height);
-        Ok(slot)
+        })
     }
 }
 
@@ -144,6 +175,8 @@ struct GlyphKey {
 }
 
 pub struct GlyphAtlas {
+    /// テクスチャの一辺。
+    side: u32,
     view: ID3D11ShaderResourceView,
     factory: ID2D1Factory1,
     context: ID2D1DeviceContext,
@@ -179,9 +212,10 @@ impl GlyphAtlas {
         ui_font: Rc<UiFont>,
         wide_glyph: WideGlyph,
     ) -> windows::core::Result<Self> {
+        let side = atlas_side();
         let desc = D3D11_TEXTURE2D_DESC {
-            Width: ATLAS_SIZE,
-            Height: ATLAS_SIZE,
+            Width: side,
+            Height: side,
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -250,6 +284,7 @@ impl GlyphAtlas {
         );
 
         let mut atlas = Self {
+            side,
             view,
             factory,
             context,
@@ -261,7 +296,7 @@ impl GlyphAtlas {
             line_thickness: line_thickness(font.cell_width_px),
             placement,
             wide_glyph,
-            shelves: Shelves::new(ATLAS_SIZE),
+            shelves: Shelves::new(side),
             slots: HashMap::new(),
             decoration_slots: HashMap::new(),
             icon_slots: HashMap::new(),
@@ -277,7 +312,7 @@ impl GlyphAtlas {
     }
 
     pub fn size(&self) -> (u32, u32) {
-        (ATLAS_SIZE, ATLAS_SIZE)
+        (self.side, self.side)
     }
 
     /// タブのアイコンを描くのに使う、Direct2D のファクトリと、DirectWrite のファクトリと、UI のフォントの
@@ -292,7 +327,7 @@ impl GlyphAtlas {
         self.decoration_slots.clear();
         self.icon_slots.clear();
         self.label_slots.clear();
-        self.shelves = Shelves::new(ATLAS_SIZE);
+        self.shelves = Shelves::new(self.side);
         // SAFETY: context の描画先はアトラスのテクスチャ。BeginDraw と EndDraw を対にする。
         unsafe {
             self.context.BeginDraw();
@@ -973,6 +1008,19 @@ mod tests {
         assert!(shelves.allocate(100, 1).is_err());
         assert!(Shelves::new(100).allocate(101, 1).is_err());
         assert!(Shelves::new(100).allocate(1, 101).is_err());
+    }
+
+    #[test]
+    fn a_slot_that_does_not_fit_leaves_the_shelf_as_it_was() {
+        let mut shelves = Shelves::new(100);
+        let at = |slot: Slot| (slot.x, slot.y);
+        assert_eq!(at(shelves.allocate(60, 60).unwrap()), (0, 0));
+        // 右に入らず、次の棚の下にも入らない。失敗しても、いまの棚は進まない。
+        assert!(shelves.allocate(50, 50).is_err());
+        assert!(shelves.allocate(50, 50).is_err());
+        // いまの棚の残りに入るものは入る。
+        assert_eq!(at(shelves.allocate(40, 40).unwrap()), (60, 0));
+        assert_eq!(at(shelves.allocate(30, 30).unwrap()), (0, 60));
     }
 
     #[test]
