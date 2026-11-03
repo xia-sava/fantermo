@@ -208,31 +208,32 @@ impl ConPty {
                 }
             };
 
+        // スレッドを作れなければ、組み立てた Self を drop して、疑似コンソールと子プロセスを Drop で片づける。
         let (sender, receiver) = mpsc::channel();
-        let reader = thread::Builder::new().name("conpty-reader".into()).spawn({
-            let wake = Arc::clone(&wake);
-            move || read_output(File::from(output), &sender, &*wake)
-        })?;
-        thread::Builder::new()
-            .name("conpty-exit-watcher".into())
-            .spawn({
-                let process = Arc::clone(&process);
-                move || {
-                    wait_for_exit(&process);
-                    wake();
-                }
-            })?;
-
-        Ok(Self {
+        let mut pty = Self {
             console,
             console_size,
             input: File::from(input),
             process,
             job,
             output: receiver,
-            reader: Some(reader),
+            reader: None,
             exit: None,
-        })
+        };
+        pty.reader = Some(thread::Builder::new().name("conpty-reader".into()).spawn({
+            let wake = Arc::clone(&wake);
+            move || read_output(File::from(output), &sender, &*wake)
+        })?);
+        thread::Builder::new()
+            .name("conpty-exit-watcher".into())
+            .spawn({
+                let process = Arc::clone(&pty.process);
+                move || {
+                    wait_for_exit(&process);
+                    wake();
+                }
+            })?;
+        Ok(pty)
     }
 }
 
@@ -279,7 +280,8 @@ impl Backend for ConPty {
 
 impl Drop for ConPty {
     /// 接続の途中のプロセスがあると、疑似コンソールを閉じても子プロセスと conhost が残り、出力のパイプが閉じない
-    /// ことがある。呼び出し元（ウィンドウのスレッド）を止めないよう、閉じるのは別のスレッドでする。
+    /// ことがある。呼び出し元（ウィンドウのスレッド）はすぐに戻り、閉じるのは別のスレッドでする。そのスレッドを
+    /// 作れなければ、疑似コンソールを閉じることだけをその場でする。
     fn drop(&mut self) {
         let console = self.console.0;
         let process = Arc::clone(&self.process);
@@ -293,7 +295,9 @@ impl Drop for ConPty {
                 close_console(HPCON(console), &process, job.as_ref(), reader);
             });
         if let Err(e) = closing {
-            tracing::warn!("failed to start closing the pseudo console: {e}");
+            tracing::warn!("failed to start closing the pseudo console; closing it here: {e}");
+            // SAFETY: スレッドを作れなかったので、console を閉じるものはほかになく、ここで一度だけ閉じる。
+            unsafe { ClosePseudoConsole(HPCON(console)) };
         }
     }
 }
