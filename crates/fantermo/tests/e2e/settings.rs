@@ -1619,7 +1619,7 @@ fn a_shell_ending_while_the_settings_dialog_is_open_closes_the_window() {
     let mut server = start_settings_test(ONE_PROFILE);
     open_settings(&server);
     server.send_line("exit");
-    server.wait_exit();
+    assert_eq!(server.wait_exit(), 0);
 }
 
 /// 開いている間に別のプログラムが書き換えた設定は、キャンセルで閉じたあとに読み直す。
