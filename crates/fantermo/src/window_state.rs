@@ -6,7 +6,6 @@
 //! 受け持つ。
 
 use std::{
-    ffi::OsString,
     io,
     path::{Path, PathBuf},
 };
@@ -20,7 +19,7 @@ use windows::Win32::{
     },
 };
 
-use crate::config_file;
+use crate::app_files::{app_data_file, with_suffix, write_replacing};
 
 /// 開発用。状態ファイルの場所を、この環境変数の値に差し替える。
 const STATE_PATH_ENV: &str = "FANTERMO_STATE";
@@ -31,15 +30,12 @@ const STATE_FILE_NAME: &str = "state.toml";
 /// 読めなかった状態ファイルを写しておくファイルの、名前の後ろに足すもの。
 const BROKEN_SUFFIX: &str = ".broken";
 
-/// 書き込みの途中のファイルの、名前の後ろに足す拡張子。書き終えてから状態ファイルと置き換える。
-const TEMPORARY_EXTENSION: &str = "tmp";
-
 /// `WINDOWPLACEMENT` の、最大化したときの位置を指定しないことを表す値。
 const UNSPECIFIED_POSITION: POINT = POINT { x: -1, y: -1 };
 
 /// 状態ファイルの場所。[`STATE_PATH_ENV`] があればその値、なければ `%APPDATA%\fantermo\state.toml`。
 pub fn path() -> Option<PathBuf> {
-    config_file::app_data_file(STATE_PATH_ENV, STATE_FILE_NAME)
+    app_data_file(STATE_PATH_ENV, STATE_FILE_NAME)
 }
 
 /// 状態ファイルを読む。無ければ（初回の起動）既定値。TOML として読めなければ、中身を
@@ -83,19 +79,6 @@ pub fn load(path: Option<&Path>) -> State {
     }
 }
 
-/// `path` の名前の後ろに `suffix` を足した場所。
-fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let mut name = OsString::from(path.as_os_str());
-    name.push(suffix);
-    PathBuf::from(name)
-}
-
-/// `path` を書き換えるときの一時ファイルの場所。名前は `<名前>.<プロセスの番号>.tmp`。
-/// 二つの fantermo が同時に書いても、互いの一時ファイルを使わない。
-fn temporary_path(path: &Path, process_id: u32) -> PathBuf {
-    with_suffix(path, &format!(".{process_id}.{TEMPORARY_EXTENSION}"))
-}
-
 /// 読めなかった中身 `bytes` を、`path` の名前に `.broken` を足したファイルへ写す。
 fn set_aside_broken(path: &Path, bytes: &[u8]) {
     let broken = with_suffix(path, BROKEN_SUFFIX);
@@ -111,31 +94,6 @@ pub fn save(path: &Path, state: &State) {
     match write_replacing(path, &state::to_toml(state)) {
         Ok(()) => tracing::info!("saved the window state to {}", path.display()),
         Err(e) => tracing::warn!("cannot save the window state {}: {e}", path.display()),
-    }
-}
-
-/// `path` に `text` を書く。フォルダが無ければ作る。同じフォルダの一時ファイルに書いてから置き換える
-/// ので、途中で止まっても前のファイルは壊れない。
-pub fn write_replacing(path: &Path, text: &str) -> io::Result<()> {
-    if let Some(dir) = path.parent()
-        && !dir.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(dir)?;
-    }
-    let temporary = temporary_path(path, std::process::id());
-    std::fs::write(&temporary, text)
-        .and_then(|()| std::fs::rename(&temporary, path))
-        .inspect_err(|_| remove_temporary(&temporary))
-}
-
-/// 置き換えに失敗した一時ファイル `temporary` を消す。名前にプロセスの番号が入っていて、
-/// 二度と上書きされないため。
-fn remove_temporary(temporary: &Path) {
-    match std::fs::remove_file(temporary) {
-        Ok(()) => {}
-        // 書き始める前に失敗していれば、ファイルはない。
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => tracing::warn!("cannot remove {}: {e}", temporary.display()),
     }
 }
 
@@ -224,18 +182,8 @@ mod tests {
         };
         save(&path, &state);
         assert_eq!(load(Some(&path)), state);
-        assert!(!temporary_path(&path, std::process::id()).exists());
+        assert!(!with_suffix(&path, &format!(".{}.tmp", std::process::id())).exists());
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn temporary_path_carries_the_process_id() {
-        let path = Path::new("dir").join(STATE_FILE_NAME);
-        assert_eq!(
-            temporary_path(&path, 1234),
-            Path::new("dir").join("state.toml.1234.tmp")
-        );
-        assert_ne!(temporary_path(&path, 1), temporary_path(&path, 2));
     }
 
     #[test]
@@ -257,17 +205,6 @@ mod tests {
         let broken = dir.join("state.toml.broken");
         assert_eq!(std::fs::read_to_string(&broken).unwrap(), "[window\n");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[window\n");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn failed_replacement_removes_the_temporary_file() {
-        let dir = scratch_dir("failed-replacement");
-        // 置き換え先がフォルダだと、書くのは成功して置き換えが失敗する。
-        let path = dir.join(STATE_FILE_NAME);
-        std::fs::create_dir_all(&path).unwrap();
-        assert!(write_replacing(&path, "text").is_err());
-        assert!(!temporary_path(&path, std::process::id()).exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

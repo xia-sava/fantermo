@@ -29,12 +29,11 @@ use windows::{
             FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
             ReadDirectoryChangesW,
         },
-        UI::Shell::FOLDERID_RoamingAppData,
     },
     core::HSTRING,
 };
 
-use crate::{known_folder, window_state};
+use crate::app_files::{app_data_file, write_replacing};
 
 /// フォルダの変化を受け取るバッファの大きさ（4 バイト単位）。
 const NOTIFY_BUFFER_WORDS: usize = 4096;
@@ -45,26 +44,12 @@ const NOTIFY_HEADER_BYTES: usize = 12;
 /// 開発用。設定ファイルの場所を、この環境変数の値に差し替える。
 const CONFIG_PATH_ENV: &str = "FANTERMO_CONFIG";
 
-/// fantermo のファイルを置く、`%APPDATA%` の下のフォルダ。
-const APP_DATA_FOLDER: &str = "fantermo";
-
 /// 設定ファイルの名前。
 const CONFIG_FILE_NAME: &str = "config.toml";
 
 /// 設定ファイルの場所。[`CONFIG_PATH_ENV`] があればその値、なければ `%APPDATA%\fantermo\config.toml`。
 pub fn path() -> Option<PathBuf> {
     app_data_file(CONFIG_PATH_ENV, CONFIG_FILE_NAME)
-}
-
-/// fantermo が `%APPDATA%\fantermo` に置くファイル `file_name` の場所。環境変数 `override_env` が
-/// あれば、その値に差し替える。
-pub fn app_data_file(override_env: &str, file_name: &str) -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os(override_env) {
-        return Some(PathBuf::from(path));
-    }
-    let mut path = known_folder::path(&FOLDERID_RoamingAppData)?;
-    path.extend([APP_DATA_FOLDER, file_name]);
-    Some(path)
 }
 
 /// 読んだ設定と、利用者に見せる警告の文。
@@ -236,7 +221,7 @@ fn migrate_with(path: &Path, text: String, steps: &'static [Step]) -> String {
             tracing::warn!("{}: {dropped}", path.display());
         }
     }
-    match window_state::write_replacing(path, &migrated.text) {
+    match write_replacing(path, &migrated.text) {
         Ok(()) => tracing::info!(
             "rewrote the settings file {} in the current format",
             path.display()
@@ -277,7 +262,7 @@ pub fn save(path: &Path, base: &Config, edited: &Config) -> Result<(), String> {
     if exists && updated == text {
         return Ok(());
     }
-    if let Err(e) = window_state::write_replacing(path, &updated) {
+    if let Err(e) = write_replacing(path, &updated) {
         return Err(failed("設定ファイルに保存できませんでした。", &e));
     }
     tracing::info!("saved the settings to {}", path.display());
