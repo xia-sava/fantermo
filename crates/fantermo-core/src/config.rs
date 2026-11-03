@@ -637,16 +637,19 @@ pub enum BackendKind {
 }
 
 impl BackendKind {
+    /// 値と、設定ファイルに書く名前。
+    const NAMES: [(BackendKind, &'static str); 3] = [
+        (BackendKind::Conpty, "conpty"),
+        (BackendKind::Cygwin, "cygwin"),
+        (BackendKind::Wsl, "wsl"),
+    ];
+
     /// 書ける値のすべて。
-    pub const ALL: [BackendKind; 3] = [BackendKind::Conpty, BackendKind::Cygwin, BackendKind::Wsl];
+    pub const ALL: [BackendKind; 3] = named_values(&Self::NAMES);
 
     /// 設定ファイルに書く名前。
     pub fn name(self) -> &'static str {
-        match self {
-            BackendKind::Conpty => "conpty",
-            BackendKind::Cygwin => "cygwin",
-            BackendKind::Wsl => "wsl",
-        }
+        name_of(&Self::NAMES, self)
     }
 
     /// ブリッジで接続する。`command` を相手の側のコマンドラインとして渡し、空なら相手のログインシェル。
@@ -656,8 +659,36 @@ impl BackendKind {
 
     /// 設定ファイルに書く名前 `name` の値。
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.name() == name)
+        value_named(&Self::NAMES, name)
     }
+}
+
+/// 名前で書く値の表 `names` の値。表の順。
+const fn named_values<T: Copy, const N: usize>(names: &[(T, &str); N]) -> [T; N] {
+    let mut values = [names[0].0; N];
+    let mut index = 1;
+    while index < N {
+        values[index] = names[index].0;
+        index += 1;
+    }
+    values
+}
+
+/// 名前で書く値の表 `names` での、`value` の名前。
+fn name_of<T: Copy + PartialEq>(names: &[(T, &'static str)], value: T) -> &'static str {
+    names
+        .iter()
+        .find(|(candidate, _)| *candidate == value)
+        .map(|(_, name)| *name)
+        .expect("every value has a name")
+}
+
+/// 名前で書く値の表 `names` で、名前が `name` の値。大文字小文字は区別する。
+fn value_named<T: Copy>(names: &[(T, &'static str)], name: &str) -> Option<T> {
+    names
+        .iter()
+        .find(|(_, candidate)| *candidate == name)
+        .map(|(value, _)| *value)
 }
 
 /// `[background]` の設定。
@@ -725,8 +756,7 @@ impl Default for BackgroundConfig {
 }
 
 /// 背景画像の表示方法（`background.fit`）。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BackgroundFit {
     /// 縦横比を保って範囲を覆い、はみ出しを切る。
     #[default]
@@ -742,29 +772,26 @@ pub enum BackgroundFit {
 }
 
 impl BackgroundFit {
-    /// 書ける値のすべて。設定ファイルの説明と同じ順。
-    pub const ALL: [BackgroundFit; 5] = [
-        BackgroundFit::Fill,
-        BackgroundFit::Fit,
-        BackgroundFit::Stretch,
-        BackgroundFit::Tile,
-        BackgroundFit::Center,
+    /// 値と、設定ファイルに書く名前。設定ファイルの説明と同じ順。
+    const NAMES: [(BackgroundFit, &'static str); 5] = [
+        (BackgroundFit::Fill, "fill"),
+        (BackgroundFit::Fit, "fit"),
+        (BackgroundFit::Stretch, "stretch"),
+        (BackgroundFit::Tile, "tile"),
+        (BackgroundFit::Center, "center"),
     ];
+
+    /// 書ける値のすべて。設定ファイルの説明と同じ順。
+    pub const ALL: [BackgroundFit; 5] = named_values(&Self::NAMES);
 
     /// 設定ファイルに書く名前 `name` の値。
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|fit| fit.name() == name)
+        value_named(&Self::NAMES, name)
     }
 
     /// 設定ファイルに書く名前。
     pub fn name(self) -> &'static str {
-        match self {
-            BackgroundFit::Fill => "fill",
-            BackgroundFit::Fit => "fit",
-            BackgroundFit::Stretch => "stretch",
-            BackgroundFit::Tile => "tile",
-            BackgroundFit::Center => "center",
-        }
+        name_of(&Self::NAMES, self)
     }
 }
 
@@ -811,8 +838,7 @@ pub const TERMINAL_COLOR_KEYS: [&str; 2] = ["background", "foreground"];
 
 /// 端末の配色（`colors.scheme`）。背景色・文字の色・16 色をまとめて決める。カーソルは文字の色で
 /// 描き、選択範囲は文字の色と背景色を入れ替えて描くので、どちらも配色に従う。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ColorScheme {
     /// 黒の背景に白の文字。
     #[default]
@@ -822,15 +848,21 @@ pub enum ColorScheme {
 }
 
 impl ColorScheme {
+    /// 値と、設定ファイルに書く名前。設定ファイルの説明と同じ順。
+    const NAMES: [(ColorScheme, &'static str); 2] =
+        [(ColorScheme::Dark, "dark"), (ColorScheme::Light, "light")];
+
     /// 書ける値のすべて。設定ファイルの説明と同じ順。
-    pub const ALL: [ColorScheme; 2] = [ColorScheme::Dark, ColorScheme::Light];
+    pub const ALL: [ColorScheme; 2] = named_values(&Self::NAMES);
 
     /// 設定ファイルに書く名前。
     pub fn name(self) -> &'static str {
-        match self {
-            ColorScheme::Dark => "dark",
-            ColorScheme::Light => "light",
-        }
+        name_of(&Self::NAMES, self)
+    }
+
+    /// 設定ファイルに書く名前 `name` の値。
+    pub fn from_name(name: &str) -> Option<Self> {
+        value_named(&Self::NAMES, name)
     }
 
     /// 配色の端末の色。
@@ -1043,8 +1075,7 @@ impl PasteConfig {
 }
 
 /// 貼り付ける前に、内容を編集のダイアログで確認するとき（`paste.confirm`）。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PasteConfirm {
     /// コマンドとして実行される可能性があるとき。改行を含む文字列でアプリが bracketed paste を有効にしていない
     /// ときと、bracketed paste の終わりの印を含むとき。
@@ -1057,20 +1088,24 @@ pub enum PasteConfirm {
 }
 
 impl PasteConfirm {
-    /// 書ける値のすべて。設定ファイルの説明と同じ順。
-    pub const ALL: [PasteConfirm; 3] = [
-        PasteConfirm::Unsafe,
-        PasteConfirm::Multiline,
-        PasteConfirm::Never,
+    /// 値と、設定ファイルに書く名前。設定ファイルの説明と同じ順。
+    const NAMES: [(PasteConfirm, &'static str); 3] = [
+        (PasteConfirm::Unsafe, "unsafe"),
+        (PasteConfirm::Multiline, "multiline"),
+        (PasteConfirm::Never, "never"),
     ];
+
+    /// 書ける値のすべて。設定ファイルの説明と同じ順。
+    pub const ALL: [PasteConfirm; 3] = named_values(&Self::NAMES);
 
     /// 設定ファイルに書く名前。
     pub fn name(self) -> &'static str {
-        match self {
-            PasteConfirm::Unsafe => "unsafe",
-            PasteConfirm::Multiline => "multiline",
-            PasteConfirm::Never => "never",
-        }
+        name_of(&Self::NAMES, self)
+    }
+
+    /// 設定ファイルに書く名前 `name` の値。
+    pub fn from_name(name: &str) -> Option<Self> {
+        value_named(&Self::NAMES, name)
     }
 }
 
@@ -1082,8 +1117,7 @@ pub struct ClipboardConfig {
 }
 
 /// アプリがクリップボードの内容を読み取ろうとしたときにどうするか（`clipboard.read`）。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ClipboardRead {
     /// 確認のダイアログを出す。
     #[default]
@@ -1095,20 +1129,24 @@ pub enum ClipboardRead {
 }
 
 impl ClipboardRead {
-    /// 書ける値のすべて。設定ファイルの説明と同じ順。
-    pub const ALL: [ClipboardRead; 3] = [
-        ClipboardRead::Ask,
-        ClipboardRead::Allow,
-        ClipboardRead::Deny,
+    /// 値と、設定ファイルに書く名前。設定ファイルの説明と同じ順。
+    const NAMES: [(ClipboardRead, &'static str); 3] = [
+        (ClipboardRead::Ask, "ask"),
+        (ClipboardRead::Allow, "allow"),
+        (ClipboardRead::Deny, "deny"),
     ];
+
+    /// 書ける値のすべて。設定ファイルの説明と同じ順。
+    pub const ALL: [ClipboardRead; 3] = named_values(&Self::NAMES);
 
     /// 設定ファイルに書く名前。
     pub fn name(self) -> &'static str {
-        match self {
-            ClipboardRead::Ask => "ask",
-            ClipboardRead::Allow => "allow",
-            ClipboardRead::Deny => "deny",
-        }
+        name_of(&Self::NAMES, self)
+    }
+
+    /// 設定ファイルに書く名前 `name` の値。
+    pub fn from_name(name: &str) -> Option<Self> {
+        value_named(&Self::NAMES, name)
     }
 }
 
@@ -1135,8 +1173,7 @@ impl Default for FontConfig {
 
 /// フォントのグリフが、文字に割り当てたセルより広いときの描き方（`font.wide_glyph`）。
 /// 曖昧幅の文字を 1 セルで数えることは変えず、描き方だけを選ぶ。罫線などの形として描く文字には効かない。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WideGlyph {
     /// セルに収まるように横に縮める。
     #[default]
@@ -1150,22 +1187,25 @@ pub enum WideGlyph {
 }
 
 impl WideGlyph {
-    /// 書ける値のすべて。設定ファイルの説明と同じ順。
-    pub const ALL: [WideGlyph; 4] = [
-        WideGlyph::Shrink,
-        WideGlyph::Clip,
-        WideGlyph::Overflow,
-        WideGlyph::OverflowCenter,
+    /// 値と、設定ファイルに書く名前。設定ファイルの説明と同じ順。
+    const NAMES: [(WideGlyph, &'static str); 4] = [
+        (WideGlyph::Shrink, "shrink"),
+        (WideGlyph::Clip, "clip"),
+        (WideGlyph::Overflow, "overflow"),
+        (WideGlyph::OverflowCenter, "overflow_center"),
     ];
+
+    /// 書ける値のすべて。設定ファイルの説明と同じ順。
+    pub const ALL: [WideGlyph; 4] = named_values(&Self::NAMES);
 
     /// 設定ファイルに書く名前。
     pub fn name(self) -> &'static str {
-        match self {
-            WideGlyph::Shrink => "shrink",
-            WideGlyph::Clip => "clip",
-            WideGlyph::Overflow => "overflow",
-            WideGlyph::OverflowCenter => "overflow_center",
-        }
+        name_of(&Self::NAMES, self)
+    }
+
+    /// 設定ファイルに書く名前 `name` の値。
+    pub fn from_name(name: &str) -> Option<Self> {
+        value_named(&Self::NAMES, name)
     }
 }
 
@@ -1343,7 +1383,7 @@ pub fn parse(text: &str, previous: &Config) -> Parsed {
         Item::Valid(mut paste) => {
             const SECTION: Option<&str> = Some("paste");
             reader
-                .take::<PasteConfirm>(&mut paste, SECTION, "confirm")
+                .take_named(&mut paste, SECTION, "confirm", &PasteConfirm::NAMES)
                 .apply(&mut config.paste.confirm, PasteConfirm::default());
             reader
                 .take::<u32>(&mut paste, SECTION, "confirm_size")
@@ -1366,7 +1406,7 @@ pub fn parse(text: &str, previous: &Config) -> Parsed {
         Item::Valid(mut clipboard) => {
             const SECTION: Option<&str> = Some("clipboard");
             reader
-                .take::<ClipboardRead>(&mut clipboard, SECTION, "read")
+                .take_named(&mut clipboard, SECTION, "read", &ClipboardRead::NAMES)
                 .apply(&mut config.clipboard.read, ClipboardRead::default());
             reader.warn_unknown(&clipboard, SECTION);
         }
@@ -1689,7 +1729,7 @@ fn read_font(reader: &mut Reader, table: &mut Table, font: &mut FontConfig) {
         })
         .apply(&mut font.size_pt, defaults.size_pt);
     reader
-        .take::<WideGlyph>(table, SECTION, "wide_glyph")
+        .take_named(table, SECTION, "wide_glyph", &WideGlyph::NAMES)
         .apply(&mut font.wide_glyph, defaults.wide_glyph);
 }
 
@@ -1705,7 +1745,7 @@ fn read_background(reader: &mut Reader, table: &mut Table, background: &mut Back
     read_image_opacity(reader, table, SECTION)
         .apply(&mut background.image_opacity, defaults.image_opacity);
     reader
-        .take::<BackgroundFit>(table, SECTION, "fit")
+        .take_named(table, SECTION, "fit", &BackgroundFit::NAMES)
         .apply(&mut background.fit, defaults.fit);
 }
 
@@ -1769,7 +1809,7 @@ fn read_background_image(reader: &mut Reader, path: &str, value: Value) -> Optio
         }
         Item::Invalid => return None,
     };
-    let fit = match reader.take::<BackgroundFit>(&mut table, section, "fit") {
+    let fit = match reader.take_named(&mut table, section, "fit", &BackgroundFit::NAMES) {
         Item::Valid(fit) => Some(fit),
         Item::Absent | Item::Invalid => None,
     };
@@ -1789,7 +1829,7 @@ fn read_background_image(reader: &mut Reader, path: &str, value: Value) -> Optio
 fn read_colors(reader: &mut Reader, colors: &mut Table, config: &mut ColorsConfig) {
     const SECTION: Option<&str> = Some("colors");
     reader
-        .take::<ColorScheme>(colors, SECTION, "scheme")
+        .take_named(colors, SECTION, "scheme", &ColorScheme::NAMES)
         .apply(&mut config.scheme, ColorScheme::default());
     for table in ColorTable::ALL {
         let section = table.path().join(".");
@@ -1915,6 +1955,25 @@ impl Reader {
                 Item::Invalid
             }
         }
+    }
+
+    /// `table` から `key` を取り出して、名前で書く値の表 `names` の名前として読む。文字列でなければ
+    /// 警告し、知らない名前なら書ける名前を添えて警告する。
+    fn take_named<T: Copy>(
+        &mut self,
+        table: &mut Table,
+        section: Option<&str>,
+        key: &str,
+        names: &[(T, &'static str)],
+    ) -> Item<T> {
+        let path = key_path(section, key);
+        self.take::<String>(table, section, key)
+            .parse(self, &path, |name| {
+                value_named(names, &name).ok_or_else(|| {
+                    let known: Vec<&str> = names.iter().map(|(_, name)| *name).collect();
+                    format!("ignoring {path}: unknown name {name:?}, expected one of {known:?}")
+                })
+            })
     }
 
     /// 読み終えた `table` に残ったキーを、知らないものとして警告する。
