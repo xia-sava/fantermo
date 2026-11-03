@@ -31,8 +31,8 @@ const STATE_FILE_NAME: &str = "state.toml";
 /// 読めなかった状態ファイルを写しておくファイルの、名前の後ろに足すもの。
 const BROKEN_SUFFIX: &str = ".broken";
 
-/// 書き込みの途中のファイルの、名前の後ろに足すもの。書き終えてから状態ファイルと置き換える。
-const TEMPORARY_SUFFIX: &str = ".tmp";
+/// 書き込みの途中のファイルの、名前の後ろに足す拡張子。書き終えてから状態ファイルと置き換える。
+const TEMPORARY_EXTENSION: &str = "tmp";
 
 /// `WINDOWPLACEMENT` の、最大化したときの位置を指定しないことを表す値。
 const UNSPECIFIED_POSITION: POINT = POINT { x: -1, y: -1 };
@@ -90,6 +90,12 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// `path` を書き換えるときの一時ファイルの場所。名前は `<名前>.<プロセスの番号>.tmp`。
+/// 二つの fantermo が同時に書いても、互いの一時ファイルを使わない。
+fn temporary_path(path: &Path, process_id: u32) -> PathBuf {
+    with_suffix(path, &format!(".{process_id}.{TEMPORARY_EXTENSION}"))
+}
+
 /// 読めなかった中身 `bytes` を、`path` の名前に `.broken` を足したファイルへ写す。
 fn set_aside_broken(path: &Path, bytes: &[u8]) {
     let broken = with_suffix(path, BROKEN_SUFFIX);
@@ -116,7 +122,7 @@ pub fn write_replacing(path: &Path, text: &str) -> io::Result<()> {
     {
         std::fs::create_dir_all(dir)?;
     }
-    let temporary = with_suffix(path, TEMPORARY_SUFFIX);
+    let temporary = temporary_path(path, std::process::id());
     std::fs::write(&temporary, text)?;
     if let Err(e) = std::fs::rename(&temporary, path) {
         if let Err(remove) = std::fs::remove_file(&temporary) {
@@ -212,8 +218,18 @@ mod tests {
         };
         save(&path, &state);
         assert_eq!(load(Some(&path)), state);
-        assert!(!with_suffix(&path, TEMPORARY_SUFFIX).exists());
+        assert!(!temporary_path(&path, std::process::id()).exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn temporary_path_carries_the_process_id() {
+        let path = Path::new("dir").join(STATE_FILE_NAME);
+        assert_eq!(
+            temporary_path(&path, 1234),
+            Path::new("dir").join("state.toml.1234.tmp")
+        );
+        assert_ne!(temporary_path(&path, 1), temporary_path(&path, 2));
     }
 
     #[test]

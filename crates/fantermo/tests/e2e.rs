@@ -6214,7 +6214,12 @@ fn assert_save_failed(server: &Server) {
     assert!(text.contains("config.toml"), "{text}");
     close_message_box(server, 1);
     wait_top_dialog(server, SETTINGS_DIALOG_CLASS);
-    assert!(!server.dir().join("config.toml.tmp").exists());
+    let leftovers: Vec<_> = std::fs::read_dir(server.dir())
+        .expect("failed to list the settings folder")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
 /// 読めない・書けないファイルへの保存はメッセージを出し、ダイアログは開いたままで、やり直せる。
