@@ -61,8 +61,8 @@ use windows::{
                 GetMessageW, GetQueueStatus, GetWindowLongPtrW, GetWindowRect, HTCLIENT, IDC_ARROW,
                 IDC_HAND, IsIconic, KillTimer, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
                 PostMessageW, PostQuitMessage, QS_INPUT, QS_PAINT, RegisterClassExW,
-                SIZE_MINIMIZED, SPI_GETWHEELSCROLLLINES, SPI_SETWHEELSCROLLLINES, SW_RESTORE,
-                SW_SHOWDEFAULT, SW_SHOWMAXIMIZED, SWP_NOACTIVATE, SWP_NOZORDER,
+                SIZE_MINIMIZED, SPI_GETWHEELSCROLLLINES, SW_RESTORE, SW_SHOWDEFAULT,
+                SW_SHOWMAXIMIZED, SWP_NOACTIVATE, SWP_NOZORDER,
                 SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetCursor, SetForegroundWindow,
                 SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
                 SystemParametersInfoW, TranslateMessage, USER_TIMER_MINIMUM, WA_INACTIVE,
@@ -4081,11 +4081,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             with_app(&mut |app| app.fit_to_client());
             LRESULT(0)
         }
-        // 設定アプリでホイールの行数を変えたときは、次のホイールから新しい行数で動かす。
+        // 設定が変わったら、次のホイールから Windows の設定の行数で動かす。読み直しは軽く、
+        // レジストリを書いて wparam 0 で知らせる道具の変更も拾えるので、変わった設定の種類は見ない。
         WM_SETTINGCHANGE => {
-            if wparam.0 == SPI_SETWHEELSCROLLLINES.0 as usize {
-                with_app(&mut |app| app.wheel_lines_per_notch = wheel_lines_per_notch());
-            }
+            with_app(&mut |app| app.wheel_lines_per_notch = wheel_lines_per_notch());
             // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
