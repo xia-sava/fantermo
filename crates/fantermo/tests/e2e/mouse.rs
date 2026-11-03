@@ -37,6 +37,14 @@ fn wheel(delta: i32, at: Point) -> String {
     step(&format!("wheel:{delta}"), at, "")
 }
 
+/// 画面を空にしてから、打った行には出ない 2 行を出す（[`echo_lines`]）。続けて操作する段が、下の空きの行を使える。
+fn fresh_lines(server: &Server, first: &str, second: &str) -> Value {
+    server.type_line("cls");
+    echo_lines(server, first, second)
+}
+
+/// ドラッグの選択。選び方（通常、行をまたぐ、余白とウィンドウの外から、Alt の矩形）、コピーのキー、キャプチャを
+/// 失ったあとは広げないこと。段ごとに画面を空にし、段の名前を行の文字にしている。
 #[test]
 fn dragging_selects_the_text_and_the_copy_key_copies_it() {
     let server = Server::start_cmd();
@@ -74,13 +82,9 @@ fn dragging_selects_the_text_and_the_copy_key_copies_it() {
     server.type_line("echo alive-%ERRORLEVEL%-end");
     server.wait_text("alive-0-end");
     server.wait_clipboard("alph");
-}
 
-#[test]
-fn a_drag_over_lines_selects_up_to_the_end_of_the_first_line() {
-    let server = Server::start_cmd();
-    server.wait_text(CMD_PROMPT);
-    let state = echo_lines(&server, "upper", "lower");
+    // 行をまたぐドラッグは、最初の行の終わりまで選ぶ。
+    let state = fresh_lines(&server, "upper", "lower");
     let (col, row) = find_cell(&state, "upper-0-end");
     server.mouse(&left_drag(
         cell_left(&state, col + 2, row),
@@ -88,27 +92,50 @@ fn a_drag_over_lines_selects_up_to_the_end_of_the_first_line() {
         "",
     ));
     assert_eq!(selection(&server.state()), Some("per-0-end\nlo"));
-}
 
-#[test]
-fn a_drag_from_the_padding_and_out_of_the_window_uses_the_nearest_cell() {
-    let server = Server::start_cmd();
-    server.wait_text(CMD_PROMPT);
-    let state = echo_lines(&server, "alpha", "other");
-    let (col, row) = find_cell(&state, "alpha-0-end");
+    // 余白からと、ウィンドウの外へのドラッグは、いちばん近いセルを使う。
+    let state = fresh_lines(&server, "plain", "beyond");
+    let (col, row) = find_cell(&state, "plain-0-end");
     assert_eq!(col, 0, "{state:#}");
     let (_, y) = cell_center(&state, 0, row);
-
     let padding = i64::try_from(number(&state["terminal_x"])).expect("the position fits") - 1;
     server.mouse(&left_drag((padding, y), cell_right(&state, 4, row), ""));
-    assert_eq!(selection(&server.state()), Some("alpha"));
-
+    assert_eq!(selection(&server.state()), Some("plain"));
     server.mouse(&left_drag(cell_right(&state, 4, row), (-20, y), ""));
-    assert_eq!(selection(&server.state()), Some("alpha"));
+    assert_eq!(selection(&server.state()), Some("plain"));
+
+    // Alt を押したドラッグは矩形を選ぶ。
+    let state = fresh_lines(&server, "abcdef", "ghijkl");
+    let (col, row) = find_cell(&state, "abcdef-0-end");
+    let from = cell_left(&state, col + 1, row);
+    let to = cell_right(&state, col + 2, row + 1);
+    server.mouse(&left_drag(from, to, "alt"));
+    assert_eq!(selection(&server.state()), Some("bc\nhi"));
+    // 同じ位置をすぐ押すとダブルクリックになるので、間に別の位置を押す。
+    server.mouse(&left_click(on_empty_cell_below(&state, row)));
+    server.mouse(&left_drag(from, to, ""));
+    assert_eq!(selection(&server.state()), Some("bcdef-0-end\nghi"));
+
+    // ほかのウィンドウがマウスをキャプチャしたあとは、離したことが届かない。そのあとの動きで選択を広げない。
+    let state = fresh_lines(&server, "omega", "zeta");
+    let (col, row) = find_cell(&state, "omega-0-end");
+    // 前の段の押した位置から離れた位置を押して、前の押下の続きにならないようにする。
+    server.mouse(&left_click(on_empty_cell_below(&state, row)));
+    server.mouse(&left_press_and_move(
+        cell_left(&state, col, row),
+        cell_right(&state, col + 1, row),
+        "",
+    ));
+    assert_eq!(selection(&server.state()), Some("om"));
+    server.send_message("capturechanged", 0);
+    server.mouse(&step("move", cell_right(&state, col + 4, row), ""));
+    assert_eq!(selection(&server.state()), Some("om"));
 }
 
+/// クリックの選択（ダブルクリックは単語、トリプルクリックは行）とコピーのキー、クリックと入力で選択が外れること、
+/// 右ボタンはメニューを出し、中ボタンは貼り付けないこと。段ごとに画面を空にしている。
 #[test]
-fn double_click_selects_a_word_and_triple_click_a_line() {
+fn clicks_select_and_the_other_buttons_do_their_own_things() {
     let server = Server::start_cmd();
     server.wait_text(CMD_PROMPT);
     let state = echo_lines(&server, "alpha beta", "gamma delta");
@@ -125,76 +152,34 @@ fn double_click_selects_a_word_and_triple_click_a_line() {
     assert_eq!(selection(&server.state()), Some("gamma delta-0-end"));
     server.press("ctrl+c");
     server.wait_clipboard("gamma delta-0-end");
-}
 
-#[test]
-fn alt_drag_selects_a_rectangle() {
-    let server = Server::start_cmd();
-    server.wait_text(CMD_PROMPT);
-    let state = echo_lines(&server, "abcdef", "ghijkl");
-    let (col, row) = find_cell(&state, "abcdef-0-end");
-    let from = cell_left(&state, col + 1, row);
-    let to = cell_right(&state, col + 2, row + 1);
-
-    server.mouse(&left_drag(from, to, "alt"));
-    assert_eq!(selection(&server.state()), Some("bc\nhi"));
-
-    // 同じ位置をすぐ押すとダブルクリックになるので、間に別の位置を押す。
-    server.mouse(&left_click(on_empty_cell_below(&state, row)));
-    server.mouse(&left_drag(from, to, ""));
-    assert_eq!(selection(&server.state()), Some("bcdef-0-end\nghi"));
-}
-
-#[test]
-fn a_click_and_input_clear_the_selection() {
-    let server = Server::start_cmd();
-    server.wait_text(CMD_PROMPT);
-    let state = echo_lines(&server, "alpha", "other");
-    let (col, row) = find_cell(&state, "alpha-0-end");
+    // クリックと入力で、選択が外れる。
+    let state = fresh_lines(&server, "sigma", "tau");
+    let (col, row) = find_cell(&state, "sigma-0-end");
     let select = left_drag(
         cell_left(&state, col, row),
         cell_right(&state, col + 4, row),
         "",
     );
-
     server.mouse(&select);
-    assert_eq!(selection(&server.state()), Some("alpha"));
+    assert_eq!(selection(&server.state()), Some("sigma"));
     server.mouse(&left_click(on_empty_cell_below(&state, row)));
     assert_eq!(selection(&server.state()), None);
-
     server.mouse(&select);
-    assert_eq!(selection(&server.state()), Some("alpha"));
+    assert_eq!(selection(&server.state()), Some("sigma"));
     server.type_text("x");
     assert_eq!(selection(&server.state()), None);
-}
+    // 打った文字を実行して行を空にし、終了コードを 0 に戻す。
+    server.press("enter");
+    server.type_line("ver >nul");
 
-/// ほかのウィンドウがマウスをキャプチャしたあとは、離したことが届かない。そのあとの動きで選択を広げない。
-#[test]
-fn a_selection_stops_following_the_pointer_when_the_capture_is_lost() {
-    let server = Server::start_cmd();
-    server.wait_text(CMD_PROMPT);
-    let state = echo_lines(&server, "alpha", "other");
-    let (col, row) = find_cell(&state, "alpha-0-end");
-    server.mouse(&left_press_and_move(
-        cell_left(&state, col, row),
-        cell_right(&state, col + 1, row),
-        "",
-    ));
-    assert_eq!(selection(&server.state()), Some("al"));
-
-    server.send_message("capturechanged", 0);
-    server.mouse(&step("move", cell_right(&state, col + 4, row), ""));
-    assert_eq!(selection(&server.state()), Some("al"));
-}
-
-#[test]
-fn the_right_button_opens_the_menu_and_the_middle_button_does_not_paste() {
-    let server = Server::start_cmd();
-    server.wait_text(CMD_PROMPT);
+    // 右ボタンと中ボタン。
     server.post("/e2e/clipboard", b"must-not-be-pasted");
-    let state = echo_lines(&server, "alpha", "other");
-    let (col, row) = find_cell(&state, "alpha-0-end");
+    let state = fresh_lines(&server, "kappa", "lambda");
+    let (col, row) = find_cell(&state, "kappa-0-end");
     let at = cell_center(&state, col, row);
+    // 前の段の押した位置から離れた位置を押して、前の押下の続きにならないようにする。
+    server.mouse(&left_click(on_empty_cell_below(&state, row)));
 
     server.mouse(&button_click("middle", at, ""));
     server.type_line("echo after-%ERRORLEVEL%-middle");
@@ -218,7 +203,7 @@ fn the_right_button_opens_the_menu_and_the_middle_button_does_not_paste() {
     );
     server.mouse(&step("right-up", at, ""));
     wait_menu(&server);
-    assert_eq!(selection(&server.state()), Some("alpha"));
+    assert_eq!(selection(&server.state()), Some("kappa"));
     close_menu(&server);
 
     server.type_line("echo after-%ERRORLEVEL%-menu");
@@ -227,10 +212,33 @@ fn the_right_button_opens_the_menu_and_the_middle_button_does_not_paste() {
     assert!(!text.contains("must-not-be-pasted"), "{text}");
 }
 
+/// スクロールバックがなければつまみはなく、押しても何も起きない。右ボタンでメニューも出さず、選択も始めない。
+/// スクロールバックができたあとは、ホイール、つまみの外のクリックによる 1 ページの送り、押し続けたときの繰り返し。
 #[test]
-fn the_wheel_scrolls_the_scrollback() {
+fn the_wheel_and_the_scroll_bar_track_scroll_the_scrollback() {
     let server = Server::start_cmd();
-    server.wait_text(CMD_PROMPT);
+    let state = server.wait_text(CMD_PROMPT);
+    assert!(state["scroll_bar"]["thumb"].is_null(), "{state:#}");
+    let at = on_scroll_bar(&state, scroll_bar_middle(&state));
+    server.mouse(&format!(
+        "{}{}{}",
+        step("left-down", at, ""),
+        step("move", (at.0, at.1 + DRAG_PIXELS), "left"),
+        step("left-up", (at.0, at.1 + DRAG_PIXELS), "")
+    ));
+    server.mouse(&button_click("right", at, ""));
+    server.mouse(&button_click("middle", at, ""));
+    let after = server.state();
+    assert_eq!(after["scroll_bar"]["pressed"], false, "{after:#}");
+    assert_eq!(selection(&after), None, "{after:#}");
+    assert_eq!(
+        after["dialogs"].as_array().map(Vec::len),
+        Some(0),
+        "{after:#}"
+    );
+    server.type_line("echo alive-%ERRORLEVEL%-end");
+    server.wait_text("alive-0-end");
+
     let state = fill_scrollback(&server);
     let newest = newest_offset(&state);
     let lines = number(&state["scroll"]["lines_per_notch"]);
@@ -262,8 +270,47 @@ fn the_wheel_scrolls_the_scrollback() {
     server.wait_until("the newest lines", |state| {
         scroll_offset(state) == newest_offset(state)
     });
+
+    // つまみの外のクリックは、1 ページ送る。
+    let state = server.state();
+    let page = number(&state["scroll"]["len"]);
+    let above = on_scroll_bar(&state, thumb_top(&state) - 1);
+    server.mouse(&button_click("left", above, ""));
+    let moved = server.state();
+    assert_eq!(scroll_offset(&moved), newest - page, "{moved:#}");
+    assert_eq!(moved["scroll_bar"]["pressed"], false, "{moved:#}");
+    let below = on_scroll_bar(&moved, thumb_top(&moved) + thumb_length(&moved) + 1);
+    server.mouse(&button_click("left", below, ""));
+    assert_eq!(scroll_offset(&server.state()), newest);
+
+    // つまみの外を押し続けると、つまみがマウスの位置に来るまで送り、そこで止まる。
+    let state = server.state();
+    let target = scroll_bar_middle(&state);
+    assert!(target < thumb_top(&state), "{state:#}");
+    let at = on_scroll_bar(&state, target);
+    server.mouse(&format!(
+        "{}{}",
+        step("move", at, ""),
+        step("left-down", at, "")
+    ));
+    let reached = server.wait_until("the thumb under the pointer", |state| {
+        thumb_top(state) <= target
+    });
+    assert!(
+        target < thumb_top(&reached) + thumb_length(&reached),
+        "{reached:#}"
+    );
+    // 押したままでも、つまみはマウスの位置を通り越さない。
+    let stopped_at = scroll_offset(&reached);
+    server.assert_holds_for(REPEAT_STOPPED_CHECK, "the stopped view", |state| {
+        scroll_offset(state) == stopped_at
+    });
+    server.mouse(&step("left-up", at, ""));
+    assert_eq!(server.state()["scroll_bar"]["pressed"], false);
 }
 
+/// つまみのドラッグ（動き、つかんだ位置、色、バーの外、離したあと）、キャプチャを失ったときとタブを替えたときに
+/// 押していることが終わること。
 #[test]
 fn dragging_the_thumb_moves_the_view_and_keeps_the_grabbed_position() {
     /// つまみの動きがマウスの動きからずれてよいピクセル数。行の単位に丸める分。
@@ -317,65 +364,15 @@ fn dragging_the_thumb_moves_the_view_and_keeps_the_grabbed_position() {
     let released = server.state();
     assert_eq!(released["scroll_bar"]["pressed"], false, "{released:#}");
     assert!(scroll_offset(&released) < newest, "{released:#}");
-}
 
-#[test]
-fn clicking_the_scroll_bar_track_moves_a_page() {
-    let server = Server::start_cmd();
-    server.wait_text(CMD_PROMPT);
-    let state = fill_scrollback(&server);
-    let newest = newest_offset(&state);
-    let page = number(&state["scroll"]["len"]);
-
-    let above = on_scroll_bar(&state, thumb_top(&state) - 1);
-    server.mouse(&button_click("left", above, ""));
-    let moved = server.state();
-    assert_eq!(scroll_offset(&moved), newest - page, "{moved:#}");
-    assert_eq!(moved["scroll_bar"]["pressed"], false, "{moved:#}");
-
-    let below = on_scroll_bar(&moved, thumb_top(&moved) + thumb_length(&moved) + 1);
-    server.mouse(&button_click("left", below, ""));
-    assert_eq!(scroll_offset(&server.state()), newest);
-}
-
-/// つまみの外を押し続けると、つまみがマウスの位置に来るまで送り、そこで止まる。
-#[test]
-fn holding_the_scroll_bar_track_repeats_until_the_thumb_reaches_the_pointer() {
-    let server = Server::start_cmd();
-    server.wait_text(CMD_PROMPT);
-    let state = fill_scrollback(&server);
-    let target = scroll_bar_middle(&state);
-    assert!(target < thumb_top(&state), "{state:#}");
-
-    let at = on_scroll_bar(&state, target);
-    server.mouse(&format!(
-        "{}{}",
-        step("move", at, ""),
-        step("left-down", at, "")
-    ));
-    let reached = server.wait_until("the thumb under the pointer", |state| {
-        thumb_top(state) <= target
+    // 打つと、いちばん新しい行に戻る。
+    server.type_text("x");
+    let state = server.wait_until("the newest lines", |state| {
+        scroll_offset(state) == newest_offset(state)
     });
-    assert!(
-        target < thumb_top(&reached) + thumb_length(&reached),
-        "{reached:#}"
-    );
-    // 押したままでも、つまみはマウスの位置を通り越さない。
-    let stopped_at = scroll_offset(&reached);
-    server.assert_holds_for(REPEAT_STOPPED_CHECK, "the stopped view", |state| {
-        scroll_offset(state) == stopped_at
-    });
-    server.mouse(&step("left-up", at, ""));
-    assert_eq!(server.state()["scroll_bar"]["pressed"], false);
-}
-
-#[test]
-fn the_scroll_bar_press_ends_when_the_capture_is_lost_or_the_tab_changes() {
-    let server = Server::start_cmd();
-    server.wait_text(CMD_PROMPT);
-    let state = fill_scrollback(&server);
     let (x, y) = on_thumb(&state);
 
+    // キャプチャを失ったら、押していることが終わる。
     server.mouse(&left_press_and_move((x, y), (x, y - DRAG_PIXELS), ""));
     let dragged = server.state();
     assert_eq!(dragged["scroll_bar"]["pressed"], true, "{dragged:#}");
@@ -399,37 +396,9 @@ fn the_scroll_bar_press_ends_when_the_capture_is_lost_or_the_tab_changes() {
     server.mouse(&step("left-up", (x, y), ""));
 }
 
-/// スクロールバックがなければつまみはなく、押しても何も起きない。右ボタンでメニューも出さず、選択も始めない。
 #[test]
-fn the_scroll_bar_without_scrollback_does_nothing() {
-    let server = Server::start_cmd();
-    let state = server.wait_text(CMD_PROMPT);
-    assert!(state["scroll_bar"]["thumb"].is_null(), "{state:#}");
-    let at = on_scroll_bar(&state, scroll_bar_middle(&state));
-
-    server.mouse(&format!(
-        "{}{}{}",
-        step("left-down", at, ""),
-        step("move", (at.0, at.1 + DRAG_PIXELS), "left"),
-        step("left-up", (at.0, at.1 + DRAG_PIXELS), "")
-    ));
-    server.mouse(&button_click("right", at, ""));
-    server.mouse(&button_click("middle", at, ""));
-    let after = server.state();
-    assert_eq!(after["scroll_bar"]["pressed"], false, "{after:#}");
-    assert_eq!(selection(&after), None, "{after:#}");
-    assert_eq!(
-        after["dialogs"].as_array().map(Vec::len),
-        Some(0),
-        "{after:#}"
-    );
-    server.type_line("echo alive-%ERRORLEVEL%-end");
-    server.wait_text("alive-0-end");
-}
-
-#[test]
-fn the_tab_bar_switches_and_opens_tabs() {
-    let server = Server::start_cmd();
+fn the_tab_bar_switches_opens_and_closes_tabs() {
+    let mut server = Server::start_cmd();
     let state = server.wait_text(CMD_PROMPT);
 
     server.mouse(&left_click(area_center(&state["tab_bar"]["new_tab"])));
@@ -467,15 +436,8 @@ fn the_tab_bar_switches_and_opens_tabs() {
     let state = server.state();
     assert_eq!(tab_count(&state), 2, "{state:#}");
     assert_eq!(state["active"], 1, "{state:#}");
-}
 
-#[test]
-fn the_close_buttons_and_the_middle_button_close_tabs() {
-    let mut server = Server::start_cmd();
-    let state = server.wait_text(CMD_PROMPT);
-    let new_tab = area_center(&state["tab_bar"]["new_tab"]);
-    server.mouse(&left_click(new_tab));
-    let state = wait_tabs(&server, 2);
+    // 閉じるボタンと中ボタンで閉じる。
     server.mouse(&left_click(area_center(&state["tab_bar"]["new_tab"])));
     let state = wait_tabs(&server, 3);
     server.mouse(&left_click(area_center(&state["tab_bar"]["new_tab"])));
