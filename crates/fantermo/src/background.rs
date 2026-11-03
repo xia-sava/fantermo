@@ -249,6 +249,15 @@ impl Decoder {
                 WICDecodeMetadataCacheOnDemand,
             )?;
             let frame = decoder.GetFrame(0)?;
+            let (mut width, mut height) = (0, 0);
+            frame.GetSize(&mut width, &mut height)?;
+            if exceeds_source_pixel_limit(width, height) {
+                // 呼び出す側が、この誤りをファイル名つきで warn に残す。
+                return Err(windows::core::Error::new(
+                    E_FAIL,
+                    format!("the image is {width}x{height}, over {MAX_SOURCE_PIXELS} pixels"),
+                ));
+            }
             let converter = factory.CreateFormatConverter()?;
             converter.Initialize(
                 &frame,
@@ -258,15 +267,6 @@ impl Decoder {
                 0.0,
                 WICBitmapPaletteTypeMedianCut,
             )?;
-            let (mut width, mut height) = (0, 0);
-            converter.GetSize(&mut width, &mut height)?;
-            if exceeds_source_pixel_limit(width, height) {
-                // 呼び出す側が、この誤りをファイル名つきで warn に残す。
-                return Err(windows::core::Error::new(
-                    E_FAIL,
-                    format!("the image is {width}x{height}, over {MAX_SOURCE_PIXELS} pixels"),
-                ));
-            }
             let (stored_width, stored_height) =
                 background::stored_size((width, height), screen_size(), MAX_TEXTURE_SIDE);
             let source: IWICBitmapSource = if (stored_width, stored_height) == (width, height) {
