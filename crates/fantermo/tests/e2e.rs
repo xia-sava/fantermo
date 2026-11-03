@@ -5874,6 +5874,30 @@ fn capture_key(server: &Server, button: i32, combo: &str) {
     press_key_in_dialog(server, combo);
 }
 
+/// Alt を含む F4 は断って、読み取りのダイアログを開いたまま待つ。割り当ては変わらない。
+#[test]
+fn the_key_capture_refuses_alt_f4_and_keeps_waiting() {
+    let server = start_settings_test(ONE_PROFILE);
+    open_settings(&server);
+    show_page(&server, PAGE_KEYS);
+    let default = Keymap::default();
+    let rows = list_state(&server, ID_KEYS).0;
+
+    select_key_row(&server, &default, Action::NewTab, None);
+    capture_key(&server, ID_KEY_ADD, "alt+f4");
+    let state = server.wait_until("the refusal in the key capture dialog", |state| {
+        state["dialogs"][0]["class"] == KEY_CAPTURE_CLASS
+            && dialog_text(&state["dialogs"][0]).contains("割り当てられません")
+    });
+    // 断る文のあとにも、やめかたの案内が残る。
+    assert!(dialog_text(&state["dialogs"][0]).contains("Esc"));
+
+    // 読み取りは続いていて、Esc でやめられる。
+    press_key_in_dialog(&server, "escape");
+    wait_top_dialog(&server, SETTINGS_DIALOG_CLASS);
+    assert_eq!(list_state(&server, ID_KEYS).0, rows);
+}
+
 /// キーの割り当てを足し、変え、外し、既定に戻す。Esc なら読み取りをやめる。
 #[test]
 fn the_keys_page_adds_changes_removes_and_resets_bindings() {
