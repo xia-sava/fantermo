@@ -6,12 +6,23 @@
 //! （[`OutputBudget::receiving`]）までは知らせ直さないので、読むためのスレッドが積んでまだ処理されていない知らせは
 //! 端末ごとに高々一つになる。
 //! 知らせを積みすぎると、ウィンドウのスレッドがそれを処理し続けて、キー入力と描画が後回しになるため。
+//! 積めなかった知らせは次の出力で積み直す。子プロセスが終わったあとの最後の知らせは、次がないので積めるまで
+//! 積み直す（[`OutputBudget::sent_last`]）。
 
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::{
+    sync::{Condvar, Mutex, MutexGuard, PoisonError},
+    thread,
+    time::Duration,
+};
 
 /// ウィンドウのスレッドがまだ受け取っていない出力のバイト数の上限。ブリッジが書き終えていない入力に置く
 /// 上限と同じ大きさ。ConPTY の一度の読み取り（64 KiB）なら 1024 回分。
 pub const MAX_PENDING_OUTPUT: usize = 64 * 1024 * 1024;
+
+/// 最後の知らせを積めなかったときに、知らせ直すまでの間隔（[`OutputBudget::sent_last`]）。積めないのは
+/// ウィンドウのスレッドのキューが埋まっているときで、空くのを待つ間に CPU を使わない長さにする。終了の知らせが
+/// 遅れるのはタブを閉じるまでの時間だけ。
+const WAKE_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
 /// まだ受け取られていない出力のバイト数と、上限で待っている読むためのスレッドを起こすもの。
 pub struct OutputBudget {
@@ -67,11 +78,27 @@ impl OutputBudget {
     /// 受け取る端末はもうなく、知らせの宛先のウィンドウも残っているとは限らないため。`close` と同じロックの中で
     /// 見るので、`close` から戻ったあとに `wake` が呼ばれることはない。
     pub fn sent(&self, wake: impl FnOnce() -> bool) {
+        self.notify(wake);
+    }
+
+    /// 読むためのスレッドが、最後のものをチャネルに入れ終えた（子プロセスが終わった）。このあとは何も渡さないので、
+    /// 積めなかった知らせを次の [`sent`](Self::sent) で積み直す機会はない。[`sent`](Self::sent) と同じように
+    /// 知らせ、積めなければ [`WAKE_RETRY_INTERVAL`] ごとに知らせ直す。すでに知らせてあるか、
+    /// [`close`](Self::close) したら戻る。
+    pub fn sent_last(&self, wake: &dyn Fn() -> bool) {
+        while !self.notify(wake) {
+            thread::sleep(WAKE_RETRY_INTERVAL);
+        }
+    }
+
+    /// まだ知らせていなければ `wake` で知らせる。知らせてあるか、閉じていれば `true`。
+    fn notify(&self, wake: impl FnOnce() -> bool) -> bool {
         let mut state = self.lock();
         if !state.closed && !state.notified {
             // 知らせを積むだけで待たないので、ロックを持ったまま呼んでよい。
             state.notified = wake();
         }
+        state.closed || state.notified
     }
 
     /// ウィンドウのスレッドがチャネルから受け取り始める。チャネルを読む前に呼ぶ。このあとに入れたものは
@@ -110,7 +137,7 @@ mod tests {
     use std::{
         sync::{
             Arc,
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
         },
         thread,
     };
@@ -169,6 +196,37 @@ mod tests {
         assert!(budget.push(1));
         budget.close();
         assert!(!sent_with(&budget, true));
+    }
+
+    #[test]
+    fn the_last_wake_is_asked_for_until_it_is_posted() {
+        let budget = OutputBudget::new(LIMIT);
+        let calls = AtomicUsize::new(0);
+        budget.sent_last(&|| calls.fetch_add(1, Ordering::SeqCst) == 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        // 知らせたあとは、受け取り始めるまで知らせない。
+        budget.sent_last(&|| panic!("asked for a wake twice"));
+    }
+
+    #[test]
+    fn closing_stops_asking_for_the_last_wake() {
+        let budget = Arc::new(OutputBudget::new(LIMIT));
+        let asked = Arc::new(AtomicBool::new(false));
+        let waker = thread::spawn({
+            let budget = Arc::clone(&budget);
+            let asked = Arc::clone(&asked);
+            move || {
+                budget.sent_last(&|| {
+                    asked.store(true, Ordering::SeqCst);
+                    false
+                });
+            }
+        });
+        while !asked.load(Ordering::SeqCst) {
+            thread::yield_now();
+        }
+        budget.close();
+        waker.join().unwrap();
     }
 
     #[test]

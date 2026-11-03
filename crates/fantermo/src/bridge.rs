@@ -596,7 +596,8 @@ fn write_input(mut stdin: impl Write, queued: &mpsc::Receiver<Vec<u8>>, closing:
 
 /// ブリッジの標準出力を閉じるまで読み、単位ごとに `sender` へ渡して `wake` を呼ぶ。まだ受け取られていない分が
 /// `budget` の上限に達していれば、受け取られるまで待つ（[`send_all`]）。`closing` が立っていれば（破棄した
-/// あとなら）、閉じたことは知らせない。
+/// あとなら）、閉じたことは知らせない。終わりの単位か閉じたことを渡したら、その知らせは積めるまで積み直す
+/// （[`OutputBudget::sent_last`]）。
 fn read_output(
     mut stdout: ChildStdout,
     process: &OwnedHandle,
@@ -619,6 +620,8 @@ fn read_output(
         },
     );
     if !closed {
+        // 終わりの単位を受け取って渡した。その知らせを積めていなければ、積めるまで積み直す。
+        budget.sent_last(wake);
         return;
     }
     if closing.load(Ordering::Relaxed) {
@@ -634,6 +637,7 @@ fn read_output(
         })
         .flatten();
     send_all(sender, budget, reader.closed(code), wake);
+    budget.sent_last(wake);
 }
 
 /// `events` を `sender` へ渡し、すべて渡せたら `wake` で知らせる（まとめ方は [`OutputBudget::sent`]）。端末に

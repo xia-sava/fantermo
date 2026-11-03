@@ -6,7 +6,11 @@ use std::{
     hash::{BuildHasher, Hasher, RandomState},
     path::{Path, PathBuf},
     rc::Rc,
-    sync::{Arc, mpsc},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant, SystemTime},
 };
 
@@ -3225,14 +3229,24 @@ fn device_removed_poster(hwnd: HWND) -> renderer::DeviceRemovedNotify {
 /// App を解放するときにバックエンドを破棄し、どちらもウィンドウのハンドルを解放する前なので、壊れたウィンドウの
 /// ハンドルの値（ほかのウィンドウに使い回されうる）へ積むことはない。閉じる前に積んだ知らせが閉じたあとに届いても、
 /// [`App::on_wake`] は知らない番号として捨てる（番号は使い回さない）。
+///
+/// 積めなかったことは端末ごとに一度だけ warn に残し、二度目からは debug にする。子プロセスが終わったあとの知らせは
+/// 積めるまで間隔をおいて積み直すので、キューが埋まっている間に warn が続かないようにする。
 fn wake_poster(hwnd: HWND, id: SessionId) -> Wake {
     // HWND はスレッドをまたいで渡せないので、値だけを持たせる。
     let hwnd_value = hwnd.0 as isize;
+    let warned = AtomicBool::new(false);
     Arc::new(
         move || match post(HWND(hwnd_value as *mut _), WM_APP_WAKE, WPARAM(id.0)) {
             Ok(()) => true,
             Err(e) => {
-                warn_post_failed(WM_APP_WAKE, &e);
+                if !window_is_gone(&e) && warned.swap(true, Ordering::Relaxed) {
+                    tracing::debug!(
+                        "failed to post message {WM_APP_WAKE:#06x} for terminal {id:?} again: {e}"
+                    );
+                } else {
+                    warn_post_failed(WM_APP_WAKE, &e);
+                }
                 false
             }
         },

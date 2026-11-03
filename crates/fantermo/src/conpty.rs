@@ -251,7 +251,7 @@ impl ConPty {
                     process::wait(&process, None);
                     // 出力の知らせと同じくまとめる。知らせを積んであれば、それを受け取ったウィンドウのスレッドが
                     // 出力を受け取ったあとで終了を見る。
-                    budget.sent(&*wake);
+                    budget.sent_last(&*wake);
                 }
             })?;
         Ok(pty)
