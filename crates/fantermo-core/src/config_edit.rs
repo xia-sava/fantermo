@@ -1530,17 +1530,19 @@ mod tests {
         // プロファイルはテーブルを消す。
         assert_eq!(back, TEMPLATE);
 
-        // 一つずつ戻しても同じ。一覧に載らない項目を戻してから、一覧の項目を上から一つずつ戻す。
+        // 一つずつ戻しても同じ。一覧の項目を上から一つずつ戻してから（`[background]` の項目は画像の
+        // テーブルが残ったまま戻す）、一覧に載らない項目を戻す。
         let mut current = edited.clone();
         let mut text = text;
         let defaults = Config::default();
         /// 戻す手順。二つ目の引数は既定値。
         type Step = Box<dyn Fn(&mut Config, &Config)>;
-        let mut steps: Vec<Step> = vec![
-            Box::new(|c, d| {
-                c.background.images = d.background.images.clone();
-                c.background.fit = d.background.fit;
-            }),
+        let mut steps: Vec<Step> = Vec::new();
+        for scalar in SCALARS {
+            steps.push(Box::new(|c, d| reset_scalar(scalar, c, d)));
+        }
+        let others: Vec<Step> = vec![
+            Box::new(|c, d| c.background.images = d.background.images.clone()),
             Box::new(|c, d| {
                 c.profiles = d.profiles.clone();
                 c.default_profile = d.default_profile.clone();
@@ -1549,9 +1551,7 @@ mod tests {
             Box::new(|c, d| c.font.families = d.font.families.clone()),
             Box::new(|c, d| c.keys = d.keys.clone()),
         ];
-        for scalar in SCALARS {
-            steps.push(Box::new(|c, d| reset_scalar(scalar, c, d)));
-        }
+        steps.extend(others);
         for step in steps {
             let mut next = current.clone();
             step(&mut next, &defaults);

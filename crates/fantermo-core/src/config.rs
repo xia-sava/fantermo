@@ -3049,7 +3049,12 @@ mod tests {
             .warnings
             .iter()
             .map(|warning| {
+                // 知らないキーの警告（一覧から抜けた項目）も、キーの名前を取り出して差に出す。
                 let rest = warning.message.trim_start_matches("ignoring ");
+                let rest = rest
+                    .strip_prefix("unknown setting ")
+                    .or_else(|| rest.strip_prefix("unknown table "))
+                    .unwrap_or(rest);
                 let end = rest.find([':', ' ']).unwrap_or(rest.len());
                 rest[..end].to_owned()
             })
@@ -3499,26 +3504,30 @@ mod tests {
                     let (start, end) = (*range.start(), *range.end());
                     (
                         [start, end, (start + end) / 2.0].map(|value| value.to_string()),
-                        [
+                        vec![
                             (start - 0.01).to_string(),
                             (end + 0.01).to_string(),
                             "nan".to_owned(),
                         ],
                     )
                 }
-                ScalarKind::Int { range, .. } => (
-                    [
-                        *range.start(),
-                        *range.end(),
-                        (range.start() + range.end()) / 2,
-                    ]
-                    .map(|value| value.to_string()),
-                    [
+                ScalarKind::Int { range, .. } => {
+                    let mut rejected = vec![
                         (range.end() + 1).to_string(),
                         "-1".to_owned(),
                         "1.5".to_owned(),
-                    ],
-                ),
+                    ];
+                    rejected.extend(range.start().checked_sub(1).map(|below| below.to_string()));
+                    (
+                        [
+                            *range.start(),
+                            *range.end(),
+                            (range.start() + range.end()) / 2,
+                        ]
+                        .map(|value| value.to_string()),
+                        rejected,
+                    )
+                }
                 ScalarKind::Name { .. } => continue,
             };
             let file_is_read = |text: &str| {

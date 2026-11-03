@@ -3697,6 +3697,8 @@ mod tests {
 
     #[test]
     fn number_fields_read_what_they_show() {
+        // `parse` に渡す項目の名前の誤りは、このテストだけが見つける。`NumberKind` の定数を足したら、
+        // ここにも足す（`Controls::number_fields` はウィンドウが要るので使えない）。
         fn reads_back<T: Copy + PartialEq + std::fmt::Debug>(kind: &NumberKind<T>) {
             let value = (kind.start)(&Config::default());
             assert_eq!(
