@@ -190,6 +190,7 @@ fn create(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> windows::core::Re
             None,
         )?
     };
+    let unfinished = dialog::Unfinished::new(hwnd);
     let text = label_text(prompt, None);
     // SAFETY: hwnd は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
     let label = unsafe {
@@ -210,7 +211,7 @@ fn create(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> windows::core::Re
     };
     // フォントは呼び出し元のダイアログのもので、そのダイアログが閉じるまで消さない。
     dialog::set_font(label, font, false);
-    Ok((hwnd, label))
+    Ok((unfinished.finish(), label))
 }
 
 extern "system" fn capture_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {

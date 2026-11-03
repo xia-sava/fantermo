@@ -231,6 +231,7 @@ fn create(
             None,
         )?
     };
+    let unfinished = dialog::Unfinished::new(hwnd);
 
     let child = |class: PCWSTR, text: &str, style: WINDOW_STYLE, ex_style, id: i32| {
         // SAFETY: hwnd は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
@@ -332,6 +333,7 @@ fn create(
 
     // 状態を結び付けてから大きさを決め、WM_SIZE で子を並べさせる。
     // SAFETY: state は run の中にあり、run は run_modal でダイアログが壊れる（WM_DESTROY で外す）まで待つ。
+    // この先で失敗すれば、unfinished が戻る前にダイアログを壊す。
     unsafe { dialog::attach_state(hwnd, state) };
     // SAFETY: hwnd は作ったばかりのウィンドウ。
     unsafe { SetWindowPos(hwnd, None, left, top, width, height, SWP_NOZORDER)? };
@@ -344,7 +346,7 @@ fn create(
         _ = ShowWindow(hwnd, SW_SHOW);
         _ = SetFocus(Some(state.edit.get()));
     }
-    Ok(hwnd)
+    Ok(unfinished.finish())
 }
 
 /// DPI を `dpi` にし、入力欄とボタンのフォントと、入力欄の上の行のフォントを作り直す。コントロールを

@@ -3,7 +3,7 @@
 //! ダイアログの状態は、作ったあとに [`attach_state`] でウィンドウに結び付け、ウィンドウプロシージャは
 //! [`state_of`] で読む。`WM_DESTROY` で [`on_destroy`] が結び付けを外し、閉じた印を立てる。印が立つと
 //! `modal::run` のループが抜け、呼び出し元が状態を捨てる。状態が持つフォント（[`OwnedFont`]）はそのときに
-//! 消えるので、コントロールより先には消えない。
+//! 消えるので、コントロールより先には消えない。作る途中で失敗したダイアログは、[`Unfinished`] が壊す。
 //!
 //! 寸法は 96 DPI のときのピクセルで決め、ダイアログの DPI に合わせて拡大する（[`scale`]）。
 
@@ -156,6 +156,29 @@ pub fn destroy(dialog: HWND) {
     // SAFETY: dialog はこのスレッドのウィンドウ。もう壊れていれば失敗するだけ。
     if let Err(e) = unsafe { DestroyWindow(dialog) } {
         tracing::warn!("failed to close a dialog: {e}");
+    }
+}
+
+/// 作っている途中のダイアログ。[`Unfinished::finish`] で作り終えないまま捨てると（途中で失敗して戻ると）、
+/// ダイアログを壊す。結び付けた状態があれば、`WM_DESTROY` で外れる。
+pub struct Unfinished(Option<HWND>);
+
+impl Unfinished {
+    pub fn new(dialog: HWND) -> Self {
+        Self(Some(dialog))
+    }
+
+    /// 作り終えたダイアログを返す。以後、捨てても壊さない。
+    pub fn finish(mut self) -> HWND {
+        self.0.take().unwrap_or_default()
+    }
+}
+
+impl Drop for Unfinished {
+    fn drop(&mut self) {
+        if let Some(dialog) = self.0.take() {
+            destroy(dialog);
+        }
     }
 }
 

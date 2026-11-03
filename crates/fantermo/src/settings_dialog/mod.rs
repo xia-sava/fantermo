@@ -332,6 +332,7 @@ fn create<'a>(
             None,
         )?
     };
+    let unfinished = dialog::Unfinished::new(hwnd);
     let mut b = Builder::new(hwnd, instance.into());
 
     let pages = b.list(
@@ -382,7 +383,7 @@ fn create<'a>(
     }
 
     Ok(State {
-        hwnd,
+        hwnd: unfinished.finish(),
         controls: Controls {
             pages,
             error,
