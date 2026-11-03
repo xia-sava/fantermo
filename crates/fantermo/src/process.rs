@@ -1,7 +1,8 @@
 //! プロセスのハンドルを開く・待つ・終了コードを読む・終わらせる処理と、子プロセスの出力のパイプを閉じるまで
 //! 読む処理。ConPTY とブリッジのバックエンドと、起動の指定を渡す先のウィンドウを選ぶ処理が使う。
 //!
-//! 失敗したときのログは、何のプロセスかが分かる呼び出し元で残すので、ここではエラーを返すだけにする。
+//! 開く・待つ・終了コードを読む・終わらせる処理は、失敗したときのログを何のプロセスかが分かる呼び出し元で
+//! 残すので、エラーを返すだけにする。読む処理は、読めなかったときのログを読む相手の名前を添えてここで残す。
 
 use std::{
     io::{self, Read},
@@ -18,7 +19,10 @@ use windows::Win32::{
 };
 
 /// fantermo がプロセスを終わらせるときの終了コード。
-pub const TERMINATED_EXIT_CODE: u32 = 1;
+const TERMINATED_EXIT_CODE: u32 = 1;
+
+/// 出力のパイプから一度に読む大きさ。
+pub const READ_BUFFER_SIZE: usize = 64 * 1024;
 
 /// プロセス `pid` を `access` の権限で開く。
 pub fn open(pid: u32, access: PROCESS_ACCESS_RIGHTS) -> windows::core::Result<OwnedHandle> {
@@ -38,7 +42,8 @@ pub fn wait(process: &OwnedHandle, timeout: Option<Duration>) -> bool {
     unsafe { WaitForSingleObject(handle(process), millis) == WAIT_OBJECT_0 }
 }
 
-/// 終わったプロセスの終了コード。
+/// 終わったプロセスの終了コード。`process` は [`wait`] で終わったことを見たハンドル。終わっていなければ
+/// `STILL_ACTIVE`（259）が返る。
 pub fn exit_code(process: &OwnedHandle) -> windows::core::Result<u32> {
     let mut code = 0u32;
     // SAFETY: process は有効なプロセスのハンドルで、code は書き込める。
@@ -52,7 +57,7 @@ pub fn terminate(process: &OwnedHandle) -> windows::core::Result<()> {
     unsafe { TerminateProcess(handle(process), TERMINATED_EXIT_CODE) }
 }
 
-/// 子プロセスの出力のパイプ `reader` を、閉じるまで `buffer_size` バイトずつ読んで `on_chunk` に渡す。
+/// 子プロセスの出力のパイプ `reader` を、閉じるまで一度に `buffer_size` バイトまで読んで `on_chunk` に渡す。
 /// `on_chunk` が `false` を返したら、そこで読むのをやめる。パイプが閉じたか読めなくなって抜けたら `true`、
 /// `on_chunk` が止めたら `false`。読めなかったときは `source`（読む相手の名前）を添えてログに残す。
 pub fn read_until_closed(

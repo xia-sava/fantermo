@@ -379,7 +379,6 @@ fn send_to(window: HWND, units: &[u16], timeout: Duration) -> bool {
 
 /// プロセス `pid` が、管理者として動いているかどうかでこのプロセスと同じか。読めなければ `false`。
 fn same_elevation_as_this_process(pid: u32) -> bool {
-    // 読み取りの権限で開く。
     let process = match process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION) {
         Ok(process) => process,
         Err(e) => {

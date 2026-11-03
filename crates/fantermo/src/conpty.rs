@@ -74,9 +74,6 @@ use crate::{
     process,
 };
 
-/// 出力のパイプから一度に読む大きさ。
-const READ_BUFFER_SIZE: usize = 64 * 1024;
-
 /// 疑似コンソールを閉じたあと、接続しているプロセスが自分で終わるのを待つ猶予（ミリ秒）。
 const CLOSE_TIMEOUT_MS: u32 = 5000;
 
@@ -404,7 +401,6 @@ impl ConsoleHost {
     /// `client` が接続しているコンソールのプロセス。接続する前か、開けなければ `None`。
     fn of(client: &OwnedHandle) -> Option<Self> {
         let pid = connected_console_host(query_console_host(HANDLE(client.as_raw_handle()))?)?;
-        // 終わるのを待つ権限で開く。
         let process = match process::open(pid, PROCESS_SYNCHRONIZE) {
             Ok(process) => process,
             Err(e) => {
@@ -969,13 +965,18 @@ fn read_output(
     budget: &OutputBudget,
     wake: &dyn Fn() -> bool,
 ) {
-    process::read_until_closed(output, READ_BUFFER_SIZE, "the pseudo console", |chunk| {
-        if !budget.push(chunk.len()) || sender.send(chunk.to_vec()).is_err() {
-            return false;
-        }
-        budget.sent(wake);
-        true
-    });
+    process::read_until_closed(
+        output,
+        process::READ_BUFFER_SIZE,
+        "the pseudo console",
+        |chunk| {
+            if !budget.push(chunk.len()) || sender.send(chunk.to_vec()).is_err() {
+                return false;
+            }
+            budget.sent(wake);
+            true
+        },
+    );
 }
 
 #[cfg(test)]

@@ -58,8 +58,6 @@ const WSL_EXE: &str = "wsl.exe";
 
 /// 破棄したあと、ブリッジが自分で終わるのを待つ時間。過ぎたら止める。
 const QUIT_TIMEOUT: Duration = Duration::from_secs(5);
-/// 出力のパイプから一度に読む大きさ。
-const READ_BUFFER_SIZE: usize = 64 * 1024;
 /// ブリッジの開始の通知より前に届いたバイト列を、エラーの文に添えるために覚えておく上限。
 const RAW_OUTPUT_LIMIT: usize = 4096;
 /// シグナルで終わった子プロセスの終了コードの基準（シェルと同じく 128 + シグナルの番号）。
@@ -609,12 +607,17 @@ fn read_output(
 ) {
     let mut reader = OutputReader::default();
     // stdout は、ブリッジの終了を待つ間も開いたままにし、この関数を抜けるときに閉じる。
-    let closed = process::read_until_closed(&mut stdout, READ_BUFFER_SIZE, "the bridge", |chunk| {
-        let events = reader.push(chunk);
-        let done = reader.done;
-        send_all(sender, budget, events, wake);
-        !done
-    });
+    let closed = process::read_until_closed(
+        &mut stdout,
+        process::READ_BUFFER_SIZE,
+        "the bridge",
+        |chunk| {
+            let events = reader.push(chunk);
+            let done = reader.done;
+            send_all(sender, budget, events, wake);
+            !done
+        },
+    );
     if !closed {
         return;
     }
