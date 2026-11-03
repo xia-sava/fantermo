@@ -10,7 +10,7 @@ description: fantermo の e2e テストと、制御の口（feature e2e）での
 要求にはヘッダー `X-Fantermo-Token` でトークンを付ける（付いていない、合わないものは 403）。一つの接続で要求を続けて送れ（keep-alive）、
 次の要求が 10 秒来ない接続は閉じる。`Server::request` は接続を使い回し、閉じられていたら繋ぎ直す。手で `curl` などで使うときもトークンを付ける。
 実装は `crates/fantermo/src/e2e_server.rs`（受ける側）と `crates/fantermo/src/window/e2e.rs`（ウィンドウのスレッド側）、
-テストの土台は `crates/fantermo/tests/common/mod.rs`、テストは `crates/fantermo/tests/e2e/`（話題ごとのファイル `basics.rs` `processes.rs` `mouse.rs` `menu.rs` `settings.rs` `update.rs` `dpi.rs` など。複数の話題が使う補助は `ui.rs`）。テストの名前にはファイル名（モジュール）が前に付く（`mouse::the_wheel_scrolls_the_scrollback`）。名前の一部での絞り込みと `--skip` は、これまでの名前のままで効く。
+テストの土台は `crates/fantermo/tests/common/mod.rs`、テストは `crates/fantermo/tests/e2e/`（話題ごとのファイル `basics.rs` `processes.rs` `mouse.rs` `menu.rs` `settings.rs` `update.rs` `dpi.rs` など。複数の話題が使う補助は `ui.rs`）。テストの名前にはファイル名（モジュール）が前に付く（`mouse::the_wheel_and_the_scroll_bar_track_scroll_the_scrollback`）。名前の一部での絞り込みと `--skip` は、これまでの名前のままで効く。
 
 ## 実行
 
