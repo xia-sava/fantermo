@@ -1009,7 +1009,7 @@ impl DeviceRemovedWatch {
         let device: ID3D11Device4 = match device.cast() {
             Ok(device) => device,
             Err(e) => {
-                tracing::debug!("no ID3D11Device4; noticing a lost device only when drawing: {e}");
+                tracing::warn!("no ID3D11Device4; noticing a lost device only when drawing: {e}");
                 return None;
             }
         };
