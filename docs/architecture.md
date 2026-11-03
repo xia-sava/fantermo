@@ -318,7 +318,11 @@ run-hidden は利用者のセッションのウィンドウステーション（
 1. `fantermo-core/src/config.rs`: 型にフィールドを足し，`Default` に既定値を入れます．既定値と範囲は `DEFAULT_*`・`*_RANGE` の定数にします．`parse` の中で `reader.take(…).check(…).apply(…)` の形で読みます（型が違う・範囲外なら警告を残してその項目だけ前の値）．設定ダイアログの入力欄から読む `parse_*` も置きます．`TEMPLATE` に説明と `# キー = 既定値` の行を足します．
 2. `fantermo-core/src/config_edit.rs`: `Setting` に足し，`Setting::ALL`（配列の長さも）・`path`・`key`・`value` に足します．プロファイルや背景画像の一覧のようなテーブルの配列は，別の処理（`update` の中）です．
 3. `fantermo/src/window.rs`: `App` に値を持たせ，`App::new`・`apply_config`・**`config_in_use`** に足します．`config_in_use` に足し忘れると，読み直しと設定ダイアログで値が戻ります．反映に配置やアトラスの作り直しが要るかを `apply_config` で決めます．
-4. `fantermo/src/settings_dialog.rs`: コントロールの ID（`ID_*`），`Controls` のフィールド，`create` で作る，`fill` で値を入れる，`read` で `Config` に戻す（不正なら入力欄を返してフォーカスする），数なら `step` と `EN_CHANGE` の振り分け．
+4. `fantermo/src/settings_dialog.rs`: コントロールの ID（`ID_*`），`Controls` のフィールド，`create` で作る，`fill` で値を入れる，`read` で `Config` に戻す（不正なら入力欄を返してフォーカスする）．コントロールは種類ごとの部品で作ります．
+   - 数なら `NumberField`．読み方・見せ方・矢印での動かし方・読めないときの文を `NumberKind` の定数に書き，`Controls::number_fields()` に足します．矢印での増減，矢印の配置，`EN_CHANGE` の振り分けはこの一覧を回します．
+   - ラジオボタンの組なら `RadioGroup`．選択肢と画面の名前の配列を渡し，`Controls::radio_groups()` に足します．`BN_CLICKED` の振り分けはこの一覧を回します．
+   - 固定の選択肢のコンボボックスなら `ChoiceBox`．選択肢と画面の名前を渡します．`CBN_SELCHANGE` の処理は `dialog_proc` に書きます．
+   - 変えたときに反映のほかにも処理が要るものは，`dialog_proc` の一覧を回す分岐より上に，その ID の分岐を書きます．
 5. 書き方を改めるとき（キーの名前を変える，型を変える）は，`config::migrate` の `STEPS` の最後に手順を足します．今の書き方には何もしない手順にします．
 6. テスト: `config.rs` の `template_shows_every_setting_with_its_default`・`all_items_are_read` と範囲のテスト，`config_edit.rs` の書き戻しのテスト，設定ダイアログの e2e（`crates/fantermo/tests/e2e.rs`）．利用者に見える項目なら README も．
 
