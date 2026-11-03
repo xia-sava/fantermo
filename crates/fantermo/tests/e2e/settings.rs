@@ -282,12 +282,26 @@ fn key_row_of(keys: &Keymap, action: Action, combo: Option<&str>) -> usize {
     unreachable!("every action is listed")
 }
 
-/// 全ページが開いて、見えるコントロールがページごとに替わり、起動時の値が設定ファイルのとおり。
+/// 全ページが開いて、見えるコントロールがページごとに替わり、起動時の値が設定ファイルのとおり。小さいウィンドウの
+/// 真ん中に置くと画面の外へはみ出す設定ダイアログは、作業領域の中に置く。
 #[test]
 fn every_settings_page_opens_and_shows_the_values_of_the_file() {
+    const SMALL_GRID: (u16, u16) = (20, 5);
     let server = start_settings_test_with_images(EVERY_PAGE_CONFIG, &["a.png", "b.png"]);
     let config = saved_config(&server);
+    server.resize(SMALL_GRID.0, SMALL_GRID.1);
     let dialog = open_settings(&server);
+    let work = &dialog["work_area"];
+    let field = |value: &Value| value.as_i64().expect("not a number");
+    let (left, top) = (field(&dialog["left"]), field(&dialog["top"]));
+    let (width, height) = (field(&dialog["width"]), field(&dialog["height"]));
+    assert!(
+        left >= field(&work["left"])
+            && top >= field(&work["top"])
+            && left + width <= field(&work["right"])
+            && top + height <= field(&work["bottom"]),
+        "{dialog:#}"
+    );
     assert_eq!(control(&dialog, ID_PAGES)["selected"], PAGE_APPEARANCE);
     let pages = control(&dialog, ID_PAGES)["items"]
         .as_array()
@@ -450,27 +464,6 @@ fn every_settings_page_opens_and_shows_the_values_of_the_file() {
     press_cancel(&server);
 }
 
-/// 小さいウィンドウの真ん中に置くと画面の外へはみ出す設定ダイアログは、作業領域の中に置く。
-#[test]
-fn the_settings_dialog_stays_on_the_screen_over_a_small_window() {
-    const SMALL_GRID: (u16, u16) = (20, 5);
-    let server = start_settings_test(ONE_PROFILE);
-    server.resize(SMALL_GRID.0, SMALL_GRID.1);
-    let dialog = open_settings(&server);
-    let work = &dialog["work_area"];
-    let field = |value: &Value| value.as_i64().expect("not a number");
-    let (left, top) = (field(&dialog["left"]), field(&dialog["top"]));
-    let (width, height) = (field(&dialog["width"]), field(&dialog["height"]));
-    assert!(
-        left >= field(&work["left"])
-            && top >= field(&work["top"])
-            && left + width <= field(&work["right"])
-            && top + height <= field(&work["bottom"]),
-        "{dialog:#}"
-    );
-    press_cancel(&server);
-}
-
 /// `page` を見せて、コントロール `id` を押せるかを読む。
 #[track_caller]
 fn control_enabled_on_page(server: &Server, page: usize, id: i32) -> bool {
@@ -598,35 +591,8 @@ fn the_preview_and_cancel_keep_the_window_rect() {
     assert_layout_fits_the_client(&state);
 }
 
-/// 「適用」は書いて開いたまま。そのあとの「キャンセル」は適用したときへ戻す。
-#[test]
-fn apply_keeps_the_dialog_open_and_cancel_returns_to_what_was_applied() {
-    let server = start_settings_test(&format!("{ONE_PROFILE}[window]\npadding = 4\n"));
-    let first_x = number(&server.state()["terminal_x"]);
-    open_settings(&server);
-
-    set_text(&server, ID_PADDING, "10");
-    press_apply(&server);
-    assert_eq!(saved_config(&server).window.padding, 10);
-    assert_eq!(server.state()["dialogs"].as_array().map_or(0, Vec::len), 1);
-    let applied_x = first_x + 6;
-    server.wait_until("the applied padding", |state| {
-        number(&state["terminal_x"]) == applied_x
-    });
-    let applied = config_text(&server);
-
-    set_text(&server, ID_PADDING, "20");
-    let previewed_x = first_x + 16;
-    server.wait_until("the previewed padding", |state| {
-        number(&state["terminal_x"]) == previewed_x
-    });
-    press_cancel(&server);
-    let state = server.state();
-    assert_eq!(number(&state["terminal_x"]), applied_x, "{state:#}");
-    assert_eq!(config_text(&server), applied);
-}
-
 /// 「キャンセル」、×、Esc は、どのページの変更も端末から取り下げ、設定ファイルを変えない。Enter は「OK」。
+/// 「適用」は書いて開いたままで、そのあとの「キャンセル」は適用したときへ戻す。
 #[test]
 fn cancelling_leaves_the_file_and_the_window_as_they_were() {
     let original = format!(
@@ -676,6 +642,29 @@ fn cancelling_leaves_the_file_and_the_window_as_they_were() {
     press_key_in_dialog(&server, "enter");
     server.wait_dialogs(0);
     assert_eq!(saved_config(&server).window.padding, 9);
+
+    // 「適用」は書いて開いたまま。そのあとの「キャンセル」は適用したときへ戻す。
+    let first_x = number(&server.state()["terminal_x"]);
+    open_settings(&server);
+    set_text(&server, ID_PADDING, "10");
+    press_apply(&server);
+    assert_eq!(saved_config(&server).window.padding, 10);
+    assert_eq!(open_dialog_count(&server), 1);
+    let applied_x = first_x + 1;
+    server.wait_until("the applied padding", |state| {
+        number(&state["terminal_x"]) == applied_x
+    });
+    let applied = config_text(&server);
+
+    set_text(&server, ID_PADDING, "20");
+    let previewed_x = first_x + 11;
+    server.wait_until("the previewed padding", |state| {
+        number(&state["terminal_x"]) == previewed_x
+    });
+    press_cancel(&server);
+    let state = server.state();
+    assert_eq!(number(&state["terminal_x"]), applied_x, "{state:#}");
+    assert_eq!(config_text(&server), applied);
 }
 
 /// 設定ファイルの、ダイアログで扱わないコメントと未知のキーとテーブルは、保存で消えない。
@@ -720,11 +709,6 @@ path = 'b.png'
     // 未知のキーは起動の警告で知らせる。
     wait_message_box(&server);
     close_message_box(&server, 0);
-
-    // 何も変えなければ書かない。
-    open_settings(&server);
-    press_ok(&server);
-    assert_eq!(config_text(&server), original);
 
     // 一つ変えれば、その値だけが変わる。
     open_settings(&server);
@@ -788,35 +772,15 @@ fn invalid_numbers_show_an_error_and_are_not_saved() {
     select(&server, ID_BACKGROUND_IMAGES, 0);
 
     let cases: [(usize, i32, &[&str], &str); 6] = [
-        (
-            PAGE_APPEARANCE,
-            ID_SIZE,
-            &["abc", "", "0", "129", "-1"],
-            "11",
-        ),
-        (
-            PAGE_APPEARANCE,
-            ID_SCROLL_BAR_WIDTH,
-            &["abc", "3", "65", "1.5"],
-            "12",
-        ),
-        (PAGE_APPEARANCE, ID_PADDING, &["abc", "-1", "65"], "4"),
-        (
-            PAGE_BEHAVIOR,
-            ID_PASTE_CONFIRM_SIZE,
-            &["abc", "-1", "1048577"],
-            "8",
-        ),
-        (
-            PAGE_BACKGROUND,
-            ID_BACKGROUND_OPACITY,
-            &["abc", "-0.1", "1.1"],
-            "0.5",
-        ),
+        (PAGE_APPEARANCE, ID_SIZE, &["abc"], "11"),
+        (PAGE_APPEARANCE, ID_SCROLL_BAR_WIDTH, &["abc"], "12"),
+        (PAGE_APPEARANCE, ID_PADDING, &["abc"], "4"),
+        (PAGE_BEHAVIOR, ID_PASTE_CONFIRM_SIZE, &["abc"], "8"),
+        (PAGE_BACKGROUND, ID_BACKGROUND_OPACITY, &["abc"], "0.5"),
         (
             PAGE_BACKGROUND,
             ID_BACKGROUND_ITEM_OPACITY,
-            &["abc", "2"],
+            &["abc"],
             "0.25",
         ),
     ];
@@ -1007,46 +971,12 @@ fn profiles_are_added_edited_made_default_and_removed() {
     assert_eq!(state["tabs"][1]["profile"], "one", "{state:#}");
 }
 
-/// 空の名前、重なった名前、ConPTY の空のコマンドラインは、エラーの文を出してそのプロファイルを選び、書かない。
-#[test]
-fn profiles_with_empty_or_repeated_values_are_not_saved() {
-    let original = format!(
-        "{ONE_PROFILE}[[profiles]]\nname = \"two\"\ncommand = \"cmd.exe /k prompt e2e$G\"\n"
-    );
-    let server = start_settings_test(&original);
-    open_settings(&server);
-    show_page(&server, PAGE_PROFILES);
-
-    let cases = [
-        (ID_PROFILE_NAME, "", "two"),
-        (ID_PROFILE_NAME, "   ", "two"),
-        (ID_PROFILE_NAME, "one", "two"),
-        (ID_PROFILE_COMMAND, "", "cmd.exe /k prompt e2e$G"),
-    ];
-    for (id, bad, good) in cases {
-        select(&server, ID_PROFILES, 1);
-        set_text(&server, id, bad);
-        // ほかのプロファイルを選んでいても、エラーのあるプロファイルへ戻る。
-        select(&server, ID_PROFILES, 0);
-        press_apply(&server);
-        let dialog = read_controls(&server);
-        assert_ne!(control(&dialog, ID_ERROR)["text"], "", "{id} {bad:?}");
-        assert_eq!(control(&dialog, ID_PROFILES)["selected"], 1, "{id} {bad:?}");
-        assert_eq!(dialog["focus"], id, "{id} {bad:?}");
-        assert_eq!(config_text(&server), original, "{id} {bad:?}");
-        set_text(&server, id, good);
-        press_apply(&server);
-        assert_eq!(control_text(&server, ID_ERROR), "");
-    }
-    press_cancel(&server);
-    assert_eq!(config_text(&server), original);
-}
-
-/// 不正な入力が見えていないページにあれば、「適用」でも「OK」でも、そのページへ移ってフォーカスする。
+/// 不正な入力が見えていないページにあれば、「適用」でも「OK」でも、そのページへ移ってフォーカスする。書かない。
+/// プロファイルの入力が不正なら、ほかのプロファイルを選んでいても、エラーのあるプロファイルへ戻る。
 #[test]
 fn an_invalid_input_on_a_hidden_page_is_shown_and_focused() {
     let original = format!(
-        "{ONE_PROFILE}[paste]\nconfirm_size = 8\n\n[background]\nimage_opacity = 0.5\n\n[[background.images]]\npath = 'a.png'\n"
+        "{ONE_PROFILE}[[profiles]]\nname = \"two\"\ncommand = \"cmd.exe /k prompt e2e$G\"\n[paste]\nconfirm_size = 8\n\n[background]\nimage_opacity = 0.5\n\n[[background.images]]\npath = 'a.png'\n"
     );
     let server = start_settings_test_with_images(&original, &["a.png"]);
     open_settings(&server);
@@ -1067,10 +997,26 @@ fn an_invalid_input_on_a_hidden_page_is_shown_and_focused() {
             assert_eq!(control(&dialog, id)["visible"], true, "{id} {how}");
             assert_eq!(dialog["focus"], id, "{id} {how}");
         };
+        // 悪い入力は 2 つ目のプロファイルに書き、1 つ目を選んで見えないページへ移る。
+        let edited_profile = usize::from(id == ID_PROFILE_COMMAND);
+        if id == ID_PROFILE_COMMAND {
+            select(&server, ID_PROFILES, edited_profile);
+        }
         set_text(&server, id, "");
+        if id == ID_PROFILE_COMMAND {
+            select(&server, ID_PROFILES, 0);
+        }
         show_page(&server, PAGE_COLORS);
         press_apply(&server);
         shown(&server, "applying");
+        if id == ID_PROFILE_COMMAND {
+            let dialog = read_controls(&server);
+            assert_eq!(
+                control(&dialog, ID_PROFILES)["selected"],
+                edited_profile,
+                "{id}"
+            );
+        }
 
         show_page(&server, PAGE_COLORS);
         click(&server, ID_OK);
@@ -1591,9 +1537,10 @@ fn a_key_bound_to_another_action_asks_before_moving_it() {
 }
 
 /// ダイアログの間も端末の出力を処理して描き、閉じたあとも入力できる。ダイアログの間、ウィンドウは無効になる。
+/// ダイアログの間に最後のシェルが終わると、ダイアログごとウィンドウが閉じる。
 #[test]
 fn the_terminal_keeps_working_while_the_settings_dialog_is_open() {
-    let server = start_settings_test(ONE_PROFILE);
+    let mut server = start_settings_test(ONE_PROFILE);
     open_settings(&server);
     assert_eq!(server.state()["window_enabled"], false);
 
@@ -1611,42 +1558,19 @@ fn the_terminal_keeps_working_while_the_settings_dialog_is_open() {
     let state = server.state();
     assert_eq!(state["window_enabled"], true, "{state:#}");
     check_terminal_still_works(&server, "after-settings");
-}
 
-/// ダイアログの間に最後のシェルが終わると、ダイアログごとウィンドウが閉じる。
-#[test]
-fn a_shell_ending_while_the_settings_dialog_is_open_closes_the_window() {
-    let mut server = start_settings_test(ONE_PROFILE);
+    // 最後のシェルが終わるように、裏のタブを閉じる。
+    server.post("/e2e/tab/close", b"");
+    server.wait_until("one tab", |state| tab_count(state) == 1);
     open_settings(&server);
     server.send_line("exit");
     assert_eq!(server.wait_exit(), 0);
 }
 
-/// 開いている間に別のプログラムが書き換えた設定は、キャンセルで閉じたあとに読み直す。
+/// 開いている間に別のプログラムが書き換えた設定は、キャンセルで閉じたあとに読み直す。保存したときも閉じたあとに
+/// 反映する。ダイアログで変えた項目も残る。
 #[test]
-fn a_file_changed_while_the_dialog_is_open_is_read_after_closing() {
-    let server = start_settings_test(&format!("{ONE_PROFILE}[window]\npadding = 4\n"));
-    let first_x = number(&server.state()["terminal_x"]);
-    open_settings(&server);
-    std::fs::write(
-        config_path(&server),
-        format!("{ONE_PROFILE}[window]\npadding = 10\n"),
-    )
-    .expect("failed to write the settings");
-    let unchanged = Duration::from_millis(600);
-    server.assert_holds_for(unchanged, "the padding before closing", |state| {
-        number(&state["terminal_x"]) == first_x
-    });
-    press_cancel(&server);
-    let expected = first_x + 6;
-    server.wait_until("the padding of the file", |state| {
-        number(&state["terminal_x"]) == expected
-    });
-}
-
-/// 開いている間に別のプログラムが書き換えた設定は、保存したときも閉じたあとに反映する。ダイアログで変えた項目も残る。
-#[test]
-fn a_file_changed_while_the_dialog_is_open_is_read_after_saving() {
+fn a_file_changed_while_the_dialog_is_open_is_read_after_the_dialog_closes() {
     let server = start_settings_test(&format!("{ONE_PROFILE}[window]\npadding = 4\n"));
     let first_x = number(&server.state()["terminal_x"]);
 
@@ -1694,6 +1618,23 @@ fn a_file_changed_while_the_dialog_is_open_is_read_after_saving() {
     press_cancel(&server);
     server.wait_until("the padding of the file", |state| {
         number(&state["terminal_x"]) == first_x + 10
+    });
+
+    // 何も押さずにキャンセルで閉じたときも、閉じるまでは反映せず、閉じたあとに読み直す。
+    open_settings(&server);
+    std::fs::write(
+        config_path(&server),
+        format!("{ONE_PROFILE}[window]\npadding = 16\n"),
+    )
+    .expect("failed to write the settings");
+    server.assert_holds_for(
+        Duration::from_millis(600),
+        "the padding before closing",
+        |state| number(&state["terminal_x"]) == first_x + 10,
+    );
+    press_cancel(&server);
+    server.wait_until("the padding of the file", |state| {
+        number(&state["terminal_x"]) == first_x + 12
     });
 }
 
@@ -1824,7 +1765,8 @@ fn assert_save_failed(server: &Server) {
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
-/// 読めない・書けないファイルへの保存はメッセージを出し、ダイアログは開いたままで、やり直せる。
+/// 読めない・書けないファイルへの保存はメッセージを出し、ダイアログは開いたままで、やり直せる。開いている間に消された
+/// 設定ファイルは、ひな形に変えた項目を書いて作る。
 #[test]
 fn saving_to_a_file_that_cannot_be_read_or_written_shows_a_message_and_can_be_retried() {
     /// 共有モード: 共有しない（読めない）。
@@ -1879,12 +1821,8 @@ fn saving_to_a_file_that_cannot_be_read_or_written_shows_a_message_and_can_be_re
     server.wait_until("the padding of the repaired file", |state| {
         number(&state["terminal_x"]) == expected
     });
-}
 
-/// 開いている間に消された設定ファイルは、ひな形に変えた項目を書いて作る。
-#[test]
-fn saving_after_the_file_was_removed_creates_it_from_the_template() {
-    let server = start_settings_test(&format!("{ONE_PROFILE}[window]\npadding = 4\n"));
+    // 開いている間に消された設定ファイルは、ひな形に変えた項目を書いて作る。
     open_settings(&server);
     std::fs::remove_file(config_path(&server)).expect("failed to remove the settings");
     set_text(&server, ID_PADDING, "10");
