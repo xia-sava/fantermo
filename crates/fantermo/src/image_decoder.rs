@@ -35,12 +35,21 @@ const BYTES_PER_PIXEL: u32 = 4;
 /// タブのアイコンの画像で、大きさを見るコマの数の上限。
 const MAX_ICON_FRAMES: u32 = 32;
 
-/// 背景画像の元の大きさ（幅 × 高さ）の上限。展開する前に比べて、超える画像は読まない。
+/// 画像の元の大きさ（幅 × 高さ）の上限。展開する前に比べて、超える画像は読まない。
 const MAX_SOURCE_PIXELS: u64 = 100_000_000;
 
 /// 元の大きさが幅 `width`、高さ `height` の画像が、[`MAX_SOURCE_PIXELS`] を超えるか。
 fn exceeds_source_pixel_limit(width: u32, height: u32) -> bool {
     u64::from(width) * u64::from(height) > MAX_SOURCE_PIXELS
+}
+
+/// 元の大きさが [`MAX_SOURCE_PIXELS`] を超える画像を読まないときの誤り。呼び出す側が、この誤りを
+/// ファイル名つきで warn に残す。
+fn source_too_large(width: u32, height: u32) -> windows::core::Error {
+    windows::core::Error::new(
+        E_FAIL,
+        format!("the image is {width}x{height}, over {MAX_SOURCE_PIXELS} pixels"),
+    )
 }
 
 /// 読んだ画像。乗算済みアルファの BGRA で、行の間は詰めてある。ピクセルのバイト数が
@@ -125,6 +134,7 @@ impl Decoder {
 
     /// `path` の画像を、一辺 `side` のタブのアイコンとして読む。コマが複数あれば（ICO）大きさの合うものを
     /// 使い（[`tab_icon::best_frame`]）、縦横比を保って縮め、正方形の真ん中に置く。余りは透明。
+    /// 選んだコマの元の大きさが [`MAX_SOURCE_PIXELS`] を超えればエラー。
     pub fn decode_icon(&self, path: &Path, side: u32) -> windows::core::Result<Decoded> {
         let factory = &self.factory;
         // SAFETY: どの呼び出しも、作ったばかりの WIC のオブジェクトに対するもので、文字列と出力先は
@@ -144,6 +154,10 @@ impl Decoder {
                 sizes.push((width, height));
             }
             let chosen = tab_icon::best_frame(&sizes, side);
+            let (chosen_width, chosen_height) = sizes[chosen];
+            if exceeds_source_pixel_limit(chosen_width, chosen_height) {
+                return Err(source_too_large(chosen_width, chosen_height));
+            }
             let frame = decoder.GetFrame(chosen as u32)?;
             self.fit_in_square(&frame.cast()?, sizes[chosen], side)
         }
@@ -253,11 +267,7 @@ impl Decoder {
             let (mut width, mut height) = (0, 0);
             frame.GetSize(&mut width, &mut height)?;
             if exceeds_source_pixel_limit(width, height) {
-                // 呼び出す側が、この誤りをファイル名つきで warn に残す。
-                return Err(windows::core::Error::new(
-                    E_FAIL,
-                    format!("the image is {width}x{height}, over {MAX_SOURCE_PIXELS} pixels"),
-                ));
+                return Err(source_too_large(width, height));
             }
             let converter = factory.CreateFormatConverter()?;
             converter.Initialize(
@@ -399,6 +409,39 @@ mod tests {
         assert_eq!((decoded.width(), decoded.height()), (SIDE, SIDE));
         assert_eq!(decoded.pixels().len(), (SIDE * SIDE * 4) as usize);
         assert!(decoded.pixels().chunks(4).any(|pixel| pixel[3] > 0));
+    }
+
+    /// 1 ビットのグレースケールで、すべて 0 の `width` × `height` の PNG を一時フォルダに書き、そのパスを返す。
+    fn write_png(name: &str, width: u32, height: u32) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("fantermo-decoder-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create the folder");
+        let path = dir.join(name);
+        let file = std::fs::File::create(&path).expect("create the PNG");
+        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+        encoder.set_color(png::ColorType::Grayscale);
+        encoder.set_depth(png::BitDepth::One);
+        let mut writer = encoder.write_header().expect("write the PNG header");
+        let row_bytes = (width as usize).div_ceil(8);
+        writer
+            .write_image_data(&vec![0; row_bytes * height as usize])
+            .expect("write the PNG pixels");
+        writer.finish().expect("finish the PNG");
+        path
+    }
+
+    #[test]
+    fn icon_files_over_the_source_pixel_limit_are_errors() {
+        let decoder = decoder();
+        let small = write_png("icon-small.png", 4, 4);
+        let decoded = decoder.decode_icon(&small, 8).expect("a small icon");
+        assert_eq!((decoded.width(), decoded.height()), (8, 8));
+        let large = write_png("icon-large.png", 10_001, 10_001);
+        let error = decoder.decode_icon(&large, 16).expect_err("a huge icon");
+        assert!(error.message().contains("over"), "{error}");
+        for path in [small, large] {
+            std::fs::remove_file(&path).expect("remove the PNG");
+        }
     }
 
     #[test]
