@@ -302,7 +302,9 @@ impl Drop for ConPty {
     }
 }
 
-/// 疑似コンソールを閉じ、接続しているプロセスが終わらなければ終わらせて、読むためのスレッドが抜けるのを待つ。
+/// 疑似コンソールを閉じ、接続しているプロセスが終わらなければ終わらせる。conhost が終わったと分かったときだけ、
+/// 読むためのスレッドが抜けるのを待つ。conhost の番号を読めなかったときや、[`SWEEP_LIMIT`] までに終わらなかった
+/// ときは、出力のパイプが閉じるとは限らないので、読むためのスレッドは待たずに手放す。
 fn close_console(
     console: HPCON,
     process: &OwnedHandle,
@@ -337,12 +339,18 @@ fn close_console(
             tracing::warn!("failed to terminate the child: {e}");
         }
     }
-    if let Some(host) = &host {
-        host.end_clients(job);
+    let host_ended = match &host {
+        Some(host) => host.end_clients(job),
+        None => false,
+    };
+    let Some(reader) = reader else {
+        return;
+    };
+    if !host_ended {
+        tracing::debug!("leaving the conpty reader thread without knowing that its console ended");
+        return;
     }
-    if let Some(reader) = reader
-        && reader.join().is_err()
-    {
+    if reader.join().is_err() {
         tracing::warn!("the conpty reader thread panicked");
     }
 }
@@ -384,8 +392,8 @@ impl ConsoleHost {
     }
 
     /// このコンソールに接続しているプロセスと、`job` の中で接続し終えないまま止まっているコンソールのプログラムを、
-    /// conhost が終わるまで終わらせ続ける。
-    fn end_clients(&self, job: Option<&OwnedHandle>) {
+    /// conhost が終わるまで終わらせ続ける。conhost が [`SWEEP_LIMIT`] までに終われば真。
+    fn end_clients(&self, job: Option<&OwnedHandle>) -> bool {
         let deadline = Instant::now() + SWEEP_LIMIT;
         let mut connecting = HashMap::new();
         while !self.wait(0) {
@@ -395,7 +403,7 @@ impl ConsoleHost {
                     self.pid,
                     job.map(describe_job_processes)
                 );
-                return;
+                return false;
             }
             self.terminate_clients();
             if let Some(job) = job {
@@ -403,6 +411,7 @@ impl ConsoleHost {
             }
             self.wait(SWEEP_INTERVAL_MS);
         }
+        true
     }
 
     fn terminate_clients(&self) {
