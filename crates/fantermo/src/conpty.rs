@@ -1,8 +1,9 @@
 //! ConPTY のバックエンド。
 //!
-//! 疑似コンソールとは 2 本の匿名パイプで接続する。入力はウィンドウのスレッドから書き込み、出力は読むための
-//! スレッドで待ってチャネルで渡す。疑似コンソールは子プロセスが終了しても出力のパイプを閉じないので、
-//! 終了は子プロセスのハンドルを待つスレッドで知る。
+//! 疑似コンソールとは 2 本の匿名パイプで接続する。入力は書くためのスレッドに任せ、ウィンドウのスレッドは
+//! チャネルに積むだけにする（conhost が出力の書き込みで止まると、入力のパイプも読まれなくなるため）。出力は
+//! 読むためのスレッドで待ってチャネルで渡す。疑似コンソールは子プロセスが終了しても出力のパイプを閉じない
+//! ので、終了は子プロセスのハンドルを待つスレッドで知る。
 //!
 //! 疑似コンソールを閉じると、接続しているプロセスに閉じる知らせが一度届く。そのあとに接続したプロセス（起動の途中
 //! だったもの）には届かず、動き続ける。接続し終えないまま止まるプロセスもある。疑似コンソールのプロセス
@@ -22,7 +23,11 @@ use std::{
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
     path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex, mpsc},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -167,7 +172,10 @@ pub struct ConPty {
     /// 疑似コンソールに伝えてある桁数と行数。セルのピクセル寸法は疑似コンソールに渡らないので、
     /// これが変わったときだけ伝える。
     console_size: COORD,
-    input: File,
+    /// 書くためのスレッドへ渡す入力。
+    input: mpsc::Sender<Vec<u8>>,
+    /// 破棄した。書くためのスレッドは、書いている途中のものを書き終えたら、残りを捨てて抜ける。
+    closing: Arc<AtomicBool>,
     process: Arc<OwnedHandle>,
     /// 子プロセスとその子孫が入る Job。作れなければ `None` で、閉じたあとは接続したプロセスだけを探す。
     job: Option<OwnedHandle>,
@@ -213,16 +221,23 @@ impl ConPty {
 
         // スレッドを作れなければ、組み立てた Self を drop して、疑似コンソールと子プロセスを Drop で片づける。
         let (sender, receiver) = mpsc::channel();
+        let (input_sender, queued) = mpsc::channel();
+        let closing = Arc::new(AtomicBool::new(false));
         let mut pty = Self {
             console,
             console_size,
-            input: File::from(input),
+            input: input_sender,
+            closing: Arc::clone(&closing),
             process,
             job,
             output: receiver,
             reader: None,
             exit: None,
         };
+        thread::Builder::new().name("conpty-writer".into()).spawn({
+            let input = File::from(input);
+            move || write_input(input, &queued, &closing)
+        })?;
         pty.reader = Some(thread::Builder::new().name("conpty-reader".into()).spawn({
             let wake = Arc::clone(&wake);
             move || read_output(File::from(output), &sender, &*wake)
@@ -242,7 +257,9 @@ impl ConPty {
 
 impl Backend for ConPty {
     fn write(&mut self, data: &[u8]) -> io::Result<()> {
-        self.input.write_all(data)
+        self.input
+            .send(data.to_vec())
+            .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))
     }
 
     fn resize(&mut self, size: GridSize) -> io::Result<()> {
@@ -286,6 +303,10 @@ impl Drop for ConPty {
     /// ことがある。呼び出し元（ウィンドウのスレッド）はすぐに戻り、閉じるのは別のスレッドでする。そのスレッドを
     /// 作れなければ、疑似コンソールを閉じることだけをその場でする。
     fn drop(&mut self) {
+        // 書くためのスレッドは、書いている途中のものを書き終えたら残りを捨てて抜ける。conhost が読まずに
+        // 書き込みが返らなくても、閉じるスレッドが疑似コンソールを閉じて conhost が終われば、入力のパイプが
+        // 壊れて返る。
+        self.closing.store(true, Ordering::Relaxed);
         let console = self.console.0;
         let process = Arc::clone(&self.process);
         let job = self.job.take();
@@ -935,6 +956,25 @@ fn coord(size: GridSize) -> COORD {
     }
 }
 
+/// `queued` の入力を `input` に書く。チャネルが閉じたら抜ける。`closing` が立ったら（破棄したら）、受け取った
+/// ものと残りは捨てて抜ける。conhost が読まずに書き込みが返らない間も、ウィンドウのスレッドは待たない。
+fn write_input(mut input: impl Write, queued: &mpsc::Receiver<Vec<u8>>, closing: &AtomicBool) {
+    for bytes in queued {
+        if closing.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Err(e) = input.write_all(&bytes) {
+            // 疑似コンソールを閉じたあと。
+            if e.kind() == io::ErrorKind::BrokenPipe {
+                tracing::debug!("the pseudo console has closed its input: {e}");
+            } else {
+                tracing::warn!("failed to write to the pseudo console: {e}");
+            }
+            return;
+        }
+    }
+}
+
 /// 出力のパイプが閉じるまで読み、読めた分をチャネルで渡す。
 fn read_output(mut output: File, sender: &mpsc::Sender<Vec<u8>>, wake: &dyn Fn()) {
     let mut buf = vec![0u8; READ_BUFFER_SIZE];
@@ -1011,6 +1051,26 @@ mod tests {
             assert!(Instant::now() < deadline, "timed out; screen:\n{screen}");
             thread::sleep(POLL_INTERVAL);
         }
+    }
+
+    #[test]
+    fn write_input_writes_in_order_and_nothing_once_closing() {
+        let closing = AtomicBool::new(false);
+        let mut written = Vec::new();
+        let (sender, queued) = mpsc::channel();
+        sender.send(b"ab".to_vec()).unwrap();
+        sender.send(b"cd".to_vec()).unwrap();
+        drop(sender);
+        write_input(&mut written, &queued, &closing);
+        assert_eq!(written, b"abcd");
+
+        written.clear();
+        closing.store(true, Ordering::Relaxed);
+        let (sender, queued) = mpsc::channel();
+        sender.send(b"after".to_vec()).unwrap();
+        drop(sender);
+        write_input(&mut written, &queued, &closing);
+        assert!(written.is_empty());
     }
 
     #[test]
