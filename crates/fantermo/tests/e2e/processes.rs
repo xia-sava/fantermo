@@ -36,7 +36,9 @@ const NEW_DESCENDANT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// どのコンソールにも接続せずに動き続ける、窓を出さないプログラム。
 const GUI_PROCESS: &str = "wscript.exe";
-/// 閉じたあと、起動の途中だった Cygwin の `sleep` が `/proc` に見えるようになるまで置く時間。
+/// 閉じたあと、起動の途中だった Cygwin の `sleep` が `/proc` に見えるようになるまで置く時間。ブリッジの
+/// `hang_up_wait` が子プロセスの終わりを待つ上限（`HANGUP_WAIT_MS`、2 秒）に合わせた。これより短いと、見えるように
+/// なる前に見て、残っていても通る。
 const CYGWIN_SLEEP_SETTLE: Duration = Duration::from_secs(2);
 
 #[test]

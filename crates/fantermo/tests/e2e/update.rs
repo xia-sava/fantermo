@@ -40,7 +40,8 @@ const UPDATE_TEMP_FOLDER: &str = "tmp";
 const DOWNLOAD_FOLDER_PREFIX: &str = "fantermo-update-";
 /// 一時フォルダの中の、スクリプトを起動する代わりにそのパスが書かれるファイル。
 const HANDOFF_RECORD: &str = "handoff.txt";
-/// メッセージボックスの文。
+/// メッセージボックスの文。`update.rs` の `CheckError` が作る文を写したもの（統合テストからは `update` を呼べない）。
+/// 本体の文を変えたら、ここも直す。
 const OFFER_TEXT: &str = "ダウンロードして更新しますか";
 const UP_TO_DATE_TEXT: &str = "最新バージョンです";
 const BAD_SIGNATURE_TEXT: &str = "更新情報の署名を確認できませんでした";
@@ -52,7 +53,8 @@ const DIGEST_MISMATCH_TEXT: &str = "ダウンロードしたファイルが、�
 const CANNOT_START_TEXT: &str = "更新を始められませんでした";
 const OTHER_INSTANCES_TEXT: &str = "ほかに fantermo が";
 const CONFIRM_APPLY_TEXT: &str = "すべてのタブを閉じて";
-/// 何も起きないことを見る時間の窓。
+/// 何も起きないことを見る時間の窓。取得の要求は起動やダイアログを開く操作の直後に出るので、通信とスレッドの
+/// 切り替えの遅れを見込んで数秒取る。
 const NO_REQUEST_WINDOW: Duration = Duration::from_secs(3);
 
 /// テストの配布元。HTTP と、署名する鍵。
@@ -454,7 +456,8 @@ fn a_host_that_refuses_connections_is_told() {
     check_terminal_still_works(&server, "after-refused");
 }
 
-/// 答えない相手は時間切れになる（受信の上限は 30 秒）。待っている間も端末は動く。
+/// 答えない相手は時間切れになる（受信の上限は 30 秒。実時間で待つので、このテストは遅い）。待っている間も端末は
+/// 動く。
 #[test]
 fn a_silent_host_times_out_while_the_terminal_keeps_working() {
     let source = ReleaseSource::new();

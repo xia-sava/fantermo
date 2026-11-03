@@ -1642,7 +1642,7 @@ fn a_file_changed_while_the_dialog_is_open_is_read_after_the_dialog_closes() {
         format!("{ONE_PROFILE}[window]\npadding = 14\n"),
     )
     .expect("failed to write the settings");
-    server.assert_holds_for(Duration::from_millis(600), "the padding", |state| {
+    server.assert_holds_for(NO_RELOAD_WINDOW, "the padding", |state| {
         number(&state["terminal_x"]) == first_x + 8
     });
     press_cancel(&server);
@@ -1657,24 +1657,24 @@ fn a_file_changed_while_the_dialog_is_open_is_read_after_the_dialog_closes() {
         format!("{ONE_PROFILE}[window]\npadding = 16\n"),
     )
     .expect("failed to write the settings");
-    server.assert_holds_for(
-        Duration::from_millis(600),
-        "the padding before closing",
-        |state| number(&state["terminal_x"]) == first_x + 10,
-    );
+    server.assert_holds_for(NO_RELOAD_WINDOW, "the padding before closing", |state| {
+        number(&state["terminal_x"]) == first_x + 10
+    });
     press_cancel(&server);
     server.wait_until("the padding of the file", |state| {
         number(&state["terminal_x"]) == first_x + 12
     });
 }
 
-/// 設定ファイルの警告を、続けて出さない時間の窓。
-const NO_REPEATED_WARNING: Duration = Duration::from_millis(600);
+/// 設定ファイルを書き換えたのに、反映や警告が起きないことを見る時間の窓。書き換えを知らされてから読み直すまでの
+/// 間（`CONFIG_RELOAD_DELAY`、200 ms）と監視の遅れの分を見込んでいる。`CONFIG_RELOAD_DELAY` をこの窓以上にすると、
+/// 起きないことを見ているテストが、読み直す前に終わって黙って通る。
+const NO_RELOAD_WINDOW: Duration = Duration::from_millis(600);
 
 /// メッセージボックスが開かないことを確認する。
 #[track_caller]
 fn assert_no_warning_opens(server: &Server) {
-    server.assert_holds_for(NO_REPEATED_WARNING, "no warning", |state| {
+    server.assert_holds_for(NO_RELOAD_WINDOW, "no warning", |state| {
         state["dialogs"].as_array().map_or(0, Vec::len) == 0
     });
 }
