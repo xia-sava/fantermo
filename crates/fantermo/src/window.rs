@@ -3241,9 +3241,15 @@ fn post(hwnd: HWND, message: u32, wparam: WPARAM) -> windows::core::Result<()> {
 
 /// [`post`] の失敗を残す。ウィンドウが壊れたあと（閉じる途中に届いた出力や終了の知らせ）は害がないので
 /// debug にとどめる。ほかの失敗（キューがいっぱいなど）は、知らせを失ってそのタブの出力が止まりうるので warn。
+/// [`WM_APP_DEVICE_REMOVED`] を失ったときは、デバイスの喪失に描くときまで気づかないことを添える。
 fn warn_post_failed(message: u32, error: &windows::core::Error) {
     if window_is_gone(error) {
         tracing::debug!("the window is gone; did not post message {message:#06x}: {error}");
+    } else if message == WM_APP_DEVICE_REMOVED {
+        tracing::warn!(
+            "failed to post message {message:#06x}: {error}; \
+             the lost Direct3D device will be noticed only when drawing"
+        );
     } else {
         tracing::warn!("failed to post message {message:#06x}: {error}");
     }
