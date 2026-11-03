@@ -2338,6 +2338,7 @@ impl App {
     /// から扱う。ウィンドウを閉じるときは `true` を返す。
     fn on_wake(&mut self, id: SessionId) -> bool {
         if self.output_continuations.contains(&id) {
+            tracing::debug!("leaving a wake for terminal {id:?} to the output continuation timer");
             return false;
         }
         let Some(index) = self.sessions.iter().position(|session| session.id() == id) else {

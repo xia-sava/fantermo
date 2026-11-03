@@ -1,7 +1,8 @@
 //! ConPTY のバックエンド。
 //!
 //! 疑似コンソールとは 2 本の匿名パイプで接続する。入力は書くためのスレッドに任せ、ウィンドウのスレッドは
-//! チャネルに積むだけにする（conhost が出力の書き込みで止まると、入力のパイプも読まれなくなるため）。出力は
+//! チャネルに積むだけにする（conhost は出力の書き込みで止まるとコンソールのロックを持ったままになることがあり、
+//! 入力のパイプが読まれなくなりうるため）。出力は
 //! 読むためのスレッドで待ってチャネルで渡す。チャネルの中のバイト数は [`OutputBudget`] で上限を置く。
 //! 疑似コンソールは子プロセスが終了しても出力のパイプを閉じないので、終了は子プロセスのハンドルを待つ
 //! スレッドで知る。
@@ -274,6 +275,8 @@ impl Backend for ConPty {
         if console_size == self.console_size {
             return Ok(());
         }
+        // ResizePseudoConsole は conhost の signal のパイプへ小さな知らせを書くだけで、パイプが埋まるには数百回の
+        // 変更が要るので、ウィンドウのスレッドから呼んで待たずに戻るものとして扱う。
         // SAFETY: self.console は Drop まで閉じない。
         unsafe { ResizePseudoConsole(self.console, console_size) }.map_err(io::Error::from)?;
         self.console_size = console_size;
@@ -320,7 +323,7 @@ impl Drop for ConPty {
     fn drop(&mut self) {
         // 書くためのスレッドは、書いている途中のものを書き終えたら残りを捨てて抜ける。conhost が読まずに
         // 書き込みが返らなくても、閉じるスレッドが疑似コンソールを閉じて conhost が終われば、入力のパイプが
-        // 壊れて返る。
+        // 壊れて返る。conhost が終わらなければ書くためのスレッドも残る（読むためのスレッドを手放すのと同じ）。
         self.closing.store(true, Ordering::Relaxed);
         // 上限で待っている読むためのスレッドを抜けさせる。抜けると出力のパイプの読む側が閉じるので、
         // close_console が読むためのスレッドの終わりを待っても止まらない。
