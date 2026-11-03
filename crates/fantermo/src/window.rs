@@ -1160,13 +1160,8 @@ impl App {
     /// 何もしない。
     fn open_session(&mut self, launch: Launch) {
         let startup = self.startup_of(&self.arguments, launch);
-        if let Err(e) = self.open_startup(&startup) {
-            tracing::warn!(
-                "failed to open a terminal with {:?} ({}): {e}",
-                startup.command_line,
-                startup.backend.name()
-            );
-        }
+        // 失敗は open_startup が残す。
+        _ = self.open_startup(&startup);
     }
 
     fn startup_of(&self, request: &TabRequest, launch: Launch) -> Startup {
@@ -1179,17 +1174,29 @@ impl App {
         )
     }
 
-    /// `startup` の新しい端末を開き、タブの並びの最後に足して表示する。
+    /// `startup` の新しい端末を開き、タブの並びの最後に足して表示する。開けなければ警告を残して、
+    /// そのエラーを返す。
     fn open_startup(&mut self, startup: &Startup) -> Result<(), Box<dyn std::error::Error>> {
         let id = SessionId(self.next_session_id);
         let size = grid_size(&self.font, self.terminal_area);
-        let mut session = Session::spawn(
+        let spawned = Session::spawn(
             id,
             startup,
             size,
             &self.colors.terminal_colors(),
             wake_poster(self.hwnd, id),
-        )?;
+        );
+        let mut session = match spawned {
+            Ok(session) => session,
+            Err(e) => {
+                tracing::warn!(
+                    "failed to open a terminal with {:?} ({}): {e}",
+                    startup.command_line,
+                    startup.backend.name()
+                );
+                return Err(e);
+            }
+        };
         self.next_session_id += 1;
         session.background_image = self.choose_background_image();
         self.sessions.push(session);
@@ -1242,11 +1249,6 @@ impl App {
         startup.working_folder = forwarded.usable_working_folder().map(Path::to_owned);
         let mut notice = forwarded.options.notice(&self.profiles);
         if let Err(e) = self.open_startup(&startup) {
-            tracing::warn!(
-                "failed to open a terminal with {:?} ({}): {e}",
-                startup.command_line,
-                startup.backend.name()
-            );
             let failed = format!(
                 "「{}」を起動できませんでした。\n\n{e}",
                 startup.command_line
