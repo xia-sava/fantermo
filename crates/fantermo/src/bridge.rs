@@ -476,8 +476,8 @@ pub fn cygwin_root(configured: Option<&str>) -> Result<PathBuf, String> {
     })
 }
 
-/// ブリッジの実行ファイル。fantermo の実行ファイルと同じフォルダ、なければ開発中にビルドしたもの
-/// （`target/bridge/<ターゲット>/<debug|release>/`）。見つからなければその理由の文。
+/// ブリッジの実行ファイル。fantermo の実行ファイルと同じフォルダ、なければ（開発中のビルドでは）
+/// 開発中にビルドしたもの（`target/bridge/<ターゲット>/debug/`）。見つからなければその理由の文。
 fn find_bridge((file_name, triple): (&str, &str)) -> Result<PathBuf, String> {
     let exe = env::current_exe()
         .map_err(|e| format!("fantermo の実行ファイルの場所が分かりません: {e}"))?;
@@ -495,22 +495,32 @@ fn find_bridge((file_name, triple): (&str, &str)) -> Result<PathBuf, String> {
 }
 
 /// fantermo の実行ファイル `exe` に対して、ブリッジ `file_name` を探す場所。先頭がいつもの場所。
+/// 開発中のビルドでは、ブリッジのビルドの出力先も探す。
 fn bridge_candidates(exe: &Path, file_name: &str, triple: &str) -> Vec<PathBuf> {
+    bridge_candidates_for(exe, file_name, triple, cfg!(debug_assertions))
+}
+
+/// [`bridge_candidates`]。`development` が真のとき（開発中のビルド）だけ、ブリッジのビルドの出力先
+/// （`<exe のフォルダ>\..\bridge\<ターゲット>\debug\`）を加える。
+fn bridge_candidates_for(
+    exe: &Path,
+    file_name: &str,
+    triple: &str,
+    development: bool,
+) -> Vec<PathBuf> {
     let Some(dir) = exe.parent() else {
         return vec![PathBuf::from(file_name)];
     };
     let mut candidates = vec![dir.join(file_name)];
+    if !development {
+        return candidates;
+    }
     if let Some(target_dir) = dir.parent() {
-        let profile = if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "release"
-        };
         candidates.push(
             target_dir
                 .join("bridge")
                 .join(triple)
-                .join(profile)
+                .join("debug")
                 .join(file_name),
         );
     }
@@ -1098,24 +1108,25 @@ mod tests {
     }
 
     #[test]
-    fn bridge_is_looked_up_next_to_fantermo_then_in_the_build_output() {
-        let profile = if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "release"
-        };
+    fn bridge_is_looked_up_next_to_fantermo_then_in_the_build_output_in_development() {
+        let exe = Path::new(r"C:\repo\target\debug\fantermo.exe");
+        let triple = "x86_64-unknown-linux-musl";
         assert_eq!(
-            bridge_candidates(
-                Path::new(r"C:\repo\target\debug\fantermo.exe"),
-                "fantermo-bridge",
-                "x86_64-unknown-linux-musl"
-            ),
+            bridge_candidates_for(exe, "fantermo-bridge", triple, true),
             [
                 PathBuf::from(r"C:\repo\target\debug\fantermo-bridge"),
-                PathBuf::from(format!(
-                    r"C:\repo\target\bridge\x86_64-unknown-linux-musl\{profile}\fantermo-bridge"
-                )),
+                PathBuf::from(
+                    r"C:\repo\target\bridge\x86_64-unknown-linux-musl\debug\fantermo-bridge"
+                ),
             ]
+        );
+        assert_eq!(
+            bridge_candidates_for(exe, "fantermo-bridge", triple, false),
+            [PathBuf::from(r"C:\repo\target\debug\fantermo-bridge")]
+        );
+        assert_eq!(
+            bridge_candidates(exe, "fantermo-bridge", triple).len(),
+            if cfg!(debug_assertions) { 2 } else { 1 }
         );
     }
 

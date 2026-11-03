@@ -199,7 +199,7 @@ fantermo は `std::process::Command` でブリッジを起動し（`CREATE_NO_WI
 - **Cygwin**: `<cygwin_root>\bin` を PATH の先頭に置き，`HOME` を消し，作業フォルダを `--cwd` と `CHERE_INVOKING=1` で渡します．利用者のコマンドラインは引数に入れず，環境変数 `FANTERMO_BRIDGE_COMMAND` に入れて `/bin/sh -c` で実行させます（理由は `COMMAND_VARIABLE` のコメント）．`cygwin_root` を書かなければ `config::find_cygwin_root` で探します．
 - **WSL**: `<System32>\wsl.exe [-d <distribution>] --cd <作業フォルダ> --exec /mnt/<ドライブ>/…/fantermo-bridge [-- /bin/sh -c <command>]`．ブリッジの Linux のパスは自前で `/mnt/<ドライブ>/…` に直します（`wslpath` を呼ぶと WSL をもう一度起動して待つため）．`wsl.exe` は名前だけで探さず，`known_folder::system` が返すシステムのフォルダ（`System32`）の絶対パスで起動します．環境変数は `WSLENV` に名前を足して届けます．
 - **共通**: 一つのコマンドなら `exec` を前に付けます（`shell_command`）．シェルを親として残さず，Ctrl+C のあとの終了コードがアプリのものになるようにするためです．`command` が空なら相手のログインシェルを起動します．
-- **ブリッジの探し方**: fantermo の exe と同じフォルダ，なければ `<exe のフォルダ>\..\bridge\<ターゲット>\<debug|release>\`（`target/bridge/…`）．
+- **ブリッジの探し方**: fantermo の exe と同じフォルダ，なければ，開発中のビルド（`debug_assertions` が有効なビルド）では `<exe のフォルダ>\..\bridge\<ターゲット>\debug\`（`target/bridge/…`）．リリースのビルドは exe と同じフォルダだけを探します．
 - **起動できないとき**: ブリッジや Cygwin が見つからない，起動できない，エラーで終わったときは，理由を `fantermo: …` の赤い文字で端末に出し，タブは開いたままにします．
 
 ブリッジ（`crates/fantermo-bridge/src/main.rs`）は開始の通知を交換し，最初のリサイズの大きさで `forkpty` し，標準入力と pty の master を `poll` で見て中継します．pty への書き込みは別のスレッドで行い，書き終えていない入力が 64 MiB を超えたら標準入力を読むのを止めます．Cygwin の pty は大きな入力で詰まるので，Cygwin 向けだけ `InputPacer`（`cfg(target_os = "cygwin")`）で 4 KiB ずつ，pipe が空になってから書きます（理由は `InputPacer` のコメント）．終了コードは 0 正常，2 引数の誤り，3 プロトコルのエラー，4 子を起動できない，5 入出力のエラーです．
