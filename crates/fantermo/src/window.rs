@@ -3717,6 +3717,8 @@ thread_local! {
     /// 借用が重なって飛ばした知らせ（[`is_repostable`] のメッセージ）の、宛先のウィンドウとメッセージと
     /// `wparam`。
     static SKIPPED_MESSAGES: RefCell<Vec<(HWND, u32, WPARAM)>> = const { RefCell::new(Vec::new()) };
+    /// [`SKIPPED_MESSAGES`] のうち、積み直せずに warn を残したもの。積み直せるまで、二度目からは debug にする。
+    static WARNED_REPOSTS: RefCell<Vec<(HWND, u32, WPARAM)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// 借用が重なって飛ばしたら、借用を手放したところで積み直すメッセージ。
@@ -3750,13 +3752,23 @@ fn remember_skipped_message(hwnd: HWND, msg: u32, wparam: WPARAM) {
 
 /// 借用が重なって飛ばしたメッセージを積み直す。借用を手放したところで呼ぶ。積めなかったものは残し、
 /// [`OUTPUT_TIMER_ID`] のタイマーを動かす（タイマーの処理が借用を手放したところで、ここをもう一度通る）。
+/// 積めなかったことは、同じメッセージを続けて積めない間は一度だけ warn に残す（タイマーの刻みごとに続けない）。
 fn repost_skipped_messages() {
     let mut failed = Vec::new();
-    for (hwnd, msg, wparam) in SKIPPED_MESSAGES.take() {
-        if let Err(e) = post(hwnd, msg, wparam) {
-            warn_post_failed(msg, &e);
-            if !window_is_gone(&e) {
-                failed.push((hwnd, msg, wparam));
+    for message @ (hwnd, msg, wparam) in SKIPPED_MESSAGES.take() {
+        match post(hwnd, msg, wparam) {
+            Ok(()) => forget_repost_warning(message),
+            Err(e) if window_is_gone(&e) => {
+                warn_post_failed(msg, &e);
+                forget_repost_warning(message);
+            }
+            Err(e) => {
+                if remember_repost_warning(message) {
+                    warn_post_failed(msg, &e);
+                } else {
+                    tracing::debug!("failed to repost message {msg:#06x} again: {e}");
+                }
+                failed.push(message);
             }
         }
     }
@@ -3764,6 +3776,22 @@ fn repost_skipped_messages() {
         remember_skipped_message(hwnd, msg, wparam);
         start_output_timer(hwnd);
     }
+}
+
+/// `message` を積み直せなかったことを warn に残したと覚える。まだ残していなければ `true`。
+fn remember_repost_warning(message: (HWND, u32, WPARAM)) -> bool {
+    WARNED_REPOSTS.with_borrow_mut(|warned| {
+        let first = !warned.contains(&message);
+        if first {
+            warned.push(message);
+        }
+        first
+    })
+}
+
+/// `message` を積み直せたか、宛先のウィンドウが壊れた。次に積めなかったときは、また warn に残す。
+fn forget_repost_warning(message: (HWND, u32, WPARAM)) {
+    WARNED_REPOSTS.with_borrow_mut(|warned| warned.retain(|other| *other != message));
 }
 
 /// [`OUTPUT_TIMER_ID`] のタイマーを動かす。動かせなければ warn を残して `false` を返す。
