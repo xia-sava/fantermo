@@ -1141,14 +1141,14 @@ struct RadioGroup<T: 'static> {
 impl<T: Copy + PartialEq> RadioGroup<T> {
     /// 選択肢 `choices` のボタンを、それぞれの表示 `labels` で、選択肢の位置 `rect_of(位置)` に作る。ID は
     /// `first_id` から続く。先頭のボタンだけが Tab で止まり、グループを始める。
-    fn create(
+    fn create<const N: usize>(
         b: &mut Builder,
         first_id: i32,
-        choices: &'static [T],
-        labels: &[&str],
+        choices: &'static [T; N],
+        labels: &[&str; N],
         rect_of: impl Fn(i32) -> DipRect,
     ) -> windows::core::Result<Self> {
-        let mut buttons = Vec::with_capacity(labels.len());
+        let mut buttons = Vec::with_capacity(N);
         for (index, text) in (0..).zip(labels) {
             buttons.push(b.radio(first_id + index, text, rect_of(index), index == 0)?);
         }
