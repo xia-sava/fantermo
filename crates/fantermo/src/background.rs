@@ -34,6 +34,14 @@ const BYTES_PER_PIXEL: u32 = 4;
 /// タブのアイコンの画像で、大きさを見るコマの数の上限。
 const MAX_ICON_FRAMES: u32 = 32;
 
+/// 背景画像の元の大きさ（幅 × 高さ）の上限。展開する前に比べて、超える画像は読まない。
+const MAX_SOURCE_PIXELS: u64 = 100_000_000;
+
+/// 元の大きさが幅 `width`、高さ `height` の画像が、[`MAX_SOURCE_PIXELS`] を超えるか。
+fn exceeds_source_pixel_limit(width: u32, height: u32) -> bool {
+    u64::from(width) * u64::from(height) > MAX_SOURCE_PIXELS
+}
+
 /// 読んだ画像。乗算済みアルファの BGRA で、行の間は詰めてある。ピクセルのバイト数が
 /// 幅 × 高さ × 4 であることは [`Decoded::new`] が保証する。
 #[derive(Clone, Debug)]
@@ -252,6 +260,13 @@ impl Decoder {
             )?;
             let (mut width, mut height) = (0, 0);
             converter.GetSize(&mut width, &mut height)?;
+            if exceeds_source_pixel_limit(width, height) {
+                // 呼び出す側が、この誤りをファイル名つきで warn に残す。
+                return Err(windows::core::Error::new(
+                    E_FAIL,
+                    format!("the image is {width}x{height}, over {MAX_SOURCE_PIXELS} pixels"),
+                ));
+            }
             let (stored_width, stored_height) =
                 background::stored_size((width, height), screen_size(), MAX_TEXTURE_SIDE);
             let source: IWICBitmapSource = if (stored_width, stored_height) == (width, height) {
@@ -315,6 +330,15 @@ mod tests {
 
     /// 一辺のピクセル数。
     const SIDE: i32 = 2;
+
+    #[test]
+    fn source_pixel_limit_is_inclusive() {
+        assert!(!exceeds_source_pixel_limit(10_000, 10_000));
+        assert!(exceeds_source_pixel_limit(10_000, 10_001));
+        // 掛け算が u32 に収まらない大きさでも、桁あふれせずに超えると判る。
+        assert!(exceeds_source_pixel_limit(u32::MAX, u32::MAX));
+        assert!(!exceeds_source_pixel_limit(0, u32::MAX));
+    }
 
     /// COM を初期化したスレッドで作った [`Decoder`]。
     fn decoder() -> Decoder {
