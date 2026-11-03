@@ -742,20 +742,12 @@ fn on_scroll_bar_pixel(state: &Value, y: u64) -> (u32, u32) {
     pixel_at(on_scroll_bar(state, y))
 }
 
-/// 背景色 `background`（`[colors]` の後ろ）と背景画像の設定で起動し、スクロールバックのない（つまみのない）
-/// スクロールバーの列に `under` が見えることを確認してから、スクロールバックを作って [`assert_scroll_bar_colors`] で
-/// 見る。DPI を変えたあとも同じ。
-fn check_the_scroll_bar_over(background: &str, under: [u8; 3], track: [u8; 3]) {
-    let server =
-        start_with_background(&format!("{SCROLL_BAR_COLORS_SETTING}{background}"), |dir| {
-            std::fs::write(dir.join(SOLID_IMAGE), solid_image(SOLID_IMAGE_COLOR))
-                .expect("failed to write the image");
-        });
-    server.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
+/// スクロールバックのない（つまみのない）スクロールバーの列に `under` が見えることを確認する。
+fn check_the_bar_column_without_a_thumb(server: &Server, under: [u8; 3]) {
     let state = server.state();
     assert!(state["scroll_bar"]["thumb"].is_null(), "{state:#}");
     wait_pixels(
-        &server,
+        server,
         &[
             (
                 on_scroll_bar_pixel(&state, scroll_bar_middle(&state)),
@@ -764,33 +756,37 @@ fn check_the_scroll_bar_over(background: &str, under: [u8; 3], track: [u8; 3]) {
             (scroll_bar_edge(&state), under),
         ],
     );
+}
 
+/// 背景画像がなければ、スクロールバーの列は端末の背景色で、トラックは設定の色のまま不透明に塗る。設定ファイルに背景画像を
+/// 足すと、背景画像はスクロールバーの列にも敷き、トラックは半透明に塗って画像を透かす（つまみは不透明）。画像があるときは
+/// DPI を変えたあとも同じ。
+#[test]
+fn the_scroll_bar_track_follows_the_background_image() {
+    const IMAGE_OPACITY: f64 = 0.5;
+    let server = start_with_background(SCROLL_BAR_COLORS_SETTING, |dir| {
+        std::fs::write(dir.join(SOLID_IMAGE), solid_image(SOLID_IMAGE_COLOR))
+            .expect("failed to write the image");
+    });
+    server.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
+    check_the_bar_column_without_a_thumb(&server, TERMINAL_BACKGROUND);
     fill_scrollback(&server);
+    assert_scroll_bar_colors(&server, TERMINAL_BACKGROUND, SCROLL_BAR_TRACK);
+
+    std::fs::write(
+        server.dir().join("config.toml"),
+        format!(
+            "{TERMINAL_BACKGROUND_SETTING}{SCROLL_BAR_COLORS_SETTING}[background]\nimage_opacity = {IMAGE_OPACITY:?}\nfit = \"stretch\"\n\n[[background.images]]\npath = '{SOLID_IMAGE}'\n"
+        ),
+    )
+    .expect("failed to write the settings");
+    let under = over_terminal_background(SOLID_IMAGE_COLOR, IMAGE_OPACITY);
+    let track = blend(SCROLL_BAR_TRACK, under, TRACK_OPACITY_OVER_IMAGE);
     assert_scroll_bar_colors(&server, under, track);
     for dpi in [DPI_150_PERCENT, DPI_200_PERCENT, DPI_100_PERCENT] {
         change_dpi(&server, dpi);
         assert_scroll_bar_colors(&server, under, track);
     }
-}
-
-/// 背景画像はスクロールバーの列にも敷き、トラックは半透明に塗って画像を透かす。つまみは不透明。
-#[test]
-fn the_scroll_bar_track_lets_the_background_image_show_through() {
-    const IMAGE_OPACITY: f64 = 0.5;
-    let under = over_terminal_background(SOLID_IMAGE_COLOR, IMAGE_OPACITY);
-    check_the_scroll_bar_over(
-        &format!(
-            "[background]\nimage_opacity = {IMAGE_OPACITY:?}\nfit = \"stretch\"\n\n[[background.images]]\npath = '{SOLID_IMAGE}'\n"
-        ),
-        under,
-        blend(SCROLL_BAR_TRACK, under, TRACK_OPACITY_OVER_IMAGE),
-    );
-}
-
-/// 背景画像がなければ、スクロールバーの列は端末の背景色で、トラックは設定の色のまま不透明に塗る。
-#[test]
-fn without_a_background_image_the_scroll_bar_track_keeps_its_color() {
-    check_the_scroll_bar_over("", TERMINAL_BACKGROUND, SCROLL_BAR_TRACK);
 }
 
 /// 元の大きさの背景画像は、DPI を変えても画素の数が変わらず、新しい範囲の真ん中に出る。

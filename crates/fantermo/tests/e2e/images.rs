@@ -27,13 +27,12 @@ fn exercise_kitty_image(server: &Server) {
     const WIDTH: usize = 16;
     const COLOR: [u8; 3] = [230, 20, 40];
 
-    wait_sh_ready(server);
     let pixels = COLOR.repeat(WIDTH * WIDTH);
     server.send_line(&format!(
         r"printf '\033[2J\033[{IMAGE_ROW};{IMAGE_COL}H\033_Ga=T,f=24,s={WIDTH},v={WIDTH},c={COLUMNS},r={ROWS},i=1,q=2;{}\033\\'",
         common::base64(&pixels)
     ));
-    let state = server.wait_until("an image", |state| number(&state["images"]) == 1);
+    let state = server.wait_until("a kitty image", |state| number(&state["images"]) == 1);
     let picture = server.picture();
     let cell_width = u32::try_from(number(&state["cell_width"])).expect("cell width");
     let cell_height = u32::try_from(number(&state["cell_height"])).expect("cell height");
@@ -57,41 +56,36 @@ fn exercise_sixel_image(server: &Server) {
     const WIDTH: u32 = 48;
     const HEIGHT: u32 = 12;
 
-    wait_sh_ready(server);
     server.send_line(&format!(
         r"printf '\033[2J\033[{IMAGE_ROW};{IMAGE_COL}H\033Pq#0;2;0;100;0#0!{WIDTH}~-!{WIDTH}~\033\\'"
     ));
-    let state = server.wait_until("an image", |state| number(&state["images"]) == 1);
+    let state = server.wait_until("a sixel image", |state| number(&state["images"]) == 1);
     let picture = server.picture();
     let (x, y) = cell_pixel(&state, IMAGE_COL - 1, IMAGE_ROW - 1, WIDTH / 2, HEIGHT / 2);
     assert_color(picture.rgb(x, y), COLOR);
 }
 
+/// sixel の画像を置いたあと、画面を消して画像がなくなってから、kitty の画像を置く。続けて置くと、先に置いた画像の
+/// ままで待ちが成り立ってしまう。
+fn exercise_images(server: &Server) {
+    wait_sh_ready(server);
+    exercise_sixel_image(server);
+    server.send_line(r"printf '\033[2J'");
+    server.wait_until("no image", |state| number(&state["images"]) == 0);
+    exercise_kitty_image(server);
+}
+
 #[test]
-fn cygwin_kitty_image_is_drawn() {
-    run_with_cygwin("cygwin_kitty_image_is_drawn", |server| {
-        exercise_kitty_image(&server);
+fn cygwin_images_are_drawn() {
+    run_with_cygwin("cygwin_images_are_drawn", |server| {
+        exercise_images(&server);
     });
 }
 
 #[test]
-fn cygwin_sixel_image_is_drawn() {
-    run_with_cygwin("cygwin_sixel_image_is_drawn", |server| {
-        exercise_sixel_image(&server);
-    });
-}
-
-#[test]
-fn wsl_kitty_image_is_drawn() {
-    run_with_wsl("wsl_kitty_image_is_drawn", |server| {
-        exercise_kitty_image(&server);
-    });
-}
-
-#[test]
-fn wsl_sixel_image_is_drawn() {
-    run_with_wsl("wsl_sixel_image_is_drawn", |server| {
-        exercise_sixel_image(&server);
+fn wsl_images_are_drawn() {
+    run_with_wsl("wsl_images_are_drawn", |server| {
+        exercise_images(&server);
     });
 }
 

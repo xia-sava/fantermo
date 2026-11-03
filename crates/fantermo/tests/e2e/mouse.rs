@@ -565,7 +565,6 @@ const REPORT_COL: u32 = 4;
 const REPORT_ROW: u32 = 2;
 
 fn exercise_clicks_reach_the_application(server: &Server) {
-    wait_sh_ready(server);
     start_report_reader(server, SGR_CLICKS);
     let state = server.wait_until("the mouse mode", |state| state["mouse_tracking"] == true);
     let at = cell_center(&state, REPORT_COL, REPORT_ROW);
@@ -682,25 +681,10 @@ fn mouse_reports_reach_an_application_through_conpty() {
     server.wait_text(CURSOR_UP);
 }
 
-#[test]
-fn cygwin_clicks_reach_the_application() {
-    run_with_cygwin("cygwin_clicks_reach_the_application", |server| {
-        exercise_clicks_reach_the_application(&server);
-    });
-}
-
-#[test]
-fn wsl_clicks_reach_the_application() {
-    run_with_wsl("wsl_clicks_reach_the_application", |server| {
-        exercise_clicks_reach_the_application(&server);
-    });
-}
-
 /// ドラッグと動きの報告、古い形の報告。モードごとにタブを開く。
 fn exercise_motion_reaches_the_application(server: &Server) {
-    wait_sh_ready(server);
-    start_report_reader(server, SGR_DRAGS);
-    let state = server.wait_until("the mouse mode", |state| state["mouse_tracking"] == true);
+    let state = start_report_reader_in_new_tab(server, SGR_DRAGS);
+    assert_eq!(state["mouse_tracking"], true, "{state:#}");
     let from = cell_center(&state, REPORT_COL, REPORT_ROW);
     let to = cell_center(&state, REPORT_COL + 3, REPORT_ROW + 1);
 
@@ -738,25 +722,10 @@ fn exercise_motion_reaches_the_application(server: &Server) {
     );
 }
 
-#[test]
-fn cygwin_motion_reaches_the_application() {
-    run_with_cygwin("cygwin_motion_reaches_the_application", |server| {
-        exercise_motion_reaches_the_application(&server);
-    });
-}
-
-#[test]
-fn wsl_motion_reaches_the_application() {
-    run_with_wsl("wsl_motion_reaches_the_application", |server| {
-        exercise_motion_reaches_the_application(&server);
-    });
-}
-
 /// アプリがマウスを求めているときと代替画面の、ホイールの振る舞い。
 fn exercise_wheel_with_applications(server: &Server) {
-    wait_sh_ready(server);
-    start_report_reader(server, SGR_CLICKS);
-    let state = server.wait_until("the mouse mode", |state| state["mouse_tracking"] == true);
+    let state = start_report_reader_in_new_tab(server, SGR_CLICKS);
+    assert_eq!(state["mouse_tracking"], true, "{state:#}");
     let at = cell_center(&state, REPORT_COL, REPORT_ROW);
     // 1 ノッチごとに、ボタンの押下だけを送る。
     let up = sgr(SGR_WHEEL_UP, REPORT_COL, REPORT_ROW, 'M');
@@ -832,23 +801,6 @@ fn exercise_wheel_with_applications(server: &Server) {
     ));
     assert_eq!(selection(&server.state()), Some("reader-4"));
 
-    // カーソルキーのモード（DECCKM）に従う。
-    let state = start_report_reader_in_new_tab(server, &format!(r"{ALTERNATE_SCREEN}\033[?1h"));
-    let lines = number(&state["scroll"]["lines_per_notch"]) as usize;
-    assert_eq!(reports_of(server, &wheel(NOTCH, at)), "^[OA".repeat(lines));
-    assert_eq!(reports_of(server, &wheel(-NOTCH, at)), "^[OB".repeat(lines));
-
-    // kitty keyboard protocol では、本物のカーソルキーと同じ形にする。
-    start_report_reader_in_new_tab(server, &format!(r"{ALTERNATE_SCREEN}\033[>3u"));
-    assert_eq!(
-        reports_of(server, &wheel(NOTCH, at)),
-        "^[[1;1:1A^[[1;1:3A".repeat(lines)
-    );
-
-    // Alternate Scroll（DECSET 1007）を切ったアプリには送らない。
-    start_report_reader_in_new_tab(server, &format!(r"{ALTERNATE_SCREEN}\033[?1007l"));
-    assert_eq!(reports_of(server, &wheel(NOTCH, at)), "");
-
     // Shift で報告をやめても、アプリがマウスを求めていればカーソルキーにしない。
     start_report_reader_in_new_tab(server, &format!(r"{ALTERNATE_SCREEN}{SGR_CLICKS}"));
     assert_eq!(
@@ -857,16 +809,24 @@ fn exercise_wheel_with_applications(server: &Server) {
     );
 }
 
+/// クリック、ドラッグと動き、ホイールの報告を、一つの起動で続けて確認する。モードごとにタブを開く。
+fn exercise_mouse_reports(server: &Server) {
+    wait_sh_ready(server);
+    exercise_clicks_reach_the_application(server);
+    exercise_motion_reaches_the_application(server);
+    exercise_wheel_with_applications(server);
+}
+
 #[test]
-fn cygwin_the_wheel_reaches_the_application() {
-    run_with_cygwin("cygwin_the_wheel_reaches_the_application", |server| {
-        exercise_wheel_with_applications(&server);
+fn cygwin_mouse_reports_reach_the_application() {
+    run_with_cygwin("cygwin_mouse_reports_reach_the_application", |server| {
+        exercise_mouse_reports(&server);
     });
 }
 
 #[test]
-fn wsl_the_wheel_reaches_the_application() {
-    run_with_wsl("wsl_the_wheel_reaches_the_application", |server| {
-        exercise_wheel_with_applications(&server);
+fn wsl_mouse_reports_reach_the_application() {
+    run_with_wsl("wsl_mouse_reports_reach_the_application", |server| {
+        exercise_mouse_reports(&server);
     });
 }

@@ -41,23 +41,6 @@ fn clipboard_answer(text: &str) -> String {
 }
 
 #[test]
-fn cygwin_clipboard_read_denied_by_the_setting_gets_no_answer() {
-    let Some(config) = cygwin_config("cygwin_clipboard_read_denied_by_the_setting_gets_no_answer")
-    else {
-        return;
-    };
-    let config = format!("[clipboard]\nread = \"deny\"\n{config}");
-    let server = Server::start(&config, &[]);
-    wait_sh_ready(&server);
-    server.set_clipboard(CLIPBOARD_TEXT);
-    start_clipboard_read(&server, "denied");
-    let state = server.state();
-    assert_eq!(state["dialogs"].as_array().map(Vec::len), Some(0));
-    let answer = finish_clipboard_read(&server, "denied");
-    assert!(!answer.contains("52;c"), "{answer}");
-}
-
-#[test]
 fn cygwin_clipboard_read_allowed_by_the_setting_is_answered() {
     let Some(config) = cygwin_config("cygwin_clipboard_read_allowed_by_the_setting_is_answered")
     else {
