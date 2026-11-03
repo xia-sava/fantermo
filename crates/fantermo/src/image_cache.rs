@@ -111,16 +111,10 @@ impl<T> ImageCache<T> {
 
 #[cfg(test)]
 mod tests {
-    use fantermo_core::frame::ImageSource;
-
     use super::*;
 
     fn key(id: u32) -> ImageKey {
-        ImageKey {
-            source: ImageSource::Kitty,
-            id,
-            generation: 1,
-        }
+        ImageKey { id, generation: 1 }
     }
 
     #[test]

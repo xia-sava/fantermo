@@ -40,8 +40,7 @@ use crate::{
     clipboard::{self, ReadRequest, WriteRequest},
     config::TerminalColors,
     frame::{
-        CellView, CursorView, Frame, ImageKey, ImageLayer, ImagePixels, ImageSource, ImageView,
-        Rgb, Underline,
+        CellView, CursorView, Frame, ImageKey, ImageLayer, ImagePixels, ImageView, Rgb, Underline,
     },
     link::{self, LineCell, Link, LinkSpan},
     output_scan::{OutputEvent, OutputScanner},
@@ -745,11 +744,6 @@ impl Vt {
         self.terminal.scroll_viewport(ScrollViewport::Bottom);
     }
 
-    /// 表示する範囲を、スクロールバックのいちばん古い行からにする。
-    pub fn scroll_to_top(&mut self) {
-        self.terminal.scroll_viewport(ScrollViewport::Top);
-    }
-
     /// 表示する範囲の先頭を、全体の先頭から `row` 行目（[`ScrollPosition::offset`] と同じ数え方）に
     /// する。範囲を越える値は、いちばん新しい行までに収まる。
     pub fn scroll_to_row(&mut self, row: usize) {
@@ -1001,7 +995,6 @@ fn image_views(
         };
         views.push(ImageView {
             key: ImageKey {
-                source: ImageSource::Kitty,
                 id: placement.image_id()?,
                 generation: placement.image_generation()?,
             },
@@ -1850,7 +1843,7 @@ mod tests {
         assert_eq!(vt.scroll_position().unwrap(), position(21, 16, 5));
         vt.scroll(-10);
         assert_eq!(vt.scroll_position().unwrap(), position(21, 6, 5));
-        vt.scroll_to_top();
+        vt.scroll_to_row(0);
         assert_eq!(vt.scroll_position().unwrap(), position(21, 0, 5));
         assert_eq!(first_row_text(&mut vt), "line00");
         vt.scroll_to_bottom();
@@ -2439,7 +2432,7 @@ mod tests {
         // 上へ流れて、表示している範囲から出た。
         let scrolled = vt.frame().unwrap().images;
         assert!(scrolled.is_empty(), "{scrolled:?}");
-        vt.scroll_to_top();
+        vt.scroll_to_row(0);
         assert_eq!(vt.frame().unwrap().images[0].row, 0);
     }
 

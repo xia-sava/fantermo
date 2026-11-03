@@ -73,18 +73,10 @@ pub struct CursorView {
     pub color: Rgb,
 }
 
-/// 端末の中の画像がどの仕組みで届いたか。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ImageSource {
-    /// kitty graphics protocol。
-    Kitty,
-}
-
 /// 端末の中の画像のピクセルを指すもの。ピクセルが変わると `generation` が変わるので、テクスチャを
 /// 覚える鍵に使える。`generation` は端末や画面をまたいでも使い回されない。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ImageKey {
-    pub source: ImageSource,
     pub id: u32,
     pub generation: u64,
 }
@@ -259,7 +251,6 @@ mod tests {
     fn image_view() -> ImageView {
         ImageView {
             key: ImageKey {
-                source: ImageSource::Kitty,
                 id: 1,
                 generation: 1,
             },
