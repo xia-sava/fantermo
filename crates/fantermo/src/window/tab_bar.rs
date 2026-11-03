@@ -7,7 +7,8 @@ use windows::Win32::Graphics::Gdi::{
 };
 
 use super::{
-    App, Deferred,
+    App,
+    proc::Deferred,
     tabs::{Launch, tab_title},
 };
 use crate::{

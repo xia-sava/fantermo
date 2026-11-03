@@ -107,14 +107,26 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 
 `build.rs` は，メインスレッドのスタックを 8 MB にし，Common Controls 6 のマニフェストとアイコンのリソースを埋め込み，コミットの短い SHA とリリースのビルドか（`FANTERMO_RELEASE=1`）を埋め込みます．
 
-### `window.rs` の中
+### `window` の中
 
-- **メッセージの定数と `run`** … `WM_APP_WAKE`（出力と子プロセスの終了），`WM_APP_CONFIG_CHANGED`，`WM_APP_UPDATE`，`WM_APP_CLIPBOARD_PROMPT`，`WM_APP_E2E`，`WM_APP_LAUNCH`，`WM_APP_DEVICE_REMOVED` とタイマーの番号．`run` がウィンドウと `App` を作り，メッセージループを回します．
-- **配置の関数** … `Insets`，`terminal_area_in_client`，`scroll_bar_area_in_client`，`backdrop_area_in_client`，`grid_size`．クライアント領域を，タブバー，端末を描く領域，余白，スクロールバー，背景画像を敷く領域に分けます．
-- **`App`** … ウィンドウ一つ分の状態．端末の並び（`sessions` と `active`），フォント，`Renderer`，いま使っている設定の値，マウスとタブバーとスクロールバーの操作の途中の状態など．
-- **`App` のメソッド** … キー（`on_key`，`on_key_input`，`run_bound_action`），タブ（`run_tab_command`，`open_startup`，`close_session`，`activate`），起動中の起動（`accept_launch`，`open_pending_launches`），貼り付けとクリップボード，マウスとリンク，スクロールバー，タブバー，メニュー，出力（`on_wake`），大きさ（`on_resize`，`layout`，`resize_sessions`），DPI とフォント（`apply_dpi`，`apply_font`），設定（`reload_config`，`apply_config`，`config_in_use`，`settings_request`），描画（`render_to`，`on_device_lost`，`on_device_removed_message`，`recreate_renderer`），点滅と画像のアニメーションのタイマー．
-- **借用の外ですること** … `Deferred` と `run_deferred`，`show_about`，`continue_update`，`run_menu_command`，`edit_settings`（`SettingsHost`），`destroy_window`，`save_window_state`，`repost_skipped_messages`．
-- **`window_proc`** … メッセージごとの振り分け．
+`App`（ウィンドウ一つ分の状態）は `window/mod.rs` に置き，そのメソッドは話題ごとのファイルの `impl App` に分けてあります．ほかのファイルから呼ぶものだけに `pub(super)` を付けます．
+
+| ファイル | 受け持つこと |
+|---|---|
+| `window/mod.rs` | メッセージの定数（`WM_APP_WAKE`（出力と子プロセスの終了），`WM_APP_CONFIG_CHANGED`，`WM_APP_UPDATE`，`WM_APP_CLIPBOARD_PROMPT`，`WM_APP_E2E`，`WM_APP_LAUNCH`，`WM_APP_DEVICE_REMOVED`）とタイマーの番号．`run` がウィンドウと `App` を作り，メッセージループを回します．`App` の構造体と `App::new`（端末の並び（`sessions` と `active`），フォント，`Renderer`，いま使っている設定の値，マウスとタブバーとスクロールバーの操作の途中の状態など）．ウィンドウにメッセージを積む `post`・`poster`・`wake_poster` |
+| `window/proc.rs` | `window_proc`（メッセージごとの振り分けと，`App` を借りる `with_app`），借用の外ですること（`Deferred` と `run_deferred`，`destroy_window`，`save_window_state`），借用が重なって飛ばしたメッセージの積み直し（`is_repostable`，`repost_skipped_messages`），`app_of` |
+| `window/layout.rs` | 配置の関数（`Insets`，`terminal_area_in_client`，`scroll_bar_area_in_client`，`backdrop_area_in_client`，`grid_size`）．クライアント領域を，タブバー，端末を描く領域，余白，スクロールバー，背景画像を敷く領域に分けます．座標の変換と，大きさ（`on_resize`，`layout`，`resize_sessions`） |
+| `window/dpi.rs` | DPI とフォント（`apply_dpi`，`apply_font`，`load_font`），起動したときの DPI の変更（`change_dpi_keeping_window`，`change_dpi_keeping_grid`） |
+| `window/keys.rs` | キー（`on_key`，`on_key_input`，`run_bound_action`），IME，端末へ送る入力（`send`） |
+| `window/tabs.rs` | タブ（`run_tab_command`，`open_startup`，`close_session`，`activate`），起動中の起動（`accept_launch`，`open_pending_launches`），出力（`on_wake`，`continue_output`），タイトルとベル，最初の端末で起動するもの（`startup_for`） |
+| `window/mouse.rs` | マウスのボタンと動きとホイール，選択，リンク，アプリへの報告 |
+| `window/scroll_bar.rs`・`window/tab_bar.rs` | スクロールバーとタブバーの操作と，描くものの組み立て |
+| `window/menu.rs` | メニューを出す要求と，選ばれた項目の働き（`run_menu_command`） |
+| `window/clipboard.rs` | 貼り付けとコピーと選択，アプリからのクリップボードの読み書きの依頼と読み取りの確認 |
+| `window/settings.rs` | 設定（`reload_config`，`apply_config`，`config_in_use`，`settings_request`），設定ダイアログ（`edit_settings`，`SettingsHost`） |
+| `window/render.rs` | 描画（`render_to`，`on_device_lost`，`on_device_removed_message`，`recreate_renderer`），背景画像の選び方，点滅と画像のアニメーションのタイマー |
+| `window/update.rs` | 「fantermo について」（`show_about`）と更新の続き（`continue_update`） |
+| `window/e2e.rs` | e2e テストの制御の口のうち，ウィンドウのスレッドで動く側（feature `e2e`） |
 
 ウィンドウプロシージャの中では `App` を `RefCell` で借ります．処理の途中で同じウィンドウへのメッセージがこの場で届くと借用が重なるので，借りられなければそのメッセージを飛ばします（`window_proc` の `with_app`）．飛ばした `WM_APP_WAKE`，`WM_APP_DEVICE_REMOVED`，`WM_CLOSE` は，借用を手放したところで積み直します（`is_repostable`，`repost_skipped_messages`）．ダイアログ，メニュー，メッセージボックスのように自分でメッセージを回すものは，借用を手放してから開きます．借用を持ったまま開くと，その間に届いた出力や描き直しが飛ばされるためです．入力の処理は開くものを `Deferred` で返し，`window_proc` が借用を外して `run_deferred` で開きます．`DestroyWindow` も同じ理由で借用の外で呼びます．`destroy_window` は `with_app` で `App` を借りられたとき（ほかに借用がないとき）だけ状態を書いて `DestroyWindow` を呼びます．ほかのスレッドから送られた `WM_CLOSE` が，借用の中の同期の呼び出し（貼り付けの `GetClipboardData` など）の間に届いたときは，閉じずに飛ばして積み直します．積み直したメッセージは借用の中では取り出されないので，借用を手放したあとで処理されます．開いている間に最後の端末が終わるとウィンドウが閉じて `App` が解放されるので，`with_app` は呼ばれるたびに `App` を読み直し，もうなければ何もしません．
 
@@ -249,7 +261,7 @@ fantermo は `std::process::Command` でブリッジを起動し（`CREATE_NO_WI
 
 ### ウィンドウまわり
 
-windows-rs で Win32 を直接書きます．winsafe は標準のコントロールをほとんど使わないので利点が小さく，winit は IME とキー入力の細かいところに手が届きにくく，WinUI 3 は Rust から使うのが難しく重いためです．借用の扱いは 2 節の「`window.rs` の中」のとおりです．
+windows-rs で Win32 を直接書きます．winsafe は標準のコントロールをほとんど使わないので利点が小さく，winit は IME とキー入力の細かいところに手が届きにくく，WinUI 3 は Rust から使うのが難しく重いためです．借用の扱いは 2 節の「`window` の中」のとおりです．
 
 ### 描画
 
@@ -325,7 +337,7 @@ run-hidden は利用者のセッションのウィンドウステーション（
 
 1. `fantermo-core/src/config.rs`: 型にフィールドを足し，`Default` に既定値を入れます．既定値と範囲は `DEFAULT_*`・`*_RANGE` の定数にします．数か名前一つだけの項目なら，項目の一覧 `SCALARS` に 1 行（テーブル，キー，値の種類 `ScalarKind` と範囲，フィールドを読み書きする `get`・`set`）を足します．読む処理（`parse`）と書き戻す処理（`config_edit::update`）はこの一覧を上から順に処理し，設定ダイアログの入力欄から読む処理（`parse_input`）は項目を名前で引きます．`parse` は，型が違う・範囲外・知らない名前なら警告を残してその項目だけ前の値にします．名前で書く値は，その型に値と名前の表 `NAMES` を置き，`ALL`・`name`・`from_name` をそこから作ります．`TEMPLATE` に説明と `# キー = 既定値` の行を足します．
 2. 一覧に載らない項目（`font.family`，`default_profile`，プロファイル，背景画像の一覧，色，キーの割り当て）は，読む処理と書き戻す処理をそれぞれ書きます．読む処理は，一覧の項目のあるテーブルなら `config/read.rs` の `read_table` に，ほかは `parse` に書きます（`parse` が `read_table` で回すのは，一覧の項目のあるテーブルだけです）．書き戻す処理は `fantermo-core/src/config_edit.rs` の `update` から呼びます．
-3. `fantermo/src/window.rs`: `App` に値を持たせ，`App::new`・`apply_config`・**`config_in_use`** に足します．`config_in_use` に足し忘れると，読み直しと設定ダイアログで値が戻ります．反映に配置やアトラスの作り直しが要るかを `apply_config` で決めます．
+3. `fantermo/src/window/mod.rs` と `window/settings.rs`: `App` に値を持たせ，`App::new`（`mod.rs`）・`apply_config`・**`config_in_use`**（`settings.rs`）に足します．`config_in_use` に足し忘れると，読み直しと設定ダイアログで値が戻ります．反映に配置やアトラスの作り直しが要るかを `apply_config` で決めます．
 4. `fantermo/src/settings_dialog.rs`: コントロールの ID（`ID_*`），`Controls` のフィールド，`create` で作る，`fill` で値を入れる，`read` で `Config` に戻す（不正なら入力欄を返してフォーカスする）．コントロールは種類ごとの部品で作ります．
    - 数なら `NumberField`．読み方（`config::parse_input` に項目の名前を渡す）・見せ方・矢印での動かし方・読めないときの文を `NumberKind` の定数に書き，`Controls::number_fields()` に足します．矢印での増減，矢印の配置，`EN_CHANGE` の振り分けはこの一覧を回します．
    - ラジオボタンの組なら `RadioGroup`．選択肢と画面の名前の配列を渡し，`Controls::radio_groups()` に足します．`BN_CLICKED` の振り分けはこの一覧を回します．
@@ -337,7 +349,7 @@ run-hidden は利用者のセッションのウィンドウステーション（
 ### キーの割り当てを足す
 
 1. `fantermo-core/src/keymap.rs`: `Action` に足し，`ACTION_NAMES`（設定ファイルに書く snake_case の名前）と `Action::ALL` に足します（どちらも配列の長さを書いています）．既定で割り当てるなら `DEFAULT_BINDINGS` に足します．
-2. `fantermo/src/window.rs`: `run_bound_action` に動作を書きます．成り立たないときにシェルへ送るか，押し続けたときに繰り返すかもここで決めます．
+2. `fantermo/src/window/keys.rs`: `run_bound_action` に動作を書きます．成り立たないときにシェルへ送るか，押し続けたときに繰り返すかもここで決めます．
 3. `fantermo/src/settings_dialog.rs`: `ACTION_LABELS` に画面の名前を足します．`Action::ALL` と同じ順に並べます．
 4. メニューにも同じ項目があれば，`context_menu.rs` の `MenuCommand::action` でつなぎます（メニューに添えるキーが割り当てから決まります）．
 5. `TEMPLATE` の `[keys]` の説明（`template_lists_the_default_keys` が既定の割り当てとの一致を見ます）．
@@ -345,7 +357,7 @@ run-hidden は利用者のセッションのウィンドウステーション（
 ### メニューの項目を足す
 
 1. `fantermo/src/context_menu.rs`: `MenuCommand` に足し，`ALL`・`id`（0 と `PROFILE_ID_BASE` 以上は使わない）・`name`（アクセラレータ付き）・`action` に足し，`Menu::items` のどのメニューのどこに並べるかを決めます．押せないときがあれば `MenuRequest` に条件を足します．
-2. `fantermo/src/window.rs`: `run_menu_command` に動作を書きます．ダイアログを開くものは `Deferred` を返し，借用の外で開きます．
+2. `fantermo/src/window/menu.rs`: `run_menu_command` に動作を書きます．ダイアログを開くものは `Deferred` を返し，借用の外で開きます．
 3. e2e のメニューのテストは項目の並びを見ているので，合わせて直します．
 
 ### 制御の口の要求を足す
@@ -368,7 +380,7 @@ run-hidden は利用者のセッションのウィンドウステーション（
 
 ## 7. テスト
 
-- **単体のテスト**: `./tools/dev.sh test`．各モジュールの `#[cfg(test)]` のほか，`crates/fantermo-core/tests/key_encoding.rs`（libghostty-vt のキーの符号化を固定する）と `crates/run-hidden/tests/usage.rs`．ウィンドウや描画に依存しない計算（`tab_bar`，`scroll_bar`，`window.rs` の配置の関数など）は関数に分けて単体でテストします．
+- **単体のテスト**: `./tools/dev.sh test`．各モジュールの `#[cfg(test)]` のほか，`crates/fantermo-core/tests/key_encoding.rs`（libghostty-vt のキーの符号化を固定する）と `crates/run-hidden/tests/usage.rs`．ウィンドウや描画に依存しない計算（`tab_bar`，`scroll_bar`，`window/layout.rs` の配置の関数など）は関数に分けて単体でテストします．
 - **e2e**: `./tools/dev.sh test --features e2e`．実際の fantermo を run-hidden で別デスクトップに起動し，制御の口で操作して画面の文字と絵を読みます．テストは `crates/fantermo/tests/e2e.rs`，土台は `crates/fantermo/tests/common/`．実行のしかた，書き方，環境変数，落とし穴は `.claude/skills/e2e-verify` にあります．
 - **画面の書き出し**: `FANTERMO_DUMP=<ディレクトリ>` を付けると，fantermo が `screen.txt`（画面の文字と大きさ）と `frame.png`（描いたバックバッファ）を定期的に書き出します（`dump.rs`）．Direct3D のウィンドウはウィンドウの DC から撮れないので，画面を使わずに描画を見るときに使います．
 - **ブリッジのテスト**: `./tools/bridge.sh test <cygwin|linux|all>`．`crates/fantermo-bridge/tests/protocol.rs` が，ブリッジをパイプで起動してプロトコルの単位で話します．

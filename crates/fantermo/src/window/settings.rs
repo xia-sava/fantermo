@@ -7,7 +7,12 @@ use fantermo_core::config::{
 };
 use windows::Win32::Foundation::HWND;
 
-use super::{App, Deferred, WithApp, dpi::load_font, run_deferred, tab_bar::system_colors};
+use super::{
+    App,
+    dpi::load_font,
+    proc::{Deferred, WithApp, run_deferred},
+    tab_bar::system_colors,
+};
 use crate::{
     config_file::{self, Loaded},
     font::{self, Font},

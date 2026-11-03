@@ -23,7 +23,10 @@ use windows::{
 };
 
 use super::{
-    App, Deferred, OUTPUT_TIMER_ID, WINDOW_TITLE, in_menu, layout::grid_size, wake_poster,
+    App, OUTPUT_TIMER_ID, WINDOW_TITLE,
+    layout::grid_size,
+    proc::{Deferred, in_menu},
+    wake_poster,
 };
 use crate::{
     clipboard_prompt,

@@ -11,8 +11,9 @@ use windows::Win32::{
 };
 
 use super::{
-    App, app_of,
+    App,
     layout::{client_size_for_terminal, grid_pixels, window_frame, window_rect},
+    proc::app_of,
 };
 use crate::{
     font::{self, Font},

@@ -51,10 +51,10 @@ use windows::{
 };
 
 use super::{
-    App, Deferred, WithApp, destroy_window,
+    App,
     dpi::send_dpi_changed,
     layout::{client_size, client_size_for_terminal, grid_pixels, window_frame, window_rect},
-    run_deferred,
+    proc::{Deferred, WithApp, destroy_window, run_deferred},
     tabs::{Launch, TabCommand, tab_title},
 };
 use crate::{

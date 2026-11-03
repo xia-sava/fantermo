@@ -4,7 +4,11 @@ use std::path::Path;
 
 use windows::Win32::Foundation::RECT;
 
-use super::{App, Deferred, WithApp, tabs::TabCommand};
+use super::{
+    App,
+    proc::{Deferred, WithApp},
+    tabs::TabCommand,
+};
 use crate::{
     context_menu::{Menu, MenuCommand, MenuRequest},
     link_opener, tab_bar,

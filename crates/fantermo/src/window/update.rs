@@ -7,7 +7,10 @@ use windows::Win32::{
     UI::WindowsAndMessaging::MSG,
 };
 
-use super::{App, Deferred, WM_APP_UPDATE, WithApp, poster};
+use super::{
+    App, WM_APP_UPDATE, poster,
+    proc::{Deferred, WithApp},
+};
 use crate::{about, font::Font, update};
 
 impl App {

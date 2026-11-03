@@ -7,7 +7,10 @@ use fantermo_core::{
 };
 use windows::Win32::{Foundation::WPARAM, UI::Input::KeyboardAndMouse::IsWindowEnabled};
 
-use super::{App, Deferred, WM_APP_CLIPBOARD_PROMPT, in_menu, post_or_warn};
+use super::{
+    App, WM_APP_CLIPBOARD_PROMPT, post_or_warn,
+    proc::{Deferred, in_menu},
+};
 use crate::{
     clipboard,
     clipboard_prompt::{self, Choice},

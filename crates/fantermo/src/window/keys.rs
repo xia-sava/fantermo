@@ -11,7 +11,7 @@ use windows::Win32::{
     },
 };
 
-use super::{App, Deferred, mouse::is_link_modifier, tabs::TabCommand};
+use super::{App, mouse::is_link_modifier, proc::Deferred, tabs::TabCommand};
 use crate::{
     ime::{self, CursorRect},
     keyboard::{self, KeyPosition, Utf16Assembler},

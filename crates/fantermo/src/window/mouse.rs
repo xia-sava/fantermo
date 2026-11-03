@@ -22,7 +22,7 @@ use windows::Win32::{
     },
 };
 
-use super::{App, Deferred};
+use super::{App, proc::Deferred};
 use crate::{keyboard, link_opener, tab_bar::Hit};
 
 /// キーボードから開いた WM_CONTEXTMENU が `lparam` に入れてくる位置。
