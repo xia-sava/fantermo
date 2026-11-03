@@ -100,19 +100,16 @@ pub(super) fn change_dpi_keeping_grid(hwnd: HWND, dpi: u32) {
 }
 
 impl App {
-    /// DPI が `dpi` に変わった。端末のフォントを測り直し、[`App::apply_font`] で入れ替える。
-    /// 端末の大きさは呼び出し元が合わせる（このあと届く WM_SIZE の [`App::on_resize`]）。測れなければ
-    /// 前のフォントのまま描く。
+    /// DPI が `dpi` に変わった。端末のフォントを測り直し、[`App::apply_font`] で入れ替え、タブのアイコンを
+    /// その DPI の一辺で作り直す。端末の大きさは呼び出し元が合わせる（このあと届く WM_SIZE の
+    /// [`App::on_resize`]）。フォントを測れなければ前のフォントのまま描く。
     pub(super) fn apply_dpi(&mut self, dpi: u32) {
         self.dpi = dpi;
-        let font = match font::find_or_default(&self.dwrite, &self.config.font, dpi) {
-            Ok(font) => font,
-            Err(e) => {
-                tracing::warn!("failed to measure the font for {dpi} DPI: {e}");
-                return;
-            }
-        };
-        self.apply_font(font);
+        match font::find_or_default(&self.dwrite, &self.config.font, dpi) {
+            Ok(font) => self.apply_font(font),
+            Err(e) => tracing::warn!("failed to measure the font for {dpi} DPI: {e}"),
+        }
+        self.update_tab_icons();
     }
 
     /// いまの DPI で測った端末のフォント `font` に入れ替える。UI のフォントを測り直し、グリフアトラスを
@@ -150,6 +147,8 @@ impl App {
         log_ui_font(&ui_font, dpi);
         self.font = font;
         self.ui_font = ui_font;
+        // 頭文字の書体が変わっていれば、タブのアイコンを作り直す。
+        self.update_tab_icons();
         if let Some(e) = lost {
             self.on_device_lost(&e);
         }

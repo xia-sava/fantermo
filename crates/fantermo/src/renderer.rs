@@ -57,7 +57,7 @@ use crate::{
     image_decoder::{Decoded, Decoder, MAX_TEXTURE_SIDE},
     paint::{Area, Paint},
     pipeline::{CellPipeline, DrawList, Instance, InstanceKind},
-    tab_icon::{Generator, TabIcon},
+    tab_icon::TabIcon,
     ui_font::UiFont,
 };
 
@@ -105,10 +105,8 @@ pub struct Renderer {
     images: HashMap<PathBuf, ImageTexture>,
     /// 端末の中の画像。テクスチャを作れなかったものは `None` で覚え、作り直さない。
     terminal_images: ImageCache<Option<ImageTexture>>,
-    /// タブのアイコンのピクセルを作るもの。初めて作るときに作る。
-    tab_icon_generator: Option<Generator>,
-    /// タブのアイコンと一辺ごとのテクスチャ。作れなかったものは `None` で覚え、作り直さない。
-    tab_icons: HashMap<(TabIcon, u32), Option<ImageTexture>>,
+    /// 開いているタブのアイコンのテクスチャ。
+    tab_icons: Vec<TabIconTexture>,
     /// 前のフレームでアトラスに入らず飛ばした数。0 は全部入った。
     skipped_last_frame: usize,
 }
@@ -156,6 +154,13 @@ struct ImageTexture {
     view: ID3D11ShaderResourceView,
     width: u32,
     height: u32,
+}
+
+/// タブのアイコンの一辺 `side` のテクスチャ。作れなかったものは `None` で覚え、作り直さない。
+struct TabIconTexture {
+    icon: TabIcon,
+    side: u32,
+    texture: Option<ImageTexture>,
 }
 
 /// 端末の背景に敷く画像の描き方。
@@ -231,8 +236,7 @@ impl Renderer {
             decoder: None,
             images: HashMap::new(),
             terminal_images: ImageCache::new(TERMINAL_IMAGE_TEXTURE_LIMIT),
-            tab_icon_generator: None,
-            tab_icons: HashMap::new(),
+            tab_icons: Vec::new(),
             skipped_last_frame: 0,
         };
         renderer.create_target()?;
@@ -451,8 +455,6 @@ impl Renderer {
         self.atlas = GlyphAtlas::new(&self.device, dwrite, font, ui_font, wide_glyph)?;
         self.cell_width = font.cell_width_px;
         self.cell_height = font.cell_height_px;
-        // タブのアイコンは一辺ごとに作るので、新しい一辺で作り直させる。
-        self.tab_icons.clear();
         Ok(())
     }
 
@@ -602,14 +604,10 @@ impl Renderer {
         Ok(())
     }
 
-    /// タブのアイコン `icon` を `area` に描く。
-    fn push_tab_icon(&mut self, list: &mut DrawList, icon: &TabIcon, area: Area) {
-        let key = (icon.clone(), area.width);
-        if !self.tab_icons.contains_key(&key) {
-            let texture = self.create_tab_icon(icon, area.width);
-            self.tab_icons.insert(key.clone(), texture);
-        }
-        let Some(Some(texture)) = self.tab_icons.get(&key) else {
+    /// タブのアイコン `icon` を `area` に描く。一辺が `area` の幅のテクスチャを
+    /// [`Renderer::prepare_tab_icons`] で作ってあれば描く。
+    fn push_tab_icon(&self, list: &mut DrawList, icon: &TabIcon, area: Area) {
+        let Some(texture) = self.tab_icon_texture(icon, area.width) else {
             return;
         };
         let whole = background::Rect {
@@ -631,35 +629,45 @@ impl Renderer {
         list.push_image(image_instance(&placement), &texture.view);
     }
 
-    /// タブのアイコン `icon` の一辺 `side` のテクスチャを作る。作れなければ警告して `None`。
-    fn create_tab_icon(&mut self, icon: &TabIcon, side: u32) -> Option<ImageTexture> {
-        let created = self
-            .tab_icon_pixels(icon, side)
-            .and_then(|decoded| self.create_image(&decoded));
-        match created {
-            Ok(texture) => Some(texture),
-            Err(e) => {
-                tracing::warn!("failed to create a tab icon: {e}");
-                None
+    /// タブのアイコン `icon` の一辺 `side` のテクスチャ。作っていないか、作れなかったときは `None`。
+    fn tab_icon_texture(&self, icon: &TabIcon, side: u32) -> Option<&ImageTexture> {
+        self.tab_icons
+            .iter()
+            .find(|made| made.icon == *icon && made.side == side)
+            .and_then(|made| made.texture.as_ref())
+    }
+
+    /// タブのアイコンとそのピクセル `icons` のテクスチャを揃える。一辺はピクセルの幅。`icons` にないものは捨てる。
+    /// 作れなかったものは警告して `None` で覚え、作り直さない。[`Renderer::render`] の前に呼ぶ。
+    pub fn prepare_tab_icons<'a>(
+        &mut self,
+        icons: impl Iterator<Item = (&'a TabIcon, &'a Decoded)>,
+    ) {
+        let icons: Vec<(&TabIcon, &Decoded)> = icons.collect();
+        self.tab_icons.retain(|made| {
+            icons
+                .iter()
+                .any(|(icon, pixels)| **icon == made.icon && pixels.width() == made.side)
+        });
+        for (icon, pixels) in icons {
+            let side = pixels.width();
+            if self
+                .tab_icons
+                .iter()
+                .any(|made| made.icon == *icon && made.side == side)
+            {
+                continue;
             }
+            let texture = self
+                .create_image(pixels)
+                .inspect_err(|e| tracing::warn!("failed to create a tab icon: {e}"))
+                .ok();
+            self.tab_icons.push(TabIconTexture {
+                icon: icon.clone(),
+                side,
+                texture,
+            });
         }
-    }
-
-    /// タブのアイコン `icon` の一辺 `side` のピクセル。画像が読めなければ、警告して自動で作る。自動で作るときは、
-    /// 本物のアイコンを読めればそれを背景の正方形に載せ、読めなければ自前の絵を描く。
-    pub fn tab_icon_pixels(&mut self, icon: &TabIcon, side: u32) -> windows::core::Result<Decoded> {
-        let generator = match &self.tab_icon_generator {
-            Some(generator) => generator,
-            None => self
-                .tab_icon_generator
-                .insert(Generator::new(self.atlas.dwrite())?),
-        };
-        generator.pixels(icon, side, self.atlas.ui_font_family())
-    }
-
-    /// 作ったタブのアイコンのうち、`keep` が偽のものを捨てる。
-    pub fn retain_tab_icons(&mut self, keep: impl Fn(&TabIcon) -> bool) {
-        self.tab_icons.retain(|(icon, _), _| keep(icon));
     }
 
     /// `frame` の画像のうち `layer` の層のものを、下から順に `list` に並べる。画面の外へはみ出す分は

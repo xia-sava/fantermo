@@ -22,22 +22,22 @@ impl App {
         let (new_tab, profiles) = self.tab_bar_layout().new_tab_buttons();
         let side = tab_bar::tab_icon_size(self.dpi);
         let config_dir = self.config_path.as_deref().and_then(Path::parent);
-        let mut renderer = self.renderer.as_mut();
+        let generator = self.tab_icon_generator.as_ref();
+        let family = &self.ui_font.family;
         let profile_icons = self
             .config
             .profiles
             .iter()
             .zip(TabIcon::for_profiles(&self.config.profiles, config_dir))
-            .map(|(profile, icon)| {
-                // `Renderer` がないとき（作り直しを待つ間と、描画をやめたあと）は、アイコンを付けない。
-                match renderer.as_mut()?.tab_icon_pixels(&icon, side) {
+            .map(
+                |(profile, icon)| match generator?.pixels(&icon, side, family) {
                     Ok(pixels) => Some(pixels),
                     Err(e) => {
                         tracing::warn!("failed to make the icon of {:?}: {e}", profile.name);
                         None
                     }
-                }
-            })
+                },
+            )
             .collect();
         let (left, top) = self.client_to_screen(new_tab.x as i32, new_tab.y as i32);
         let (right, bottom) =

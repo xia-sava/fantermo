@@ -5,8 +5,11 @@
 //! C、WSL のペンギン、ConPTY の `>_`）を描く。同じ絵になるプロファイルが複数あるときだけ、絵を小さくして
 //! プロファイル名の頭文字を添える。色はプロファイル名から決まるので、起動のたびに同じになる。作った絵は
 //! 乗算済みアルファの BGRA（[`Decoded`]）で返す。
+//!
+//! ピクセルはタブを開いたときと DPI が変わったときに作り（[`Pixels`]）、描くときにはファイルを読まない。
 
 use std::{
+    collections::HashMap,
     env,
     f32::consts::PI,
     path::{Path, PathBuf},
@@ -535,6 +538,48 @@ impl Generator {
             picture.as_ref(),
             side,
         )
+    }
+}
+
+/// 開いているタブのアイコンのピクセル。一辺か頭文字の書体が変わったら作り直す。作れなかったものは `None` で
+/// 覚え、作り直さない。
+#[derive(Default)]
+pub struct Pixels {
+    side: u32,
+    family: String,
+    made: HashMap<TabIcon, Option<Decoded>>,
+}
+
+impl Pixels {
+    /// `icons` のそれぞれの、一辺 `side`、頭文字の書体 `family` のピクセルを揃える。持っていないものは `make` で
+    /// 作り、`icons` にないものは捨てる。
+    pub fn update<'a>(
+        &mut self,
+        icons: impl IntoIterator<Item = &'a TabIcon>,
+        side: u32,
+        family: &str,
+        mut make: impl FnMut(&TabIcon) -> Option<Decoded>,
+    ) {
+        if side != self.side || family != self.family {
+            self.made.clear();
+            self.side = side;
+            family.clone_into(&mut self.family);
+        }
+        let icons: Vec<&TabIcon> = icons.into_iter().collect();
+        self.made.retain(|icon, _| icons.contains(&icon));
+        for icon in icons {
+            if !self.made.contains_key(icon) {
+                let pixels = make(icon);
+                self.made.insert(icon.clone(), pixels);
+            }
+        }
+    }
+
+    /// 作れたアイコンとそのピクセル。
+    pub fn iter(&self) -> impl Iterator<Item = (&TabIcon, &Decoded)> {
+        self.made
+            .iter()
+            .filter_map(|(icon, pixels)| Some((icon, pixels.as_ref()?)))
     }
 }
 
@@ -1315,5 +1360,70 @@ mod tests {
         assert_eq!(fit_in_square((16, 16), 27), (27, 27, 0, 0));
         // 細長い画像も消えない。
         assert_eq!(fit_in_square((1000, 1), 18), (18, 1, 0, 8));
+    }
+
+    #[test]
+    fn pixels_are_made_once_per_icon_side_and_family() {
+        let wsl = TabIcon {
+            backend: BackendKind::Wsl,
+            ..TabIcon::without_profile()
+        };
+        let plain = TabIcon::without_profile();
+        /// `icons` で `pixels` を揃え、作ったアイコンの接続方式と一辺と書体を `made` に足す。
+        fn update(
+            pixels: &mut Pixels,
+            made: &mut Vec<(BackendKind, u32, String)>,
+            icons: &[&TabIcon],
+            side: u32,
+            family: &str,
+        ) {
+            pixels.update(icons.iter().copied(), side, family, |icon| {
+                made.push((icon.backend, side, family.to_owned()));
+                Some(Decoded::blank(side, side))
+            });
+        }
+        let mut pixels = Pixels::default();
+        let mut made = Vec::new();
+        // 同じアイコンのタブが複数あっても一度だけ作る。
+        update(
+            &mut pixels,
+            &mut made,
+            &[&plain, &plain, &wsl],
+            18,
+            "Segoe UI",
+        );
+        assert_eq!(made.len(), 2);
+        // 持っているものは作り直さない。
+        update(&mut pixels, &mut made, &[&plain, &wsl], 18, "Segoe UI");
+        assert_eq!(made.len(), 2);
+        // 閉じたタブのアイコンは捨てる。
+        update(&mut pixels, &mut made, &[&plain], 18, "Segoe UI");
+        assert_eq!(pixels.iter().count(), 1);
+        assert_eq!(made.len(), 2);
+        // 一辺が変わったら作り直す。
+        update(&mut pixels, &mut made, &[&plain], 27, "Segoe UI");
+        assert_eq!(
+            made.last(),
+            Some(&(BackendKind::Conpty, 27, "Segoe UI".to_owned()))
+        );
+        assert!(pixels.iter().all(|(_, decoded)| decoded.width() == 27));
+        // 書体が変わったら作り直す。
+        update(&mut pixels, &mut made, &[&plain], 27, "Yu Gothic UI");
+        assert_eq!(made.len(), 4);
+    }
+
+    #[test]
+    fn pixels_that_cannot_be_made_are_not_retried() {
+        let icon = TabIcon::without_profile();
+        let mut pixels = Pixels::default();
+        let mut attempts = 0;
+        for _ in 0..2 {
+            pixels.update([&icon], 18, "Segoe UI", |_| {
+                attempts += 1;
+                None
+            });
+        }
+        assert_eq!(attempts, 1);
+        assert_eq!(pixels.iter().count(), 0);
     }
 }

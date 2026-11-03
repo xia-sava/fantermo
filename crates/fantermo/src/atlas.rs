@@ -312,16 +312,6 @@ impl GlyphAtlas {
         (self.side, self.side)
     }
 
-    /// DirectWrite のファクトリ。
-    pub fn dwrite(&self) -> &IDWriteFactory {
-        &self.dwrite
-    }
-
-    /// UI のフォントの書体の名前。
-    pub fn ui_font_family(&self) -> &str {
-        &self.ui_font.family
-    }
-
     /// 覚えている場所を捨て、テクスチャを空にする。
     pub fn clear(&mut self) -> windows::core::Result<()> {
         self.slots.clear();

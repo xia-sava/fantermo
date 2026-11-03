@@ -52,6 +52,7 @@ use crate::{
     renderer::Renderer,
     session::{Session, SessionId},
     tab_bar::Hit,
+    tab_icon,
     ui_font::UiFont,
     version, window_state,
 };
@@ -80,7 +81,7 @@ use layout::{
     scroll_bar_area_in_client, terminal_area_in_client, window_size,
 };
 use mouse::wheel_lines_per_notch;
-use proc::window_proc;
+use proc::{app_of, window_proc};
 use render::{device_removed_poster, random_seed};
 use scroll_bar::ScrollBarDrag;
 use tabs::{Launch, startup_for, window_title};
@@ -214,6 +215,10 @@ pub fn run(
             change_dpi_keeping_grid(hwnd, window_dpi);
         }
     }
+    // 最初のタブのアイコンは、ウィンドウの DPI が決まってから作る（DPI を変えたときに作っていれば何もしない）。
+    if let Some(app) = app_of(hwnd) {
+        app.borrow_mut().update_tab_icons();
+    }
 
     let show = if restored.is_some_and(|window| window.maximized) {
         SW_SHOWMAXIMIZED
@@ -346,6 +351,11 @@ struct App {
     terminal_area: Area,
     /// Direct3D で描くもの。デバイスを失ってから、作り直しを待つ間と、描画をやめたあとは `None`。
     renderer: Option<Renderer>,
+    /// タブのアイコンのピクセルを作るもの。作れなかったときは `None` で、アイコンを出さない。
+    tab_icon_generator: Option<tab_icon::Generator>,
+    /// 開いているタブのアイコンのピクセル。[`App::update_tab_icons`] で揃え、`Renderer` はこれからテクスチャを
+    /// 作る。
+    tab_icon_pixels: tab_icon::Pixels,
     /// デバイスを失ってから `Renderer` を作り直そうとした回数（作れなかった回も数える）。描けたら 0 に
     /// 戻す。
     renderer_recreations: u32,
@@ -442,6 +452,9 @@ impl App {
             config.font.wide_glyph,
             device_removed_poster(hwnd),
         )?;
+        let tab_icon_generator = tab_icon::Generator::new(&dwrite)
+            .inspect_err(|e| tracing::warn!("failed to prepare drawing the tab icons: {e}"))
+            .ok();
         let first_id = SessionId(0);
         let session = Session::spawn(
             first_id,
@@ -491,6 +504,8 @@ impl App {
             output_continuations: Vec::new(),
             terminal_area,
             renderer: Some(renderer),
+            tab_icon_generator,
+            tab_icon_pixels: tab_icon::Pixels::default(),
             renderer_recreations: 0,
             dump,
             window_title: window_title("", &version::display()),

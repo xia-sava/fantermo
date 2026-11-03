@@ -170,6 +170,7 @@ impl App {
         };
         session.background_image = self.choose_background_image();
         self.sessions.push(session);
+        self.update_tab_icons();
         self.activate(self.sessions.len() - 1);
         Ok(())
     }
@@ -252,11 +253,8 @@ impl App {
         }
         drop(closed);
         self.drop_unused_background_images();
-        if let Some(renderer) = self.renderer.as_mut() {
-            let sessions = &self.sessions;
-            renderer
-                .retain_tab_icons(|icon| sessions.iter().any(|session| session.tab_icon == *icon));
-        }
+        // 閉じたタブだけが使っていたアイコンを捨てる。テクスチャは次に描くときに捨てる。
+        self.update_tab_icons();
         self.active = active_after_close(self.active, index, self.sessions.len());
         if was_active {
             self.on_activated();

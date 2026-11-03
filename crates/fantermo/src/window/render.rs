@@ -150,7 +150,7 @@ impl App {
 
     /// 失ったデバイスの代わりに `Renderer` を作り直し、各端末が選んだ背景画像を読み直す。読み直せなかった
     /// 端末と、`Renderer` がない間に開いた端末には、背景画像を選び直す。端末の中の画像とタブのアイコンの
-    /// テクスチャは、描くときに作り直される。
+    /// テクスチャは、描くときに作り直される（タブのアイコンは `App` が持つピクセルから作り、ファイルは読まない）。
     ///
     /// 作れなければ [`RENDERER_RETRY_DELAY`] のあとにもう一度試す。作り直しても描けないことが
     /// [`MAX_RENDERER_RECREATIONS`] 回続いたら、描画をやめる。
@@ -299,6 +299,7 @@ impl App {
         };
         let session = &self.sessions[self.active];
         renderer.prepare_terminal_images(session.id().0, &frame.images, &session.vt);
+        renderer.prepare_tab_icons(self.tab_icon_pixels.iter());
         match renderer.render(
             &[(&frame, self.terminal_area)],
             backdrop.as_ref(),

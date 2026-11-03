@@ -1,4 +1,4 @@
-//! タブバー。マウスを載せたとき、押して離したときの働き、描くもの。
+//! タブバー。マウスを載せたとき、押して離したときの働き、描くもの、タブのアイコンのピクセル。
 
 use fantermo_core::{frame::Rgb, vt::MouseButton};
 use windows::Win32::Graphics::Gdi::{
@@ -150,5 +150,24 @@ impl App {
                 .with_colors(&self.config.colors.tab_bar),
             &*self.ui_font,
         )
+    }
+
+    /// 開いているタブのアイコンのピクセルを、いまの DPI の一辺と UI のフォントの書体で揃える。アイコンの
+    /// ファイルを読むのはここで、タブを開いたときと DPI が変わったときに呼ぶ。描くときには呼ばない。
+    pub(super) fn update_tab_icons(&mut self) {
+        let side = tab_bar::tab_icon_size(self.dpi);
+        let generator = self.tab_icon_generator.as_ref();
+        let family = &self.ui_font.family;
+        self.tab_icon_pixels.update(
+            self.sessions.iter().map(|session| &session.tab_icon),
+            side,
+            family,
+            |icon| {
+                generator?
+                    .pixels(icon, side, family)
+                    .inspect_err(|e| tracing::warn!("failed to create a tab icon: {e}"))
+                    .ok()
+            },
+        );
     }
 }
