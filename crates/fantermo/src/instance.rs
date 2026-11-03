@@ -406,7 +406,7 @@ fn same_elevation_as_this_process(pid: u32) -> bool {
 }
 
 /// プロセス `process` が管理者として動いているか。読めなければ `None`。
-fn is_elevated(process: HANDLE) -> Option<bool> {
+pub(crate) fn is_elevated(process: HANDLE) -> Option<bool> {
     let mut token = HANDLE::default();
     // SAFETY: process は有効なハンドルで、token は書き込める。
     if let Err(e) = unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } {

@@ -2,7 +2,8 @@
 //!
 //! 更新できるのは、インストーラ（MSI）が入れるフォルダ `%LOCALAPPDATA%\Programs\fantermo` にある
 //! リリースのビルドだけ。ほかの場所のものと開発中のビルドでは、「fantermo について」の「更新を確認」を
-//! 押せない。判定はフォルダだけで行うので、zip をこのフォルダに展開したものも押せる。
+//! 押せない。判定はフォルダだけで行うので、zip をこのフォルダに展開したものも押せる。管理者として
+//! 動いているときも押せない。
 //!
 //! 「更新を確認」を押すと、GitHub の `latest` のリリースから更新の情報 `latest.json` と署名
 //! `latest.json.sig` を取得し、埋め込んだ公開鍵で署名を検証してから読み、バージョンを比べる。新しい
@@ -28,13 +29,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use windows::Win32::UI::Shell::FOLDERID_UserProgramFiles;
+use windows::Win32::{System::Threading::GetCurrentProcess, UI::Shell::FOLDERID_UserProgramFiles};
 
 pub use self::manifest::{Comparison, Release, Version};
 use self::{
     http::HttpError, manifest::ManifestError, signature::SHA256_LEN, signature::VerifyError,
 };
-use crate::{known_folder, logging, version};
+use crate::{instance, known_folder, logging, version};
 
 /// インストーラが fantermo を入れる、`%LOCALAPPDATA%\Programs` の下のフォルダ。
 const INSTALL_DIR_NAME: &str = "fantermo";
@@ -78,7 +79,26 @@ pub fn can_update() -> bool {
     let Some(programs) = known_folder::path(&FOLDERID_UserProgramFiles) else {
         return false;
     };
-    is_installed_build(version::RELEASE, &exe, &programs)
+    allows_update(
+        is_installed_build(version::RELEASE, &exe, &programs),
+        is_elevated_process(),
+    )
+}
+
+/// 更新できるか。インストーラで入れたビルド（`installed`）で、管理者として動いていない（`elevated` が偽）
+/// ときだけ真。管理者として更新すると、管理者の権限で、利用者が書けるフォルダの MSI を入れることになる。
+fn allows_update(installed: bool, elevated: bool) -> bool {
+    installed && !elevated
+}
+
+/// このプロセスが管理者として動いているか。調べられなければ偽。
+pub fn is_elevated_process() -> bool {
+    // SAFETY: このプロセスの疑似ハンドルを得るだけ。
+    let this = unsafe { GetCurrentProcess() };
+    instance::is_elevated(this).unwrap_or_else(|| {
+        tracing::warn!("failed to tell whether this process is elevated");
+        false
+    })
 }
 
 /// リリースのビルド（`release`）で、実行ファイル `exe` がインストーラの入れる場所（`programs` の下の
@@ -444,6 +464,14 @@ mod tests {
         assert!(!is_installed_build(true, unzipped, programs));
         let nested = Path::new(r"C:\Users\xia\AppData\Local\Programs\fantermo\bin\fantermo.exe");
         assert!(!is_installed_build(true, nested, programs));
+    }
+
+    #[test]
+    fn an_elevated_process_cannot_update() {
+        assert!(allows_update(true, false));
+        assert!(!allows_update(true, true));
+        assert!(!allows_update(false, false));
+        assert!(!allows_update(false, true));
     }
 
     #[test]

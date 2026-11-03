@@ -28,6 +28,8 @@ const REPOSITORY_URL: &str = "https://github.com/xia-sava/fantermo";
 const CHECK_UPDATE_ID: i32 = 101;
 /// 「更新を確認」を押せないときに添える行。
 const UPDATE_UNAVAILABLE: &str = "自動更新は、インストーラでインストールした場合にのみ利用できます";
+/// 管理者として動いているために「更新を確認」を押せないときに添える行。
+const UPDATE_UNAVAILABLE_ELEVATED: &str = "管理者として起動した fantermo からは更新できません";
 /// `THIRD-PARTY-NOTICES.txt` の区切りの線の幅。これが折り返さずに収まる幅で開く。
 const TEXT_COLUMNS: u32 = 80;
 
@@ -82,7 +84,11 @@ pub fn show(owner: HWND, font: &Font, hooks: &UpdateHooks) {
         HeaderLine::Link(REPOSITORY_URL),
     ];
     if !can_update {
-        header.push(HeaderLine::Text(UPDATE_UNAVAILABLE));
+        header.push(HeaderLine::Text(if update::is_elevated_process() {
+            UPDATE_UNAVAILABLE_ELEVATED
+        } else {
+            UPDATE_UNAVAILABLE
+        }));
     }
     let buttons = [
         Button {
