@@ -87,7 +87,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `boxdraw`・`boxdraw/` | 罫線，ブロック要素，点字，Powerline の記号，レガシーコンピューティング記号の一部を形として組み立てる |
 | `decoration` | 下線・取り消し線・上線をセルの中の形として組み立てる |
 | `paint` | セルの格子によらずピクセルの位置で描くもの（`Paint`）．タブバーとスクロールバーが使う |
-| `tab_bar`・`scroll_bar` | 並べ方，当たり判定，色（`Palette`），描くものの組み立て．ウィンドウと描画に依存しない関数にしてある |
+| `tab_bar`・`scroll_bar` | 並べ方，当たり判定，色（`Palette`），描くものの組み立て．ウィンドウと描画に依存しない関数にしてある．`tab_bar` は寸法とタイトルの省略を `tab_bar.rs`，並べ方と当たり判定を `tab_bar/layout.rs`，色と描くものの組み立てを `tab_bar/paints.rs` に置く |
 | `tab_icon` | タブのタイトルの左のアイコン |
 | `background`・`image_cache` | 背景画像のファイルを WIC で読む．端末の中の画像のテクスチャの入れ物 |
 | `context_menu` | コンテキストメニュー，≡ のメニュー，プロファイルの一覧（`MenuCommand`，`Menu`） |
