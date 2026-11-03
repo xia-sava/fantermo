@@ -175,9 +175,6 @@ const RENDERER_RETRY_DELAY: Duration = Duration::from_millis(1500);
 /// 出力を流しきれなかった端末の続きを、キー入力と描き直しを処理させたあとで流すタイマー。
 const OUTPUT_TIMER_ID: usize = 7;
 
-/// 借用が重なって [`WM_APP_DEVICE_REMOVED`] を飛ばしたときに、借用を手放したあとで処理し直すタイマー。
-const DEVICE_REMOVED_TIMER_ID: usize = 8;
-
 /// 画像のアニメーションで描き直す間隔の下限。
 const MIN_IMAGE_ANIMATION_INTERVAL: Duration = Duration::from_millis(8);
 
@@ -2535,15 +2532,6 @@ impl App {
         }
     }
 
-    /// 飛ばした [`WM_APP_DEVICE_REMOVED`] を処理し直す時刻になった。タイマーを止めてから処理する。
-    fn on_device_removed_timer(&mut self) {
-        // SAFETY: self.hwnd は有効なウィンドウ。
-        if let Err(e) = unsafe { KillTimer(Some(self.hwnd), DEVICE_REMOVED_TIMER_ID) } {
-            tracing::warn!("failed to stop the timer to handle the removed Direct3D device: {e}");
-        }
-        self.on_device_removed_message();
-    }
-
     /// 失ったデバイスの代わりに `Renderer` を作り直し、各端末が選んだ背景画像を読み直す。読み直せなかった
     /// 端末と、`Renderer` がない間に開いた端末には、背景画像を選び直す。端末の中の画像とタブのアイコンの
     /// テクスチャは、描くときに作り直される。
@@ -3680,56 +3668,44 @@ fn bring_to_front(hwnd: HWND) {
 }
 
 thread_local! {
-    /// 借用が重なって飛ばした [`WM_APP_WAKE`] の宛先のウィンドウと `wparam`。読むためのスレッドは、ウィンドウの
-    /// スレッドが受け取り始めるまで次の知らせを積まず、上限に達すれば読むのも待つので、飛ばしたままにすると
-    /// そのタブの出力が止まる。
-    static SKIPPED_WAKES: RefCell<Vec<(HWND, WPARAM)>> = const { RefCell::new(Vec::new()) };
+    /// 借用が重なって飛ばした知らせ（[`is_repostable`] のメッセージ）の、宛先のウィンドウとメッセージと
+    /// `wparam`。
+    static SKIPPED_MESSAGES: RefCell<Vec<(HWND, u32, WPARAM)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// 借用が重なって [`WM_APP_WAKE`] を飛ばしたことを覚える。同じ宛先は重ねない。
-fn remember_skipped_wake(hwnd: HWND, wparam: WPARAM) {
-    SKIPPED_WAKES.with_borrow_mut(|wakes| {
-        if !wakes.contains(&(hwnd, wparam)) {
-            wakes.push((hwnd, wparam));
+/// 借用が重なって飛ばしたら、借用を手放したところで積み直すメッセージ。
+///
+/// - [`WM_APP_WAKE`]。読むためのスレッドは、ウィンドウのスレッドが受け取り始めるまで次の知らせを積まず、
+///   上限に達すれば読むのも待つので、飛ばしたままにするとそのタブの出力が止まる。
+/// - [`WM_APP_DEVICE_REMOVED`]。一度しか届かないので、飛ばしたままにすると描くときまで作り直さない。
+fn is_repostable(msg: u32) -> bool {
+    msg == WM_APP_WAKE || msg == WM_APP_DEVICE_REMOVED
+}
+
+/// 借用が重なってメッセージを飛ばしたことを覚える。同じ宛先の同じ知らせは重ねない。
+fn remember_skipped_message(hwnd: HWND, msg: u32, wparam: WPARAM) {
+    SKIPPED_MESSAGES.with_borrow_mut(|messages| {
+        if !messages.contains(&(hwnd, msg, wparam)) {
+            messages.push((hwnd, msg, wparam));
         }
     });
 }
 
-/// 借用が重なって飛ばした [`WM_APP_WAKE`] を積み直す。借用を手放したところで呼ぶ。積めなかったものは残し、
+/// 借用が重なって飛ばしたメッセージを積み直す。借用を手放したところで呼ぶ。積めなかったものは残し、
 /// [`OUTPUT_TIMER_ID`] のタイマーを動かす（タイマーの処理が借用を手放したところで、ここをもう一度通る）。
-fn repost_skipped_wakes() {
+fn repost_skipped_messages() {
     let mut failed = Vec::new();
-    for (hwnd, wparam) in SKIPPED_WAKES.take() {
-        if let Err(e) = post(hwnd, WM_APP_WAKE, wparam) {
-            warn_post_failed(WM_APP_WAKE, &e);
+    for (hwnd, msg, wparam) in SKIPPED_MESSAGES.take() {
+        if let Err(e) = post(hwnd, msg, wparam) {
+            warn_post_failed(msg, &e);
             if !window_is_gone(&e) {
-                failed.push((hwnd, wparam));
+                failed.push((hwnd, msg, wparam));
             }
         }
     }
-    for (hwnd, wparam) in failed {
-        remember_skipped_wake(hwnd, wparam);
+    for (hwnd, msg, wparam) in failed {
+        remember_skipped_message(hwnd, msg, wparam);
         start_output_timer(hwnd);
-    }
-}
-
-/// 借用が重なって飛ばした [`WM_APP_DEVICE_REMOVED`] を、[`DEVICE_REMOVED_TIMER_ID`] のタイマーで処理し直す。
-/// タイマーは処理できるまで届き続け、処理したところで止める。
-fn start_device_removed_timer(hwnd: HWND) {
-    // SAFETY: hwnd は有効なウィンドウ。同じ番号のタイマーは置き換わる。
-    if unsafe {
-        SetTimer(
-            Some(hwnd),
-            DEVICE_REMOVED_TIMER_ID,
-            USER_TIMER_MINIMUM,
-            None,
-        )
-    } == 0
-    {
-        tracing::warn!(
-            "failed to start the timer to handle the removed Direct3D device: {}",
-            windows::core::Error::from_thread()
-        );
     }
 }
 
@@ -3788,14 +3764,12 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             Ok(mut borrowed) => {
                 action(&mut borrowed);
                 drop(borrowed);
-                repost_skipped_wakes();
+                repost_skipped_messages();
             }
             Err(_) => {
                 tracing::debug!("skipped reentrant message {msg:#06x}");
-                if msg == WM_APP_WAKE {
-                    remember_skipped_wake(hwnd, wparam);
-                } else if msg == WM_APP_DEVICE_REMOVED {
-                    start_device_removed_timer(hwnd);
+                if is_repostable(msg) {
+                    remember_skipped_message(hwnd, msg, wparam);
                 }
             }
         }
@@ -3926,10 +3900,6 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         WM_APP_DEVICE_REMOVED => {
             with_app(&mut |app| app.on_device_removed_message());
-            LRESULT(0)
-        }
-        WM_TIMER if wparam.0 == DEVICE_REMOVED_TIMER_ID => {
-            with_app(&mut |app| app.on_device_removed_timer());
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == RENDERER_RETRY_TIMER_ID => {
@@ -4135,7 +4105,6 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 _ = KillTimer(Some(hwnd), IMAGE_ANIMATION_TIMER_ID);
                 _ = KillTimer(Some(hwnd), RENDERER_RETRY_TIMER_ID);
                 _ = KillTimer(Some(hwnd), OUTPUT_TIMER_ID);
-                _ = KillTimer(Some(hwnd), DEVICE_REMOVED_TIMER_ID);
             };
             let mut code = 0;
             with_app(&mut |app| {
