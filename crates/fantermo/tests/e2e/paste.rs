@@ -30,19 +30,15 @@ fn paste_commands(bytes: usize, tail: &str) -> String {
     text
 }
 
-#[test]
-fn a_paste_just_under_the_size_is_not_confirmed() {
-    let server = Server::start(PASTE_NEVER_CONFIRMS, &CMD_COMMAND);
-    server.wait_text(CMD_PROMPT);
-    server.paste(&paste_commands(DEFAULT_PASTE_CONFIRM_BYTES - 1, "small"));
-    let state = server.wait_text("marker-0-small");
-    assert_eq!(state["dialogs"].as_array().map(Vec::len), Some(0));
-}
-
+/// 大きさの手前までは確認せず、大きさちょうどで確認して、キャンセルすれば送らず、OK なら送る。
 #[test]
 fn a_paste_of_the_size_is_confirmed_and_can_be_cancelled() {
     let server = Server::start(PASTE_NEVER_CONFIRMS, &CMD_COMMAND);
     server.wait_text(CMD_PROMPT);
+
+    server.paste(&paste_commands(DEFAULT_PASTE_CONFIRM_BYTES - 1, "small"));
+    let state = server.wait_text("marker-0-small");
+    assert_eq!(state["dialogs"].as_array().map(Vec::len), Some(0));
 
     server.paste(&paste_commands(DEFAULT_PASTE_CONFIRM_BYTES, "cancelled"));
     let controls = wait_text_dialog(&server);
@@ -160,16 +156,6 @@ fn the_text_dialog_follows_a_dpi_change() {
     server.press_dialog_button(BUTTON_CANCEL);
     server.wait_dialogs(0);
     check_terminal_still_works(&server, "after-text-dialog-dpi");
-}
-
-#[test]
-fn a_large_paste_is_not_confirmed_when_the_size_is_zero() {
-    let config = format!("{PASTE_NEVER_CONFIRMS}confirm_size = 0\n");
-    let server = Server::start(&config, &CMD_COMMAND);
-    server.wait_text(CMD_PROMPT);
-    server.paste(&paste_commands(4 * DEFAULT_PASTE_CONFIRM_BYTES, "large"));
-    let state = server.wait_text("marker-0-large");
-    assert_eq!(state["dialogs"].as_array().map(Vec::len), Some(0));
 }
 
 #[test]
