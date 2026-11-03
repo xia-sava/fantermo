@@ -216,10 +216,7 @@ fn resize_window(hwnd: HWND, cols: u16, rows: u16, with_app: &WithApp) -> Respon
     let Some(client) = client else {
         return Response::internal_error("the window is busy with another message");
     };
-    let frame = match frame_size(hwnd) {
-        Ok(frame) => frame,
-        Err(e) => return Response::internal_error(format!("cannot read the window size: {e}")),
-    };
+    let frame = window_frame(hwnd);
     // SAFETY: hwnd は有効なウィンドウ。WM_SIZE がこの場で届くが、借用は持っていない。
     let moved = unsafe {
         SetWindowPos(
@@ -434,18 +431,6 @@ fn send_mouse(hwnd: HWND, steps: &[MouseStep]) {
         // SAFETY: hwnd は有効なウィンドウ。ウィンドウプロシージャがこの場で動くが、借用は持っていない。
         unsafe { SendMessageW(hwnd, id, Some(wparam), Some(lparam)) };
     }
-}
-
-/// ウィンドウの大きさとクライアント領域の大きさの差。枠の分。
-fn frame_size(hwnd: HWND) -> windows::core::Result<SIZE> {
-    let mut rect = RECT::default();
-    // SAFETY: hwnd は有効なウィンドウで、rect は書き込める。
-    unsafe { GetWindowRect(hwnd, &mut rect)? };
-    let (width, height) = client_size(hwnd);
-    Ok(SIZE {
-        cx: (rect.right - rect.left) - width as i32,
-        cy: (rect.bottom - rect.top) - height as i32,
-    })
 }
 
 /// ウィンドウ `hwnd` のタイトルや、コントロールの文字。
