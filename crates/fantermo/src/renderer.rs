@@ -27,10 +27,10 @@ use windows::Win32::{
         Dxgi::{
             Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC},
             CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_ERROR_DEVICE_REMOVED,
-            DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_DRIVER_INTERNAL_ERROR, DXGI_PRESENT,
-            DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
-            DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIFactory2,
-            IDXGISwapChain1,
+            DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_DRIVER_INTERNAL_ERROR, DXGI_MWA_NO_ALT_ENTER,
+            DXGI_MWA_NO_WINDOW_CHANGES, DXGI_PRESENT, DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1,
+            DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
+            IDXGIFactory2, IDXGISwapChain1,
         },
     },
 };
@@ -132,6 +132,14 @@ impl Renderer {
         // SAFETY: hwnd はこのスレッドが作った有効なウィンドウで、desc は初期化済み。
         let swap_chain =
             unsafe { factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None)? };
+        // DXGI は既定でウィンドウのメッセージを見て Alt+Enter で全画面に切り替えようとする。
+        // Alt+Enter は端末へ届けるものなので、DXGI の監視を外す。
+        // SAFETY: hwnd は有効なウィンドウで、factory はそのスワップチェーンを作ったもの。
+        if let Err(e) = unsafe {
+            factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES)
+        } {
+            tracing::warn!("failed to stop DXGI from handling Alt+Enter: {e}");
+        }
 
         let atlas = GlyphAtlas::new(&device, dwrite, font, ui_font, wide_glyph)?;
         let pipeline = CellPipeline::new(&device)?;
