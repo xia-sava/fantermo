@@ -9,7 +9,7 @@ use std::{cell::RefCell, ffi::c_void, ops::Range};
 use serde_json::json;
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, POINT, RECT, TRUE, WPARAM},
+        Foundation::{HWND, LPARAM, POINT, RECT, SIZE, TRUE, WPARAM},
         Graphics::Gdi::{
             ClientToScreen, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO,
             MonitorFromWindow, ScreenToClient,
@@ -51,9 +51,10 @@ use windows::{
 };
 
 use super::{
-    App, Deferred, Launch, SIZE, TabCommand, WithApp, client_size, client_size_for_terminal,
-    destroy_window, grid_pixels, run_deferred, send_dpi_changed, tab_title, window_frame,
-    window_rect,
+    App, Deferred, Launch, TabCommand, WithApp, destroy_window,
+    dpi::send_dpi_changed,
+    layout::{client_size, client_size_for_terminal, grid_pixels, window_frame, window_rect},
+    run_deferred, tab_title,
 };
 use crate::{
     clipboard,

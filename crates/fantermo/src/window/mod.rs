@@ -14,13 +14,12 @@ use std::{
 };
 
 use fantermo_core::{
-    backend::{ExitCode, GridSize},
+    backend::ExitCode,
     background::{Candidate, Random},
     clipboard::{ReadDecision, ReadPrompts, ReadRequest, WriteRequest, read_decision},
     config::{
-        self, BackgroundConfig, ClipboardConfig, ClipboardRead, ColorsConfig, Config,
-        DEFAULT_FONT_FAMILIES, FontConfig, PasteConfig, PasteConfirm, Profile, ScrollBarConfig,
-        WideGlyph, WindowConfig,
+        self, BackgroundConfig, ClipboardConfig, ClipboardRead, ColorsConfig, Config, FontConfig,
+        PasteConfig, PasteConfirm, Profile, ScrollBarConfig, WideGlyph, WindowConfig,
     },
     frame::Rgb,
     keymap::{self, Keymap},
@@ -28,20 +27,17 @@ use fantermo_core::{
     state::State,
     vt::{
         self, Key, KeyAction, KeyInput, Mods, MouseAction, MouseButton, MouseInput, PasteOutcome,
-        PointerPosition, ScrollPosition,
+        ScrollPosition,
     },
 };
 use windows::{
     Win32::{
-        Foundation::{
-            ERROR_INVALID_WINDOW_HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
-        },
+        Foundation::{ERROR_INVALID_WINDOW_HANDLE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::{
             DirectWrite::IDWriteFactory,
             Gdi::{
                 COLOR_BTNFACE, COLOR_BTNSHADOW, COLOR_BTNTEXT, COLOR_GRAYTEXT, COLOR_WINDOW,
-                COLOR_WINDOWTEXT, ClientToScreen, GetSysColor, InvalidateRect, SYS_COLOR_INDEX,
-                ScreenToClient, ValidateRect,
+                COLOR_WINDOWTEXT, GetSysColor, InvalidateRect, SYS_COLOR_INDEX, ValidateRect,
             },
         },
         System::{
@@ -51,7 +47,7 @@ use windows::{
         },
         UI::{
             Controls::WM_MOUSELEAVE,
-            HiDpi::{AdjustWindowRectExForDpi, GetDpiForSystem, GetDpiForWindow},
+            HiDpi::{GetDpiForSystem, GetDpiForWindow},
             Input::KeyboardAndMouse::{
                 GetDoubleClickTime, IsWindowEnabled, ReleaseCapture, SetCapture, TME_LEAVE,
                 TRACKMOUSEEVENT, TrackMouseEvent, VK_F4, VK_PROCESSKEY, VK_SPACE,
@@ -60,24 +56,23 @@ use windows::{
                 CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
                 DestroyWindow, DispatchMessageW, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO,
                 FlashWindowEx, GUI_INMENUMODE, GUI_POPUPMENUMODE, GUITHREADINFO, GWLP_USERDATA,
-                GetClientRect, GetForegroundWindow, GetGUIThreadInfo, GetLastActivePopup,
-                GetMessageW, GetQueueStatus, GetWindowLongPtrW, GetWindowRect, HTCLIENT, IDC_ARROW,
-                IDC_HAND, IsIconic, KillTimer, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
-                PostMessageW, PostQuitMessage, QS_INPUT, QS_PAINT, RegisterClassExW,
-                SIZE_MINIMIZED, SPI_GETWHEELSCROLLLINES, SW_RESTORE, SW_SHOWDEFAULT,
-                SW_SHOWMAXIMIZED, SWP_NOACTIVATE, SWP_NOZORDER,
-                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetCursor, SetForegroundWindow,
-                SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-                SystemParametersInfoW, TranslateMessage, USER_TIMER_MINIMUM, WA_INACTIVE,
-                WHEEL_DELTA, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED,
-                WM_CHAR, WM_CLOSE, WM_CONTEXTMENU, WM_COPYDATA, WM_DEADCHAR, WM_DESTROY,
-                WM_DPICHANGED, WM_ENABLE, WM_ENDSESSION, WM_EXITMENULOOP, WM_IME_COMPOSITION,
-                WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN,
-                WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-                WM_NCDESTROY, WM_PAINT, WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP,
-                WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR, WM_SYSCOLORCHANGE,
-                WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSEXW,
-                WS_OVERLAPPEDWINDOW,
+                GetForegroundWindow, GetGUIThreadInfo, GetLastActivePopup, GetMessageW,
+                GetQueueStatus, GetWindowLongPtrW, HTCLIENT, IDC_ARROW, IDC_HAND, IsIconic,
+                KillTimer, LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostMessageW,
+                PostQuitMessage, QS_INPUT, QS_PAINT, RegisterClassExW, SIZE_MINIMIZED,
+                SPI_GETWHEELSCROLLLINES, SW_RESTORE, SW_SHOWDEFAULT, SW_SHOWMAXIMIZED,
+                SWP_NOACTIVATE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetCursor,
+                SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
+                ShowWindow, SystemParametersInfoW, TranslateMessage, USER_TIMER_MINIMUM,
+                WA_INACTIVE, WHEEL_DELTA, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP,
+                WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU, WM_COPYDATA, WM_DEADCHAR,
+                WM_DESTROY, WM_DPICHANGED, WM_ENABLE, WM_ENDSESSION, WM_EXITMENULOOP,
+                WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS,
+                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
+                WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_QUERYENDSESSION, WM_RBUTTONDOWN,
+                WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR,
+                WM_SYSCOLORCHANGE, WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER,
+                WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -99,7 +94,7 @@ use crate::{
     keyboard::{self, KeyPosition, Utf16Assembler},
     link_opener,
     notice::{self, Topic},
-    paint::{Area, Paint, scale},
+    paint::{Area, Paint},
     paste_editor,
     renderer::{self, Backdrop, Renderer},
     scroll_bar,
@@ -111,8 +106,19 @@ use crate::{
     update, version, window_state,
 };
 
+mod dpi;
 #[cfg(feature = "e2e")]
 mod e2e;
+mod layout;
+
+use dpi::{
+    change_dpi_keeping_grid, change_dpi_keeping_window, dpi_from_env, load_font, log_font,
+    log_ui_font,
+};
+use layout::{
+    Insets, backdrop_area_in_client, client_size, client_size_for_terminal, grid_pixels, grid_size,
+    scroll_bar_area_in_client, terminal_area_in_client, window_size,
+};
 
 pub const WINDOW_CLASS: PCWSTR = w!("fantermo");
 const WINDOW_TITLE: &str = "fantermo";
@@ -197,10 +203,6 @@ const KEYBOARD_CONTEXT_MENU_POSITION: (i32, i32) = (-1, -1);
 /// 起動したときの大きさ（セルの数）。ウィンドウの状態ファイルに大きさを覚えていないときに使う。
 const INITIAL_COLS: u16 = 100;
 const INITIAL_ROWS: u16 = 30;
-
-/// 開発用。起動したときのウィンドウの DPI を、この環境変数の値とみなす。倍率の違うモニタへ移したときの
-/// 作り直しを、モニタを使わずに確認するために使う。
-const DPI_ENV: &str = "FANTERMO_DPI";
 
 /// 新しい端末で起動するもの。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -351,119 +353,6 @@ pub fn run(
     Ok(message_loop())
 }
 
-/// 設定のフォントを先頭から探し、`dpi` で測る。どれも見つからなければ、既定のフォントから探す。
-fn load_font(
-    dwrite: &IDWriteFactory,
-    settings: &FontConfig,
-    dpi: u32,
-) -> windows::core::Result<Font> {
-    let families: Vec<&str> = settings.families.iter().map(String::as_str).collect();
-    match font::find(dwrite, &families, settings.size_pt, dpi) {
-        Ok(font) => Ok(font),
-        Err(e) if families != DEFAULT_FONT_FAMILIES => {
-            tracing::warn!("none of the fonts {families:?} is available, trying the defaults: {e}");
-            font::find(dwrite, &DEFAULT_FONT_FAMILIES, settings.size_pt, dpi)
-        }
-        Err(e) => Err(e),
-    }
-}
-
-fn log_ui_font(font: &UiFont, dpi: u32) {
-    tracing::info!(
-        "UI font {} {}px at {dpi} DPI: line {} px",
-        font.family,
-        font.size_px,
-        font.height_px()
-    );
-}
-
-fn log_font(font: &Font, dpi: u32) {
-    tracing::info!(
-        "font {} {}pt at {dpi} DPI: cell {}x{} px",
-        font.family,
-        font.size_pt,
-        font.cell_width_px,
-        font.cell_height_px
-    );
-}
-
-/// [`DPI_ENV`] で指定された DPI。指定がないか、正の整数でなければ `None`。
-fn dpi_from_env() -> Option<u32> {
-    let value = std::env::var(DPI_ENV).ok()?;
-    match value.parse::<u32>() {
-        Ok(dpi) if dpi > 0 => Some(dpi),
-        _ => {
-            tracing::warn!("ignoring {DPI_ENV}={value:?}: not a positive integer");
-            None
-        }
-    }
-}
-
-/// ウィンドウの位置と大きさ（枠を含む、画面の座標）。
-fn window_rect(hwnd: HWND) -> RECT {
-    let mut rect = RECT::default();
-    // SAFETY: hwnd は有効なウィンドウで、rect は書き込める。
-    if let Err(e) = unsafe { GetWindowRect(hwnd, &mut rect) } {
-        tracing::warn!("failed to get the window position: {e}");
-    }
-    rect
-}
-
-/// ウィンドウの枠の大きさ（ウィンドウの大きさとクライアント領域の大きさの差）。
-fn window_frame(hwnd: HWND) -> SIZE {
-    let rect = window_rect(hwnd);
-    let (width, height) = client_size(hwnd);
-    SIZE {
-        cx: (rect.right - rect.left) - width as i32,
-        cy: (rect.bottom - rect.top) - height as i32,
-    }
-}
-
-/// `WM_DPICHANGED` を推奨の矩形 `rect` を添えて送り、DPI が `dpi` に変わったときの処理（フォントと
-/// アトラスの作り直しと、`rect` への移動）をさせる。借用を持っていないときに呼ぶ。
-fn send_dpi_changed(hwnd: HWND, dpi: u32, rect: &RECT) {
-    // WM_DPICHANGED の wparam は、下位に横の DPI、上位に縦の DPI。
-    let wparam = WPARAM((dpi | (dpi << 16)) as usize);
-    // SAFETY: hwnd は有効なウィンドウ。rect は処理が終わるまで生きている。借用は持っていない。
-    unsafe {
-        SendMessageW(
-            hwnd,
-            WM_DPICHANGED,
-            Some(wparam),
-            Some(LPARAM(std::ptr::from_ref(rect) as isize)),
-        )
-    };
-}
-
-/// ウィンドウの位置と大きさを変えずに、DPI が `dpi` に変わったときの処理をさせる。桁数と行数は、いまの
-/// クライアント領域にその DPI のセルで入る数になる。
-fn change_dpi_keeping_window(hwnd: HWND, dpi: u32) {
-    send_dpi_changed(hwnd, dpi, &window_rect(hwnd));
-}
-
-/// ウィンドウの左上を動かさずに、DPI が `dpi` に変わったときの処理をさせる。大きさは、いまの桁数と行数が
-/// その DPI でちょうど入る大きさにする。覚えていた大きさがないときの起動に使う。
-fn change_dpi_keeping_grid(hwnd: HWND, dpi: u32) {
-    let Some(app) = app_of(hwnd) else {
-        return;
-    };
-    let client = app.borrow().scaled_client_size(dpi);
-    let client = match client {
-        Ok(client) => client,
-        Err(e) => {
-            tracing::warn!("failed to compute the window size for {dpi} DPI: {e}");
-            return;
-        }
-    };
-    let mut rect = window_rect(hwnd);
-    // 枠の大きさは、いまのウィンドウの枠から取る。DPI_ENV で DPI を差し替えたときも、枠はウィンドウの実際の
-    // DPI で付くため。
-    let frame = window_frame(hwnd);
-    rect.right = rect.left + client.cx + frame.cx;
-    rect.bottom = rect.top + client.cy + frame.cy;
-    send_dpi_changed(hwnd, dpi, &rect);
-}
-
 /// Windows のシステムの色。描くたびに問い合わせるので、システムの色が変わればそのまま従う。
 fn system_colors() -> tab_bar::SystemColors {
     let color = |index: SYS_COLOR_INDEX| {
@@ -484,130 +373,6 @@ fn system_colors() -> tab_bar::SystemColors {
         window: color(COLOR_WINDOW),
         window_text: color(COLOR_WINDOWTEXT),
     }
-}
-
-/// `font` で `cols` × `rows` のセルを並べた大きさ（ピクセル）。
-fn grid_pixels(font: &Font, cols: u16, rows: u16) -> SIZE {
-    SIZE {
-        cx: (u32::from(cols) * font.cell_width_px) as i32,
-        cy: (u32::from(rows) * font.cell_height_px) as i32,
-    }
-}
-
-/// ウィンドウのクライアント領域のうち、端末の画面の周りに取る場所の寸法。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Insets {
-    /// 上端のタブバーの高さ（[`tab_bar::height`]）。
-    tab_bar_height: u32,
-    /// 端末の画面の上・下・左・右の余白。上はタブバーとの間、右はスクロールバーとの間。何も描かず、
-    /// 描画が端末の背景色で塗るところに任せる（`Renderer::render` はどの領域にも入らないところを端末の
-    /// 背景色で塗る）。
-    padding: u32,
-    /// 右端のスクロールバーの幅（[`scroll_bar::Metrics::width`]）。
-    scroll_bar_width: u32,
-}
-
-impl Insets {
-    /// DPI が `dpi` のウィンドウでの寸法。`scroll_bar_width` は設定のスクロールバーの幅、`padding` は設定の
-    /// 余白（どちらも 96 DPI でのピクセル。DPI に比例させる）。
-    fn new(dpi: u32, scroll_bar_width: u32, padding: u32) -> Self {
-        Self {
-            tab_bar_height: tab_bar::height(dpi),
-            // scale は 1 ピクセルより細くしないので、余白なし（0）はそのまま。
-            padding: if padding == 0 { 0 } else { scale(padding, dpi) },
-            scroll_bar_width: scroll_bar::Metrics {
-                dpi,
-                base_width: scroll_bar_width,
-            }
-            .width(),
-        }
-    }
-}
-
-/// 大きさが `width` × `height` のクライアント領域のうち、表示している端末を描く領域。上端のタブバーと
-/// 右端のスクロールバーを除き、その内側の上・下・左・右に余白（寸法は `insets`）を空けた残りの全体に
-/// 描く。
-fn terminal_area_in_client(width: u32, height: u32, insets: Insets) -> Area {
-    let top = (insets.tab_bar_height + insets.padding).min(height);
-    let available_width = width.saturating_sub(insets.scroll_bar_width);
-    Area {
-        x: insets.padding.min(available_width),
-        y: top,
-        width: available_width.saturating_sub(2 * insets.padding),
-        height: (height - top).saturating_sub(insets.padding),
-    }
-}
-
-/// 大きさが `width` のクライアント領域のうち、スクロールバーを描く領域。クライアント領域の右端に幅
-/// `insets.scroll_bar_width` で、上下は端末を描く領域 `terminal` に揃える。
-fn scroll_bar_area_in_client(width: u32, terminal: Area, insets: Insets) -> Area {
-    let x = width.saturating_sub(insets.scroll_bar_width);
-    Area {
-        x,
-        y: terminal.y,
-        width: width - x,
-        height: terminal.height,
-    }
-}
-
-/// 大きさが `width` × `height` のクライアント領域のうち、背景画像を敷く領域。上端のタブバーを除いた
-/// 残りの全体（端末を描く領域、その周りの余白、右端のスクロールバーの列）。
-fn backdrop_area_in_client(width: u32, height: u32, insets: Insets) -> Area {
-    let top = insets.tab_bar_height.min(height);
-    Area {
-        x: 0,
-        y: top,
-        width,
-        height: height - top,
-    }
-}
-
-/// 端末を描く領域の大きさが `terminal` になるクライアント領域の大きさ。[`terminal_area_in_client`] と
-/// 対になる。
-fn client_size_for_terminal(terminal: SIZE, insets: Insets) -> SIZE {
-    let padding = 2 * insets.padding as i32;
-    SIZE {
-        cx: terminal.cx + padding + insets.scroll_bar_width as i32,
-        cy: terminal.cy + padding + insets.tab_bar_height as i32,
-    }
-}
-
-/// 端末を描く領域の左上からの位置 (`x`, `y`) を、大きさが `size` の端末のセルを並べた画面の中の、
-/// いちばん近い位置にする。
-fn clamp_to_grid(x: i32, y: i32, size: GridSize) -> (i32, i32) {
-    let limit = |count: u16, cell_px: u32| (u32::from(count) * cell_px).saturating_sub(1) as i32;
-    (
-        x.clamp(0, limit(size.cols, size.cell_width_px)),
-        y.clamp(0, limit(size.rows, size.cell_height_px)),
-    )
-}
-
-/// クライアント領域の中の位置を、`area` の左上からの位置にする。
-fn client_to_area(area: Area, x: i32, y: i32) -> (i32, i32) {
-    (x - area.x as i32, y - area.y as i32)
-}
-
-/// `area` の左上からの位置を、クライアント領域の中の位置にする。[`client_to_area`] と対になる。
-fn area_to_client(area: Area, x: i32, y: i32) -> (i32, i32) {
-    (x + area.x as i32, y + area.y as i32)
-}
-
-/// クライアント領域の大きさが `client` になる、DPI が `dpi` のウィンドウの大きさ（枠を含む）。
-fn window_size(client: SIZE, dpi: u32) -> windows::core::Result<SIZE> {
-    let mut rect = RECT {
-        left: 0,
-        top: 0,
-        right: client.cx,
-        bottom: client.cy,
-    };
-    // SAFETY: rect は書き込める。
-    unsafe {
-        AdjustWindowRectExForDpi(&mut rect, MAIN_WINDOW_STYLE, false, WINDOW_EX_STYLE(0), dpi)?
-    };
-    Ok(SIZE {
-        cx: rect.right - rect.left,
-        cy: rect.bottom - rect.top,
-    })
 }
 
 /// ウィンドウを作る。大きさは、`font` のセルを [`INITIAL_COLS`] × [`INITIAL_ROWS`] 並べた端末の画面に、
@@ -1508,62 +1273,6 @@ impl App {
         }
     }
 
-    /// ウィンドウのクライアント領域の中の位置を、端末を描く領域の左上からの位置にする。
-    fn client_to_terminal(&self, x: i32, y: i32) -> (i32, i32) {
-        client_to_area(self.terminal_area, x, y)
-    }
-
-    /// 端末を描く領域の左上からの位置を、ウィンドウのクライアント領域の中の位置にする。
-    fn terminal_to_client(&self, x: i32, y: i32) -> (i32, i32) {
-        area_to_client(self.terminal_area, x, y)
-    }
-
-    /// ウィンドウのクライアント領域の中の位置を、端末を描く領域の左上からの位置にする。クライアント領域の
-    /// 中でセルの外（端末の画面の余白など）なら、いちばん近いセルの中の位置にする。クライアント領域の外
-    /// （ドラッグでウィンドウの外へ出たとき）はそのまま。マウスの選択とアプリへの報告に使う。
-    fn pointer_in_terminal(&self, x: i32, y: i32) -> (i32, i32) {
-        let (terminal_x, terminal_y) = self.client_to_terminal(x, y);
-        let (width, height) = client_size(self.hwnd);
-        if x < 0 || y < 0 || x as u32 >= width || y as u32 >= height {
-            return (terminal_x, terminal_y);
-        }
-        clamp_to_grid(terminal_x, terminal_y, self.session().vt.size())
-    }
-
-    /// ウィンドウのクライアント領域の中の位置を、表示している範囲のセルに直す。端末を描く領域の外は端の
-    /// セルにする。
-    fn pointer(&self, x: i32, y: i32) -> PointerPosition {
-        let (x, y) = self.pointer_in_terminal(x, y);
-        let size = self.session().vt.size();
-        let cell = |pixel: i32, cell_px: u32, count: u16| -> u16 {
-            let index = pixel.max(0) as u32 / cell_px;
-            index.min(u32::from(count.saturating_sub(1))) as u16
-        };
-        PointerPosition {
-            col: cell(x, size.cell_width_px, size.cols),
-            row: cell(y, size.cell_height_px, size.rows),
-            x: f64::from(x),
-            y: f64::from(y),
-        }
-    }
-
-    /// ウィンドウのクライアント領域の中の位置にあるセル（桁、行）。セルの外（端末の画面の余白、
-    /// スクロールバー）なら `None`。
-    fn cell_at(&self, x: i32, y: i32) -> Option<(u16, u16)> {
-        let (x, y) = self.client_to_terminal(x, y);
-        let size = self.session().vt.size();
-        if x < 0
-            || y < 0
-            || x as u32 >= u32::from(size.cols) * size.cell_width_px
-            || y as u32 >= u32::from(size.rows) * size.cell_height_px
-        {
-            return None;
-        }
-        let col = (x as u32 / size.cell_width_px).min(u32::from(u16::MAX)) as u16;
-        let row = (y as u32 / size.cell_height_px).min(u32::from(u16::MAX)) as u16;
-        Some((col, row))
-    }
-
     /// ウィンドウのクライアント領域の中の位置にあるリンク。
     fn link_at(&self, x: i32, y: i32) -> Option<Link> {
         let (col, row) = self.cell_at(x, y)?;
@@ -2147,16 +1856,6 @@ impl App {
         self.invalidate();
     }
 
-    /// ウィンドウのクライアント領域の中の位置を、画面での位置にする。
-    fn client_to_screen(&self, x: i32, y: i32) -> (i32, i32) {
-        let mut point = POINT { x, y };
-        // SAFETY: self.hwnd は有効なウィンドウで、point は書き込める。
-        if !unsafe { ClientToScreen(self.hwnd, &mut point) }.as_bool() {
-            tracing::warn!("failed to convert the menu position");
-        }
-        (point.x, point.y)
-    }
-
     /// マウスの操作をアプリへ送るか。アプリが求めていて、Shift を押していないとき。
     fn reports_mouse(&self) -> bool {
         if keyboard::current_mods().contains(Mods::SHIFT) {
@@ -2166,17 +1865,6 @@ impl App {
             tracing::warn!("failed to read the mouse mode: {e}");
             false
         })
-    }
-
-    /// 画面での位置（WM_MOUSEWHEEL の `lparam`）を、ウィンドウのクライアント領域の中の位置にする。
-    fn screen_to_client(&self, lparam: LPARAM) -> (i32, i32) {
-        let (x, y) = client_position(lparam);
-        let mut point = POINT { x, y };
-        // SAFETY: self.hwnd は有効なウィンドウで、point は書き込める。
-        if !unsafe { ScreenToClient(self.hwnd, &mut point) }.as_bool() {
-            tracing::warn!("failed to convert the wheel position");
-        }
-        (point.x, point.y)
     }
 
     /// アプリがマウスを求めていて Shift を押していなければ、操作をアプリへ送って `true` を返す。
@@ -2472,20 +2160,6 @@ impl App {
         unsafe { _ = FlashWindowEx(&flash) };
     }
 
-    /// ウィンドウのクライアント領域の大きさが変わった。端末を描く領域と、端末の大きさを合わせる。
-    fn on_resize(&mut self, width: u32, height: u32) {
-        if let Some(renderer) = self.renderer.as_mut()
-            && let Err(e) = renderer.resize(width, height)
-        {
-            if renderer::is_device_lost(&e) {
-                self.on_device_lost(&e);
-            } else {
-                tracing::warn!("failed to resize the swap chain: {e}");
-            }
-        }
-        self.layout(width, height);
-    }
-
     /// Direct3D のデバイスを失って `error` になった。理由をログに残し、`Renderer` を作り直す。最初の
     /// 作り直しはこの場で、作り直したのに描けなかったあとは [`RENDERER_RETRY_DELAY`] のあとに試す。
     /// 作り直しても描けないことが [`MAX_RENDERER_RECREATIONS`] 回続いていたら、作り直さずに描画をやめる。
@@ -2611,100 +2285,6 @@ impl App {
         if self.renderer.is_none() {
             self.recreate_renderer();
         }
-    }
-
-    /// いまのクライアント領域の大きさに合わせる。最小化していれば何もしない（大きさ 0 を端末に伝えないため。
-    /// 戻したときに届く WM_SIZE で合わせる）。
-    fn fit_to_client(&mut self) {
-        // SAFETY: self.hwnd は有効なウィンドウ。
-        if unsafe { IsIconic(self.hwnd) }.as_bool() {
-            return;
-        }
-        let (width, height) = client_size(self.hwnd);
-        self.on_resize(width, height);
-    }
-
-    /// クライアント領域の大きさが `width` × `height` のときの、端末を描く領域に合わせる。
-    fn layout(&mut self, width: u32, height: u32) {
-        let insets = self.insets(self.dpi);
-        self.terminal_area = terminal_area_in_client(width, height, insets);
-        self.scroll_bar_area = scroll_bar_area_in_client(width, self.terminal_area, insets);
-        self.backdrop_area = backdrop_area_in_client(width, height, insets);
-        self.resize_sessions();
-        self.update_tab_bar_hover();
-        self.update_scroll_bar_hover();
-        // 余白やスクロールバーの幅だけが変わると、マウスの下のセルが変わる。
-        self.refresh_hovered_link_now();
-    }
-
-    /// すべての端末の大きさを、端末を描く領域に合わせる。表示していない端末も同じ大きさにする。
-    fn resize_sessions(&mut self) {
-        let size = grid_size(&self.font, self.terminal_area);
-        let mut changed = false;
-        for session in &mut self.sessions {
-            changed |= session.resize(size);
-        }
-        if !changed {
-            return;
-        }
-        self.refresh_hovered_link_now();
-        self.invalidate();
-    }
-
-    /// DPI が `dpi` に変わった。端末のフォントを測り直し、[`App::apply_font`] で入れ替える。
-    /// 端末の大きさは呼び出し元が合わせる（このあと届く WM_SIZE の [`App::on_resize`]）。測れなければ
-    /// 前のフォントのまま描く。
-    fn apply_dpi(&mut self, dpi: u32) {
-        self.dpi = dpi;
-        let font = match load_font(&self.dwrite, &self.font_config, dpi) {
-            Ok(font) => font,
-            Err(e) => {
-                tracing::warn!("failed to measure the font for {dpi} DPI: {e}");
-                return;
-            }
-        };
-        self.apply_font(font);
-    }
-
-    /// いまの DPI で測った端末のフォント `font` に入れ替える。UI のフォントを測り直し、グリフアトラスを
-    /// 作り直す。端末の大きさは呼び出し元が合わせる。アトラスを作り直せなければ前のフォントのまま描く
-    /// （UI のフォントだけを作れなければ、UI のフォントだけ前のまま）。
-    fn apply_font(&mut self, font: Font) {
-        let dpi = self.dpi;
-        let ui_font = match UiFont::for_dpi(&self.dwrite, dpi) {
-            Ok(ui_font) => Rc::new(ui_font),
-            Err(e) => {
-                tracing::warn!("failed to create the UI font for {dpi} DPI: {e}");
-                self.ui_font.clone()
-            }
-        };
-        // `Renderer` がないとき（作り直しを待つ間と、描画をやめたあと）と、デバイスを失ったときも、
-        // フォントは入れ替え、作り直す `Renderer` に使う。
-        let rebuilt = match self.renderer.as_mut() {
-            Some(renderer) => renderer.set_font(
-                &self.dwrite,
-                &font,
-                ui_font.clone(),
-                self.font_config.wide_glyph,
-            ),
-            None => Ok(()),
-        };
-        let lost = match rebuilt {
-            Ok(()) => None,
-            Err(e) if renderer::is_device_lost(&e) => Some(e),
-            Err(e) => {
-                tracing::warn!("failed to rebuild the glyph atlas for {dpi} DPI: {e}");
-                return;
-            }
-        };
-        log_font(&font, dpi);
-        log_ui_font(&ui_font, dpi);
-        self.font = font;
-        self.ui_font = ui_font;
-        if let Some(e) = lost {
-            self.on_device_lost(&e);
-        }
-        self.invalidate();
     }
 
     /// 設定ファイルを読み直し、[`App::apply_config`] で入れ替える。
@@ -2894,16 +2474,6 @@ impl App {
         self.invalidate();
     }
 
-    /// DPI が `dpi` に変わったときに、いまの桁数と行数がそのまま収まるクライアント領域の大きさ。
-    fn scaled_client_size(&self, dpi: u32) -> windows::core::Result<SIZE> {
-        let font = load_font(&self.dwrite, &self.font_config, dpi)?;
-        let size = self.session().vt.size();
-        Ok(client_size_for_terminal(
-            grid_pixels(&font, size.cols, size.rows),
-            self.insets(dpi),
-        ))
-    }
-
     fn render(&mut self) {
         self.render_to(None);
     }
@@ -3042,25 +2612,6 @@ impl App {
         }
     }
 
-    /// DPI が `dpi` のときの、端末の画面の周りに取る場所の寸法。
-    fn insets(&self, dpi: u32) -> Insets {
-        Insets::new(dpi, self.scroll_bar_width, self.padding)
-    }
-
-    /// タブバーを描く領域。ウィンドウの上端に、ウィンドウの幅いっぱい。その下の端末の画面の上の余白は
-    /// 含まない（余白の上のマウスは、ほかの余白と同じく端末のいちばん近いセルとみなす）。
-    fn tab_bar_area(&self) -> Area {
-        Area {
-            x: 0,
-            y: 0,
-            width: self.scroll_bar_area.right(),
-            height: self
-                .insets(self.dpi)
-                .tab_bar_height
-                .min(self.terminal_area.y),
-        }
-    }
-
     /// 表示している端末の画像のアニメーションを進め、次のコマで描き直すタイマーを動かす。再生中の
     /// ものがなければ止める。
     fn tick_image_animations(&mut self) {
@@ -3183,16 +2734,6 @@ fn window_title(tab_title: &str, version: &str) -> String {
     }
 }
 
-/// 端末を描く領域 `area` に収まる大きさ。少なくとも 1 セル。
-fn grid_size(font: &Font, area: Area) -> GridSize {
-    GridSize {
-        cols: (area.width / font.cell_width_px).clamp(1, u32::from(u16::MAX)) as u16,
-        rows: (area.height / font.cell_height_px).clamp(1, u32::from(u16::MAX)) as u16,
-        cell_width_px: font.cell_width_px,
-        cell_height_px: font.cell_height_px,
-    }
-}
-
 /// ほかのスレッドから呼んで、`hwnd` に `message` を `wparam` を添えて積むもの。
 fn poster(hwnd: HWND, message: u32, wparam: WPARAM) -> impl Fn() + Send + Sync + 'static {
     // HWND はスレッドをまたいで渡せないので、値だけを持たせる。PostMessageW はどのスレッドからでも呼べる。
@@ -3283,18 +2824,6 @@ fn warn_post_failed(message: u32, error: &windows::core::Error) {
     } else {
         tracing::warn!("failed to post message {message:#06x}: {error}");
     }
-}
-
-fn client_size(hwnd: HWND) -> (u32, u32) {
-    let mut rect = RECT::default();
-    // SAFETY: hwnd は有効なウィンドウで、rect は書き込める。
-    if let Err(e) = unsafe { GetClientRect(hwnd, &mut rect) } {
-        tracing::warn!("failed to get the client size: {e}");
-    }
-    (
-        (rect.right - rect.left).max(0) as u32,
-        (rect.bottom - rect.top).max(0) as u32,
-    )
 }
 
 /// ウィンドウに結び付けた App を借りて `action` を呼ぶもの。呼ばれるたびに App を読み直すので、ダイアログや
@@ -4499,119 +4028,6 @@ mod tests {
         assert!(!is_link_modifier(Mods::empty()));
         assert!(!is_link_modifier(Mods::CTRL | Mods::SHIFT));
         assert!(!is_link_modifier(Mods::CTRL | Mods::ALT));
-    }
-
-    #[test]
-    fn the_terminal_is_surrounded_by_the_padding() {
-        // 96 DPI ではタブバーの 26、既定の余白 4、既定の幅のスクロールバー 12。192 DPI では 52、8、24。
-        // 設定の余白は 0 から、DPI に比例させる。
-        for (dpi, setting, bar, padding, scroll_bar) in [
-            (96, fantermo_core::config::DEFAULT_PADDING, 26, 4, 12),
-            (192, fantermo_core::config::DEFAULT_PADDING, 52, 8, 24),
-            (96, 0, 26, 0, 12),
-            (96, 20, 26, 20, 12),
-            (192, 20, 52, 40, 24),
-        ] {
-            let insets = Insets::new(
-                dpi,
-                fantermo_core::config::DEFAULT_SCROLL_BAR_WIDTH,
-                setting,
-            );
-            assert_eq!(
-                insets,
-                Insets {
-                    tab_bar_height: bar,
-                    padding,
-                    scroll_bar_width: scroll_bar
-                }
-            );
-            let terminal = SIZE { cx: 800, cy: 480 };
-            let client = client_size_for_terminal(terminal, insets);
-            assert_eq!(
-                (client.cx as u32, client.cy as u32),
-                (800 + 2 * padding + scroll_bar, 480 + bar + 2 * padding)
-            );
-            let area = terminal_area_in_client(client.cx as u32, client.cy as u32, insets);
-            let top = bar + padding;
-            assert_eq!(
-                area,
-                Area {
-                    x: padding,
-                    y: top,
-                    width: 800,
-                    height: 480
-                }
-            );
-            // スクロールバーはクライアント領域の右端で、端末との間に余白。上下は端末に揃える。
-            assert_eq!(
-                scroll_bar_area_in_client(client.cx as u32, area, insets),
-                Area {
-                    x: 800 + 2 * padding,
-                    y: top,
-                    width: scroll_bar,
-                    height: 480
-                }
-            );
-            // 端末の左上のセルの左上は、クライアント領域の (padding, top)。余白の中は端末の外。
-            let (left, top) = (padding as i32, top as i32);
-            assert_eq!(client_to_area(area, left, top), (0, 0));
-            assert_eq!(client_to_area(area, left - 1, top - 1), (-1, -1));
-            assert_eq!(client_to_area(area, left + 800, top + 480), (800, 480));
-            assert_eq!(area_to_client(area, 16, 32), (left + 16, top + 32));
-            // 背景画像は端末と余白とスクロールバーの列に敷く。
-            assert_eq!(
-                backdrop_area_in_client(client.cx as u32, client.cy as u32, insets),
-                Area {
-                    x: 0,
-                    y: bar,
-                    width: 800 + 2 * padding + scroll_bar,
-                    height: 480 + 2 * padding
-                }
-            );
-        }
-        // タブバーより低いクライアント領域では、端末を描く領域は空。スクロールバーと左右の余白より
-        // 狭ければ、端末の幅は 0 で、スクロールバーはクライアント領域の右端に設定の幅。
-        let insets = Insets {
-            tab_bar_height: 26,
-            padding: 4,
-            scroll_bar_width: 12,
-        };
-        assert_eq!(terminal_area_in_client(800, 20, insets).height, 0);
-        assert_eq!(terminal_area_in_client(800, 32, insets).height, 0);
-        let narrow = terminal_area_in_client(18, 100, insets);
-        assert_eq!((narrow.x, narrow.width), (4, 0));
-        assert_eq!(
-            scroll_bar_area_in_client(18, narrow, insets),
-            Area {
-                x: 6,
-                y: 30,
-                width: 12,
-                height: 66
-            }
-        );
-        assert_eq!(scroll_bar_area_in_client(8, narrow, insets).width, 8);
-        // 設定の幅は DPI に比例させる。
-        assert_eq!(Insets::new(144, 20, 4).scroll_bar_width, 30);
-        assert_eq!(Insets::new(144, 12, 5).padding, 8);
-    }
-
-    #[test]
-    fn positions_outside_the_cells_go_to_the_nearest_cell() {
-        // 10 × 5 のセル、一つが 8 × 16 ピクセル。
-        let size = GridSize {
-            cols: 10,
-            rows: 5,
-            cell_width_px: 8,
-            cell_height_px: 16,
-        };
-        // 左と上の余白は先頭の列と行の端、右と下の余白は最後の列と行の端。
-        assert_eq!(clamp_to_grid(-4, -4, size), (0, 0));
-        assert_eq!(clamp_to_grid(85, 90, size), (79, 79));
-        assert_eq!(clamp_to_grid(-1, 40, size), (0, 40));
-        // セルの中はそのまま。
-        assert_eq!(clamp_to_grid(0, 0, size), (0, 0));
-        assert_eq!(clamp_to_grid(79, 79, size), (79, 79));
-        assert_eq!(clamp_to_grid(33, 17, size), (33, 17));
     }
 
     #[test]
