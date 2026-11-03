@@ -646,12 +646,13 @@ pub fn run(owner: HWND, request: Request, host: &mut dyn Host) {
         dpi: Cell::new(BASE_DPI),
         closed: Cell::new(false),
     };
+    // SAFETY: owner は呼び出し元の有効なウィンドウ。
+    let dpi = unsafe { GetDpiForWindow(owner) };
+    // fill が警告の文の高さをこの DPI のフォントで測れるように、先に決める。
+    state.set_dpi(dpi);
     state.fill(&current, selected_font);
     // SAFETY: hwnd は作ったばかりのウィンドウ。ポインタは modal::run が戻るまで有効で、WM_DESTROY で外す。
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, std::ptr::from_ref(&state) as isize) };
-    // SAFETY: owner は呼び出し元の有効なウィンドウ。
-    let dpi = unsafe { GetDpiForWindow(owner) };
-    state.set_dpi(dpi);
     if let Err(e) = place(owner, hwnd, dpi) {
         tracing::warn!("failed to place the settings dialog: {e}");
     }
