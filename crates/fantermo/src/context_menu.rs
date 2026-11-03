@@ -3,7 +3,7 @@
 
 use windows::{
     Win32::{
-        Foundation::{HWND, RECT},
+        Foundation::{E_INVALIDARG, HWND, RECT},
         Graphics::Gdi::{
             BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateDIBSection, DIB_RGB_COLORS, DeleteObject,
             HBITMAP,
@@ -230,12 +230,16 @@ impl Drop for ItemBitmaps {
 
 /// `image`（乗算済みアルファの BGRA）の 32 ビットの DIB。
 fn create_bitmap(image: &Decoded) -> windows::core::Result<HBITMAP> {
+    let width =
+        i32::try_from(image.width()).map_err(|_| windows::core::Error::from(E_INVALIDARG))?;
+    let height =
+        i32::try_from(image.height()).map_err(|_| windows::core::Error::from(E_INVALIDARG))?;
     let info = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: image.width() as i32,
+            biWidth: width,
             // 負の高さは、上の行から並べることを表す。
-            biHeight: -(image.height() as i32),
+            biHeight: -height,
             biPlanes: 1,
             biBitCount: 32,
             biCompression: BI_RGB.0,

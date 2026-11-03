@@ -271,7 +271,7 @@ impl Renderer {
     }
 
     fn add_terminal_image(&mut self, owner: usize, key: ImageKey, decoded: &Decoded) {
-        // 端末エミュレーション側の上限に頼らず、Direct3D のテクスチャに収まらない画像は作らない。
+        // Direct3D のテクスチャに収まらない画像は作らない。端末エミュレーションの上限とは別に見る。
         let texture = if decoded.width() > MAX_TEXTURE_SIDE || decoded.height() > MAX_TEXTURE_SIDE {
             tracing::warn!(
                 "the terminal image {} ({}x{}) is larger than the texture limit {MAX_TEXTURE_SIDE}",
@@ -342,7 +342,7 @@ impl Renderer {
                 .CreateTexture2D(&desc, None, Some(&mut texture))?
         };
         let texture: ID3D11Texture2D = texture.ok_or_else(windows::core::Error::empty)?;
-        // SAFETY: pixels は stride × 高さのバイトを持ち、texture のレベル 0 と同じ大きさと形式。
+        // SAFETY: pixels は stride × 高さのバイトを持ち（`Decoded` が長さを保証する）、texture のレベル 0 と同じ大きさと形式。
         unsafe {
             self.context.UpdateSubresource(
                 &texture,
@@ -381,7 +381,7 @@ impl Renderer {
         self.atlas = GlyphAtlas::new(&self.device, dwrite, font, ui_font, wide_glyph)?;
         self.cell_width = font.cell_width_px;
         self.cell_height = font.cell_height_px;
-        // タブのアイコンは一辺ごとに作るので、前の一辺のものを残さず新しい一辺で作り直させる。
+        // タブのアイコンは一辺ごとに作るので、新しい一辺で作り直させる。
         self.tab_icons.clear();
         Ok(())
     }

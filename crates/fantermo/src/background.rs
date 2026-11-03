@@ -6,6 +6,7 @@ use fantermo_core::background::{self, Files};
 use windows::{
     Win32::{
         Foundation::{E_FAIL, GENERIC_READ},
+        Graphics::Direct3D11::D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION,
         Graphics::Imaging::{
             CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICBitmapSource,
             IWICImagingFactory, WICBitmapDitherTypeNone, WICBitmapInterpolationModeFant,
@@ -25,7 +26,7 @@ use windows::{
 use crate::tab_icon::{self, RealIcon};
 
 /// Direct3D 11 のテクスチャの一辺の上限（`D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION`）。
-pub const MAX_TEXTURE_SIDE: u32 = 16384;
+pub const MAX_TEXTURE_SIDE: u32 = D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION;
 
 /// 1 ピクセルのバイト数（乗算済みアルファの BGRA）。
 const BYTES_PER_PIXEL: u32 = 4;

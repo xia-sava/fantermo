@@ -593,7 +593,7 @@ fn draw_picture(
         height: picture.height(),
     };
     // SAFETY: 描画中の target で、ピクセルと properties は呼び出しの間は生きている。ピクセルは一行
-    // stride バイトで height 行ある。
+    // stride バイトで height 行ある（`Decoded` が長さを保証する）。
     unsafe {
         let bitmap = target.CreateBitmap(
             size,
