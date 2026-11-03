@@ -50,7 +50,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `sixel` | sixel のデコーダ．`vt` が kitty graphics protocol の画像にして端末に置く |
 | `frame` | 描画のために取り出した画面．libghostty-vt の型に依存しない |
 | `backend` | `Backend` trait，`SpawnOptions`，`GridSize`，`Wake` |
-| `config` | 設定ファイルの型，既定値，解釈（`parse`），ひな形 `TEMPLATE`．プロファイル，Cygwin のフォルダを探す処理（`find_cygwin_root`）もここ |
+| `config` | 設定ファイルの型，既定値，解釈（`parse`），ひな形 `TEMPLATE`．プロファイル，Cygwin のフォルダを探す処理（`find_cygwin_root`），名前だけのコマンドを `PATH` から探す処理（`find_program_on_path`）もここ |
 | `config::migrate` | 古い書き方を今の書き方に読み替える手順 `STEPS` |
 | `config_edit` | 設定ダイアログで変えた項目だけを設定ファイルに書き戻す（`update`）．コメントと並びを残す |
 | `keymap` | fantermo が受け持つキーの割り当て（`Action`，`KeyCombo`，`Keymap`）と名前の解釈 |

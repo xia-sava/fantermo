@@ -7,12 +7,13 @@
 //! 乗算済みアルファの BGRA（[`Decoded`]）で返す。
 
 use std::{
+    env,
     f32::consts::PI,
     path::{Path, PathBuf},
 };
 
 use fantermo_core::{
-    config::{BackendKind, Profile},
+    config::{self, BackendKind, Profile},
     frame::Rgb,
     vt,
 };
@@ -38,7 +39,6 @@ use windows::{
             Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
             Imaging::{GUID_WICPixelFormat32bppPBGRA, IWICImagingFactory, WICBitmapCacheOnDemand},
         },
-        Storage::FileSystem::SearchPathW,
         UI::Shell::ExtractIconExW,
     },
     core::{HSTRING, w},
@@ -108,9 +108,6 @@ const CYGWIN_ICON_FILE: &str = "Cygwin.ico";
 /// WSL のアイコンを読む実行ファイル。
 const WSL_EXECUTABLE: &str = "wsl.exe";
 
-/// 実行ファイルを探すときのパスの長さの上限（UTF-16 の単位の数）。
-const MAX_LONG_PATH: usize = 32768;
-
 const fn rgb(r: u8, g: u8, b: u8) -> Rgb {
     Rgb { r, g, b }
 }
@@ -174,28 +171,25 @@ fn real_icon_with(
     has_icon(real.path()).then_some(real)
 }
 
-/// プログラムの名前 `program` の実行ファイルを、起動するときと同じように `PATH` などから探す。拡張子がなければ
-/// `.exe` を足す。
+/// プログラム `program` の実行ファイル。名前だけなら、ConPTY で起動するときと同じく
+/// [`config::find_program_on_path`] で環境変数 `PATH` から探す。フォルダかドライブ名があれば、書いたパス
+/// （拡張子がなければ `.exe` を足す）。
 fn search_path(program: &str) -> Option<PathBuf> {
+    // 空は名前だけでもパスでもないので、`.exe` だけのパスにしない。
     if program.is_empty() {
         return None;
     }
-    let mut buffer = vec![0; MAX_LONG_PATH];
-    // SAFETY: 文字列と出力先は呼び出しの間は生きている。
-    let length = unsafe {
-        SearchPathW(
-            None,
-            &HSTRING::from(program),
-            w!(".exe"),
-            Some(&mut buffer),
-            None,
-        )
-    } as usize;
-    // 0 は見つからない、出力先の長さ以上は入りきらない。
-    if length == 0 || length >= buffer.len() {
-        return None;
+    if !config::is_bare_program_name(program) {
+        let mut path = PathBuf::from(program);
+        let has_extension = path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().contains('.'));
+        if !has_extension {
+            path.set_extension("exe");
+        }
+        return Some(path);
     }
-    Some(PathBuf::from(String::from_utf16_lossy(&buffer[..length])))
+    config::find_program_on_path(program, env::var_os("PATH").as_deref(), Path::is_file)
 }
 
 /// ファイル `path` にアイコンがあるか。既定のアプリのアイコンは数えない。
@@ -1103,6 +1097,15 @@ mod tests {
         assert!(has_icon(&cmd));
         assert_eq!(search_path("no-such-program-for-fantermo"), None);
         assert_eq!(search_path(""), None);
+        // フォルダを書いたものは探さずにそのパス。拡張子がなければ `.exe` を足す。
+        assert_eq!(
+            search_path(r"C:\some\tool"),
+            Some(PathBuf::from(r"C:\some\tool.exe"))
+        );
+        assert_eq!(
+            search_path(r"C:\some\tool.bat"),
+            Some(PathBuf::from(r"C:\some\tool.bat"))
+        );
         assert!(!has_icon(Path::new(r"C:\no-such-folder\no-such.exe")));
     }
 

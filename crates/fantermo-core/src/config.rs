@@ -471,6 +471,39 @@ fn cygwin_root_of_bin(folder: &Path, is_file: &impl Fn(&Path) -> bool) -> Option
     folder.parent().map(Path::to_path_buf)
 }
 
+/// 実行ファイル `program` が、パスの区切り（`\`、`/`）もドライブ名も含まない名前だけのものか。空は含めない。
+pub fn is_bare_program_name(program: &str) -> bool {
+    !program.is_empty() && !program.contains(['\\', '/', ':'])
+}
+
+/// 名前だけの実行ファイル `program` を、環境変数 `PATH` の値 `path_variable` から探す。`is_file` はそのパスの
+/// ファイルがあるか。
+///
+/// `PATH` の絶対パスの項目だけを前から順に見る。空・`.`・相対パスの項目は、作業フォルダで結果が変わるので見ない。
+/// 名前に `.` がなければ、`CreateProcessW` と同じく `.exe` を付けて探す（`.` があれば拡張子があるものとし、
+/// そのまま探す）。名前だけでなければ `None`。
+pub fn find_program_on_path(
+    program: &str,
+    path_variable: Option<&OsStr>,
+    is_file: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    const EXE: &str = ".exe";
+    if !is_bare_program_name(program) {
+        return None;
+    }
+    let file_name = if program.contains('.') {
+        program.to_owned()
+    } else {
+        format!("{program}{EXE}")
+    };
+    path_variable
+        .into_iter()
+        .flat_map(env::split_paths)
+        .filter(|folder| folder.is_absolute())
+        .map(|folder| folder.join(&file_name))
+        .find(|candidate| is_file(candidate))
+}
+
 /// WSL を起動する実行ファイルの名前（フォルダと `.exe` を除く）。
 const WSL_PROGRAM: &str = "wsl";
 
@@ -486,7 +519,7 @@ fn program_name(command: &str) -> String {
 
 /// コマンドライン `command` を、実行ファイル（`"` で囲んでいれば中身）と、そのあとの引数（前後の空白を
 /// 除いたもの）に分ける。
-fn split_program(command: &str) -> (&str, &str) {
+pub fn split_program(command: &str) -> (&str, &str) {
     let command = command.trim();
     match command.strip_prefix('"') {
         Some(quoted) => match quoted.split_once('"') {
@@ -3497,6 +3530,104 @@ size = 10
         );
         // 空の項目は Cygwin のフォルダにしない。
         assert_eq!(find_cygwin(Some(";;"), &["cygwin1.dll", "sh.exe"]), None);
+    }
+
+    /// `path_variable` を `PATH` の値、`files` をあるファイルの全部として `program` を探す。
+    fn find_program(program: &str, path_variable: &str, files: &[&str]) -> Option<PathBuf> {
+        find_program_on_path(program, Some(OsStr::new(path_variable)), |path| {
+            files.iter().any(|file| Path::new(file) == path)
+        })
+    }
+
+    #[test]
+    fn bare_program_names_have_no_folder_and_no_drive() {
+        for program in ["cmd", "cmd.exe", "my tool.exe", ".hidden"] {
+            assert!(is_bare_program_name(program), "{program}");
+        }
+        for program in [
+            "",
+            r"C:\x\cmd.exe",
+            r".\cmd.exe",
+            "bin/cmd",
+            "C:cmd.exe",
+            r"\cmd",
+        ] {
+            assert!(!is_bare_program_name(program), "{program}");
+        }
+    }
+
+    #[test]
+    fn programs_are_found_on_path_in_order() {
+        let files = [r"C:\a\tool.exe", r"C:\b\tool.exe", r"C:\b\other.exe"];
+        assert_eq!(
+            find_program("tool.exe", r"C:\a;C:\b", &files),
+            Some(PathBuf::from(r"C:\a\tool.exe"))
+        );
+        assert_eq!(
+            find_program("tool.exe", r"C:\b;C:\a", &files),
+            Some(PathBuf::from(r"C:\b\tool.exe"))
+        );
+        assert_eq!(
+            find_program("other.exe", r"C:\a;C:\b", &files),
+            Some(PathBuf::from(r"C:\b\other.exe"))
+        );
+        assert_eq!(find_program("missing.exe", r"C:\a;C:\b", &files), None);
+        assert_eq!(find_program("tool.exe", "", &files), None);
+        assert_eq!(
+            find_program_on_path("tool.exe", None, |_| true),
+            None,
+            "no PATH"
+        );
+    }
+
+    #[test]
+    fn programs_on_path_skip_relative_and_empty_entries() {
+        let files = [
+            r"tool.exe",
+            r".\tool.exe",
+            r"rel\tool.exe",
+            r"\root\tool.exe",
+            r"C:tool.exe",
+            r"C:\real\tool.exe",
+        ];
+        assert_eq!(
+            find_program("tool.exe", r";.;rel;\root;C:;C:\real", &files),
+            Some(PathBuf::from(r"C:\real\tool.exe"))
+        );
+        assert_eq!(find_program("tool.exe", r";.;rel;\root;C:", &files), None);
+    }
+
+    #[test]
+    fn programs_on_path_get_exe_only_without_an_extension() {
+        let files = [
+            r"C:\a\tool.exe",
+            r"C:\a\tool",
+            r"C:\a\script.bat",
+            r"C:\a\.hidden",
+            r"C:\a\.hidden.exe",
+        ];
+        assert_eq!(
+            find_program("tool", r"C:\a", &files),
+            Some(PathBuf::from(r"C:\a\tool.exe"))
+        );
+        // `.` で始まる名前も、`.` があるので拡張子があるものとする。
+        assert_eq!(
+            find_program(".hidden", r"C:\a", &files),
+            Some(PathBuf::from(r"C:\a\.hidden"))
+        );
+        assert_eq!(
+            find_program("script.bat", r"C:\a", &files),
+            Some(PathBuf::from(r"C:\a\script.bat"))
+        );
+        assert_eq!(find_program("script", r"C:\a", &files), None);
+    }
+
+    #[test]
+    fn programs_with_a_folder_are_not_searched_on_path() {
+        let files = [r"C:\a\tool.exe", r"C:\a\sub\tool.exe"];
+        for program in [r"sub\tool.exe", r"C:\a\tool.exe", "C:tool.exe", ""] {
+            assert_eq!(find_program(program, r"C:\a", &files), None, "{program}");
+        }
     }
 
     #[test]

@@ -21,12 +21,16 @@ use std::{
         ffi::{OsStrExt, OsStringExt},
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
+    path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex, mpsc},
     thread,
     time::{Duration, Instant},
 };
 
-use fantermo_core::backend::{Backend, ExitCode, GridSize, SpawnOptions, Wake};
+use fantermo_core::{
+    backend::{Backend, ExitCode, GridSize, SpawnOptions, Wake},
+    config,
+};
 use windows::{
     Wdk::System::Threading::{NtQueryInformationProcess, PROCESSINFOCLASS},
     Win32::{
@@ -171,8 +175,9 @@ pub struct ConPty {
 
 impl ConPty {
     /// `options` のコマンドラインを疑似コンソールに接続して起動する。コマンドラインは
-    /// `CreateProcessW` にそのまま渡す。
+    /// `CreateProcessW` にそのまま渡す。最初の語が名前だけなら、実行ファイルは [`program_to_start`] で決める。
     pub fn spawn(options: &SpawnOptions, wake: Wake) -> io::Result<Self> {
+        let application = program_to_start(options)?;
         let (console_input, input) = create_pipe()?;
         let (output, console_output) = create_pipe()?;
 
@@ -192,7 +197,9 @@ impl ConPty {
 
         // Job に入れる前に子孫を作らないよう、止めた状態で作る。
         let (process, job) =
-            match spawn_process(console, options, CREATE_SUSPENDED).and_then(start_in_job) {
+            match spawn_process(console, application.as_deref(), options, CREATE_SUSPENDED)
+                .and_then(start_in_job)
+            {
                 Ok((process, job)) => (Arc::new(process), job),
                 Err(e) => {
                     // SAFETY: console は作ったばかりで、まだ誰も閉じていない。
@@ -723,12 +730,16 @@ struct Spawned {
     thread: OwnedHandle,
 }
 
-/// `console` に接続した子プロセスを起動する。`flags` は `CreateProcessW` に足すフラグ。
+/// `console` に接続した子プロセスを起動する。`application` は `CreateProcessW` の `lpApplicationName`
+/// （[`program_to_start`] で決めたもの）、`flags` は `CreateProcessW` に足すフラグ。
 fn spawn_process(
     console: HPCON,
+    application: Option<&Path>,
     options: &SpawnOptions,
     flags: PROCESS_CREATION_FLAGS,
 ) -> io::Result<Spawned> {
+    let application = application.map(|path| to_wide_nul(path.as_os_str()));
+
     // 一度目の呼び出しは属性リストに要る大きさを返すだけで、失敗として戻る。
     let mut size = 0usize;
     // SAFETY: リストを渡さずに大きさだけを問い合わせる呼び方。
@@ -775,7 +786,9 @@ fn spawn_process(
     // 終端の空文字列まで含む。
     let created = unsafe {
         CreateProcessW(
-            PCWSTR::null(),
+            application
+                .as_ref()
+                .map_or(PCWSTR::null(), |path| PCWSTR(path.as_ptr())),
             Some(PWSTR(command_line.as_mut_ptr())),
             None,
             None,
@@ -801,6 +814,41 @@ fn spawn_process(
         )
     };
     Ok(Spawned { process, thread })
+}
+
+/// `CreateProcessW` の `lpApplicationName` に渡す実行ファイル。
+///
+/// コマンドラインの最初の語が名前だけなら、子プロセスに渡す環境の `PATH` から探した絶対パス。見つからなければ
+/// 起動の失敗にする。`lpApplicationName` を渡さないと、`CreateProcessW` は fantermo の実行ファイルのフォルダと、
+/// fantermo 自身の作業フォルダ（タブに渡す作業フォルダではなく、fantermo を起動したときのフォルダ）も探すので、
+/// そこに置かれた同じ名前のファイルを起動しうる。最初の語にフォルダかドライブ名があれば
+/// `None` で、`CreateProcessW` に任せる。
+fn program_to_start(options: &SpawnOptions) -> io::Result<Option<PathBuf>> {
+    let (program, _) = config::split_program(options.command_line);
+    if !config::is_bare_program_name(program) {
+        return Ok(None);
+    }
+    let path_variable = child_path_variable(options.env);
+    config::find_program_on_path(program, path_variable.as_deref(), Path::is_file)
+        .map(Some)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("「{program}」が環境変数 PATH のフォルダに見つかりません。"),
+            )
+        })
+}
+
+/// 子プロセスに渡す環境の `PATH`。`overrides` になければこのプロセスのもの（[`environment_block`] と同じ）。
+fn child_path_variable(overrides: &[(&str, &str)]) -> Option<OsString> {
+    const PATH: &str = "PATH";
+    match overrides
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(PATH))
+    {
+        Some((_, value)) => Some(OsString::from(value)),
+        None => std::env::var_os(PATH),
+    }
 }
 
 /// このプロセスの環境に `overrides` を重ねた、`CreateProcessW` 用の環境変数のブロックを作る。
@@ -892,13 +940,20 @@ mod tests {
 
     /// `command_line` を起動し、終了して画面に `expected` が出るまで待つ。画面の文字と終了コードを返す。
     fn run_until(command_line: &str, env: &[(&str, &str)], expected: &str) -> (String, ExitCode) {
-        let options = SpawnOptions {
-            command_line,
-            env,
-            size: SIZE,
-            working_folder: None,
-        };
-        let mut pty = ConPty::spawn(&options, Arc::new(|| {})).unwrap();
+        run_options_until(
+            &SpawnOptions {
+                command_line,
+                env,
+                size: SIZE,
+                working_folder: None,
+            },
+            expected,
+        )
+    }
+
+    /// [`run_until`] と同じだが、起動の指定を `options` で渡す。
+    fn run_options_until(options: &SpawnOptions, expected: &str) -> (String, ExitCode) {
+        let mut pty = ConPty::spawn(options, Arc::new(|| {})).unwrap();
         let mut vt = Vt::new(SIZE, "xterm-256color").unwrap();
         let deadline = Instant::now() + TIMEOUT;
         loop {
@@ -935,6 +990,66 @@ mod tests {
             "[passed]",
         );
         assert!(screen.contains("[passed]"));
+    }
+
+    #[test]
+    fn a_bare_program_missing_from_path_fails_to_start() {
+        let options = SpawnOptions {
+            command_line: "no-such-program-for-fantermo -x",
+            env: &[],
+            size: SIZE,
+            working_folder: None,
+        };
+        let Err(e) = ConPty::spawn(&options, Arc::new(|| {})) else {
+            panic!("a missing program started");
+        };
+        assert_eq!(e.kind(), io::ErrorKind::NotFound);
+        assert!(
+            e.to_string().contains("「no-such-program-for-fantermo」"),
+            "{e}"
+        );
+    }
+
+    /// 名前だけのバッチファイルも、PATH で見つけたものが動き、作業フォルダの同じ名前のものは動かない。
+    /// `CreateProcessW` がバッチファイルのために起動する `cmd.exe` が、渡した絶対パスを使うことを見る。
+    #[test]
+    fn a_bare_batch_file_runs_the_one_found_on_path() {
+        let root =
+            std::env::temp_dir().join(format!("fantermo-conpty-batch-{}", std::process::id()));
+        let on_path = root.join("a");
+        let working_folder = root.join("b");
+        for (folder, marker) in [(&on_path, "marker-a"), (&working_folder, "marker-b")] {
+            std::fs::create_dir_all(folder).unwrap();
+            std::fs::write(folder.join("tool.bat"), format!("@echo {marker}\r\n")).unwrap();
+        }
+        let system = std::env::var_os("SystemRoot").expect("no SystemRoot");
+        let path_variable = format!(
+            "{};{}",
+            on_path.display(),
+            Path::new(&system).join("System32").display()
+        );
+        let env = [("PATH", path_variable.as_str())];
+        let (screen, _) = run_options_until(
+            &SpawnOptions {
+                command_line: "tool.bat x",
+                env: &env,
+                size: SIZE,
+                working_folder: Some(working_folder.as_path()),
+            },
+            "marker-",
+        );
+        _ = std::fs::remove_dir_all(&root);
+        assert!(screen.contains("marker-a"), "{screen}");
+        assert!(!screen.contains("marker-b"), "{screen}");
+    }
+
+    #[test]
+    fn the_child_path_comes_from_the_overrides_first() {
+        assert_eq!(
+            child_path_variable(&[("Path", r"C:\only")]),
+            Some(OsString::from(r"C:\only"))
+        );
+        assert_eq!(child_path_variable(&[]), std::env::var_os("PATH"));
     }
 
     #[test]
@@ -1023,7 +1138,14 @@ mod tests {
             size: SIZE,
             working_folder: None,
         };
-        let late = spawn_process(pty.console, &late_options, CREATE_SUSPENDED).unwrap();
+        let application = program_to_start(&late_options).unwrap();
+        let late = spawn_process(
+            pty.console,
+            application.as_deref(),
+            &late_options,
+            CREATE_SUSPENDED,
+        )
+        .unwrap();
 
         drop(pty);
         thread::sleep(RESUME_AFTER_CLOSING);

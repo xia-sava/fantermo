@@ -100,6 +100,19 @@ fn powershell_shows_a_prompt() {
     server.wait_text("PS ");
 }
 
+/// 名前だけのコマンドは PATH だけから探し、作業フォルダに置いた同じ名前のファイルは起動しない。作業フォルダに
+/// `cmd.exe` の写しを `powershell.exe` の名前で置いて、PowerShell のプロンプトになることを見る。
+#[test]
+fn powershell_in_the_working_folder_is_not_started() {
+    let server =
+        Server::start_with_setup("", &["powershell.exe", "-NoLogo", "-NoProfile"], |dir| {
+            let system = std::env::var_os("SystemRoot").expect("no SystemRoot");
+            let cmd = PathBuf::from(system).join("System32").join("cmd.exe");
+            std::fs::copy(&cmd, dir.join("powershell.exe")).expect("failed to copy cmd.exe");
+        });
+    server.wait_text("PS ");
+}
+
 #[test]
 fn input_reaches_the_shell_and_its_output_is_read() {
     let server = Server::start_cmd();
