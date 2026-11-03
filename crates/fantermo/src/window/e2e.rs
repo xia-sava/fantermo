@@ -140,7 +140,7 @@ fn run(hwnd: HWND, Pending { request, reply }: Pending, with_app: &WithApp) {
     match request {
         Request::Quit => {
             answer(Response::json(&json!({})));
-            destroy_window(hwnd);
+            destroy_window(hwnd, with_app);
         }
         Request::ResizeWindow { cols, rows } => {
             answer(resize_window(hwnd, cols, rows, with_app));
