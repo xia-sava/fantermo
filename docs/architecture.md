@@ -50,7 +50,10 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `sixel` | sixel のデコーダ．`vt` が kitty graphics protocol の画像にして端末に置く |
 | `frame` | 描画のために取り出した画面．libghostty-vt の型に依存しない |
 | `backend` | `Backend` trait，`SpawnOptions`，`GridSize`，`Wake` |
-| `config` | 設定ファイルの型，既定値，解釈（`parse`），ひな形 `TEMPLATE`．数か名前一つだけの項目の一覧 `SCALARS` は，読む処理，書き戻す処理，設定ダイアログが使う．プロファイル，Cygwin のフォルダを探す処理（`find_cygwin_root`），名前だけのコマンドを `PATH` から探す処理（`find_program_on_path`）もここ |
+| `config` | 設定ファイルの各節の型と既定値，ひな形 `TEMPLATE`．数か名前一つだけの項目の一覧 `SCALARS` は，読む処理，書き戻す処理，設定ダイアログが使う．下の 3 つのモジュールの名前は `config::` の下に再公開する |
+| `config::profile` | プロファイル（`Profile`，`BackendKind`），`shell` のコマンドラインの解釈，Cygwin のフォルダを探す処理（`find_cygwin_root`），名前だけのコマンドを `PATH` から探す処理（`find_program_on_path`） |
+| `config::colors` | 配色，端末・タブバー・スクロールバーの色のキー，`"#rrggbb"` の読み書き |
+| `config::read` | 設定ファイルの中身の解釈（`parse`）．警告にエラーのある行を添える |
 | `config::migrate` | 古い書き方を今の書き方に読み替える手順 `STEPS` |
 | `config_edit` | 設定ダイアログで変えた項目だけを設定ファイルに書き戻す（`update`）．コメントと並びを残す |
 | `keymap` | fantermo が受け持つキーの割り当て（`Action`，`KeyCombo`，`Keymap`）と名前の解釈 |
@@ -318,7 +321,7 @@ run-hidden は利用者のセッションのウィンドウステーション（
 `[window] padding` が一通りそろった例です（`grep -rn padding crates/` でたどれます）．
 
 1. `fantermo-core/src/config.rs`: 型にフィールドを足し，`Default` に既定値を入れます．既定値と範囲は `DEFAULT_*`・`*_RANGE` の定数にします．数か名前一つだけの項目なら，項目の一覧 `SCALARS` に 1 行（テーブル，キー，値の種類 `ScalarKind` と範囲，フィールドを読み書きする `get`・`set`）を足します．読む処理（`parse`）と書き戻す処理（`config_edit::update`）はこの一覧を上から順に処理し，設定ダイアログの入力欄から読む処理（`parse_input`）は項目を名前で引きます．`parse` は，型が違う・範囲外・知らない名前なら警告を残してその項目だけ前の値にします．名前で書く値は，その型に値と名前の表 `NAMES` を置き，`ALL`・`name`・`from_name` をそこから作ります．`TEMPLATE` に説明と `# キー = 既定値` の行を足します．
-2. 一覧に載らない項目（`font.family`，`default_profile`，プロファイル，背景画像の一覧，色，キーの割り当て）は，読む処理と書き戻す処理をそれぞれ書きます．読む処理は，一覧の項目のあるテーブルなら `config.rs` の `read_table` に，ほかは `parse` に書きます（`parse` が `read_table` で回すのは，一覧の項目のあるテーブルだけです）．書き戻す処理は `fantermo-core/src/config_edit.rs` の `update` から呼びます．
+2. 一覧に載らない項目（`font.family`，`default_profile`，プロファイル，背景画像の一覧，色，キーの割り当て）は，読む処理と書き戻す処理をそれぞれ書きます．読む処理は，一覧の項目のあるテーブルなら `config/read.rs` の `read_table` に，ほかは `parse` に書きます（`parse` が `read_table` で回すのは，一覧の項目のあるテーブルだけです）．書き戻す処理は `fantermo-core/src/config_edit.rs` の `update` から呼びます．
 3. `fantermo/src/window.rs`: `App` に値を持たせ，`App::new`・`apply_config`・**`config_in_use`** に足します．`config_in_use` に足し忘れると，読み直しと設定ダイアログで値が戻ります．反映に配置やアトラスの作り直しが要るかを `apply_config` で決めます．
 4. `fantermo/src/settings_dialog.rs`: コントロールの ID（`ID_*`），`Controls` のフィールド，`create` で作る，`fill` で値を入れる，`read` で `Config` に戻す（不正なら入力欄を返してフォーカスする）．コントロールは種類ごとの部品で作ります．
    - 数なら `NumberField`．読み方（`config::parse_input` に項目の名前を渡す）・見せ方・矢印での動かし方・読めないときの文を `NumberKind` の定数に書き，`Controls::number_fields()` に足します．矢印での増減，矢印の配置，`EN_CHANGE` の振り分けはこの一覧を回します．
@@ -326,7 +329,7 @@ run-hidden は利用者のセッションのウィンドウステーション（
    - 固定の選択肢のコンボボックスなら `ChoiceBox`．選択肢と画面の名前を渡します．`CBN_SELCHANGE` の処理は `dialog_proc` に書きます．
    - 変えたときに反映のほかにも処理が要るものは，`dialog_proc` の一覧を回す分岐より上に，その ID の分岐を書きます．
 5. 書き方を改めるとき（キーの名前を変える，型を変える）は，`config::migrate` の `STEPS` の最後に手順を足します．今の書き方には何もしない手順にします．
-6. テスト: `config.rs` の `template_shows_every_setting_with_its_default`・`all_items_are_read` と範囲のテスト（`SCALARS` の項目は，ひな形の項目，入力欄の範囲，既定値に戻す書き戻しのテストが一覧から数えます．`invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults` は設定の文字列に読めない値を 1 行足すまで落ちます．`all_items_are_read` と `config_edit.rs` の `customized()` は手で書いた値なので，足さなくても落ちませんが，既定値と違う値を足します），`config_edit.rs` の書き戻しのテスト，設定ダイアログの e2e（`crates/fantermo/tests/e2e.rs`）．利用者に見える項目なら README も．
+6. テスト: `config/read.rs` の `template_shows_every_setting_with_its_default`・`all_items_are_read` と範囲のテスト（`SCALARS` の項目は，ひな形の項目，入力欄の範囲，既定値に戻す書き戻しのテストが一覧から数えます．`invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults` は設定の文字列に読めない値を 1 行足すまで落ちます．`all_items_are_read` と `config_edit.rs` の `customized()` は手で書いた値なので，足さなくても落ちませんが，既定値と違う値を足します），`config_edit.rs` の書き戻しのテスト，設定ダイアログの e2e（`crates/fantermo/tests/e2e.rs`）．利用者に見える項目なら README も．
 
 ### キーの割り当てを足す
 
