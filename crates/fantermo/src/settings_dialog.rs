@@ -20,7 +20,7 @@ use fantermo_core::{
     background::IMAGE_EXTENSIONS,
     config::{
         self, BackendKind, BackgroundFit, BackgroundImage, ClipboardRead, ColorScheme, ColorTable,
-        ColorsConfig, Config, PasteConfirm, Profile, WideGlyph, format_color,
+        ColorsConfig, Config, PasteConfirm, Profile, ProfileError, WideGlyph, format_color,
     },
     frame::Rgb,
     keymap::{Action, KeyCombo, Keymap},
@@ -275,35 +275,26 @@ enum ProfileField {
     Command,
 }
 
-/// 編集中のプロファイル `profiles` を設定ファイルと同じ決まりでチェックする。名前とコマンドライン（ブリッジ
-/// では空でよい）が空でなく、名前がどれも違えば `Ok`。そうでなければ、最初のエラーの位置と入力欄と
-/// エラーメッセージ。
+/// 編集中のプロファイル `profiles` を設定ファイルと同じ決まり（[`Profile::validate`]）でチェックする。
+/// どれも合えば `Ok`。そうでなければ、最初のエラーの位置と入力欄とエラーメッセージ。
 fn check_profiles(profiles: &[Profile]) -> Result<(), (usize, ProfileField, &'static str)> {
     for (index, profile) in profiles.iter().enumerate() {
-        if profile.name.trim().is_empty() {
-            return Err((
-                index,
-                ProfileField::Name,
-                "プロファイルの名前を入力してください。",
-            ));
-        }
-        if profile.command.trim().is_empty() && !profile.backend.is_bridge() {
-            return Err((
-                index,
+        let Err(error) = profile.validate(&profiles[..index]) else {
+            continue;
+        };
+        let (field, message) = match error {
+            ProfileError::EmptyName => {
+                (ProfileField::Name, "プロファイルの名前を入力してください。")
+            }
+            ProfileError::EmptyCommand => (
                 ProfileField::Command,
                 "プロファイルのコマンドラインを入力してください。",
-            ));
-        }
-        if profiles[..index]
-            .iter()
-            .any(|other| other.name == profile.name)
-        {
-            return Err((
-                index,
-                ProfileField::Name,
-                "ほかのプロファイルと同じ名前です。",
-            ));
-        }
+            ),
+            ProfileError::DuplicateName => {
+                (ProfileField::Name, "ほかのプロファイルと同じ名前です。")
+            }
+        };
+        return Err((index, field, message));
     }
     Ok(())
 }

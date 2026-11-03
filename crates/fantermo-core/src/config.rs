@@ -292,6 +292,54 @@ pub fn profile_position(profiles: &[Profile], name: &str) -> Option<usize> {
     profiles.iter().position(|profile| profile.name == name)
 }
 
+/// `[[profiles]]` のテーブルのキー。
+pub struct ProfileKeys {
+    pub name: &'static str,
+    pub command: &'static str,
+    pub backend: &'static str,
+    pub cygwin_root: &'static str,
+    pub distribution: &'static str,
+    pub icon: &'static str,
+}
+
+/// `[[profiles]]` のテーブルのキー。読む処理と書き戻す処理が使う。
+pub const PROFILE_KEYS: ProfileKeys = ProfileKeys {
+    name: "name",
+    command: "command",
+    backend: "backend",
+    cygwin_root: "cygwin_root",
+    distribution: "distribution",
+    icon: "icon",
+};
+
+/// プロファイルが決まりに合わないところ。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileError {
+    /// 名前が空（空白だけ）。
+    EmptyName,
+    /// ConPTY のプロファイルのコマンドラインが空（空白だけ）。
+    EmptyCommand,
+    /// 名前が、前に並ぶプロファイルと同じ。
+    DuplicateName,
+}
+
+/// プロファイルの名前 `name` が使えるか。空（空白だけ）なら [`ProfileError::EmptyName`]。
+fn check_profile_name(name: &str) -> Result<(), ProfileError> {
+    if name.trim().is_empty() {
+        return Err(ProfileError::EmptyName);
+    }
+    Ok(())
+}
+
+/// 接続方式 `backend` のプロファイルのコマンドライン `command` が使えるか。ブリッジでは空でもよく
+/// （相手のログインシェル）、ConPTY で空（空白だけ）なら [`ProfileError::EmptyCommand`]。
+fn check_profile_command(command: &str, backend: BackendKind) -> Result<(), ProfileError> {
+    if command.trim().is_empty() && !backend.is_bridge() {
+        return Err(ProfileError::EmptyCommand);
+    }
+    Ok(())
+}
+
 /// 新しいタブで起動するもの（`[[profiles]]` のテーブル一つ）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Profile {
@@ -369,6 +417,18 @@ impl Profile {
             };
         }
         Self::new(&name, command, BackendKind::default())
+    }
+
+    /// 設定ファイルを読むときと同じ決まりでチェックする。`earlier` はこのプロファイルより前に並ぶ
+    /// プロファイル。名前とコマンドライン（ブリッジでは空でよい）が空でなく、名前が `earlier` のどれとも
+    /// 違えば `Ok`。そうでなければ、名前、コマンドライン、名前の重なりの順に見て最初に合わないところ。
+    pub fn validate(&self, earlier: &[Profile]) -> Result<(), ProfileError> {
+        check_profile_name(&self.name)?;
+        check_profile_command(&self.command, self.backend)?;
+        if profile_position(earlier, &self.name).is_some() {
+            return Err(ProfileError::DuplicateName);
+        }
+        Ok(())
     }
 
     /// `command` の実行ファイル（`"` で囲んでいれば中身）。ConPTY のプロファイルで Windows のプログラムを指す。
@@ -724,6 +784,21 @@ impl BackgroundConfig {
             .eq(other.images.iter().map(|image| &image.path))
     }
 }
+
+/// `[[background.images]]` のテーブルのキー。
+pub struct ImageKeys {
+    pub path: &'static str,
+    pub fit: &'static str,
+    /// `[background]` の不透明度のキーと同じ名前。
+    pub image_opacity: &'static str,
+}
+
+/// `[[background.images]]` のテーブルのキー。読む処理と書き戻す処理が使う。
+pub const IMAGE_KEYS: ImageKeys = ImageKeys {
+    path: "path",
+    fit: "fit",
+    image_opacity: IMAGE_OPACITY_KEY,
+};
 
 /// `background.images` の一つの項目。
 #[derive(Clone, Debug, PartialEq)]
@@ -1629,9 +1704,9 @@ fn read_profiles(reader: &mut Reader, root: &mut Table, config: &mut Config) {
                 let Some(profile) = read_profile(reader, &path, item) else {
                     continue;
                 };
-                if profiles.iter().any(|other| other.name == profile.name) {
+                if profile_position(&profiles, &profile.name).is_some() {
                     reader.warn(
-                        &key_path(Some(&path), "name"),
+                        &key_path(Some(&path), PROFILE_KEYS.name),
                         format!(
                             "ignoring {path}: the name {:?} is already used above",
                             profile.name
@@ -1712,34 +1787,41 @@ fn read_profile(reader: &mut Reader, path: &str, value: Value) -> Option<Profile
     };
     let section = Some(path);
     let backend = read_profile_backend(reader, &mut table, path);
-    let text = |reader: &mut Reader, table: &mut Table, key: &str, required: bool| match reader
-        .take::<String>(
-        table, section, key,
-    ) {
-        Item::Valid(text) if !text.trim().is_empty() => Some(text),
-        Item::Valid(_) if !required => Some(String::new()),
-        Item::Valid(_) => {
+    // `check` はプロファイルの決まり。空（空白だけ）を断る決まりなら、書いていないものも断る。断らない
+    // なら、空白だけは空にする。
+    let text = |reader: &mut Reader,
+                table: &mut Table,
+                key: &str,
+                check: &dyn Fn(&str) -> Result<(), ProfileError>| match reader
+        .take::<String>(table, section, key)
+    {
+        Item::Valid(text) if check(&text).is_err() => {
             reader.warn(
                 &key_path(section, key),
                 format!("ignoring {path}: {key} must not be empty"),
             );
             None
         }
-        Item::Absent if !required => Some(String::new()),
-        Item::Absent => {
+        Item::Valid(text) if text.trim().is_empty() => Some(String::new()),
+        Item::Valid(text) => Some(text),
+        Item::Absent if check("").is_err() => {
             reader.warn(path, format!("ignoring {path}: expected a {key}"));
             None
         }
+        Item::Absent => Some(String::new()),
         Item::Invalid => None,
     };
-    let name = text(reader, &mut table, "name", true);
-    let command_required = !backend.is_some_and(BackendKind::is_bridge);
-    let command = text(reader, &mut table, "command", command_required);
+    let name = text(reader, &mut table, PROFILE_KEYS.name, &check_profile_name);
+    // 接続方式を読めなければ、既定の ConPTY の決まりでコマンドラインを読む。
+    let command_backend = backend.unwrap_or_default();
+    let command = text(reader, &mut table, PROFILE_KEYS.command, &|command| {
+        check_profile_command(command, command_backend)
+    });
     let cygwin_root = read_profile_option(
         reader,
         &mut table,
         path,
-        "cygwin_root",
+        PROFILE_KEYS.cygwin_root,
         backend,
         BackendKind::Cygwin,
     );
@@ -1747,7 +1829,7 @@ fn read_profile(reader: &mut Reader, path: &str, value: Value) -> Option<Profile
         reader,
         &mut table,
         path,
-        "distribution",
+        PROFILE_KEYS.distribution,
         backend,
         BackendKind::Wsl,
     );
@@ -1765,7 +1847,7 @@ fn read_profile(reader: &mut Reader, path: &str, value: Value) -> Option<Profile
 
 /// プロファイルのテーブルの `icon` を読む。書いていない・空なら（空は警告して）`None`。
 fn read_profile_icon(reader: &mut Reader, table: &mut Table, path: &str) -> Option<String> {
-    const ICON: &str = "icon";
+    const ICON: &str = PROFILE_KEYS.icon;
     let section = Some(path);
     let Item::Valid(text) = reader.take::<String>(table, section, ICON) else {
         return None;
@@ -1813,13 +1895,13 @@ fn read_profile_option(
 /// プロファイルのテーブルの `backend` を読む。書いていなければ既定の種類、知らない名前なら警告して `None`。
 fn read_profile_backend(reader: &mut Reader, table: &mut Table, path: &str) -> Option<BackendKind> {
     let section = Some(path);
-    match reader.take::<String>(table, section, "backend") {
+    match reader.take::<String>(table, section, PROFILE_KEYS.backend) {
         Item::Valid(name) => match BackendKind::from_name(&name) {
             Some(kind) => Some(kind),
             None => {
                 let known: Vec<&str> = BackendKind::ALL.iter().map(|kind| kind.name()).collect();
                 reader.warn(
-                    &key_path(section, "backend"),
+                    &key_path(section, PROFILE_KEYS.backend),
                     format!("ignoring {path}: unknown backend {name:?}, expected one of {known:?}"),
                 );
                 None
@@ -1935,9 +2017,9 @@ fn read_font_family(reader: &mut Reader, table: &mut Table, families: &mut Vec<S
 /// テーブル `table`（キーのパスは `section`）の `image_opacity` を読む。範囲の外は警告して読めなかったことに
 /// する。
 fn read_image_opacity(reader: &mut Reader, table: &mut Table, section: Option<&str>) -> Item<f32> {
-    let path = key_path(section, IMAGE_OPACITY_KEY);
+    let path = key_path(section, IMAGE_KEYS.image_opacity);
     reader
-        .take::<f32>(table, section, IMAGE_OPACITY_KEY)
+        .take::<f32>(table, section, IMAGE_KEYS.image_opacity)
         .check(reader, &path, |opacity| {
             out_of_range(&path, opacity, &IMAGE_OPACITY_RANGE)
         })
@@ -1985,11 +2067,11 @@ fn read_background_image(reader: &mut Reader, path: &str, value: Value) -> Optio
         return None;
     };
     let section = Some(path);
-    let name = match reader.take::<String>(&mut table, section, "path") {
+    let name = match reader.take::<String>(&mut table, section, IMAGE_KEYS.path) {
         Item::Valid(name) if !name.trim().is_empty() => name,
         Item::Valid(_) => {
             reader.warn(
-                &key_path(section, "path"),
+                &key_path(section, IMAGE_KEYS.path),
                 format!("ignoring {path}: the path must not be empty"),
             );
             return None;
@@ -2000,7 +2082,7 @@ fn read_background_image(reader: &mut Reader, path: &str, value: Value) -> Optio
         }
         Item::Invalid => return None,
     };
-    let fit = match reader.take_named(&mut table, section, "fit", &BackgroundFit::NAMES) {
+    let fit = match reader.take_named(&mut table, section, IMAGE_KEYS.fit, &BackgroundFit::NAMES) {
         Item::Valid(fit) => Some(fit),
         Item::Absent | Item::Invalid => None,
     };

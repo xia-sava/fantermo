@@ -30,8 +30,8 @@ use toml_edit::{Array, ArrayOfTables, Decor, DocumentMut, InlineTable, Item, Key
 
 use crate::{
     config::{
-        self, BackendKind, BackgroundFit, BackgroundImage, ColorTable, Config, Profile, SCALARS,
-        Scalar, ScalarKind, format_color, migrate,
+        self, BackendKind, BackgroundFit, BackgroundImage, ColorTable, Config, IMAGE_KEYS,
+        PROFILE_KEYS, Profile, SCALARS, Scalar, ScalarKind, format_color, migrate,
     },
     keymap::{self, Action, KeyCombo},
 };
@@ -96,14 +96,6 @@ const DEFAULT_PROFILE_KEY: &str = "default_profile";
 const PROFILES_KEY: &str = "profiles";
 const SHELL_KEY: &str = "shell";
 
-/// `[[profiles]]` のテーブルのキー。
-const PROFILE_NAME: &str = "name";
-const PROFILE_COMMAND: &str = "command";
-const PROFILE_BACKEND: &str = "backend";
-const PROFILE_CYGWIN_ROOT: &str = "cygwin_root";
-const PROFILE_DISTRIBUTION: &str = "distribution";
-const PROFILE_ICON: &str = "icon";
-
 /// フォントの名前の並び。一つなら文字列、二つ以上なら配列。
 fn families_value(families: &[String]) -> Value {
     match families {
@@ -118,20 +110,18 @@ pub(crate) const BACKGROUND_PATH: &[&str] = &["background"];
 /// `[background]` の、背景画像の一覧（`[[background.images]]`）のキー。
 pub(crate) const IMAGES: &str = "images";
 
-/// `[[background.images]]` のテーブルのキー。`image_opacity` は `[background]` のキーと同じ名前。
-pub(crate) const IMAGE_PATH: &str = "path";
-const IMAGE_FIT: &str = "fit";
-pub(crate) const IMAGE_OPACITY: &str = "image_opacity";
-
 /// `[[background.images]]` のテーブル一つ。書かない値（全体の値に従う表示方法と不透明度）は入れない。
 fn image_table(image: &BackgroundImage) -> Table {
     let mut table = Table::new();
-    table.insert(IMAGE_PATH, Item::Value(Value::from(image.path.as_str())));
+    table.insert(
+        IMAGE_KEYS.path,
+        Item::Value(Value::from(image.path.as_str())),
+    );
     if let Some(fit) = image.fit {
-        table.insert(IMAGE_FIT, Item::Value(Value::from(fit.name())));
+        table.insert(IMAGE_KEYS.fit, Item::Value(Value::from(fit.name())));
     }
     if let Some(opacity) = image.image_opacity {
-        table.insert(IMAGE_OPACITY, Item::Value(number_value(opacity)));
+        table.insert(IMAGE_KEYS.image_opacity, Item::Value(number_value(opacity)));
     }
     table
 }
@@ -139,7 +129,7 @@ fn image_table(image: &BackgroundImage) -> Table {
 /// ファイルに書いてある `[[background.images]]` のテーブル一つ `table` のパス。読めないテーブル（パスの
 /// ないテーブルや、パスが空のもの）なら `None`。
 fn written_image_path(table: &Table) -> Option<&str> {
-    let path = table.get(IMAGE_PATH)?.as_str()?;
+    let path = table.get(IMAGE_KEYS.path)?.as_str()?;
     (!path.trim().is_empty()).then_some(path)
 }
 
@@ -147,11 +137,11 @@ fn written_image_path(table: &Table) -> Option<&str> {
 /// 値は書いていないものとする（設定を読むときと同じ）。
 fn written_image_settings(table: &Table) -> (Option<BackgroundFit>, Option<f32>) {
     let fit = table
-        .get(IMAGE_FIT)
+        .get(IMAGE_KEYS.fit)
         .and_then(Item::as_str)
         .and_then(BackgroundFit::from_name);
     let opacity = table
-        .get(IMAGE_OPACITY)
+        .get(IMAGE_KEYS.image_opacity)
         .and_then(Item::as_value)
         .and_then(number_of)
         .map(|opacity| opacity as f32)
@@ -337,14 +327,16 @@ fn update_image_table(table: &mut Table, image: &BackgroundImage) {
     let (fit, opacity) = written_image_settings(table);
     if fit != image.fit {
         match image.fit {
-            Some(fit) => set_table_value(table, IMAGE_FIT, Value::from(fit.name())),
-            None => remove_table_value(table, IMAGE_FIT),
+            Some(fit) => set_table_value(table, IMAGE_KEYS.fit, Value::from(fit.name())),
+            None => remove_table_value(table, IMAGE_KEYS.fit),
         }
     }
     if opacity != image.image_opacity {
         match image.image_opacity {
-            Some(opacity) => set_table_value(table, IMAGE_OPACITY, number_value(opacity)),
-            None => remove_table_value(table, IMAGE_OPACITY),
+            Some(opacity) => {
+                set_table_value(table, IMAGE_KEYS.image_opacity, number_value(opacity))
+            }
+            None => remove_table_value(table, IMAGE_KEYS.image_opacity),
         }
     }
 }
@@ -603,17 +595,17 @@ fn update_profiles(doc: &mut DocumentMut, base: &Config, edited: &Config) -> Res
 /// プロファイル一つの、インラインテーブル。
 fn profile_inline_table(profile: &Profile) -> Value {
     let mut table = InlineTable::new();
-    table.insert(PROFILE_NAME, Value::from(profile.name.as_str()));
+    table.insert(PROFILE_KEYS.name, Value::from(profile.name.as_str()));
     if let Some(command) = profile_command(profile) {
-        table.insert(PROFILE_COMMAND, Value::from(command));
+        table.insert(PROFILE_KEYS.command, Value::from(command));
     }
     if profile.backend != BackendKind::default() {
-        table.insert(PROFILE_BACKEND, Value::from(profile.backend.name()));
+        table.insert(PROFILE_KEYS.backend, Value::from(profile.backend.name()));
     }
     for (key, text) in [
-        (PROFILE_CYGWIN_ROOT, &profile.cygwin_root),
-        (PROFILE_DISTRIBUTION, &profile.distribution),
-        (PROFILE_ICON, &profile.icon),
+        (PROFILE_KEYS.cygwin_root, &profile.cygwin_root),
+        (PROFILE_KEYS.distribution, &profile.distribution),
+        (PROFILE_KEYS.icon, &profile.icon),
     ] {
         if let Some(text) = text {
             table.insert(key, Value::from(text.as_str()));
@@ -635,8 +627,8 @@ fn merge_profile_tables(doc: &mut DocumentMut, wanted: &[Profile]) {
             .iter()
             .map(|table| {
                 (
-                    text_of(table, PROFILE_NAME),
-                    text_of(table, PROFILE_COMMAND),
+                    text_of(table, PROFILE_KEYS.name),
+                    text_of(table, PROFILE_KEYS.command),
                 )
             })
             .collect(),
@@ -766,14 +758,22 @@ fn merge_profile_tables(doc: &mut DocumentMut, wanted: &[Profile]) {
 }
 
 fn update_profile_table(table: &mut Table, profile: &Profile) {
-    set_table_text(table, PROFILE_NAME, &profile.name);
-    set_or_remove_table_text(table, PROFILE_COMMAND, profile_command(profile));
-    if table.contains_key(PROFILE_BACKEND) || profile.backend != BackendKind::default() {
-        set_table_text(table, PROFILE_BACKEND, profile.backend.name());
+    set_table_text(table, PROFILE_KEYS.name, &profile.name);
+    set_or_remove_table_text(table, PROFILE_KEYS.command, profile_command(profile));
+    if table.contains_key(PROFILE_KEYS.backend) || profile.backend != BackendKind::default() {
+        set_table_text(table, PROFILE_KEYS.backend, profile.backend.name());
     }
-    set_or_remove_table_text(table, PROFILE_CYGWIN_ROOT, profile.cygwin_root.as_deref());
-    set_or_remove_table_text(table, PROFILE_DISTRIBUTION, profile.distribution.as_deref());
-    set_or_remove_table_text(table, PROFILE_ICON, profile.icon.as_deref());
+    set_or_remove_table_text(
+        table,
+        PROFILE_KEYS.cygwin_root,
+        profile.cygwin_root.as_deref(),
+    );
+    set_or_remove_table_text(
+        table,
+        PROFILE_KEYS.distribution,
+        profile.distribution.as_deref(),
+    );
+    set_or_remove_table_text(table, PROFILE_KEYS.icon, profile.icon.as_deref());
 }
 
 /// プロファイルの `command` に書く値。ブリッジで空なら（相手のログインシェル）書かない。

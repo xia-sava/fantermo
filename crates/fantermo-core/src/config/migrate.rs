@@ -7,10 +7,16 @@
 
 use toml_edit::{DocumentMut, Item, Key, Table, Value};
 
-use crate::config_edit::{
-    self, BACKGROUND_PATH, Document, IMAGE_OPACITY, IMAGE_PATH, IMAGES, bare_repr, decor_prefix,
-    number_of, number_value, value_prefixes,
+use crate::{
+    config::IMAGE_KEYS,
+    config_edit::{
+        self, BACKGROUND_PATH, Document, IMAGES, bare_repr, decor_prefix, number_of, number_value,
+        value_prefixes,
+    },
 };
+
+/// `[background]` の、画像の不透明度のキー。
+const IMAGE_OPACITY: &str = IMAGE_KEYS.image_opacity;
 
 /// 読み替えの手順一つ。
 pub struct Step {
@@ -271,7 +277,7 @@ fn image_table(item: &Value) -> Option<Table> {
             let mut path = item.clone();
             path.decor_mut().clear();
             let mut table = Table::new();
-            table.insert(IMAGE_PATH, Item::Value(path));
+            table.insert(IMAGE_KEYS.path, Item::Value(path));
             Some(table)
         }
         Value::InlineTable(inline) => {
