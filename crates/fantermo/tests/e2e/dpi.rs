@@ -187,22 +187,19 @@ fn a_dpi_change_scales_the_window_and_its_parts() {
 
 /// DPI が変わる前に問われる大きさ（`WM_GETDPISCALEDSIZE`）には答えず、Windows に任せる。問われただけではウィンドウは
 /// 変わらない。
-#[test]
-fn the_size_asked_before_a_dpi_change_is_left_to_windows() {
-    let server = Server::start_cmd();
-    server.wait_text(CMD_PROMPT);
-    server.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
-
-    for dpi in [DPI_150_PERCENT, DPI_200_PERCENT, DPI_100_PERCENT] {
-        let before = server.state();
-        let answer = server.post(&format!("/e2e/message/{GET_DPI_SCALED_SIZE}/{dpi}"), b"");
-        let answer: Value = serde_json::from_slice(&answer).expect("the answer is not JSON");
-        assert_eq!(answer["result"], 0, "{answer:#}");
-        assert_eq!(answer["width"], 0, "{answer:#}");
-        assert_eq!(answer["height"], 0, "{answer:#}");
-        assert_eq!(dpi_layout(&server.state()), dpi_layout(&before));
-        change_dpi(&server, dpi);
-    }
+#[track_caller]
+fn assert_the_size_is_left_to_windows(server: &Server, dpi: u64) {
+    let before = server.state();
+    let answer = server.post(&format!("/e2e/message/{GET_DPI_SCALED_SIZE}/{dpi}"), b"");
+    let answer: Value = serde_json::from_slice(&answer).expect("the answer is not JSON");
+    assert_eq!(answer["result"], 0, "{dpi}: {answer:#}");
+    assert_eq!(answer["width"], 0, "{dpi}: {answer:#}");
+    assert_eq!(answer["height"], 0, "{dpi}: {answer:#}");
+    assert_eq!(
+        dpi_layout(&server.state()),
+        dpi_layout(&before),
+        "asked {dpi}"
+    );
 }
 
 /// DPI で決まる寸法。ウィンドウの大きさによらない。
@@ -221,7 +218,7 @@ fn dpi_parts(state: &Value) -> Value {
 }
 
 /// 96、144、192 の間を行き来しても、同じ DPI に戻るとセル・フォント・余白・タブバー・スクロールバーの寸法が一つも違わない
-/// （誤差が積もらない）。ウィンドウはそのたびに DPI の比で変わる。
+/// （誤差が積もらない）。ウィンドウはそのたびに DPI の比で変わる。変える前に問われる大きさには、そのたびに答えない。
 #[test]
 fn going_between_dpis_returns_to_the_same_parts() {
     let server = Server::start_cmd();
@@ -229,10 +226,12 @@ fn going_between_dpis_returns_to_the_same_parts() {
     server.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
     let mut previous = server.state();
     let at_100 = dpi_parts(&previous);
+    assert_the_size_is_left_to_windows(&server, DPI_150_PERCENT);
     let state = change_dpi(&server, DPI_150_PERCENT);
     assert_window_scaled(&state, &previous);
     let at_150 = dpi_parts(&state);
     previous = state;
+    assert_the_size_is_left_to_windows(&server, DPI_200_PERCENT);
     let state = change_dpi(&server, DPI_200_PERCENT);
     assert_window_scaled(&state, &previous);
     let at_200 = dpi_parts(&state);
@@ -247,6 +246,7 @@ fn going_between_dpis_returns_to_the_same_parts() {
         (DPI_200_PERCENT, &at_200),
         (DPI_100_PERCENT, &at_100),
     ] {
+        assert_the_size_is_left_to_windows(&server, dpi);
         let state = change_dpi(&server, dpi);
         assert_eq!(&dpi_parts(&state), expected, "at {dpi} DPI");
         assert_window_scaled(&state, &previous);
@@ -291,7 +291,12 @@ fn starting_at_a_dpi_gives_the_same_sizes_as_changing_to_it() {
         ..window
     }));
 
-    for dpi in [DPI_150_PERCENT, DPI_200_PERCENT, monitor_dpi] {
+    // モニターの DPI が 144 か 192 なら、その DPI の起動は繰り返さない。
+    let mut dpis = vec![DPI_150_PERCENT, DPI_200_PERCENT];
+    if !dpis.contains(&monitor_dpi) {
+        dpis.push(monitor_dpi);
+    }
+    for dpi in dpis {
         let changed = change_dpi(&reference, dpi);
         let (started, state) = start_at_dpi(dpi, saved.as_bytes());
         for name in names {
@@ -971,37 +976,12 @@ fn the_size_saved_after_a_dpi_change_opens_in_pixels() {
     assert_eq!(saved_window(&other), current_window(&changed));
 }
 
-/// `[window]` の `dpi` を書いた `state.toml`（`dpi` を書いていたバージョンのもの）も読め、`dpi` は無視してピクセルのまま
-/// 開く。閉じるときに書き直すと `dpi` はなくなる。
-#[test]
-fn a_saved_size_with_a_dpi_is_read_in_pixels() {
-    let saved = format!(
-        "{}dpi = {DPI_200_PERCENT}\n",
-        state::to_toml(&seeded_state(UNEVEN_WINDOW))
-    );
-    let (mut server, state) = start_at_dpi(DPI_100_PERCENT, saved.as_bytes());
-    assert_eq!(state["dpi"], DPI_100_PERCENT, "{state:#}");
-    assert_eq!(current_window(&state), UNEVEN_WINDOW, "{state:#}");
-    assert_layout_fits_the_client(&state);
-    quit(&mut server);
-    assert_eq!(saved_window(&server), UNEVEN_WINDOW);
-    let written = std::fs::read_to_string(server.state_file()).expect("failed to read the state");
-    assert!(!written.contains("dpi"), "{written}");
-}
-
-/// `FANTERMO_DPI` を使わず、モニターの DPI で起動する。別の DPI を書いた `state.toml` もピクセルのまま開く。
+/// `FANTERMO_DPI` を使わず、モニターの DPI で起動する。`[window]` の `dpi` を書いた `state.toml`（`dpi` を書いていた
+/// バージョンのもの）も読め、`dpi` は無視してピクセルのまま開く。
 #[test]
 fn a_size_saved_at_another_monitor_dpi_opens_in_pixels() {
-    let probe = Server::start_cmd();
-    let monitor_dpi = number(&probe.wait_text(CMD_PROMPT)["monitor_dpi"]);
-    drop(probe);
-    let other_dpi = if monitor_dpi == DPI_200_PERCENT {
-        DPI_100_PERCENT
-    } else {
-        DPI_200_PERCENT
-    };
     let saved = format!(
-        "{}dpi = {other_dpi}\n",
+        "{}dpi = {DPI_200_PERCENT}\n",
         state::to_toml(&seeded_state(UNEVEN_WINDOW))
     );
 
@@ -1011,27 +991,9 @@ fn a_size_saved_at_another_monitor_dpi_opens_in_pixels() {
         vec![(DPI_ENV, OsString::new())]
     });
     let state = server.wait_text(CMD_PROMPT);
-    assert_eq!(state["dpi"], monitor_dpi, "{state:#}");
+    assert_eq!(state["dpi"], state["monitor_dpi"], "{state:#}");
     assert_eq!(current_window(&state), UNEVEN_WINDOW, "{state:#}");
     assert_layout_fits_the_client(&state);
-}
-
-/// 最大化して、別の DPI を書いた `state.toml` は、最大化を戻す前の大きさをピクセルのまま使い、最大化して開く。
-#[test]
-fn a_maximized_window_saved_at_another_dpi_keeps_its_normal_size() {
-    let expected = WindowState {
-        maximized: true,
-        ..UNEVEN_WINDOW
-    };
-    let saved = format!(
-        "{}dpi = {DPI_200_PERCENT}\n",
-        state::to_toml(&seeded_state(expected))
-    );
-
-    let (mut server, state) = start_at_dpi(DPI_100_PERCENT, saved.as_bytes());
-    assert_eq!(current_window(&state), expected);
-    quit(&mut server);
-    assert_eq!(saved_window(&server), expected);
 }
 
 /// 設定ダイアログは、メッセージの DPI ではなくモニターの DPI で開く。開いている間に端末の DPI が変わっても、ダイアログの

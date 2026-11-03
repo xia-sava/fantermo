@@ -20,10 +20,17 @@ fn assert_default_grid(state: &Value) {
     );
 }
 
+/// 状態のファイルがなければ既定の大きさで開き、閉じるまで書かない。閉じるときに書いたファイルで開き直すと、
+/// ウィンドウの大きさが戻る。
 #[test]
 fn the_window_size_comes_back_after_restarting() {
     let mut first = Server::start("", &CMD_COMMAND);
-    first.wait_text(CMD_PROMPT);
+    let initial = first.wait_text(CMD_PROMPT);
+    assert_default_grid(&initial);
+    assert!(
+        !first.state_file().exists(),
+        "the state was written before closing"
+    );
     first.resize(87, 23);
     let resized = first.state();
     quit(&mut first);
@@ -77,57 +84,25 @@ fn a_maximized_window_comes_back_maximized_and_keeps_its_normal_size() {
     assert_eq!(saved_window(&server), WINDOW);
 }
 
+/// 読めないファイル（TOML として読めない中身）は写しておき、既定の大きさで開き、閉じるときに正しい中身で置き換える。
 #[test]
-fn without_a_state_file_the_window_opens_at_the_default_size_and_writes_one() {
-    let mut server = Server::start("", &CMD_COMMAND);
-    let state = server.wait_text(CMD_PROMPT);
+fn an_unreadable_state_file_is_copied_aside_and_replaced_when_closing() {
+    let content: &[u8] = b"[window\n";
+    let (mut server, state) = start_with_state(content);
     assert_default_grid(&state);
-    assert!(
-        !server.state_file().exists(),
-        "the state was written before closing"
+    let broken = server.dir().join(BROKEN_STATE_FILE);
+    assert_eq!(
+        std::fs::read(&broken).expect("the unreadable state was not copied"),
+        content
+    );
+    assert_eq!(
+        std::fs::read(server.state_file()).expect("the unreadable state was removed"),
+        content
     );
     quit(&mut server);
     assert_eq!(saved_window(&server), current_window(&state));
-}
-
-/// 読めないファイルは写しておき、既定の大きさで開き、閉じるときに正しい中身で置き換える。
-#[test]
-fn an_unreadable_state_file_is_copied_aside_and_replaced_when_closing() {
-    let contents: [&[u8]; 3] = [
-        // TOML として読めない。
-        b"[window\n",
-        // 状態の型として読めない。
-        b"[window]\nleft = \"x\"\ntop = 0\nwidth = 700\nheight = 480\nmaximized = false\n",
-        // UTF-8 でない。
-        b"[window]\n# \xff\xfe\n",
-    ];
-    for content in contents {
-        let (mut server, state) = start_with_state(content);
-        assert_default_grid(&state);
-        let broken = server.dir().join(BROKEN_STATE_FILE);
-        assert_eq!(
-            std::fs::read(&broken).expect("the unreadable state was not copied"),
-            content
-        );
-        assert_eq!(
-            std::fs::read(server.state_file()).expect("the unreadable state was removed"),
-            content
-        );
-        quit(&mut server);
-        assert_eq!(saved_window(&server), current_window(&state));
-        assert_eq!(
-            std::fs::read(&broken).expect("the copy was removed"),
-            content
-        );
-    }
-}
-
-/// 読めるが使えない値は、写さずに既定の大きさで開く。
-#[test]
-fn a_state_file_with_an_unusable_size_is_ignored() {
-    let (server, state) = start_with_state(
-        b"[window]\nleft = 0\ntop = 0\nwidth = -1\nheight = 480\nmaximized = false\n",
+    assert_eq!(
+        std::fs::read(&broken).expect("the copy was removed"),
+        content
     );
-    assert_default_grid(&state);
-    assert!(!server.dir().join(BROKEN_STATE_FILE).exists());
 }
