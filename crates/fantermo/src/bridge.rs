@@ -27,7 +27,10 @@ use fantermo_bridge_protocol::{
 };
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize, SpawnOptions, Wake},
-    config::{COMMON_CYGWIN_ROOTS, cygwin_dll_path, find_cygwin_root, is_cygwin_root},
+    config::{
+        COMMON_CYGWIN_ROOTS, cygwin_dll_path, find_cygwin_root, is_cygwin_root, shell_command,
+        wsl_path, wslenv_with,
+    },
 };
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
@@ -379,73 +382,6 @@ fn wsl_command(
     Ok(command)
 }
 
-/// 引用の外にあると、コマンドを区切る・つなぐ・入出力を付け替える・別のシェルで実行するシェルの記号。
-const SHELL_OPERATORS: [char; 10] = ['|', '&', ';', '<', '>', '(', ')', '`', '\n', '\r'];
-/// 先頭にあると、続くものが一つのコマンドでなくなる語（`exec` は付けても変わらないので含める）。
-const SHELL_KEYWORDS: [&str; 22] = [
-    "!", "{", "}", "[[", "]]", "case", "do", "done", "elif", "else", "esac", "exec", "fi", "for",
-    "function", "if", "in", "select", "then", "time", "until", "while",
-];
-
-/// 利用者のコマンドライン `command_line` を `/bin/sh -c` に渡す形。一つのコマンドなら `exec` を前に
-/// 付け、シェルを親として残さずそのコマンドにする（Ubuntu の dash などは一つのコマンドでも exec せず、
-/// Ctrl+C でシェルも終わってそのシェルの終了コードが返る）。パイプや `;` などを含むときに `exec` を
-/// 付けると最初のコマンドだけが exec されて意味が変わるので、そのまま渡す。
-fn shell_command(command_line: &str) -> String {
-    let command_line = command_line.trim();
-    if is_single_command(command_line) {
-        format!("exec {command_line}")
-    } else {
-        command_line.to_owned()
-    }
-}
-
-/// `command` が、シェルの文法の記号を引用の外に含まない一つのコマンドか。先頭が変数の代入
-/// （`NAME=値`）やシェルの予約語のものは含めない。
-fn is_single_command(command: &str) -> bool {
-    let first = command.split_whitespace().next().unwrap_or_default();
-    if first.is_empty() || first.contains('=') || SHELL_KEYWORDS.contains(&first) {
-        return false;
-    }
-    let mut quote = None;
-    let mut escaped = false;
-    for c in command.chars() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match (quote, c) {
-            (Some('\''), '\'') => quote = None,
-            (Some('\''), _) => {}
-            (_, '\\') => escaped = true,
-            (Some(_), '"') => quote = None,
-            (Some(_), _) => {}
-            (None, '\'' | '"') => quote = Some(c),
-            (None, c) if SHELL_OPERATORS.contains(&c) => return false,
-            (None, _) => {}
-        }
-    }
-    quote.is_none() && !escaped
-}
-
-/// `WSLENV` の値 `current` に環境変数の名前 `names` を足したもの。すでにある名前は足さない。
-fn wslenv_with<'a>(current: Option<&str>, names: impl IntoIterator<Item = &'a str>) -> String {
-    let mut wslenv = current.unwrap_or("").to_owned();
-    for name in names {
-        let present = wslenv
-            .split(':')
-            .any(|entry| entry.split('/').next() == Some(name));
-        if present {
-            continue;
-        }
-        if !wslenv.is_empty() {
-            wslenv.push(':');
-        }
-        wslenv.push_str(name);
-    }
-    wslenv
-}
-
 /// Cygwin のフォルダ。`configured` を書いていればそれ、なければ [`find_cygwin_root`] で探したもの。
 /// 見つからなければその理由の文。
 pub fn cygwin_root(configured: Option<&str>) -> Result<PathBuf, String> {
@@ -516,25 +452,6 @@ fn bridge_candidates_for(
         );
     }
     candidates
-}
-
-/// Windows のパス `path`（`C:\a\b`）を WSL の既定のマウントのパス（`/mnt/c/a/b`）に直す。ドライブ文字で
-/// 始まらなければ `None`。
-fn wsl_path(path: &Path) -> Option<String> {
-    let text = path.to_str()?;
-    let text = text.strip_prefix(r"\\?\").unwrap_or(text);
-    let mut chars = text.chars();
-    let drive = chars.next().filter(char::is_ascii_alphabetic)?;
-    let rest = chars.as_str().strip_prefix(':')?;
-    if !(rest.is_empty() || rest.starts_with(['\\', '/'])) {
-        return None;
-    }
-    let rest = rest.replace('\\', "/");
-    Some(format!(
-        "/mnt/{}{}",
-        drive.to_ascii_lowercase(),
-        rest.trim_end_matches('/')
-    ))
 }
 
 /// Cygwin のブリッジの `--cwd` に渡す作業フォルダ。Cygwin はドライブ文字のパスも受け付ける。`\` は
@@ -1004,79 +921,12 @@ mod tests {
     }
 
     #[test]
-    fn wsl_paths_use_the_default_mount() {
-        assert_eq!(
-            wsl_path(Path::new(r"C:\Users\xia\fantermo-bridge")).as_deref(),
-            Some("/mnt/c/Users/xia/fantermo-bridge")
-        );
-        assert_eq!(
-            wsl_path(Path::new(r"\\?\D:\a b\x")).as_deref(),
-            Some("/mnt/d/a b/x")
-        );
-        assert_eq!(wsl_path(Path::new(r"\\server\share\x")), None);
-        assert_eq!(wsl_path(Path::new(r"C:x")), None);
-    }
-
-    #[test]
     fn cygwin_arguments_avoid_backslashes() {
         assert_eq!(cygwin_cwd(Path::new(r"C:\Users\xia")), "C:/Users/xia");
         assert_eq!(cygwin_quote("it's $HOME"), r#"'it'"'"'s $HOME'"#);
         assert!(!CYGWIN_COMMAND_SCRIPT.contains('\\'));
         assert!(!CYGWIN_COMMAND_SCRIPT.contains('\''));
         assert!(CYGWIN_COMMAND_SCRIPT.contains(COMMAND_VARIABLE));
-    }
-
-    #[test]
-    fn single_commands_are_executed_in_place_of_the_shell() {
-        assert_eq!(shell_command(" zsh -l "), "exec zsh -l");
-        assert_eq!(
-            shell_command(r#"sh -c 'trap "exit 7" INT; sleep 100'"#),
-            r#"exec sh -c 'trap "exit 7" INT; sleep 100'"#
-        );
-        assert_eq!(
-            shell_command(r#"printf "%s|%s\n" a\;b "$(date)""#),
-            r#"exec printf "%s|%s\n" a\;b "$(date)""#
-        );
-        for command in [
-            "ls | less",
-            "cd /tmp; zsh",
-            "make && zsh",
-            "sleep 1 &",
-            "zsh > log",
-            "(zsh)",
-            "echo `date`",
-            "echo $(date; date)",
-            "a\nb",
-            "LANG=C zsh",
-            "exec zsh",
-            "if true; then zsh; fi",
-            "{ zsh; }",
-            "! false",
-            "echo 'open",
-            "echo end\\",
-        ] {
-            assert_eq!(shell_command(command), command, "{command:?}");
-        }
-    }
-
-    #[test]
-    fn wslenv_gets_each_name_once() {
-        const NAMES: [&str; 3] = ["TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION"];
-        const ALL: &str = "TERM:TERM_PROGRAM:TERM_PROGRAM_VERSION";
-        assert_eq!(wslenv_with(None, NAMES), ALL);
-        assert_eq!(wslenv_with(Some(""), NAMES), ALL);
-        assert_eq!(
-            wslenv_with(Some("USERPROFILE/p"), NAMES),
-            format!("USERPROFILE/p:{ALL}")
-        );
-        assert_eq!(
-            wslenv_with(Some("TERM/u:X"), NAMES),
-            "TERM/u:X:TERM_PROGRAM:TERM_PROGRAM_VERSION"
-        );
-        assert_eq!(
-            wslenv_with(Some("TERM_PROGRAM:TERM:TERM_PROGRAM_VERSION/u"), NAMES),
-            "TERM_PROGRAM:TERM:TERM_PROGRAM_VERSION/u"
-        );
     }
 
     #[test]

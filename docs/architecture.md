@@ -51,7 +51,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `frame` | 描画のために取り出した画面．libghostty-vt の型に依存しない |
 | `backend` | `Backend` trait，`SpawnOptions`，`GridSize`，`Wake` |
 | `config` | 設定ファイルの各節の型と既定値，ひな形 `TEMPLATE`．数か名前一つだけの項目の一覧 `SCALARS` は，読む処理，書き戻す処理，設定ダイアログが使う．下の 3 つのモジュールの名前は `config::` の下に再公開する |
-| `config::profile` | プロファイル（`Profile`，`BackendKind`），`shell` のコマンドラインの解釈，Cygwin のフォルダを探す処理（`find_cygwin_root`），名前だけのコマンドを `PATH` から探す処理（`find_program_on_path`） |
+| `config::profile` | プロファイル（`Profile`，`BackendKind`），`shell` のコマンドラインの解釈，Cygwin のフォルダを探す処理（`find_cygwin_root`），名前だけのコマンドを `PATH` から探す処理（`find_program_on_path`），ブリッジの相手の側に渡すコマンドライン（`shell_command`）・`WSLENV`（`wslenv_with`）・パス（`wsl_path`）の形 |
 | `config::colors` | 配色，端末・タブバー・スクロールバーの色のキー，`"#rrggbb"` の読み書き |
 | `config::read` | 設定ファイルの中身の解釈（`parse`）．警告にエラーのある行を添える |
 | `config::migrate` | 古い書き方を今の書き方に読み替える手順 `STEPS` |

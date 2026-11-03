@@ -27,7 +27,8 @@ pub use colors::{
 pub use profile::{
     BackendKind, COMMON_CYGWIN_ROOTS, PROFILE_KEYS, Profile, ProfileError, ProfileKeys,
     cygwin_dll_path, default_profile_index, find_cygwin_root, find_cygwin_root_with,
-    find_program_on_path, is_bare_program_name, is_cygwin_root, profile_position, split_program,
+    find_program_on_path, is_bare_program_name, is_cygwin_root, profile_position, shell_command,
+    split_program, wsl_path, wslenv_with,
 };
 pub use read::{Parsed, Warning, parse};
 
