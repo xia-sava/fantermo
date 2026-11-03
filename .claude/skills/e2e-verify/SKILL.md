@@ -6,7 +6,9 @@ description: fantermo の e2e テストと、制御の口（feature e2e）での
 # fantermo の e2e
 
 開発用の feature `e2e`（既定で無効、配布物に入らない）を付けた fantermo は、環境変数 `FANTERMO_E2E_DIR` があると
-`127.0.0.1` の OS が割り当てたポートで小さな HTTP を受ける。ポートの番号はそのフォルダの `port` に書く。
+`127.0.0.1` の OS が割り当てたポートで小さな HTTP を受ける。そのフォルダの `port` の 1 行目にポートの番号、2 行目に乱数のトークンを書く。
+要求にはヘッダー `X-Fantermo-Token` でトークンを付ける（付いていない、合わないものは 403）。一つの接続で要求を続けて送れ（keep-alive）、
+次の要求が 10 秒来ない接続は閉じる。`Server::request` は接続を使い回し、閉じられていたら繋ぎ直す。手で `curl` などで使うときもトークンを付ける。
 実装は `crates/fantermo/src/e2e_server.rs`（受ける側）と `crates/fantermo/src/window/e2e.rs`（ウィンドウのスレッド側）、
 テストの土台は `crates/fantermo/tests/common/mod.rs`、テストは `crates/fantermo/tests/e2e.rs`。
 

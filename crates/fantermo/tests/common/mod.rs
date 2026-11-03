@@ -18,7 +18,7 @@ use std::{
     collections::HashSet,
     ffi::OsString,
     fs::File,
-    io::{Cursor, Read, Write},
+    io::{BufRead, BufReader, Cursor, ErrorKind, Read, Write},
     net::{Ipv4Addr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -96,6 +96,9 @@ const REMOVE_INTERVAL: Duration = Duration::from_millis(100);
 
 const STATUS_OK: u16 = 200;
 
+/// 要求に付けるトークンのヘッダー。値は `port` のファイルの 2 行目。
+const TOKEN_HEADER: &str = "X-Fantermo-Token";
+
 /// 一時フォルダの中の、ウィンドウの状態のファイルの名前。
 pub const STATE_FILE: &str = "state.toml";
 
@@ -103,6 +106,10 @@ pub const STATE_FILE: &str = "state.toml";
 pub struct Server {
     child: Child,
     port: u16,
+    /// 要求に付けるトークン。
+    token: String,
+    /// 使っていない接続。要求のたびに取り出し、答えを読んだら戻す。
+    connections: Mutex<Vec<BufReader<TcpStream>>>,
     dir: PathBuf,
     /// 動いている別デスクトップの名前。
     desktop: String,
@@ -236,11 +243,13 @@ impl Server {
         let mut server = Self {
             child,
             port: 0,
+            token: String::new(),
+            connections: Mutex::new(Vec::new()),
             dir,
             desktop,
             _slot: Some(slot),
         };
-        server.port = server.wait_for_port();
+        server.wait_for_control();
         server
     }
 
@@ -305,6 +314,8 @@ impl Server {
         Self {
             child,
             port: 0,
+            token: String::new(),
+            connections: Mutex::new(Vec::new()),
             dir,
             desktop: self.desktop.clone(),
             _slot: None,
@@ -343,7 +354,7 @@ impl Server {
 
     /// [`Server::launch_again`] で起動したものがウィンドウを開くのを待つ。
     pub fn wait_for_window(&mut self) {
-        self.port = self.wait_for_port();
+        self.wait_for_control();
     }
 
     /// 制御の口を開いたか。
@@ -361,12 +372,19 @@ impl Server {
         Self::start("", &["powershell.exe", "-NoLogo", "-NoProfile"])
     }
 
-    fn wait_for_port(&mut self) -> u16 {
+    /// `port` のファイルができるまで待ち、ポートの番号（1 行目）とトークン（2 行目）を読む。
+    fn wait_for_control(&mut self) {
         let path = self.dir.join("port");
         let deadline = Instant::now() + START_TIMEOUT;
         loop {
             if let Ok(text) = std::fs::read_to_string(&path) {
-                return text.trim().parse().expect("the port file is not a number");
+                let mut lines = text.lines();
+                self.port = lines
+                    .next()
+                    .and_then(|port| port.parse().ok())
+                    .expect("the first line of the port file is not a number");
+                self.token = lines.next().expect("the port file has no token").to_owned();
+                return;
             }
             if let Some(status) = self
                 .child
@@ -387,9 +405,46 @@ impl Server {
         }
     }
 
-    /// 要求を送り、状態コードと本文を返す。
+    /// 要求を送り、状態コードと本文を返す。接続は使い回す。fantermo が閉じていた接続（要求が来ないまま時間が過ぎた
+    /// とき）は、新しく繋いで送り直す。
     pub fn request(&self, method: &str, path: &str, body: &[u8]) -> (u16, Vec<u8>) {
-        let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, self.port))
+        let mut message = format!(
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{TOKEN_HEADER}: {}\r\nContent-Length: {}\r\n\r\n",
+            self.token,
+            body.len()
+        )
+        .into_bytes();
+        message.extend_from_slice(body);
+        loop {
+            let idle = self
+                .connections
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .pop();
+            let reused = idle.is_some();
+            let mut connection = idle.unwrap_or_else(|| self.connect(path));
+            match exchange(&mut connection, &message) {
+                Ok(answer) => {
+                    if answer.keep_alive {
+                        self.connections
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(connection);
+                    }
+                    return (answer.status, answer.body);
+                }
+                Err(failure) if reused && failure.connection_was_closed => {}
+                Err(failure) => panic!(
+                    "cannot exchange {method} {path}: {}\n{}",
+                    failure.error,
+                    self.log()
+                ),
+            }
+        }
+    }
+
+    fn connect(&self, path: &str) -> BufReader<TcpStream> {
+        let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, self.port))
             .unwrap_or_else(|e| panic!("cannot connect for {path}: {e}\n{}", self.log()));
         stream
             .set_read_timeout(Some(REQUEST_TIMEOUT))
@@ -397,20 +452,7 @@ impl Server {
         stream
             .set_write_timeout(Some(REQUEST_TIMEOUT))
             .expect("set_write_timeout");
-        let head = format!(
-            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        );
-        stream
-            .write_all(head.as_bytes())
-            .expect("failed to send the request");
-        stream.write_all(body).expect("failed to send the body");
-        let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
-            .unwrap_or_else(|e| panic!("cannot read the answer to {path}: {e}\n{}", self.log()));
-        split_response(&response)
-            .unwrap_or_else(|| panic!("malformed answer to {path}: {response:?}\n{}", self.log()))
+        BufReader::new(stream)
     }
 
     /// `POST` を送る。200 でなければ失敗にする。
@@ -879,15 +921,83 @@ fn sibling_of_fantermo(file_name: &str) -> PathBuf {
     fantermo_exe().with_file_name(file_name)
 }
 
-/// HTTP の答えを、状態コードと本文に分ける。
-fn split_response(response: &[u8]) -> Option<(u16, Vec<u8>)> {
-    const HEADER_END: &[u8] = b"\r\n\r\n";
-    let end = response
-        .windows(HEADER_END.len())
-        .position(|window| window == HEADER_END)?;
-    let head = std::str::from_utf8(&response[..end]).ok()?;
-    let status = head.split_ascii_whitespace().nth(1)?.parse().ok()?;
-    Some((status, response[end + HEADER_END.len()..].to_vec()))
+/// 制御の口の答え。
+struct Answer {
+    status: u16,
+    body: Vec<u8>,
+    /// 接続を続けて使える。
+    keep_alive: bool,
+}
+
+/// 要求の送受信の失敗。
+struct Failure {
+    error: std::io::Error,
+    /// 答えが一バイトも来ないうちに、相手が接続を閉じていた（送り直せる）。
+    connection_was_closed: bool,
+}
+
+/// `message`（ヘッダーと本文）を送り、答えを一つ読む。
+fn exchange(connection: &mut BufReader<TcpStream>, message: &[u8]) -> Result<Answer, Failure> {
+    let closed = |error: std::io::Error| Failure {
+        connection_was_closed: matches!(
+            error.kind(),
+            ErrorKind::BrokenPipe
+                | ErrorKind::ConnectionReset
+                | ErrorKind::ConnectionAborted
+                | ErrorKind::UnexpectedEof
+        ),
+        error,
+    };
+    let answered = |error: std::io::Error| Failure {
+        error,
+        connection_was_closed: false,
+    };
+    connection.get_mut().write_all(message).map_err(closed)?;
+    let mut status_line = String::new();
+    if connection.read_line(&mut status_line).map_err(closed)? == 0 {
+        return Err(closed(ErrorKind::UnexpectedEof.into()));
+    }
+    let malformed = |what: &str| {
+        answered(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("malformed answer: {what}: {status_line:?}"),
+        ))
+    };
+    let status = status_line
+        .split_ascii_whitespace()
+        .nth(1)
+        .and_then(|status| status.parse().ok())
+        .ok_or_else(|| malformed("no status"))?;
+    let mut content_length = 0;
+    let mut keep_alive = true;
+    loop {
+        let mut header = String::new();
+        if connection.read_line(&mut header).map_err(answered)? == 0 {
+            return Err(malformed("the headers end too early"));
+        }
+        let header = header.trim_end();
+        if header.is_empty() {
+            break;
+        }
+        let Some((name, value)) = header.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            content_length = value
+                .trim()
+                .parse()
+                .map_err(|_| malformed("bad Content-Length"))?;
+        } else if name.eq_ignore_ascii_case("connection") {
+            keep_alive = !value.trim().eq_ignore_ascii_case("close");
+        }
+    }
+    let mut body = vec![0; content_length];
+    connection.read_exact(&mut body).map_err(answered)?;
+    Ok(Answer {
+        status,
+        body,
+        keep_alive,
+    })
 }
 
 /// ブリッジを fantermo が探す場所に置く。fantermo は実行ファイルの隣と `<出力先>/bridge/` を探す。

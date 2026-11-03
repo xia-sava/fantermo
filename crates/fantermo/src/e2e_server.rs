@@ -4,6 +4,10 @@
 //! そのフォルダの [`PORT_FILE`] に書く。受けた要求はチャネルでウィンドウのスレッドへ渡し、答えを待って返す。
 //! ウィンドウ側の処理は `window::e2e`。
 //!
+//! 一つの接続で要求を続けて受ける（keep-alive）。接続ごとにスレッドを使い、次の要求が [`STREAM_TIMEOUT`] のあいだ
+//! 来なければ閉じる。[`PORT_FILE`] は 1 行目にポートの番号、2 行目に乱数のトークンを書く。要求には
+//! [`TOKEN_HEADER`] でトークンを付ける。付いていない、合わない要求は 403 で断る。
+//!
 //! | 要求 | すること |
 //! |---|---|
 //! | `GET /e2e/state` | 状態の JSON |
@@ -43,21 +47,28 @@
 //! 渡す）、なければ OS のもの。
 
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, ErrorKind, Write},
     net::{Ipv4Addr, TcpListener, TcpStream},
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{Arc, mpsc},
     thread,
     time::Duration,
 };
 
 use fantermo_core::keymap::KeyCombo;
+use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
 
 /// 制御の口を開くフォルダを指定する環境変数。ポートの番号と絵のファイルをここに書く。
 const DIR_ENV: &str = "FANTERMO_E2E_DIR";
 
-/// ポートの番号を書くファイル。
+/// ポートの番号とトークンを書くファイル。
 const PORT_FILE: &str = "port";
+
+/// 要求に付けるトークンのヘッダー。
+const TOKEN_HEADER: &str = "X-Fantermo-Token";
+
+/// トークンのバイト数（乱数）。
+const TOKEN_BYTES: usize = 16;
 
 /// ウィンドウのスレッドの答えを待つ上限。
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -303,6 +314,8 @@ pub struct Response {
     status: u16,
     content_type: &'static str,
     body: Vec<u8>,
+    /// 答えたあとで接続を閉じる。要求の続きを読めないときに立てる。
+    close: bool,
 }
 
 impl Response {
@@ -311,6 +324,7 @@ impl Response {
             status: STATUS_OK,
             content_type: "application/json",
             body: value.to_string().into_bytes(),
+            close: false,
         }
     }
 
@@ -319,6 +333,7 @@ impl Response {
             status: STATUS_OK,
             content_type: "image/png",
             body: bytes,
+            close: false,
         }
     }
 
@@ -335,7 +350,13 @@ impl Response {
             status,
             content_type: "text/plain; charset=utf-8",
             body: message.into().into_bytes(),
+            close: false,
         }
+    }
+
+    fn closing(mut self) -> Self {
+        self.close = true;
+        self
     }
 }
 
@@ -353,7 +374,7 @@ pub struct Control {
 }
 
 /// 環境変数 [`DIR_ENV`] があれば制御の口を開く。要求が届くたびに `wake` を呼ぶ。
-pub fn start(wake: impl Fn() + Send + 'static) -> Option<Control> {
+pub fn start(wake: impl Fn() + Send + Sync + 'static) -> Option<Control> {
     let dir = PathBuf::from(std::env::var_os(DIR_ENV)?);
     let (sender, requests) = mpsc::channel();
     let port = match open(&dir, sender, wake) {
@@ -370,43 +391,84 @@ pub fn start(wake: impl Fn() + Send + 'static) -> Option<Control> {
 fn open(
     dir: &Path,
     sender: mpsc::Sender<Pending>,
-    wake: impl Fn() + Send + 'static,
+    wake: impl Fn() + Send + Sync + 'static,
 ) -> std::io::Result<u16> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     let port = listener.local_addr()?.port();
+    let token = new_token()?;
     std::fs::create_dir_all(dir)?;
     // 読む側が書きかけを読まないよう、書き終えてから名前を付ける。
     let partial = dir.join(format!("{PORT_FILE}.partial"));
-    std::fs::write(&partial, port.to_string())?;
+    std::fs::write(&partial, format!("{port}\n{token}\n"))?;
     std::fs::rename(&partial, dir.join(PORT_FILE))?;
+    let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
     thread::Builder::new()
         .name("e2e-control".into())
-        .spawn(move || serve(&listener, &sender, &wake))?;
+        .spawn(move || serve(&listener, &sender, &wake, &token))?;
     Ok(port)
 }
 
-fn serve(listener: &TcpListener, sender: &mpsc::Sender<Pending>, wake: &dyn Fn()) {
+/// 乱数のトークン（16 進）。
+fn new_token() -> std::io::Result<String> {
+    let mut bytes = [0u8; TOKEN_BYTES];
+    // SAFETY: bytes は書き込める配列で、アルゴリズムのハンドルを渡さずシステムの乱数を使う。
+    unsafe { BCryptGenRandom(None, &mut bytes, BCRYPT_USE_SYSTEM_PREFERRED_RNG) }
+        .ok()
+        .map_err(std::io::Error::other)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn serve(
+    listener: &TcpListener,
+    sender: &mpsc::Sender<Pending>,
+    wake: &Arc<dyn Fn() + Send + Sync>,
+    token: &str,
+) {
     for stream in listener.incoming() {
-        let result = stream.and_then(|stream| handle_connection(stream, sender, wake));
-        if let Err(e) = result {
-            tracing::warn!("e2e control connection failed: {e}");
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(e) => {
+                tracing::warn!("e2e control failed to accept a connection: {e}");
+                continue;
+            }
+        };
+        let (sender, wake, token) = (sender.clone(), Arc::clone(wake), token.to_owned());
+        let spawned = thread::Builder::new()
+            .name("e2e-connection".into())
+            .spawn(move || {
+                if let Err(e) = handle_connection(stream, &sender, &*wake, &token) {
+                    tracing::warn!("e2e control connection failed: {e}");
+                }
+            });
+        if let Err(e) = spawned {
+            tracing::warn!("e2e control failed to start a connection thread: {e}");
         }
     }
 }
 
+/// 一つの接続の要求を、接続が閉じるか答えで閉じると決まるまで続けて処理する。
 fn handle_connection(
     stream: TcpStream,
     sender: &mpsc::Sender<Pending>,
     wake: &dyn Fn(),
+    token: &str,
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(STREAM_TIMEOUT))?;
     stream.set_write_timeout(Some(STREAM_TIMEOUT))?;
     let mut reader = BufReader::new(stream);
-    let response = match read_request(&mut reader)? {
-        Ok(request) => run_on_window_thread(request, sender, wake),
-        Err(response) => response,
-    };
-    write_response(reader.get_mut(), &response)
+    loop {
+        let Some(read) = read_request(&mut reader, token)? else {
+            return Ok(());
+        };
+        let response = match read {
+            Ok(request) => run_on_window_thread(request, sender, wake),
+            Err(response) => response,
+        };
+        write_response(reader.get_mut(), &response)?;
+        if response.close {
+            return Ok(());
+        }
+    }
 }
 
 /// `request` をウィンドウのスレッドへ渡し、答えを待つ。
@@ -428,17 +490,32 @@ fn run_on_window_thread(
     })
 }
 
-/// 接続から要求を一つ読む。読めても受け付けないものは、返す答えを `Err` に入れて返す。
-fn read_request(reader: &mut impl BufRead) -> std::io::Result<Result<Request, Response>> {
+/// 接続から要求を一つ読む。次の要求が来ないまま相手が閉じたか、[`STREAM_TIMEOUT`] が過ぎたときは `None`。読めても
+/// 受け付けないものは、返す答えを `Err` に入れて返す。`token` は付いているべき [`TOKEN_HEADER`] の値。
+fn read_request(
+    reader: &mut impl BufRead,
+    token: &str,
+) -> std::io::Result<Option<Result<Request, Response>>> {
     let mut request_line = String::new();
-    reader.read_line(&mut request_line)?;
+    match reader.read_line(&mut request_line) {
+        Ok(0) => return Ok(None),
+        Ok(_) => {}
+        Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+            return Ok(None);
+        }
+        Err(e) => return Err(e),
+    }
     let mut parts = request_line.split_ascii_whitespace();
     let (Some(method), Some(path)) = (parts.next(), parts.next()) else {
-        return Ok(Err(Response::bad_request("malformed request line")));
+        // 続きの区切りが分からないので閉じる。
+        return Ok(Some(Err(
+            Response::bad_request("malformed request line").closing()
+        )));
     };
 
     let mut content_length = 0;
     let mut from_browser = false;
+    let mut token_matches = false;
     loop {
         let mut header = String::new();
         reader.read_line(&mut header)?;
@@ -454,19 +531,32 @@ fn read_request(reader: &mut impl BufRead) -> std::io::Result<Result<Request, Re
         }
         // ブラウザの中のページは `Origin` を付けて送る。開いているページからシェルへ入力させない。
         from_browser |= name.eq_ignore_ascii_case("origin");
-    }
-    if from_browser {
-        return Ok(Err(Response::text(
-            STATUS_FORBIDDEN,
-            "requests from browsers are refused",
-        )));
+        if name.eq_ignore_ascii_case(TOKEN_HEADER) {
+            token_matches |= value.trim() == token;
+        }
     }
     if content_length > MAX_BODY_LEN {
-        return Ok(Err(Response::bad_request("the body is too long")));
+        // 本文を読み捨てられないので閉じる。
+        return Ok(Some(Err(
+            Response::bad_request("the body is too long").closing()
+        )));
     }
+    // 断る要求も本文を読み切ってから答える。次の要求の頭が分からなくなる。
     let mut body = vec![0; content_length];
     reader.read_exact(&mut body)?;
-    Ok(parse_request(method, path, body))
+    if from_browser {
+        return Ok(Some(Err(Response::text(
+            STATUS_FORBIDDEN,
+            "requests from browsers are refused",
+        ))));
+    }
+    if !token_matches {
+        return Ok(Some(Err(Response::text(
+            STATUS_FORBIDDEN,
+            format!("the {TOKEN_HEADER} header is missing or wrong"),
+        ))));
+    }
+    Ok(Some(parse_request(method, path, body)))
 }
 
 /// メソッドとパスと本文から操作を決める。
@@ -616,9 +706,14 @@ fn parse_key(text: &str) -> Result<Request, Response> {
 }
 
 fn write_response(stream: &mut TcpStream, response: &Response) -> std::io::Result<()> {
+    let connection = if response.close {
+        "close"
+    } else {
+        "keep-alive"
+    };
     write!(
         stream,
-        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: {connection}\r\n\r\n",
         response.status,
         response.content_type,
         response.body.len()
@@ -635,8 +730,15 @@ mod tests {
 
     use super::*;
 
+    const TEST_TOKEN: &str = "0123456789abcdef";
+
+    /// 要求の先頭の行のあとに、正しいトークンのヘッダーを足して読む。
     fn parse(request: &str) -> Result<Request, Response> {
-        read_request(&mut Cursor::new(request.as_bytes().to_vec())).expect("readable request")
+        let with_token =
+            request.replacen("\r\n", &format!("\r\n{TOKEN_HEADER}: {TEST_TOKEN}\r\n"), 1);
+        read_request(&mut Cursor::new(with_token.into_bytes()), TEST_TOKEN)
+            .expect("readable request")
+            .expect("a request")
     }
 
     #[test]
@@ -912,5 +1014,46 @@ mod tests {
                 .status,
             STATUS_FORBIDDEN
         );
+    }
+
+    #[test]
+    fn requests_without_the_token_are_refused_and_the_connection_goes_on() {
+        let first = "POST /e2e/input HTTP/1.1\r\nContent-Length: 2\r\n\r\nab";
+        let wrong =
+            "POST /e2e/input HTTP/1.1\r\nX-Fantermo-Token: wrong\r\nContent-Length: 1\r\n\r\nc";
+        let right = "GET /e2e/state HTTP/1.1\r\nx-fantermo-token:  0123456789abcdef \r\n\r\n";
+        let mut reader = Cursor::new(format!("{first}{wrong}{right}").into_bytes());
+        let mut read = || read_request(&mut reader, TEST_TOKEN).expect("readable request");
+        assert_eq!(read().unwrap().unwrap_err().status, STATUS_FORBIDDEN);
+        assert_eq!(read().unwrap().unwrap_err().status, STATUS_FORBIDDEN);
+        assert_eq!(read().unwrap(), Ok(Request::State));
+        assert!(read().is_none());
+    }
+
+    #[test]
+    fn requests_follow_one_another_on_a_connection() {
+        let requests = format!(
+            "POST /e2e/input HTTP/1.1\r\n{TOKEN_HEADER}: {TEST_TOKEN}\r\nContent-Length: 2\r\n\r\nab\
+             GET /e2e/state HTTP/1.1\r\n{TOKEN_HEADER}: {TEST_TOKEN}\r\n\r\n"
+        );
+        let mut reader = Cursor::new(requests.into_bytes());
+        let mut read = || read_request(&mut reader, TEST_TOKEN).expect("readable request");
+        assert_eq!(read(), Some(Ok(Request::Input(b"ab".to_vec()))));
+        assert_eq!(read(), Some(Ok(Request::State)));
+        assert_eq!(read(), None);
+    }
+
+    #[test]
+    fn a_body_that_is_too_long_closes_the_connection() {
+        let request = format!(
+            "POST /e2e/input HTTP/1.1\r\n{TOKEN_HEADER}: {TEST_TOKEN}\r\nContent-Length: {}\r\n\r\n",
+            MAX_BODY_LEN + 1
+        );
+        let response = read_request(&mut Cursor::new(request.into_bytes()), TEST_TOKEN)
+            .expect("readable request")
+            .expect("a request")
+            .unwrap_err();
+        assert_eq!(response.status, STATUS_BAD_REQUEST);
+        assert!(response.close);
     }
 }
