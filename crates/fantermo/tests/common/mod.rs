@@ -2,13 +2,10 @@
 //!
 //! [`Server`] は起動ごとにユニークな一時フォルダを作り、設定・ウィンドウの状態・ログ・ポートの番号をそこに置く。
 //! ポートは OS の割り当てなので、テストを並列に実行しても衝突しない。破棄すると子プロセスを止めて一時フォルダを
-//! 消す。テストが失敗したときは、破棄のときに fantermo のログと画面の文字を出す。
+//! 消す。テストが失敗したときは、破棄のときに fantermo のログを出す。
 //!
 //! テストの実行は `./tools/dev.sh test --features e2e`（出力先は `target/e2e`）。run-hidden は別の crate なので、
 //! `-p fantermo` で絞るときは先に `./tools/dev.sh build --features e2e` で作っておく。
-
-// 使う関数はテストの実行ファイルごとに違う。
-#![allow(dead_code)]
 
 pub mod processes;
 pub mod release_host;
@@ -83,7 +80,8 @@ const NO_CHILDREN_REMAINED: &str = "run-hidden: no processes remained";
 const NOT_ENOUGH_MEMORY: &str = "0x80070008";
 /// 起動してポートの番号が書かれるまで待つ上限。
 const START_TIMEOUT: Duration = Duration::from_secs(60);
-/// 条件が成り立つまで待つ上限。並列で起動するとシェルの起動も遅くなるので、長めに取る。
+/// 条件が成り立つまで待つ上限。並列で起動するとシェルの起動も遅くなるので、長めに取る。タブを閉じるときに子プロセスを
+/// 終わらせるまで待つ 5 秒より長くする。
 const WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// 条件を確認する間隔。
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -527,40 +525,35 @@ impl Server {
     /// OS のクリップボードを `text` で置き換える。ほかのプログラムが開いている間は失敗するので、やり直す。
     #[track_caller]
     pub fn set_clipboard(&self, text: &str) {
-        let deadline = Instant::now() + WAIT_TIMEOUT;
-        loop {
+        let mut last_answer = String::new();
+        let written = try_wait_for(|| {
             let (status, answer) = self.request("POST", "/e2e/clipboard", text.as_bytes());
-            if status == STATUS_OK {
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "cannot write the clipboard: {}",
-                String::from_utf8_lossy(&answer)
-            );
-            thread::sleep(POLL_INTERVAL);
-        }
+            last_answer = String::from_utf8_lossy(&answer).into_owned();
+            (status == STATUS_OK).then_some(())
+        });
+        assert!(
+            written.is_some(),
+            "cannot write the clipboard: {last_answer}"
+        );
     }
 
     /// OS のクリップボードの文字列が `expected` になるまで待つ。
     #[track_caller]
     pub fn wait_clipboard(&self, expected: &str) {
-        let deadline = Instant::now() + WAIT_TIMEOUT;
-        loop {
+        let mut last_answer = String::new();
+        let arrived = try_wait_for(|| {
             let (status, answer) = self.request("GET", "/e2e/clipboard", b"");
-            let text = String::from_utf8_lossy(&answer).into_owned();
-            if status == STATUS_OK {
-                let value: Value = serde_json::from_str(&text).expect("the answer is not JSON");
-                if value["text"] == expected {
-                    return;
-                }
+            last_answer = String::from_utf8_lossy(&answer).into_owned();
+            if status != STATUS_OK {
+                return None;
             }
-            assert!(
-                Instant::now() < deadline,
-                "the clipboard did not become {expected:?}: {text}"
-            );
-            thread::sleep(POLL_INTERVAL);
-        }
+            let value: Value = serde_json::from_str(&last_answer).expect("the answer is not JSON");
+            (value["text"] == expected).then_some(())
+        });
+        assert!(
+            arrived.is_some(),
+            "the clipboard did not become {expected:?}: {last_answer}"
+        );
     }
 
     /// `wait_exit` のあとで、fantermo の子孫のプロセスが自分で終わっていたことを確認する。
@@ -595,18 +588,19 @@ impl Server {
     /// `condition` が成り立つまで状態を読み続け、成り立った状態を返す。時間切れは失敗にする。
     #[track_caller]
     pub fn wait_until(&self, description: &str, condition: impl Fn(&Value) -> bool) -> Value {
-        let deadline = Instant::now() + WAIT_TIMEOUT;
-        loop {
+        let mut last_state = Value::Null;
+        let reached = try_wait_for(|| {
             let state = self.state();
             if condition(&state) {
-                return state;
+                return Some(state);
             }
-            assert!(
-                Instant::now() < deadline,
-                "timed out waiting for {description}; state: {state:#}"
-            );
-            thread::sleep(POLL_INTERVAL);
-        }
+            last_state = state;
+            None
+        });
+        let Some(state) = reached else {
+            panic!("timed out waiting for {description}; state: {last_state:#}");
+        };
+        state
     }
 
     /// `duration` のあいだ状態を読み続け、`condition` が成り立ち続けることを確認する。時間の窓の中で何かが起きないことを
@@ -639,18 +633,11 @@ impl Server {
     /// fantermo が自分で終わるのを待ち、その終了コードを返す。
     #[track_caller]
     pub fn wait_exit(&mut self) -> i32 {
-        let deadline = Instant::now() + WAIT_TIMEOUT;
-        loop {
-            if let Some(status) = self
-                .child
-                .try_wait()
-                .expect("failed to wait for run-hidden")
-            {
-                return status.code().expect("run-hidden has no exit code");
-            }
-            assert!(Instant::now() < deadline, "fantermo did not exit");
-            thread::sleep(POLL_INTERVAL);
-        }
+        let child = &mut self.child;
+        let status = wait_for("fantermo to exit", || {
+            child.try_wait().expect("failed to wait for run-hidden")
+        });
+        status.code().expect("run-hidden has no exit code")
     }
 
     /// fantermo と run-hidden のログ。
@@ -864,6 +851,29 @@ fn remove_folder(dir: &Path) {
     if let Some(e) = last_error {
         eprintln!("failed to remove {}: {e}", dir.display());
     }
+}
+
+/// `poll` が `Some` を返すまで [`POLL_INTERVAL`] ごとに呼び、その値を返す。[`WAIT_TIMEOUT`] が過ぎたら `None`。
+pub fn try_wait_for<T>(mut poll: impl FnMut() -> Option<T>) -> Option<T> {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        if let Some(value) = poll() {
+            return Some(value);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// [`try_wait_for`] の、時間切れを `description` を添えた失敗にするもの。
+#[track_caller]
+pub fn wait_for<T>(description: &str, poll: impl FnMut() -> Option<T>) -> T {
+    let Some(value) = try_wait_for(poll) else {
+        panic!("timed out waiting for {description}");
+    };
+    value
 }
 
 /// 起動ごとの一時フォルダを作る。

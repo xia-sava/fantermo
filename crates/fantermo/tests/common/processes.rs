@@ -1,10 +1,8 @@
 //! プロセスの親子を OS の一覧から読む。番号は使い回されるので、作成時刻と組みで同じプロセスかを見る。
 
-use std::{
-    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
-    thread,
-    time::{Duration, Instant},
-};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+
+use super::try_wait_for;
 
 use windows::Win32::{
     Foundation::{FILETIME, HANDLE},
@@ -19,11 +17,6 @@ use windows::Win32::{
         },
     },
 };
-
-/// 条件が成り立つまで待つ上限。タブを閉じるときに子プロセスを終わらせるまで待つ 5 秒より長くする。
-const WAIT_TIMEOUT: Duration = Duration::from_secs(60);
-/// 条件を確認する間隔。
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// 動いているプロセス。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -135,38 +128,33 @@ fn is_running(process: &Process) -> bool {
 /// `root` の子孫のうち、名前が `name` のものの数が `count` になるまで待ち、そのときの子孫を返す。
 #[track_caller]
 pub fn wait_descendants_named(root: u32, name: &str, count: usize) -> Vec<Process> {
-    let deadline = Instant::now() + WAIT_TIMEOUT;
-    loop {
+    let mut last_found = Vec::new();
+    let reached = try_wait_for(|| {
         let found = descendants(root);
         if found.iter().filter(|process| process.name == name).count() == count {
-            return found;
+            return Some(found);
         }
-        assert!(
-            Instant::now() < deadline,
-            "waiting for {count} {name} under {root}: {found:#?}"
-        );
-        thread::sleep(POLL_INTERVAL);
-    }
+        last_found = found;
+        None
+    });
+    let Some(found) = reached else {
+        panic!("waiting for {count} {name} under {root}: {last_found:#?}");
+    };
+    found
 }
 
 /// `processes` がすべて終わるまで待つ。
 #[track_caller]
 pub fn wait_ended(processes: &[Process]) {
-    let deadline = Instant::now() + WAIT_TIMEOUT;
-    loop {
-        let left: Vec<&Process> = processes
+    let mut left = Vec::new();
+    let ended = try_wait_for(|| {
+        left = processes
             .iter()
             .filter(|process| is_running(process))
             .collect();
-        if left.is_empty() {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "these processes did not end: {left:#?}"
-        );
-        thread::sleep(POLL_INTERVAL);
-    }
+        left.is_empty().then_some(())
+    });
+    assert!(ended.is_some(), "these processes did not end: {left:#?}");
 }
 
 /// `processes` がすべて動いている。

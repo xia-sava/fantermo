@@ -104,15 +104,6 @@ impl ReleaseHost {
             .insert(path.to_owned(), reply);
     }
 
-    /// `path` への答えをなくす（404 を返す）。
-    pub fn remove(&self, path: &str) {
-        self.shared
-            .routes
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(path);
-    }
-
     /// 受けた要求のパスを順に返す。
     pub fn requests(&self) -> Vec<String> {
         self.shared
