@@ -36,6 +36,9 @@ pub const MSIEXEC_LOG_NAME: &str = "update-msiexec.log";
 /// スクリプトが、待つプロセスの終了を待つ上限（秒）。過ぎたら待たずに入れる。
 pub const WAIT_SECONDS: u32 = 300;
 
+/// msiexec の終了コードを読めなかったときの、スクリプトの終了コード。
+const UNKNOWN_EXIT_CODE: i32 = -1;
+
 /// `%SystemRoot%` からの msiexec の場所。PATH から探さない。
 const MSIEXEC_UNDER_SYSTEM_ROOT: &str = r"System32\msiexec.exe";
 
@@ -69,8 +72,9 @@ pub struct Plan<'a> {
 ///
 /// 待つプロセスがすべて終わる（か上限を過ぎる）のを待ち、MSI の SHA-256 を照合してから、
 /// `msiexec /i <MSI> /qn /norestart` で入れる。照合できないか合わなければ、入れずに終わる。
-/// 終了コードが 0（成功）か 3010（成功。再起動で反映するものがある）なら（終了コードを読めなければ -1 で失敗）一時フォルダを消して
-/// 起動し直し、ほかなら起動し直さずに終わる。どちらも結果のファイルに書く。
+/// 終了コードが 0（成功）か 3010（成功。再起動で反映するものがある）なら一時フォルダを消して
+/// 起動し直し、ほかなら起動し直さずに終わる。どちらも結果のファイルに書く。終了コードを読めなければ、
+/// その旨を書いて `UNKNOWN_EXIT_CODE` で終わる。
 pub fn script(plan: &Plan) -> String {
     let pids = plan
         .wait_pids
@@ -90,6 +94,7 @@ pub fn script(plan: &Plan) -> String {
     let msi = literal(&msi);
     let msi_sha256 = literal(plan.msi_sha256);
     let wait_seconds = plan.wait_seconds;
+    let unknown_exit_code = UNKNOWN_EXIT_CODE;
     format!(
         r#"$ErrorActionPreference = 'Stop'
 $log = {log}
@@ -109,17 +114,21 @@ try {{
     Write-Result "could not read the SHA-256 of the installer: $_"
     exit 1
 }}
-if ($actual -ne {msi_sha256}) {{
+if ($actual -ine {msi_sha256}) {{
     Write-Result ("the SHA-256 of the installer is {{0}}, not {{1}}" -f $actual, {msi_sha256})
     exit 1
 }}
 Write-Result ("installing {{0}}" -f {msi})
 try {{
     $installer = Start-Process -FilePath $msiexec -ArgumentList @('/i', {msi_argument}, '/qn', '/norestart', '/l*v', {msiexec_log_argument}) -Wait -PassThru
-    $code = if ($null -eq $installer.ExitCode) {{ -1 }} else {{ $installer.ExitCode }}
+    $code = $installer.ExitCode
 }} catch {{
     Write-Result "msiexec could not be started: $_"
     exit 1
+}}
+if ($null -eq $code) {{
+    Write-Result ("msiexec finished but its exit code could not be read (see {{0}})" -f {msiexec_log})
+    exit {unknown_exit_code}
 }}
 if ($code -ne 0 -and $code -ne 3010) {{
     Write-Result ("msiexec failed with exit code {{0}} (see {{1}})" -f $code, {msiexec_log})
@@ -330,10 +339,10 @@ mod tests {
         assert!(script.contains(
             r"Get-FileHash -LiteralPath 'C:\Users\o''brien\AppData\Local\Temp\fantermo-update-1\fantermo.msi' -Algorithm SHA256"
         ));
-        assert!(script.contains(&format!("if ($actual -ne '{MSI_SHA256}')")));
+        assert!(script.contains(&format!("if ($actual -ine '{MSI_SHA256}')")));
         let waits = script.find("Wait-Process").unwrap();
         let hashes = script.find("Get-FileHash").unwrap();
-        let mismatch = script.find("if ($actual -ne").unwrap();
+        let mismatch = script.find("if ($actual -ine").unwrap();
         let exit = script[mismatch..].find("exit 1").unwrap() + mismatch;
         let installs = script.find("Start-Process -FilePath $msiexec").unwrap();
         assert!(waits < hashes && hashes < mismatch && exit < installs);
@@ -342,12 +351,12 @@ mod tests {
     #[test]
     fn script_treats_a_missing_exit_code_as_a_failure() {
         let script = plan_script(&[1]);
-        assert!(script.contains(
-            "$code = if ($null -eq $installer.ExitCode) { -1 } else { $installer.ExitCode }"
-        ));
-        let code = script.find("$code = if").unwrap();
+        assert!(script.contains("if ($null -eq $code) {"));
+        assert!(script.contains("its exit code could not be read"));
+        let missing = script.find("if ($null -eq $code)").unwrap();
+        let exit = script[missing..].find("exit -1").unwrap() + missing;
         let check = script.find("if ($code -ne 0 -and $code -ne 3010)").unwrap();
-        assert!(code < check);
+        assert!(exit < check);
     }
 
     #[test]
