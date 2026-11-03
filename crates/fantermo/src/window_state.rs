@@ -197,15 +197,25 @@ mod tests {
 
     #[test]
     fn broken_file_is_copied_aside_and_kept() {
-        let dir = scratch_dir("broken");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(STATE_FILE_NAME);
-        std::fs::write(&path, "[window\n").unwrap();
-        assert_eq!(load(Some(&path)), State::default());
-        let broken = dir.join("state.toml.broken");
-        assert_eq!(std::fs::read_to_string(&broken).unwrap(), "[window\n");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[window\n");
-        std::fs::remove_dir_all(&dir).unwrap();
+        let contents: [&[u8]; 3] = [
+            // TOML として読めない。
+            b"[window\n",
+            // 状態の型として読めない。
+            b"[window]\nleft = \"x\"\ntop = 0\nwidth = 700\nheight = 480\nmaximized = false\n",
+            // UTF-8 でない。
+            b"[window]\n# \xff\xfe\n",
+        ];
+        for (index, content) in contents.into_iter().enumerate() {
+            let dir = scratch_dir(&format!("broken-{index}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join(STATE_FILE_NAME);
+            std::fs::write(&path, content).unwrap();
+            assert_eq!(load(Some(&path)), State::default(), "content {index}");
+            let broken = dir.join("state.toml.broken");
+            assert_eq!(std::fs::read(&broken).unwrap(), content, "content {index}");
+            assert_eq!(std::fs::read(&path).unwrap(), content, "content {index}");
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
     }
 
     #[test]
