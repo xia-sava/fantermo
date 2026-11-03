@@ -11,8 +11,8 @@ use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, POINT, RECT, SIZE, TRUE, WPARAM},
         Graphics::Gdi::{
-            ClientToScreen, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-            MonitorFromWindow, ScreenToClient,
+            ClientToScreen, GetMonitorInfoW, GetObjectW, HGDIOBJ, LOGFONTW,
+            MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow, ScreenToClient,
         },
         System::{
             SystemServices::{
@@ -41,9 +41,9 @@ use windows::{
                 SHOW_WINDOW_CMD, SW_MINIMIZE, SW_RESTORE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
                 SWP_NOZORDER, SendMessageW, SetWindowPos, SetWindowTextW, ShowWindow,
                 WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_ENDSESSION, WM_GETDPISCALEDSIZE,
-                WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-                WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NOTIFY, WM_QUERYENDSESSION, WM_RBUTTONDOWN,
-                WM_RBUTTONUP,
+                WM_GETFONT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+                WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NOTIFY, WM_QUERYENDSESSION,
+                WM_RBUTTONDOWN, WM_RBUTTONUP,
             },
         },
     },
@@ -659,6 +659,7 @@ fn control_json(dialog: HWND, control: HWND) -> serde_json::Value {
         "y": top_left.y,
         "width": rect.right - rect.left,
         "height": rect.bottom - rect.top,
+        "font_height": font_height(control),
     });
     let selected = |message: u32| {
         // SAFETY: control は有効なコントロール。
@@ -683,7 +684,27 @@ fn control_json(dialog: HWND, control: HWND) -> serde_json::Value {
     value
 }
 
-/// いちばん上のダイアログの大きさと、コントロールの値。`width` と `height` は枠を含むウィンドウの大きさ、`work_area` は
+/// コントロール `control` に付けたフォントの高さ（`LOGFONTW` の `lfHeight`）。フォントを付けていなければ（システムの
+/// フォントで描くなら）`None`。
+fn font_height(control: HWND) -> Option<i32> {
+    // SAFETY: control は有効なウィンドウ。付けたフォントを問い合わせるだけ。
+    let font = unsafe { SendMessageW(control, WM_GETFONT, None, None) }.0;
+    if font == 0 {
+        return None;
+    }
+    let mut logfont = LOGFONTW::default();
+    // SAFETY: font はコントロールに付いているフォントで、logfont はその大きさだけ書き込める。
+    let copied = unsafe {
+        GetObjectW(
+            HGDIOBJ(font as *mut c_void),
+            size_of::<LOGFONTW>() as i32,
+            Some((&raw mut logfont).cast()),
+        )
+    };
+    (copied != 0).then_some(logfont.lfHeight)
+}
+
+/// いちばん上のダイアログの大きさと、コントロールの値（[`control_json`]。`font_height` は付けたフォントの高さ）。`width` と `height` は枠を含むウィンドウの大きさ、`work_area` は
 /// ウィンドウのあるモニターの作業領域で、どちらも画面の座標のピクセル。`dpi` はダイアログの DPI。`focus` はフォーカスの
 /// あるコントロールの ID。
 fn dialog_controls(main: HWND) -> Response {

@@ -48,7 +48,7 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
 | `POST /e2e/window/block/<ミリ秒>` | 答えを返してから、ウィンドウのスレッドをその時間だけ止める（応答しないウィンドウの代わり） |
 | `POST /e2e/paste` | 本文の文字を、クリップボードから読んだものとして貼り付ける（`paste.confirm` と `paste.confirm_size` に従う） |
 | `POST /e2e/dialog/button/<ID>` | 開いているダイアログのボタンを押す（`TaskDialogIndirect` は `TDM_CLICK_BUTTON`、ほかは `WM_COMMAND`。メッセージボックスは押せない） |
-| `GET /e2e/dialog/controls` | いちばん上のダイアログ（無効なものとメニューを除く）の JSON: `class` `title` `dpi` `left` `top` `width` `height`（枠を含む、画面のピクセル）`client_width` `client_height` `work_area`（`left` `top` `right` `bottom`）`focus`（コントロールの ID）`controls`（子孫のすべて。`id` `class` `text` `visible` `enabled` `x` `y` `width` `height`（クライアント座標）、ボタンは `checked`、コンボボックスと一覧は `selected`（なければ `null`）と `items`）。開いていなければ 400 |
+| `GET /e2e/dialog/controls` | いちばん上のダイアログ（無効なものとメニューを除く）の JSON: `class` `title` `dpi` `left` `top` `width` `height`（枠を含む、画面のピクセル）`client_width` `client_height` `work_area`（`left` `top` `right` `bottom`）`focus`（コントロールの ID）`controls`（子孫のすべて。`id` `class` `text` `visible` `enabled` `x` `y` `width` `height`（クライアント座標）、`font_height`（付けたフォントの `lfHeight`。付けていなければ `null`）、ボタンは `checked`、コンボボックスと一覧は `selected`（なければ `null`）と `items`）。開いていなければ 400 |
 | `POST /e2e/dialog/text/<ID>` | 入力欄の文字を本文にする（`WM_SETTEXT`。`EN_CHANGE` が届く） |
 | `POST /e2e/dialog/select/<ID>/<位置>` | コンボボックスか一覧のその項目を選ぶ（`CBN_SELCHANGE`、`LBN_SELCHANGE`）。設定ダイアログのページの切り替えはページの一覧（ID 100）でこれ |
 | `POST /e2e/dialog/radio/<ID>` | ラジオボタンを選ぶ（同じ並びのほかを外して `BN_CLICKED`） |

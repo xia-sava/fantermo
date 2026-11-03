@@ -821,52 +821,90 @@ fn a_paste_of_the_size_is_confirmed_and_can_be_cancelled() {
 }
 
 /// 編集のダイアログは、開いている間に DPI が変われば、その DPI の寸法で並べ直し、フォントを作り直す。モニターの DPI は
-/// 変えられないので、ダイアログへ送った `WM_DPICHANGED` への反応を見る。
+/// 変えられないので、ダイアログへ送った `WM_DPICHANGED` への反応を見る。送る DPI はモニターの DPI の 2 倍で、
+/// 制御の口が受ける上限を超えるモニターでは半分にする。
 #[test]
 fn the_text_dialog_follows_a_dpi_change() {
     /// 入力欄の上の行（大きさを添える文）のコントロール ID。
     const HEADER_ID: i32 = 200;
+    /// 入力欄のコントロール ID。
+    const EDIT_ID: i32 = 100;
+    /// `POST /e2e/dialog/dpichanged/<DPI>` が受ける DPI の上限。
+    const MAX_DPI: u64 = 576;
     let server = Server::start(PASTE_NEVER_CONFIRMS, &CMD_COMMAND);
     server.wait_text(CMD_PROMPT);
     server.paste(&paste_commands(DEFAULT_PASTE_CONFIRM_BYTES, "dpi"));
     wait_text_dialog(&server);
     let before = read_controls(&server);
-    let dpi = 2 * number(&before["dpi"]);
+    let from = number(&before["dpi"]);
+    let to = if 2 * from <= MAX_DPI {
+        2 * from
+    } else {
+        from / 2
+    };
+    // 制御の口の推奨の矩形と同じく、DPI の比をかけて四捨五入する。
+    let scaled = |value: u64| (value * to + from / 2) / from;
+    let scaled_font = |height: i64| (height as f64 * to as f64 / from as f64).round() as i64;
+    let font_height = |dialog: &Value, id: i32| {
+        control(dialog, id)["font_height"]
+            .as_i64()
+            .unwrap_or_else(|| panic!("{id} has no font: {dialog:#}"))
+    };
 
-    let (status, body) = server.request("POST", &format!("/e2e/dialog/dpichanged/{dpi}"), b"");
+    let (status, body) = server.request("POST", &format!("/e2e/dialog/dpichanged/{to}"), b"");
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
     let after: Value = serde_json::from_slice(&body).expect("the controls are not JSON");
-    // 推奨の矩形どおりに、クライアント領域が DPI の比で大きくなる。
+    // 推奨の矩形どおりに、クライアント領域が DPI の比で変わる。
     for key in ["client_width", "client_height"] {
         assert_eq!(
             number(&after[key]),
-            2 * number(&before[key]),
+            scaled(number(&before[key])),
             "{key}: {after:#}"
         );
     }
-    // ボタンの大きさと余白は 96 DPI のときのピクセルから決めるので、DPI の比ちょうどになる。
+    // ボタンの大きさと余白は 96 DPI のときのピクセルから決めるので、DPI の比になる（丸めの差の 1 ピクセルまで）。
     let right_margin = |dialog: &Value, id: i32| {
         let button = control(dialog, id);
         number(&dialog["client_width"]) - number(&button["x"]) - number(&button["width"])
     };
     for id in [BUTTON_OK, BUTTON_CANCEL] {
         for key in ["width", "height"] {
-            assert_eq!(
-                number(&control(&after, id)[key]),
-                2 * number(&control(&before, id)[key]),
-                "{id} {key}: {after:#}"
+            let expected = scaled(number(&control(&before, id)[key]));
+            let actual = number(&control(&after, id)[key]);
+            assert!(
+                actual.abs_diff(expected) <= 1,
+                "{id} {key}: {actual} for {expected}: {after:#}"
             );
         }
+        let expected = scaled(right_margin(&before, id));
+        let actual = right_margin(&after, id);
+        assert!(
+            actual.abs_diff(expected) <= 1,
+            "{id}: {actual} for {expected}: {after:#}"
+        );
+    }
+    // 入力欄とボタンのフォントは、開いたときのフォントを DPI の比で作り直したもの。
+    for id in [EDIT_ID, BUTTON_OK, BUTTON_CANCEL] {
         assert_eq!(
-            right_margin(&after, id),
-            2 * right_margin(&before, id),
+            font_height(&after, id),
+            scaled_font(font_height(&before, id)),
             "{id}: {after:#}"
         );
     }
-    // 上の行はメッセージのフォントの 1 行の高さなので、フォントを作り直すと高くなる。
+    // 上の行はメッセージのフォントを新しい DPI で作り直し、その 1 行の高さで並べ直す。
+    let expected = scaled_font(font_height(&before, HEADER_ID));
+    let actual = font_height(&after, HEADER_ID);
     assert!(
-        number(&control(&after, HEADER_ID)["height"])
-            > number(&control(&before, HEADER_ID)["height"]),
+        actual.abs_diff(expected) <= 1,
+        "{actual} for {expected}: {after:#}"
+    );
+    let (header_before, header_after) = (
+        number(&control(&before, HEADER_ID)["height"]),
+        number(&control(&after, HEADER_ID)["height"]),
+    );
+    assert_eq!(
+        header_after > header_before,
+        to > from,
         "{before:#}\n{after:#}"
     );
 
