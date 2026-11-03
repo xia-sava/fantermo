@@ -338,7 +338,7 @@ run-hidden は利用者のセッションのウィンドウステーション（
 1. `fantermo-core/src/config.rs`: 型にフィールドを足し，`Default` に既定値を入れます．既定値と範囲は `DEFAULT_*`・`*_RANGE` の定数にします．数か名前一つだけの項目なら，項目の一覧 `SCALARS` に 1 行（テーブル，キー，値の種類 `ScalarKind` と範囲，フィールドを読み書きする `get`・`set`）を足します．読む処理（`parse`）と書き戻す処理（`config_edit::update`）はこの一覧を上から順に処理し，設定ダイアログの入力欄から読む処理（`parse_input`）は項目を名前で引きます．`parse` は，型が違う・範囲外・知らない名前なら警告を残してその項目だけ前の値にします．名前で書く値は，その型に値と名前の表 `NAMES` を置き，`ALL`・`name`・`from_name` をそこから作ります．`TEMPLATE` に説明と `# キー = 既定値` の行を足します．
 2. 一覧に載らない項目（`font.family`，`default_profile`，プロファイル，背景画像の一覧，色，キーの割り当て）は，読む処理と書き戻す処理をそれぞれ書きます．読む処理は，一覧の項目のあるテーブルなら `config/read.rs` の `read_table` に，ほかは `parse` に書きます（`parse` が `read_table` で回すのは，一覧の項目のあるテーブルだけです）．書き戻す処理は `fantermo-core/src/config_edit.rs` の `update` から呼びます．
 3. `fantermo/src/window/mod.rs` と `window/settings.rs`: `App` に値を持たせ，`App::new`（`mod.rs`）・`apply_config`・**`config_in_use`**（`settings.rs`）に足します．`config_in_use` に足し忘れると，読み直しと設定ダイアログで値が戻ります．反映に配置やアトラスの作り直しが要るかを `apply_config` で決めます．
-4. `fantermo/src/settings_dialog.rs`: コントロールの ID（`ID_*`），`Controls` のフィールド，`create` で作る，`fill` で値を入れる，`read` で `Config` に戻す（不正なら入力欄を返してフォーカスする）．コントロールは種類ごとの部品で作ります．
+4. `fantermo/src/settings_dialog/mod.rs`: コントロールの ID（`ID_*`），`Controls` のフィールド，`create` で作る，`fill` で値を入れる，`read` で `Config` に戻す（不正なら入力欄を返してフォーカスする）．コントロールは種類ごとの部品（`settings_dialog/widgets.rs`）で作ります．
    - 数なら `NumberField`．読み方（`config::parse_input` に項目の名前を渡す）・見せ方・矢印での動かし方・読めないときの文を `NumberKind` の定数に書き，`Controls::number_fields()` に足します．矢印での増減，矢印の配置，`EN_CHANGE` の振り分けはこの一覧を回します．
    - ラジオボタンの組なら `RadioGroup`．選択肢と画面の名前の配列を渡し，`Controls::radio_groups()` に足します．`BN_CLICKED` の振り分けはこの一覧を回します．
    - 固定の選択肢のコンボボックスなら `ChoiceBox`．選択肢と画面の名前を渡します．`CBN_SELCHANGE` の処理は `dialog_proc` に書きます．
@@ -350,7 +350,7 @@ run-hidden は利用者のセッションのウィンドウステーション（
 
 1. `fantermo-core/src/keymap.rs`: `Action` に足し，`ACTION_NAMES`（設定ファイルに書く snake_case の名前）と `Action::ALL` に足します（どちらも配列の長さを書いています）．既定で割り当てるなら `DEFAULT_BINDINGS` に足します．
 2. `fantermo/src/window/keys.rs`: `run_bound_action` に動作を書きます．成り立たないときにシェルへ送るか，押し続けたときに繰り返すかもここで決めます．
-3. `fantermo/src/settings_dialog.rs`: `ACTION_LABELS` に画面の名前を足します．`Action::ALL` と同じ順に並べます．
+3. `fantermo/src/settings_dialog/mod.rs`: `ACTION_LABELS` に画面の名前を足します．`Action::ALL` と同じ順に並べます．
 4. メニューにも同じ項目があれば，`context_menu.rs` の `MenuCommand::action` でつなぎます（メニューに添えるキーが割り当てから決まります）．
 5. `TEMPLATE` の `[keys]` の説明（`template_lists_the_default_keys` が既定の割り当てとの一致を見ます）．
 
