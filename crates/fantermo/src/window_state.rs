@@ -123,14 +123,20 @@ pub fn write_replacing(path: &Path, text: &str) -> io::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let temporary = temporary_path(path, std::process::id());
-    std::fs::write(&temporary, text)?;
-    if let Err(e) = std::fs::rename(&temporary, path) {
-        if let Err(remove) = std::fs::remove_file(&temporary) {
-            tracing::warn!("cannot remove {}: {remove}", temporary.display());
-        }
-        return Err(e);
+    std::fs::write(&temporary, text)
+        .and_then(|()| std::fs::rename(&temporary, path))
+        .inspect_err(|_| remove_temporary(&temporary))
+}
+
+/// 置き換えに失敗した一時ファイル `temporary` を消す。名前にプロセスの番号が入っていて、
+/// 二度と上書きされないため。
+fn remove_temporary(temporary: &Path) {
+    match std::fs::remove_file(temporary) {
+        Ok(()) => {}
+        // 書き始める前に失敗していれば、ファイルはない。
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => tracing::warn!("cannot remove {}: {e}", temporary.display()),
     }
-    Ok(())
 }
 
 /// ウィンドウのいまの位置・大きさ・最大化。最小化していれば、最大化していないものとする。
@@ -251,6 +257,17 @@ mod tests {
         let broken = dir.join("state.toml.broken");
         assert_eq!(std::fs::read_to_string(&broken).unwrap(), "[window\n");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[window\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn failed_replacement_removes_the_temporary_file() {
+        let dir = scratch_dir("failed-replacement");
+        // 置き換え先がフォルダだと、書くのは成功して置き換えが失敗する。
+        let path = dir.join(STATE_FILE_NAME);
+        std::fs::create_dir_all(&path).unwrap();
+        assert!(write_replacing(&path, "text").is_err());
+        assert!(!temporary_path(&path, std::process::id()).exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
