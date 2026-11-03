@@ -245,12 +245,12 @@ impl Renderer {
             }
             match vt.image_pixels(&view.key) {
                 Ok(Some(pixels)) => {
-                    let decoded = Decoded {
-                        width: pixels.width,
-                        height: pixels.height,
-                        pixels: pixels.to_premultiplied_bgra(),
-                    };
-                    self.add_terminal_image(owner, view.key, &decoded);
+                    // 作れなければ `Decoded::new` が警告する。次のフレームでも読み直す。
+                    if let Some(decoded) =
+                        Decoded::new(pixels.width, pixels.height, pixels.to_premultiplied_bgra())
+                    {
+                        self.add_terminal_image(owner, view.key, &decoded);
+                    }
                 }
                 Ok(None) => {}
                 Err(e) => {
@@ -272,18 +272,18 @@ impl Renderer {
 
     fn add_terminal_image(&mut self, owner: usize, key: ImageKey, decoded: &Decoded) {
         // 端末エミュレーション側の上限に頼らず、Direct3D のテクスチャに収まらない画像は作らない。
-        let texture = if decoded.width > MAX_TEXTURE_SIDE || decoded.height > MAX_TEXTURE_SIDE {
+        let texture = if decoded.width() > MAX_TEXTURE_SIDE || decoded.height() > MAX_TEXTURE_SIDE {
             tracing::warn!(
                 "the terminal image {} ({}x{}) is larger than the texture limit {MAX_TEXTURE_SIDE}",
                 key.id,
-                decoded.width,
-                decoded.height
+                decoded.width(),
+                decoded.height()
             );
             None
         } else {
             self.create_terminal_image_texture(&key, decoded)
         };
-        let pixels = u64::from(decoded.width) * u64::from(decoded.height);
+        let pixels = u64::from(decoded.width()) * u64::from(decoded.height());
         let bytes = texture.as_ref().map_or(0, |_| {
             pixels * TEXTURE_BYTES_PER_PIXEL_NUMERATOR / TEXTURE_BYTES_PER_PIXEL_DENOMINATOR
         });
@@ -300,8 +300,8 @@ impl Renderer {
                 tracing::debug!(
                     "created the terminal image texture {} ({}x{})",
                     key.id,
-                    decoded.width,
-                    decoded.height
+                    decoded.width(),
+                    decoded.height()
                 );
                 Some(texture)
             }
@@ -309,8 +309,8 @@ impl Renderer {
                 tracing::warn!(
                     "failed to create the terminal image texture {} ({}x{}): {e}",
                     key.id,
-                    decoded.width,
-                    decoded.height
+                    decoded.width(),
+                    decoded.height()
                 );
                 None
             }
@@ -319,8 +319,8 @@ impl Renderer {
 
     fn create_image(&self, decoded: &Decoded) -> windows::core::Result<ImageTexture> {
         let desc = D3D11_TEXTURE2D_DESC {
-            Width: decoded.width,
-            Height: decoded.height,
+            Width: decoded.width(),
+            Height: decoded.height(),
             // 0 はすべてのレベルのミップマップ。縮めて描くときに粗くならないように持つ。
             MipLevels: 0,
             ArraySize: 1,
@@ -348,7 +348,7 @@ impl Renderer {
                 &texture,
                 0,
                 None,
-                decoded.pixels.as_ptr().cast(),
+                decoded.pixels().as_ptr().cast(),
                 decoded.stride(),
                 0,
             )
@@ -364,8 +364,8 @@ impl Renderer {
         unsafe { self.context.GenerateMips(&view) };
         Ok(ImageTexture {
             view,
-            width: decoded.width,
-            height: decoded.height,
+            width: decoded.width(),
+            height: decoded.height(),
         })
     }
 

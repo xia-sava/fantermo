@@ -28,20 +28,52 @@ use crate::tab_icon::{self, RealIcon};
 pub const MAX_TEXTURE_SIDE: u32 = 16384;
 
 /// 1 ピクセルのバイト数（乗算済みアルファの BGRA）。
-const BYTES_PER_PIXEL: u32 = 4;
+pub const BYTES_PER_PIXEL: u32 = 4;
 
 /// タブのアイコンの画像で、大きさを見るコマの数の上限。
 const MAX_ICON_FRAMES: u32 = 32;
 
-/// 読んだ画像。乗算済みアルファの BGRA で、行の間は詰めてある。
+/// 読んだ画像。乗算済みアルファの BGRA で、行の間は詰めてある。ピクセルのバイト数が
+/// 幅 × 高さ × 4 であることは [`Decoded::new`] が保証する。
 #[derive(Clone, Debug)]
 pub struct Decoded {
-    pub width: u32,
-    pub height: u32,
-    pub pixels: Vec<u8>,
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
 }
 
 impl Decoded {
+    /// 幅 `width`、高さ `height` の画像。`pixels` のバイト数が幅 × 高さ × 4 でなければ、警告して
+    /// `None` を返す。
+    pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Option<Self> {
+        let expected = u128::from(width) * u128::from(height) * u128::from(BYTES_PER_PIXEL);
+        if pixels.len() as u128 != expected {
+            tracing::warn!(
+                "the image {width}x{height} needs {expected} bytes of pixels, but has {}",
+                pixels.len()
+            );
+            return None;
+        }
+        Some(Self {
+            width,
+            height,
+            pixels,
+        })
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// 乗算済みアルファの BGRA のバイト列。
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
     /// 一行のバイト数。
     pub fn stride(&self) -> u32 {
         self.width * BYTES_PER_PIXEL
@@ -166,21 +198,12 @@ impl Decoder {
                 fitted_height,
                 WICBitmapInterpolationModeFant,
             )?;
-            let mut decoded = Decoded {
-                width: side,
-                height: side,
-                pixels: Vec::new(),
-            };
-            decoded.pixels = vec![0; (decoded.stride() * side) as usize];
-            let stride = decoded.stride();
+            let stride = side * BYTES_PER_PIXEL;
+            let mut pixels = vec![0; (stride * side) as usize];
             let start = (y * stride + x * BYTES_PER_PIXEL) as usize;
             let length = ((fitted_height - 1) * stride + fitted_width * BYTES_PER_PIXEL) as usize;
-            scaler.CopyPixels(
-                std::ptr::null(),
-                stride,
-                &mut decoded.pixels[start..start + length],
-            )?;
-            Ok(decoded)
+            scaler.CopyPixels(std::ptr::null(), stride, &mut pixels[start..start + length])?;
+            Decoded::new(side, side, pixels).ok_or_else(windows::core::Error::empty)
         }
     }
 
@@ -223,14 +246,11 @@ impl Decoder {
                 )?;
                 scaler.cast()?
             };
-            let mut decoded = Decoded {
-                width: stored_width,
-                height: stored_height,
-                pixels: Vec::new(),
-            };
-            decoded.pixels = vec![0; (decoded.stride() * stored_height) as usize];
-            source.CopyPixels(std::ptr::null(), decoded.stride(), &mut decoded.pixels)?;
-            Ok(decoded)
+            let stride = stored_width * BYTES_PER_PIXEL;
+            let mut pixels = vec![0; (stride * stored_height) as usize];
+            source.CopyPixels(std::ptr::null(), stride, &mut pixels)?;
+            Decoded::new(stored_width, stored_height, pixels)
+                .ok_or_else(windows::core::Error::empty)
         }
     }
 }
@@ -324,9 +344,9 @@ mod tests {
         const OPAQUE: [u8; 4] = [0x10, 0x20, 0xc0, 0xff];
         const HALF: [u8; 4] = [0x00, 0x00, 0xff, 0x80];
         let decoded = decode(icon(OPAQUE, HALF, [0; 4]));
-        assert_eq!(&decoded.pixels[..4], OPAQUE);
+        assert_eq!(&decoded.pixels()[..4], OPAQUE);
         // 半透明の赤は、色にアルファを掛けた値になる。
-        assert_eq!(&decoded.pixels[8..12], [0x00, 0x00, 0x80, 0x80]);
+        assert_eq!(&decoded.pixels()[8..12], [0x00, 0x00, 0x80, 0x80]);
     }
 
     #[test]
@@ -335,8 +355,8 @@ mod tests {
         const RED: [u8; 4] = [0x00, 0x00, 0xff, 0x00];
         const TRANSPARENT: [u8; 4] = [0x00; 4];
         let decoded = decode(icon(RED, TRANSPARENT, [0x00, 0x00, 0xc0, 0x00]));
-        assert_eq!(&decoded.pixels[..4], [0x00, 0x00, 0xff, 0xff]);
-        assert_eq!(&decoded.pixels[8..12], TRANSPARENT);
+        assert_eq!(&decoded.pixels()[..4], [0x00, 0x00, 0xff, 0xff]);
+        assert_eq!(&decoded.pixels()[8..12], TRANSPARENT);
     }
 
     #[test]
@@ -349,9 +369,22 @@ mod tests {
         let decoded = decoder()
             .decode_real_icon(&RealIcon::Executable(cmd), SIDE)
             .expect("the icon of cmd.exe");
-        assert_eq!((decoded.width, decoded.height), (SIDE, SIDE));
-        assert_eq!(decoded.pixels.len(), (SIDE * SIDE * 4) as usize);
-        assert!(decoded.pixels.chunks(4).any(|pixel| pixel[3] > 0));
+        assert_eq!((decoded.width(), decoded.height()), (SIDE, SIDE));
+        assert_eq!(decoded.pixels().len(), (SIDE * SIDE * 4) as usize);
+        assert!(decoded.pixels().chunks(4).any(|pixel| pixel[3] > 0));
+    }
+
+    #[test]
+    fn decoded_images_need_pixels_of_width_times_height_times_four_bytes() {
+        let image = Decoded::new(3, 2, vec![0; 24]).expect("the exact length");
+        assert_eq!((image.width(), image.height(), image.stride()), (3, 2, 12));
+        assert_eq!(image.pixels().len(), 24);
+        assert!(Decoded::new(3, 2, vec![0; 23]).is_none());
+        assert!(Decoded::new(3, 2, vec![0; 25]).is_none());
+        assert!(Decoded::new(3, 2, Vec::new()).is_none());
+        assert!(Decoded::new(0, 5, Vec::new()).is_some());
+        // 幅 × 高さ × 4 が u32 に収まらなくても、数え間違えて通さない。
+        assert!(Decoded::new(u32::MAX, u32::MAX, vec![0; 16]).is_none());
     }
 
     #[test]

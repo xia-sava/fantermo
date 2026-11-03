@@ -45,7 +45,13 @@ use windows::{
 };
 use windows_numerics::{Matrix3x2, Vector2};
 
-use crate::{atlas, background::Decoded, boxdraw::Shape, bridge, paint::arc};
+use crate::{
+    atlas,
+    background::{BYTES_PER_PIXEL, Decoded},
+    boxdraw::Shape,
+    bridge,
+    paint::arc,
+};
 
 /// プロファイル名から選ぶ背景の色。青・水色・青緑・緑・藍・紫の淡い色で、警告に使う赤・橙・黄は入れない。
 /// 濃い色の絵と頭文字が読め、明るいタブの白と灰色のどちらからも、暗いタブからも分かれる明るさの色だけを
@@ -540,15 +546,11 @@ pub fn draw_generated(
     };
     ended?;
     drop(target);
-    let mut decoded = Decoded {
-        width: size,
-        height: size,
-        pixels: Vec::new(),
-    };
-    decoded.pixels = vec![0; (decoded.stride() * size) as usize];
+    let stride = size * BYTES_PER_PIXEL;
+    let mut pixels = vec![0; (stride * size) as usize];
     // SAFETY: 描き終えたビットマップから、stride × 高さのバイトへ写す。
-    unsafe { bitmap.CopyPixels(std::ptr::null(), decoded.stride(), &mut decoded.pixels)? };
-    Ok(decoded)
+    unsafe { bitmap.CopyPixels(std::ptr::null(), stride, &mut pixels)? };
+    Decoded::new(size, size, pixels).ok_or_else(windows::core::Error::empty)
 }
 
 /// 正方形、絵、頭文字の順に描く。
@@ -594,15 +596,15 @@ fn draw_picture(
         dpiY: PIXEL_DPI,
     };
     let size = D2D_SIZE_U {
-        width: picture.width,
-        height: picture.height,
+        width: picture.width(),
+        height: picture.height(),
     };
     // SAFETY: 描画中の target で、ピクセルと properties は呼び出しの間は生きている。ピクセルは一行
     // stride バイトで height 行ある。
     unsafe {
         let bitmap = target.CreateBitmap(
             size,
-            Some(picture.pixels.as_ptr().cast()),
+            Some(picture.pixels().as_ptr().cast()),
             picture.stride(),
             &properties,
         )?;

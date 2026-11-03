@@ -233,9 +233,9 @@ fn create_bitmap(image: &Decoded) -> windows::core::Result<HBITMAP> {
     let info = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: image.width as i32,
+            biWidth: image.width() as i32,
             // 負の高さは、上の行から並べることを表す。
-            biHeight: -(image.height as i32),
+            biHeight: -(image.height() as i32),
             biPlanes: 1,
             biBitCount: 32,
             biCompression: BI_RGB.0,
@@ -246,9 +246,11 @@ fn create_bitmap(image: &Decoded) -> windows::core::Result<HBITMAP> {
     let mut bits = std::ptr::null_mut();
     // SAFETY: info は初期化済みで、bits は書き込める。
     let bitmap = unsafe { CreateDIBSection(None, &info, DIB_RGB_COLORS, &mut bits, None, 0)? };
-    // SAFETY: bits は高さ × 幅 × 4 バイトの、行の間を詰めた領域で、image.pixels も同じ大きさと並び。
+    let pixels = image.pixels();
+    // SAFETY: bits は高さ × 幅 × 4 バイトの、行の間を詰めた領域で、pixels も同じ大きさと並び
+    // （`Decoded::new` が長さを保証する）。
     unsafe {
-        std::ptr::copy_nonoverlapping(image.pixels.as_ptr(), bits.cast::<u8>(), image.pixels.len());
+        std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits.cast::<u8>(), pixels.len());
     }
     Ok(bitmap)
 }
@@ -384,11 +386,7 @@ mod tests {
     #[test]
     fn bitmaps_have_the_size_and_pixels_of_the_image() {
         // 2×1 の、左が青、右が半透明の赤。
-        let image = Decoded {
-            width: 2,
-            height: 1,
-            pixels: vec![0xff, 0, 0, 0xff, 0, 0, 0x80, 0x80],
-        };
+        let image = Decoded::new(2, 1, vec![0xff, 0, 0, 0xff, 0, 0, 0x80, 0x80]).unwrap();
         let bitmap = create_bitmap(&image).unwrap();
         let mut section = DIBSECTION::default();
         // SAFETY: bitmap は有効なビットマップで、section は書き込める。
@@ -404,7 +402,7 @@ mod tests {
         assert_eq!(section.dsBm.bmBitsPixel, 32);
         // SAFETY: bmBits は 2×4 バイトの有効な領域。
         let bits = unsafe { std::slice::from_raw_parts(section.dsBm.bmBits.cast::<u8>(), 8) };
-        assert_eq!(bits, image.pixels);
+        assert_eq!(bits, image.pixels());
         ItemBitmaps(vec![bitmap]);
     }
 
