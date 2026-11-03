@@ -6572,14 +6572,20 @@ fn a_manifest_that_does_not_verify_offers_nothing() {
     assert_contains(&check_for_update(&server), OFFER_TEXT);
     decline_offer(&server);
 
-    const FETCH_FAILURES: [&str; 4] = [
-        "no signature",
-        "the signature fails",
-        "a signature that is too large",
-        "the connection closes",
-    ];
+    // 署名を取得できなかった場合は、取得の失敗として知らせる。
     // (説明, 更新の情報, 署名)
-    let cases: Vec<(&str, &str, Reply)> = vec![
+    let fetch_failures: Vec<(&str, &str, Reply)> = vec![
+        ("no signature", &manifest, Reply::Status(404)),
+        ("the signature fails", &manifest, Reply::Status(500)),
+        (
+            "a signature that is too large",
+            &manifest,
+            Reply::Zeros(SIGNATURE_MAX_BYTES + 1),
+        ),
+        ("the connection closes", &manifest, Reply::Close),
+    ];
+    // 取得できた署名が合わないか読めない場合は、署名の失敗として知らせる。
+    let bad_signatures: Vec<(&str, &str, Reply)> = vec![
         (
             "signed with another key",
             &manifest,
@@ -6601,8 +6607,6 @@ fn a_manifest_that_does_not_verify_offers_nothing() {
             &manifest,
             Reply::body(source.key.sign(b"something else")),
         ),
-        ("no signature", &manifest, Reply::Status(404)),
-        ("the signature fails", &manifest, Reply::Status(500)),
         ("an empty signature", &manifest, Reply::body("")),
         ("not base64", &manifest, Reply::body("not base64!")),
         ("not text", &manifest, Reply::body(b"\xff\xfe")),
@@ -6622,24 +6626,22 @@ fn a_manifest_that_does_not_verify_offers_nothing() {
             &manifest,
             Reply::body(common::base64(&sha256(manifest.as_bytes()))),
         ),
-        (
-            "a signature that is too large",
-            &manifest,
-            Reply::Zeros(SIGNATURE_MAX_BYTES + 1),
-        ),
-        ("the connection closes", &manifest, Reply::Close),
     ];
-    for (description, body, signature) in cases {
+    let cases = fetch_failures
+        .into_iter()
+        .map(|(description, body, signature)| (CANNOT_FETCH_TEXT, description, body, signature))
+        .chain(
+            bad_signatures
+                .into_iter()
+                .map(|(description, body, signature)| {
+                    (BAD_SIGNATURE_TEXT, description, body, signature)
+                }),
+        );
+    for (expected, description, body, signature) in cases {
         source.host.clear_requests();
         source.host.set(MANIFEST_PATH, Reply::body(body));
         source.host.set(SIGNATURE_PATH, signature);
         let text = check_for_update(&server);
-        // 署名を取得できなかった場合は、取得の失敗として知らせる。
-        let expected = if FETCH_FAILURES.contains(&description) {
-            CANNOT_FETCH_TEXT
-        } else {
-            BAD_SIGNATURE_TEXT
-        };
         assert_contains(&text, expected);
         assert!(!text.contains(OFFER_TEXT), "{description}: {text}");
         assert!(
