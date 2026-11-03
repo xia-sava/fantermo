@@ -101,14 +101,14 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 
 ### `window.rs` の中
 
-- **メッセージの定数と `run`** … `WM_APP_WAKE`（出力と子プロセスの終了），`WM_APP_CONFIG_CHANGED`，`WM_APP_UPDATE`，`WM_APP_CLIPBOARD_PROMPT`，`WM_APP_E2E`，`WM_APP_LAUNCH` とタイマーの番号．`run` がウィンドウと `App` を作り，メッセージループを回します．
+- **メッセージの定数と `run`** … `WM_APP_WAKE`（出力と子プロセスの終了），`WM_APP_CONFIG_CHANGED`，`WM_APP_UPDATE`，`WM_APP_CLIPBOARD_PROMPT`，`WM_APP_E2E`，`WM_APP_LAUNCH`，`WM_APP_DEVICE_REMOVED` とタイマーの番号．`run` がウィンドウと `App` を作り，メッセージループを回します．
 - **配置の関数** … `Insets`，`terminal_area_in_client`，`scroll_bar_area_in_client`，`backdrop_area_in_client`，`grid_size`．クライアント領域を，タブバー，端末を描く領域，余白，スクロールバー，背景画像を敷く領域に分けます．
 - **`App`** … ウィンドウ一つ分の状態．端末の並び（`sessions` と `active`），フォント，`Renderer`，いま使っている設定の値，マウスとタブバーとスクロールバーの操作の途中の状態など．
 - **`App` のメソッド** … キー（`on_key`，`on_key_input`，`run_bound_action`），タブ（`run_tab_command`，`open_startup`，`close_session`，`activate`），起動中の起動（`accept_launch`，`open_pending_launches`），貼り付けとクリップボード，マウスとリンク，スクロールバー，タブバー，メニュー，出力（`on_wake`），大きさ（`on_resize`，`layout`，`resize_sessions`），DPI（`apply_dpi`），設定（`reload_config`，`apply_config`，`config_in_use`，`settings_request`），描画（`render_to`），点滅と画像のアニメーションのタイマー．
 - **借用の外ですること** … `Deferred` と `run_deferred`，`show_about`，`continue_update`，`run_menu_command`，`edit_settings`（`SettingsHost`），`destroy_window`，`save_window_state`，`repost_skipped_wakes`．
 - **`window_proc`** … メッセージごとの振り分け．
 
-ウィンドウプロシージャの中では `App` を `RefCell` で借ります．処理の途中で同じウィンドウへのメッセージがこの場で届くと借用が重なるので，借りられなければそのメッセージを飛ばします（`window_proc` の `with_app`）．飛ばした `WM_APP_WAKE` だけは，借用を手放したところで積み直します．ダイアログ，メニュー，メッセージボックスのように自分でメッセージを回すものは，借用を手放してから開きます．借用を持ったまま開くと，その間に届いた出力や描き直しが飛ばされるためです．入力の処理は開くものを `Deferred` で返し，`window_proc` が借用を外して `run_deferred` で開きます．`DestroyWindow` も同じ理由で借用の外で呼びます．開いている間に最後の端末が終わるとウィンドウが閉じて `App` が解放されるので，`with_app` は呼ばれるたびに `App` を読み直し，もうなければ何もしません．
+ウィンドウプロシージャの中では `App` を `RefCell` で借ります．処理の途中で同じウィンドウへのメッセージがこの場で届くと借用が重なるので，借りられなければそのメッセージを飛ばします（`window_proc` の `with_app`）．飛ばした `WM_APP_WAKE` は，借用を手放したところで積み直します．飛ばした `WM_APP_DEVICE_REMOVED` は，処理できるまでタイマー（`DEVICE_REMOVED_TIMER_ID`）で届け直します．ダイアログ，メニュー，メッセージボックスのように自分でメッセージを回すものは，借用を手放してから開きます．借用を持ったまま開くと，その間に届いた出力や描き直しが飛ばされるためです．入力の処理は開くものを `Deferred` で返し，`window_proc` が借用を外して `run_deferred` で開きます．`DestroyWindow` も同じ理由で借用の外で呼びます．開いている間に最後の端末が終わるとウィンドウが閉じて `App` が解放されるので，`with_app` は呼ばれるたびに `App` を読み直し，もうなければ何もしません．
 
 ## 3. 主な流れ
 
