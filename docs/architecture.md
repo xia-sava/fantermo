@@ -324,7 +324,7 @@ run-hidden は利用者のセッションのウィンドウステーション（
    - 固定の選択肢のコンボボックスなら `ChoiceBox`．選択肢と画面の名前を渡します．`CBN_SELCHANGE` の処理は `dialog_proc` に書きます．
    - 変えたときに反映のほかにも処理が要るものは，`dialog_proc` の一覧を回す分岐より上に，その ID の分岐を書きます．
 5. 書き方を改めるとき（キーの名前を変える，型を変える）は，`config::migrate` の `STEPS` の最後に手順を足します．今の書き方には何もしない手順にします．
-6. テスト: `config.rs` の `template_shows_every_setting_with_its_default`・`all_items_are_read` と範囲のテスト，`config_edit.rs` の書き戻しのテスト，設定ダイアログの e2e（`crates/fantermo/tests/e2e.rs`）．利用者に見える項目なら README も．
+6. テスト: `config.rs` の `template_shows_every_setting_with_its_default`・`all_items_are_read` と範囲のテスト（`SCALARS` の項目は，ひな形の項目，入力欄の範囲，既定値に戻す書き戻しのテストが一覧から数えます），`config_edit.rs` の書き戻しのテスト，設定ダイアログの e2e（`crates/fantermo/tests/e2e.rs`）．利用者に見える項目なら README も．
 
 ### キーの割り当てを足す
 

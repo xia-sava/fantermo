@@ -1467,6 +1467,15 @@ mod tests {
         }
     }
 
+    /// `config` の一覧の項目 `scalar` を、`defaults` の値に戻す。
+    fn reset_scalar(scalar: &Scalar, config: &mut Config, defaults: &Config) {
+        match &scalar.kind {
+            ScalarKind::Float { get, set, .. } => set(config, get(defaults)),
+            ScalarKind::Int { get, set, .. } => set(config, get(defaults)),
+            ScalarKind::Name { get, set, .. } => assert!(set(config, get(defaults))),
+        }
+    }
+
     /// 書いた結果を読むと、警告なしで `expected` になる。
     fn assert_reads_as(text: &str, expected: &Config) {
         let parsed = config::parse(text, &Config::default());
@@ -1523,32 +1532,28 @@ mod tests {
         // プロファイルはテーブルを消す。
         assert_eq!(back, TEMPLATE);
 
-        // 一つずつ戻しても同じ。
+        // 一つずつ戻しても同じ。一覧に載らない項目を戻してから、一覧の項目を上から一つずつ戻す。
         let mut current = edited.clone();
         let mut text = text;
         let defaults = Config::default();
-        let steps: [fn(&mut Config, &Config); 10] = [
-            |c, d| c.font.size_pt = d.font.size_pt,
-            |c, d| c.window = d.window.clone(),
-            |c, d| c.background.image_opacity = d.background.image_opacity,
-            |c, d| {
+        /// 戻す手順。二つ目の引数は既定値。
+        type Step = Box<dyn Fn(&mut Config, &Config)>;
+        let mut steps: Vec<Step> = vec![
+            Box::new(|c, d| {
                 c.background.images = d.background.images.clone();
                 c.background.fit = d.background.fit;
-            },
-            |c, d| {
+            }),
+            Box::new(|c, d| {
                 c.profiles = d.profiles.clone();
                 c.default_profile = d.default_profile.clone();
-            },
-            |c, _| c.keys.bind(combo("ctrl+tab"), Some(Action::NextTab)),
-            |c, d| c.scroll_bar = d.scroll_bar.clone(),
-            |c, d| c.font.families = d.font.families.clone(),
-            |c, d| c.keys = d.keys.clone(),
-            |c, d| {
-                c.paste = d.paste.clone();
-                c.clipboard = d.clipboard.clone();
-                c.font.wide_glyph = d.font.wide_glyph;
-            },
+            }),
+            Box::new(|c, _| c.keys.bind(combo("ctrl+tab"), Some(Action::NextTab))),
+            Box::new(|c, d| c.font.families = d.font.families.clone()),
+            Box::new(|c, d| c.keys = d.keys.clone()),
         ];
+        for scalar in SCALARS {
+            steps.push(Box::new(|c, d| reset_scalar(scalar, c, d)));
+        }
         for step in steps {
             let mut next = current.clone();
             step(&mut next, &defaults);

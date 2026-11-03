@@ -1491,31 +1491,6 @@ pub fn parse_input<T: InputNumber>(name: &str, text: &str) -> Option<T> {
     range.contains(&value).then_some(value)
 }
 
-/// 入力された文字列を、フォントの大きさ（ポイント）として読む（[`parse_input`]）。
-pub fn parse_font_size(text: &str) -> Option<f32> {
-    parse_input("font.size", text)
-}
-
-/// 入力された文字列を、スクロールバーの幅として読む（[`parse_input`]）。
-pub fn parse_scroll_bar_width(text: &str) -> Option<u32> {
-    parse_input("scroll_bar.width", text)
-}
-
-/// 入力された文字列を、余白として読む（[`parse_input`]）。
-pub fn parse_padding(text: &str) -> Option<u32> {
-    parse_input("window.padding", text)
-}
-
-/// 入力された文字列を、大きな貼り付けとして確認する大きさ（KiB）として読む（[`parse_input`]）。
-pub fn parse_paste_confirm_size(text: &str) -> Option<u32> {
-    parse_input("paste.confirm_size", text)
-}
-
-/// 入力された文字列を、背景画像の不透明度として読む（[`parse_input`]）。
-pub fn parse_image_opacity(text: &str) -> Option<f32> {
-    parse_input("background.image_opacity", text)
-}
-
 /// 解釈した設定と、読めなかった項目についての警告。
 #[derive(Debug)]
 pub struct Parsed {
@@ -2673,11 +2648,45 @@ mod tests {
             }
         );
         // どの項目も外した行として書いてある。
-        let settings = text
-            .lines()
-            .filter(|line| !line.starts_with('#') && line.contains(" = "))
-            .count();
-        assert_eq!(settings, 10 + 9 + 2 + 15, "{text}");
+        let mut section = String::new();
+        let mut written: Vec<String> = Vec::new();
+        for line in text.lines() {
+            if let Some(name) = line
+                .strip_prefix('[')
+                .and_then(|line| line.strip_suffix(']'))
+            {
+                section = name.to_owned();
+            } else if let Some((key, _)) = line.split_once(" = ")
+                && !line.starts_with('#')
+            {
+                written.push(if section.is_empty() {
+                    key.to_owned()
+                } else {
+                    format!("{section}.{key}")
+                });
+            }
+        }
+        let mut expected: Vec<String> = ["default_profile", "font.family"]
+            .map(str::to_owned)
+            .into_iter()
+            .chain(SCALARS.iter().map(Scalar::name))
+            .chain(ColorTable::ALL.into_iter().flat_map(|table| {
+                let section = table.path().join(".");
+                table
+                    .keys()
+                    .iter()
+                    .map(move |key| format!("{section}.{key}"))
+            }))
+            .chain(
+                Keymap::default()
+                    .bindings()
+                    .iter()
+                    .map(|(combo, _)| format!("keys.\"{combo}\"")),
+            )
+            .collect();
+        written.sort();
+        expected.sort();
+        assert_eq!(written, expected, "{text}");
         // 背景色と文字の色の例は、既定の配色の色。
         assert_eq!(
             parsed.config.colors.terminal_colors(),
@@ -3026,7 +3035,36 @@ mod tests {
         );
         assert!(!parsed.syntax_error);
         assert_eq!(parsed.config, previous);
-        assert_eq!(parsed.warnings.len(), 18, "{:?}", parsed.warnings);
+        // 一覧の項目と、一覧に載らない項目のどれにも、一つずつ警告がある。
+        let mut warned: Vec<String> = parsed
+            .warnings
+            .iter()
+            .map(|warning| {
+                let rest = warning.message.trim_start_matches("ignoring ");
+                let end = rest.find([':', ' ']).unwrap_or(rest.len());
+                rest[..end].to_owned()
+            })
+            .collect();
+        let mut expected: Vec<String> = SCALARS
+            .iter()
+            .map(Scalar::name)
+            .chain(
+                [
+                    "shell",
+                    "default_profile",
+                    "font.family",
+                    "keys.\"ctrl+tab\"",
+                    "keys.\"ctrl+page_down\"",
+                    "colors.foreground",
+                    "colors.tab_bar.bar",
+                    "background.images",
+                ]
+                .map(str::to_owned),
+            )
+            .collect();
+        warned.sort();
+        expected.sort();
+        assert_eq!(warned, expected, "{:?}", parsed.warnings);
         // 配列でない profiles も、前のプロファイルのまま。
         let parsed = super::parse("profiles = 'zsh'\ndefault_profile = 'zsh'\n", &previous);
         assert_eq!(parsed.config.profiles, previous.profiles);
@@ -3080,10 +3118,11 @@ mod tests {
         let parsed = super::parse("[paste]\nconfirm_size = 'x'\n", &previous);
         assert_eq!(parsed.config.paste.confirm_size, 64);
 
-        assert_eq!(parse_paste_confirm_size(" 0 "), Some(0));
-        assert_eq!(parse_paste_confirm_size("1048576"), Some(1_048_576));
+        let input = |text: &str| parse_input::<u32>("paste.confirm_size", text);
+        assert_eq!(input(" 0 "), Some(0));
+        assert_eq!(input("1048576"), Some(1_048_576));
         for text in ["", "1048577", "1.5", "-1", "big"] {
-            assert_eq!(parse_paste_confirm_size(text), None, "{text:?}");
+            assert_eq!(input(text), None, "{text:?}");
         }
     }
 
@@ -3432,31 +3471,73 @@ mod tests {
         }
     }
 
+    /// 入力欄の文字列 `text` を、数の項目 `scalar` の値として読めるか。
+    fn input_is_read(scalar: &Scalar, text: &str) -> bool {
+        let name = scalar.name();
+        match scalar.kind {
+            ScalarKind::Float { .. } => parse_input::<f32>(&name, text).is_some(),
+            ScalarKind::Int { .. } => parse_input::<u32>(&name, text).is_some(),
+            ScalarKind::Name { .. } => panic!("{name} is not a number"),
+        }
+    }
+
     #[test]
     fn inputs_are_checked_like_the_file() {
-        assert_eq!(parse_font_size(" 10.5 "), Some(10.5));
-        assert_eq!(parse_font_size("1"), Some(1.0));
-        assert_eq!(parse_font_size("128"), Some(128.0));
-        for text in ["", "0", "0.5", "129", "nan", "inf", "12pt", "-3"] {
-            assert_eq!(parse_font_size(text), None, "{text:?}");
+        // 数の項目は、範囲の中を読み、範囲の外と数でないものを読まない。ファイルに書いたときも同じ。
+        for scalar in SCALARS {
+            let (accepted, rejected) = match &scalar.kind {
+                ScalarKind::Float { range, .. } => {
+                    let (start, end) = (*range.start(), *range.end());
+                    (
+                        [start, end, (start + end) / 2.0].map(|value| value.to_string()),
+                        [
+                            (start - 0.01).to_string(),
+                            (end + 0.01).to_string(),
+                            "nan".to_owned(),
+                        ],
+                    )
+                }
+                ScalarKind::Int { range, .. } => (
+                    [
+                        *range.start(),
+                        *range.end(),
+                        (range.start() + range.end()) / 2,
+                    ]
+                    .map(|value| value.to_string()),
+                    [
+                        (range.end() + 1).to_string(),
+                        "-1".to_owned(),
+                        "1.5".to_owned(),
+                    ],
+                ),
+                ScalarKind::Name { .. } => continue,
+            };
+            let file_is_read = |text: &str| {
+                let parsed = parse(&format!("[{}]\n{} = {text}\n", scalar.table, scalar.key));
+                parsed.warnings.is_empty()
+            };
+            let name = scalar.name();
+            for text in &accepted {
+                assert!(input_is_read(scalar, &format!(" {text} ")), "{name} {text}");
+                assert!(file_is_read(text), "{name} {text}");
+            }
+            for text in &rejected {
+                assert!(!input_is_read(scalar, text), "{name} {text}");
+                assert!(!file_is_read(text), "{name} {text}");
+            }
+            for text in ["", "12pt", "wide"] {
+                assert!(!input_is_read(scalar, text), "{name} {text:?}");
+            }
         }
-        assert_eq!(parse_padding(" 0 "), Some(0));
-        assert_eq!(parse_padding("64"), Some(64));
-        for text in ["", "65", "4.5", "-1", "wide"] {
-            assert_eq!(parse_padding(text), None, "{text:?}");
-        }
-        assert_eq!(parse_image_opacity(" 0.75 "), Some(0.75));
-        assert_eq!(parse_image_opacity("0"), Some(0.0));
-        assert_eq!(parse_image_opacity("1"), Some(1.0));
-        for text in ["", "-0.01", "1.01", "nan", "80%"] {
-            assert_eq!(parse_image_opacity(text), None, "{text:?}");
-        }
-        assert_eq!(parse_scroll_bar_width(" 16 "), Some(16));
-        assert_eq!(parse_scroll_bar_width("4"), Some(4));
-        assert_eq!(parse_scroll_bar_width("64"), Some(64));
-        for text in ["", "3", "65", "12.5", "-1", "wide"] {
-            assert_eq!(parse_scroll_bar_width(text), None, "{text:?}");
-        }
+        assert_eq!(parse_input::<f32>("font.size", " 10.5 "), Some(10.5));
+        assert_eq!(
+            parse_input::<f32>("background.image_opacity", "0.75"),
+            Some(0.75)
+        );
+        // 一覧にない名前と、種類の違う項目は読まない。
+        assert_eq!(parse_input::<f32>("font.weight", "1"), None);
+        assert_eq!(parse_input::<u32>("font.size", "12"), None);
+        assert_eq!(parse_input::<f32>("font.wide_glyph", "1"), None);
     }
 
     #[test]
