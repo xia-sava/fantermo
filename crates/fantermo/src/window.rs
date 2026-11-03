@@ -2581,6 +2581,11 @@ impl App {
             }
         };
         tracing::info!("recreated the renderer after losing the Direct3D device");
+        // 最小化している間は描かないので、描けたときを待たずに数え直す。
+        // SAFETY: self.hwnd は有効なウィンドウ。
+        if unsafe { IsIconic(self.hwnd) }.as_bool() {
+            self.renderer_recreations = 0;
+        }
         let renderer = self.renderer.insert(renderer);
         for session in &mut self.sessions {
             let Some(image) = &session.background_image else {
