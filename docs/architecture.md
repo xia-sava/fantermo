@@ -100,7 +100,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `settings_dialog`・`key_capture` | 設定ダイアログ．キーの割り当てで押したキーを読み取るダイアログ．`settings_dialog` は，ダイアログ全体（`State`，`dialog_proc`，ページの型が使う `Page` と `DialogContext`）を `settings_dialog/mod.rs`，ページを `appearance.rs`・`background.rs`・`behavior.rs`・`profiles.rs`・`keys.rs`・`colors.rs`，コントロールを作る部品と種類ごとの部品を `widgets.rs` に置く |
 | `text_dialog`・`paste_editor`・`about` | 入力欄のダイアログと，その上に作った貼り付けの編集と「fantermo について」 |
 | `modal` | 自分で作ったダイアログを開いている間のメッセージのループ |
-| `dialog` | 自分で作るダイアログ（設定ダイアログ，入力欄のダイアログ，キーを読み取るダイアログ）に共通の下回り．クラスの登録，状態の結び付け（`attach_state`・`state_of`・`on_destroy`），96 DPI の寸法の拡大（`scale`），置き場所，フォント（`OwnedFont`）．メッセージボックスを開く `message_box` も置く |
+| `dialog` | 自分で作るダイアログ（設定ダイアログ，入力欄のダイアログ，キーを読み取るダイアログ）に共通の処理．クラスの登録，状態の結び付け（`attach_state`・`state_of`・`on_destroy`），96 DPI の寸法の拡大（`scale`），置き場所，フォント（`OwnedFont`）．メッセージボックスを開く `message_box` も置く |
 | `notice`・`clipboard_prompt` | 警告のメッセージボックス（話題 `Topic` ごとに一つ）．クリップボードの読み取りの確認 |
 | `clipboard`・`link_opener`・`file_dialog`・`known_folder` | Windows のクリップボード，リンクと設定ファイルを開く処理，ファイルを選ぶダイアログ，既知のフォルダ |
 | `update`・`update/` | 更新の確認と適用（3 節の「更新の確認と適用」） |
