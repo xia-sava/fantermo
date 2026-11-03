@@ -203,6 +203,8 @@ pub enum RefusedLink {
     Empty,
     /// `file:` の URI が、ドライブ名も接続先もないパス（Unix のパスなど）を指す。
     NotWindowsPath,
+    /// `file:` の URI が、空でも `localhost` でもドライブ名でもない接続先を持つ。
+    RemoteHost,
 }
 
 impl std::fmt::Display for RefusedLink {
@@ -213,6 +215,7 @@ impl std::fmt::Display for RefusedLink {
             Self::InvalidCharacter => write!(f, "invalid character"),
             Self::Empty => write!(f, "nothing after the scheme"),
             Self::NotWindowsPath => write!(f, "not a Windows path"),
+            Self::RemoteHost => write!(f, "a file URI with a host"),
         }
     }
 }
@@ -270,7 +273,8 @@ fn percent_encode_non_ascii(text: &str) -> String {
 }
 
 /// `file:` の scheme のあと（`//接続先/パス` か `/パス`）を、Windows のパスにする。
-/// 接続先が空か `localhost` ならドライブ名で始まるパス、それ以外なら UNC のパス。
+/// 接続先が空か `localhost` ならドライブ名で始まるパスだけを通す。ほかの接続先は、開くと相手の
+/// ホストへ接続と認証が起きる（`\\.\` や `\\?\` になる形も含む）ので断る。
 fn file_path(rest: &str) -> Result<String, RefusedLink> {
     let (host, path) = match rest.strip_prefix("//") {
         Some(authority_and_path) => match authority_and_path.find('/') {
@@ -295,13 +299,7 @@ fn file_path(rest: &str) -> Result<String, RefusedLink> {
         }
         return Ok(local.replace('/', "\\"));
     }
-    if host.chars().any(|c| c.is_control() || c == '"') {
-        return Err(RefusedLink::InvalidCharacter);
-    }
-    if path.trim_matches('/').is_empty() {
-        return Err(RefusedLink::Empty);
-    }
-    Ok(format!("\\\\{host}{}", path.replace('/', "\\")))
+    Err(RefusedLink::RemoteHost)
 }
 
 /// `C:` のようなドライブ名で始まり、そのあとが空か区切りの文字。
@@ -626,9 +624,24 @@ mod tests {
             ("file:/C:/a", r"C:\a"),
             ("file://C:/a", r"C:\a"),
             ("file:///C:", "C:"),
-            ("file://server/share/a.txt", r"\\server\share\a.txt"),
+            ("file://LOCALHOST/C:/a", r"C:\a"),
         ] {
             assert_eq!(open_target(uri), Ok(OpenTarget::Path(path.into())), "{uri}");
+        }
+    }
+
+    #[test]
+    fn file_uris_with_a_host_are_refused() {
+        for uri in [
+            "file://server/share/a.txt",
+            "file://server/",
+            "file://server",
+            "file://./pipe/a",
+            "file://?/C:/a",
+            "file://127.0.0.1/C:/a",
+            "file://%2E/pipe/a",
+        ] {
+            assert_eq!(open_target(uri), Err(RefusedLink::RemoteHost), "{uri}");
         }
     }
 
@@ -650,6 +663,5 @@ mod tests {
             open_target("file:///C:/a%zz"),
             Err(RefusedLink::InvalidCharacter)
         );
-        assert_eq!(open_target("file://server/"), Err(RefusedLink::Empty));
     }
 }
