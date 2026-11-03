@@ -1,5 +1,7 @@
 //! Windows のクリップボードの文字列。
 
+use std::time::Duration;
+
 use windows::Win32::{
     Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND},
     System::{
@@ -11,13 +13,41 @@ use windows::Win32::{
     },
 };
 
+/// クリップボードを開くのに失敗したときの、試す回数の上限（最初の 1 回を含む）。ほかのアプリが
+/// 短い間だけ開いているところに当たっても、失敗にしないため。
+const OPEN_ATTEMPTS: u32 = 5;
+
+/// クリップボードを開くのをやり直すまでの待ち。
+const OPEN_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+
+/// `attempt` を成功するまで、最大 `attempts` 回試す。失敗するたびに `interval` 待ち、最後の失敗は返す。
+fn retry<T, E>(
+    attempts: u32,
+    interval: Duration,
+    mut attempt: impl FnMut() -> Result<T, E>,
+) -> Result<T, E> {
+    let mut tried = 1;
+    loop {
+        match attempt() {
+            Err(_) if tried < attempts => {
+                tried += 1;
+                std::thread::sleep(interval);
+            }
+            result => return result,
+        }
+    }
+}
+
 /// クリップボードを開いている間だけ生きる。破棄すると閉じる。
 struct OpenedClipboard;
 
 impl OpenedClipboard {
+    /// 開く。ほかのアプリが開いていて失敗したら、[`OPEN_ATTEMPTS`] 回までやり直す。
     fn open(owner: HWND) -> windows::core::Result<Self> {
-        // SAFETY: owner は呼び出し元の有効なウィンドウ。閉じるのは Drop で一度だけ。
-        unsafe { OpenClipboard(Some(owner))? };
+        retry(OPEN_ATTEMPTS, OPEN_RETRY_INTERVAL, || {
+            // SAFETY: owner は呼び出し元の有効なウィンドウ。閉じるのは Drop で一度だけ。
+            unsafe { OpenClipboard(Some(owner)) }
+        })?;
         Ok(Self)
     }
 }
@@ -152,5 +182,30 @@ fn free(memory: HGLOBAL) {
     // SAFETY: memory は GlobalAlloc で確保し、まだ誰にも渡していない。
     if let Err(e) = unsafe { GlobalFree(Some(memory)) } {
         tracing::warn!("failed to free clipboard memory: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_stops_at_the_first_success() {
+        let mut calls = 0;
+        let result = retry(5, Duration::ZERO, || {
+            calls += 1;
+            if calls < 3 { Err("busy") } else { Ok(calls) }
+        });
+        assert_eq!(result, Ok(3));
+    }
+
+    #[test]
+    fn retry_gives_up_after_the_attempts_and_returns_the_last_error() {
+        let mut calls = 0;
+        let result: Result<(), u32> = retry(5, Duration::ZERO, || {
+            calls += 1;
+            Err(calls)
+        });
+        assert_eq!(result, Err(5));
     }
 }
