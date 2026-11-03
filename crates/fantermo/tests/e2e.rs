@@ -6572,6 +6572,12 @@ fn a_manifest_that_does_not_verify_offers_nothing() {
     assert_contains(&check_for_update(&server), OFFER_TEXT);
     decline_offer(&server);
 
+    const FETCH_FAILURES: [&str; 4] = [
+        "no signature",
+        "the signature fails",
+        "a signature that is too large",
+        "the connection closes",
+    ];
     // (説明, 更新の情報, 署名)
     let cases: Vec<(&str, &str, Reply)> = vec![
         (
@@ -6628,7 +6634,13 @@ fn a_manifest_that_does_not_verify_offers_nothing() {
         source.host.set(MANIFEST_PATH, Reply::body(body));
         source.host.set(SIGNATURE_PATH, signature);
         let text = check_for_update(&server);
-        assert_contains(&text, BAD_SIGNATURE_TEXT);
+        // 署名を取得できなかった場合は、取得の失敗として知らせる。
+        let expected = if FETCH_FAILURES.contains(&description) {
+            CANNOT_FETCH_TEXT
+        } else {
+            BAD_SIGNATURE_TEXT
+        };
+        assert_contains(&text, expected);
         assert!(!text.contains(OFFER_TEXT), "{description}: {text}");
         assert!(
             !source.host.requests().iter().any(|path| path == MSI_PATH),

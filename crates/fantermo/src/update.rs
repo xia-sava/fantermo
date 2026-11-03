@@ -194,9 +194,9 @@ pub fn start(work: Work, events: Sender<Event>, notify: impl Fn() + Send + 'stat
 /// 更新を確認できなかったわけ。
 #[derive(Debug)]
 pub enum CheckError {
-    /// 更新の情報を取得できなかった。
+    /// 更新の情報か署名を取得できなかった。
     Fetch(HttpError),
-    /// 署名を取得できなかったか、検証できなかった。
+    /// 署名を読めなかったか、検証できなかった。
     Signature(String),
     /// 更新の情報を読めなかった。
     Manifest(ManifestError),
@@ -224,7 +224,10 @@ impl CheckError {
 impl fmt::Display for CheckError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Fetch(e) => write!(f, "failed to fetch {MANIFEST_NAME}: {e}"),
+            Self::Fetch(e) => write!(
+                f,
+                "failed to fetch {MANIFEST_NAME} or {SIGNATURE_NAME}: {e}"
+            ),
             Self::Signature(e) => write!(f, "failed to verify {MANIFEST_NAME}: {e}"),
             Self::Manifest(e) => write!(f, "failed to read {MANIFEST_NAME}: {e}"),
             Self::CurrentVersion => write!(
@@ -241,8 +244,7 @@ impl fmt::Display for CheckError {
 fn check() -> Result<Comparison, CheckError> {
     let current = current_version().ok_or(CheckError::CurrentVersion)?;
     let manifest = fetch(MANIFEST_NAME, MANIFEST_MAX_BYTES).map_err(CheckError::Fetch)?;
-    let signature = fetch(SIGNATURE_NAME, SIGNATURE_MAX_BYTES)
-        .map_err(|e| CheckError::Signature(format!("failed to fetch {SIGNATURE_NAME}: {e}")))?;
+    let signature = fetch(SIGNATURE_NAME, SIGNATURE_MAX_BYTES).map_err(CheckError::Fetch)?;
     let comparison = compare_signed(&manifest, &signature, &public_key(), current)?;
     tracing::info!("checked for an update: {comparison:?}");
     Ok(comparison)
@@ -272,6 +274,8 @@ fn release_path(name: &str) -> String {
 pub enum DownloadError {
     /// MSI を取得できなかった。
     Fetch(HttpError),
+    /// 取得した MSI の SHA-256 を計算できなかった。
+    Hash(windows::core::Error),
     /// 取得した MSI の SHA-256 が更新の情報と合わない。
     Digest,
     /// 一時フォルダに書けなかった。
@@ -289,6 +293,7 @@ impl DownloadError {
                 "新しいバージョンをダウンロードできませんでした。ネットワークの接続を確認してください。"
                     .to_owned()
             }
+            Self::Hash(_) => "ダウンロードしたファイルを照合できませんでした。".to_owned(),
             Self::Digest => "ダウンロードしたファイルが、更新情報と一致しませんでした。".to_owned(),
             Self::Save(_) => "ダウンロードしたファイルを保存できませんでした。".to_owned(),
         }
@@ -299,6 +304,7 @@ impl fmt::Display for DownloadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Fetch(e) => write!(f, "failed to download {MSI_NAME}: {e}"),
+            Self::Hash(e) => write!(f, "failed to compute the SHA-256 of {MSI_NAME}: {e}"),
             Self::Digest => write!(
                 f,
                 "the SHA-256 of {MSI_NAME} does not match {MANIFEST_NAME}"
@@ -332,7 +338,7 @@ impl Drop for Downloaded {
 /// 時間がかかるので、ウィンドウのスレッドからは呼ばない。
 fn download(release: &Release) -> Result<Downloaded, DownloadError> {
     let bytes = fetch(MSI_NAME, MSI_MAX_BYTES).map_err(DownloadError::Fetch)?;
-    let digest = signature::sha256(&bytes).map_err(|e| DownloadError::Save(io::Error::other(e)))?;
+    let digest = signature::sha256(&bytes).map_err(DownloadError::Hash)?;
     if digest != release.msi_sha256 {
         tracing::warn!(
             "the SHA-256 of {MSI_NAME} is {}, not {}",
@@ -375,6 +381,8 @@ fn new_download_dir() -> io::Result<PathBuf> {
 /// 引き渡せなかったわけ。
 #[derive(Debug)]
 pub enum ApplyError {
+    /// MSI の SHA-256 を計算できなかった。
+    Hash(windows::core::Error),
     /// ダウンロードしたあとに MSI が変わった。
     Digest,
     /// ファイルを読み書きできないか、スクリプトを起動できなかった。
@@ -384,6 +392,7 @@ pub enum ApplyError {
 impl fmt::Display for ApplyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Hash(e) => write!(f, "failed to compute the SHA-256 of {MSI_NAME}: {e}"),
             Self::Digest => write!(f, "{MSI_NAME} has changed after the download"),
             Self::Io(e) => write!(f, "{e}"),
         }
@@ -408,7 +417,7 @@ impl Downloaded {
     /// 照合してから引き渡すまでの間に MSI が差し替えられていないよう、引き渡す前にもう一度照合する。
     pub fn hand_off(mut self, others: &[u32]) -> Result<(), ApplyError> {
         let bytes = std::fs::read(&self.msi).map_err(ApplyError::Io)?;
-        let digest = signature::sha256(&bytes).map_err(|e| ApplyError::Io(io::Error::other(e)))?;
+        let digest = signature::sha256(&bytes).map_err(ApplyError::Hash)?;
         if digest != self.sha256 {
             return Err(ApplyError::Digest);
         }
@@ -532,6 +541,23 @@ mod tests {
         assert_eq!(
             CheckError::Manifest(ManifestError::NoMsi).message(),
             "更新情報を読み取れませんでした。"
+        );
+    }
+
+    #[test]
+    fn messages_tell_apart_hashing_comparing_and_saving() {
+        let failure = || windows::core::Error::from_hresult(windows::core::HRESULT(-1));
+        assert_eq!(
+            DownloadError::Hash(failure()).message(),
+            "ダウンロードしたファイルを照合できませんでした。"
+        );
+        assert_eq!(
+            DownloadError::Digest.message(),
+            "ダウンロードしたファイルが、更新情報と一致しませんでした。"
+        );
+        assert_eq!(
+            DownloadError::Save(io::Error::other("x")).message(),
+            "ダウンロードしたファイルを保存できませんでした。"
         );
     }
 
