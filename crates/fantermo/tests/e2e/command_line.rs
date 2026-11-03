@@ -12,9 +12,7 @@ fn the_profile_option_chooses_the_profile_of_the_tabs() {
     assert_eq!(state["dialogs"].as_array().map(Vec::len), Some(0));
 
     // 新しいタブも引数と同じ決め方で開く。一覧から選べばそのプロファイル。
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("two tabs", |state| tab_count(state) == 2);
-    let state = server.wait_text("one>");
+    let state = server.open_tab("one>");
     assert_eq!(state["tabs"][1]["profile"], "one", "{state:#}");
     server.post("/e2e/tab/new/1", b"");
     server.wait_until("three tabs", |state| tab_count(state) == 3);
@@ -72,9 +70,7 @@ fn a_profile_with_a_command_runs_the_command_in_that_profile() {
     let state = server.wait_text("command>");
     assert_eq!(state["tabs"][0]["profile"], "one", "{state:#}");
 
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("two tabs", |state| tab_count(state) == 2);
-    let state = server.wait_text("command>");
+    let state = server.open_tab("command>");
     assert_eq!(state["tabs"][1]["profile"], "one", "{state:#}");
 
     // 一覧から選ぶと、そのプロファイルの `command`。

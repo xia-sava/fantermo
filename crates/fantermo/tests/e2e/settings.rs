@@ -987,9 +987,7 @@ fn profiles_are_added_edited_made_default_and_removed() {
     assert_eq!(state["profiles"], serde_json::json!(["one", "two"]));
 
     // 既定のプロファイルで新しいタブが開く。
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("two tabs", |state| tab_count(state) == 2);
-    let state = server.wait_text("two>");
+    let state = server.open_tab("two>");
     assert_eq!(state["tabs"][1]["profile"], "two", "{state:#}");
     server.post("/e2e/tab/close", b"");
     server.wait_until("one tab", |state| tab_count(state) == 1);
@@ -1604,9 +1602,7 @@ fn the_terminal_keeps_working_while_the_settings_dialog_is_open() {
     assert_cell_is_drawn(&server, &state, col, row);
 
     // 裏のタブの出力も届く。
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("two tabs", |state| tab_count(state) == 2);
-    server.wait_text(CMD_PROMPT);
+    server.open_tab(CMD_PROMPT);
     server.post("/e2e/tab/select/0", b"");
     server.wait_text("during-0-dialog");
 

@@ -6,7 +6,7 @@ use crate::ui::{
     DPI_150_PERCENT, DPI_200_PERCENT, MIDDLE_LEFT, MIDDLE_RIGHT, TERMINAL_BACKGROUND,
     TERMINAL_BACKGROUND_SETTING, bands_color, bands_image, change_dpi, number,
     over_terminal_background, scroll_bar_edge, solid_image, start_uneven_with_setup,
-    start_with_background, tab_count, wait_pixels,
+    start_with_background, wait_pixels,
 };
 use serde_json::Value;
 
@@ -435,10 +435,8 @@ fn each_tab_keeps_the_background_image_it_chose() {
             std::fs::write(images.join("notes.txt"), b"x").expect("failed to write");
         },
     );
-    for count in 2..=TABS {
-        server.post("/e2e/tab/new", b"");
-        server.wait_until("a new tab", |state| tab_count(state) == count);
-        server.wait_text(CMD_PROMPT);
+    for _ in 2..=TABS {
+        server.open_tab(CMD_PROMPT);
     }
     for tab in 0..TABS {
         server.post(&format!("/e2e/tab/select/{tab}"), b"");

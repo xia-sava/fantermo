@@ -4,8 +4,8 @@ use crate::common::Server;
 use crate::common::processes;
 use crate::ui::{
     CMD_LONG_COMMAND, CMD_LONG_PROCESS, SH_LONG_COMMAND, current_window, cygwin_config, quit,
-    saved_window, start_with_state, tab_count, unique_sleep_seconds, wait_cmd_ready,
-    wait_cygwin_sleep, wait_sh_ready, wait_text_dialog, wsl_config,
+    saved_window, start_with_state, tab_count, unique_sleep_seconds, wait_cygwin_sleep,
+    wait_sh_ready, wait_text_dialog, wsl_config,
 };
 
 /// ログオフの問い合わせ（`WM_QUERYENDSESSION`）と、その結果の知らせ（`WM_ENDSESSION`）の名前。
@@ -110,7 +110,9 @@ fn the_session_end_saves_the_state_and_leaves_no_child_processes() {
         server,
         [CMD_LONG_COMMAND, CMD_LONG_COMMAND],
         &wait_pings,
-        wait_cmd_ready,
+        |server| {
+            server.wait_text(CMD_PROMPT);
+        },
         check_cmd_responds,
     );
 }
@@ -157,10 +159,8 @@ fn wsl_the_session_end_saves_the_state_and_leaves_no_child_processes() {
 #[test]
 fn after_a_cancelled_session_end_the_window_still_closes_normally() {
     let mut server = Server::start_watching_children("", &CMD_COMMAND);
-    wait_cmd_ready(&server);
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("two tabs", |state| tab_count(state) == 2);
-    wait_cmd_ready(&server);
+    server.wait_text(CMD_PROMPT);
+    server.open_tab(CMD_PROMPT);
     server.send_line(CMD_LONG_COMMAND);
     processes::wait_descendants_named(server.pid(), CMD_LONG_PROCESS, 1);
     server.post("/e2e/tab/select/0", b"");

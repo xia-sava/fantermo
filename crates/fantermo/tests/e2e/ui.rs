@@ -73,10 +73,6 @@ pub const CYGWIN_SLEEP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// `/bin/sh` で長く動くコマンド。
 pub const SH_LONG_COMMAND: &str = "sleep 300";
 
-pub fn wait_cmd_ready(server: &Server) {
-    server.wait_text(CMD_PROMPT);
-}
-
 /// `/bin/sh` が入力を読むのを待つ。プロンプトは環境によって違うので、コマンドの結果で見る。
 pub fn wait_sh_ready(server: &Server) {
     server.type_line("echo ready-$((1+1))");

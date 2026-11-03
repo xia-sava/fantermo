@@ -76,9 +76,7 @@ fn a_second_launch_adds_a_tab_and_ends() {
     assert_eq!(state["tabs"][4]["profile"], Value::Null, "{state:#}");
 
     // ウィンドウの引数は変わらないので、新しいタブは既定のプロファイルのまま。
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("six tabs", |state| tab_count(state) == 6);
-    let state = server.wait_text("two>");
+    let state = server.open_tab("two>");
     assert_eq!(state["tabs"][5]["profile"], "two", "{state:#}");
 }
 
@@ -90,9 +88,7 @@ fn a_second_launch_does_not_use_the_arguments_of_the_window() {
     server.wait_until("two tabs", |state| tab_count(state) == 2);
     server.wait_text("two>");
     // ウィンドウの引数で開く新しいタブは変わらない。
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("three tabs", |state| tab_count(state) == 3);
-    server.wait_text("first>");
+    server.open_tab("first>");
 }
 
 #[test]

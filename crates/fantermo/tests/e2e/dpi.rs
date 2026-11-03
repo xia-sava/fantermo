@@ -161,9 +161,7 @@ fn start_at_dpi(dpi: u64, saved: &[u8]) -> (Server, Value) {
 fn a_dpi_change_scales_the_window_and_its_parts() {
     let server = Server::start_powershell();
     server.wait_text("PS ");
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("the second tab", |state| tab_count(state) == 2);
-    server.wait_text("PS ");
+    server.open_tab("PS ");
     server.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
     let base = server.state();
     assert_eq!(base["dpi"], DPI_100_PERCENT, "{base:#}");

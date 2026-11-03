@@ -393,9 +393,7 @@ fn the_scroll_bar_press_ends_when_the_capture_is_lost_or_the_tab_changes() {
     assert_eq!(scroll_offset(&server.state()), scroll_offset(&dragged));
     server.mouse(&step("left-up", (x, 0), ""));
 
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("two tabs", |state| tab_count(state) == 2);
-    server.wait_text(CMD_PROMPT);
+    server.open_tab(CMD_PROMPT);
     server.post("/e2e/tab/select/0", b"");
     let state = server.wait_text("filled-0-end");
     let (x, y) = on_thumb(&state);
@@ -722,9 +720,7 @@ fn mouse_reports_reach_an_application_through_conpty() {
     server.wait_text(&sgr(SGR_WHEEL_UP, REPORT_COL, REPORT_ROW, 'M'));
 
     // マウスをやめて代替画面に入ると、ホイールはカーソルキーになる。読み手は動いたままなので、別のタブで動かす。
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("the new tab", |state| tab_count(state) == 2);
-    server.wait_text("PS ");
+    server.open_tab("PS ");
     server.send_line(&READER.replace("[?1000h'+$e+'[?1006h", "[?1049h"));
     let state = server.wait_text("reader-42");
     assert_eq!(state["mouse_tracking"], false, "{state:#}");

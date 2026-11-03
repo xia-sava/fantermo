@@ -1,10 +1,11 @@
 use crate::common::CMD_COMMAND;
+use crate::common::CMD_PROMPT;
 use crate::common::Server;
 use crate::common::processes;
 use crate::common::processes::Process;
 use crate::ui::{
     CMD_LONG_COMMAND, CMD_LONG_PROCESS, SH_LONG_COMMAND, cygwin_config, cygwin_sleep_is_running,
-    tab_count, unique_sleep_seconds, wait_cmd_ready, wait_cygwin_sleep, wait_sh_ready, wsl_config,
+    tab_count, unique_sleep_seconds, wait_cygwin_sleep, wait_sh_ready, wsl_config,
 };
 use std::thread;
 use std::time::Duration;
@@ -61,7 +62,9 @@ fn closing_the_window_ends_the_child_processes_of_every_tab() {
         server,
         [CMD_LONG_COMMAND, CMD_LONG_COMMAND],
         &wait_pings,
-        wait_cmd_ready,
+        |server| {
+            server.wait_text(CMD_PROMPT);
+        },
     );
 }
 
@@ -69,13 +72,11 @@ fn closing_the_window_ends_the_child_processes_of_every_tab() {
 #[test]
 fn closing_a_tab_ends_its_child_processes_only() {
     let server = Server::start_cmd();
-    wait_cmd_ready(&server);
+    server.wait_text(CMD_PROMPT);
     let pid = server.pid();
     let first = processes::descendants(pid);
 
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("two tabs", |state| tab_count(state) == 2);
-    wait_cmd_ready(&server);
+    server.open_tab(CMD_PROMPT);
     server.type_line(CMD_LONG_COMMAND);
     // プロセスができたらすぐ閉じる。間を空けて見ると、接続を終えたあとに閉じることが多くなる。
     let second = wait_new_descendant(pid, CMD_LONG_PROCESS, &first);
@@ -113,10 +114,7 @@ fn wait_new_descendant(root: u32, name: &str, known: &[Process]) -> Vec<Process>
 #[track_caller]
 fn open_cmd_tab(server: &Server) -> Vec<Process> {
     let before = processes::descendants(server.pid());
-    let tabs = tab_count(&server.state());
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("a new tab", |state| tab_count(state) == tabs + 1);
-    wait_cmd_ready(server);
+    server.open_tab(CMD_PROMPT);
     processes::descendants(server.pid())
         .into_iter()
         .filter(|process| !before.contains(process))
@@ -128,7 +126,7 @@ fn open_cmd_tab(server: &Server) -> Vec<Process> {
 #[test]
 fn closing_tabs_while_commands_start_ends_their_child_processes() {
     let server = Server::start_cmd();
-    wait_cmd_ready(&server);
+    server.wait_text(CMD_PROMPT);
     let pid = server.pid();
     let first = processes::descendants(pid);
 
@@ -151,7 +149,7 @@ fn closing_tabs_while_commands_start_ends_their_child_processes() {
 #[test]
 fn closing_the_window_while_commands_start_leaves_no_child_processes() {
     let mut server = Server::start_watching_children("", &CMD_COMMAND);
-    wait_cmd_ready(&server);
+    server.wait_text(CMD_PROMPT);
     open_cmd_tab(&server);
     let known = processes::descendants(server.pid());
     server.send_line(&cmd_line_starting_console_clients());
@@ -188,7 +186,7 @@ fn wait_descendants_outside_the_console(root: u32, known: &[Process]) -> Vec<Pro
 #[test]
 fn closing_a_tab_while_commands_start_leaves_processes_outside_its_console() {
     let server = Server::start_cmd();
-    wait_cmd_ready(&server);
+    server.wait_text(CMD_PROMPT);
     let pid = server.pid();
     let script = server.dir().join("sleep.vbs");
     std::fs::write(&script, "WScript.Sleep 300000\n").expect("failed to write the script");

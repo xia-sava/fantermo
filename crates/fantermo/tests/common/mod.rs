@@ -636,6 +636,18 @@ impl Server {
         })
     }
 
+    /// 新しいタブを開き、タブが一つ増えて、表示しているタブに `prompt` が出るのを待つ。そのときの状態を返す。
+    #[track_caller]
+    pub fn open_tab(&self, prompt: &str) -> Value {
+        let tab_count = |state: &Value| state["tabs"].as_array().map_or(0, Vec::len);
+        let expected = tab_count(&self.state()) + 1;
+        self.post("/e2e/tab/new", b"");
+        self.wait_until(&format!("{expected} tabs"), |state| {
+            tab_count(state) == expected
+        });
+        self.wait_text(prompt)
+    }
+
     /// fantermo が自分で終わるのを待ち、その終了コードを返す。
     #[track_caller]
     pub fn wait_exit(&mut self) -> i32 {

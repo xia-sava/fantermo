@@ -1,7 +1,7 @@
 use crate::common::CMD_COMMAND;
 use crate::common::CMD_PROMPT;
 use crate::common::Server;
-use crate::ui::{cygwin_config, number, tab_count, wsl_config};
+use crate::ui::{assert_the_shell_sees_the_grid, cygwin_config, number, tab_count, wsl_config};
 use std::io::Cursor;
 use std::path::PathBuf;
 
@@ -76,10 +76,8 @@ fn tabs_open_switch_and_close() {
     server.type_line("echo first-%ERRORLEVEL%-tab");
     server.wait_text("first-0-tab");
 
-    server.post("/e2e/tab/new", b"");
-    let state = server.wait_until("two tabs", |state| tab_count(state) == 2);
+    let state = server.open_tab(CMD_PROMPT);
     assert_eq!(state["active"], 1);
-    server.wait_text(CMD_PROMPT);
     let second = server.state();
     assert!(
         !second["text"]
@@ -130,22 +128,17 @@ fn closing_a_tab_right_after_opening_it_does_not_block_the_window() {
 fn resizing_the_window_changes_the_grid_and_reaches_the_shell() {
     let server = Server::start_powershell();
     server.wait_text("PS ");
-    let print_size = "\"[$($Host.UI.RawUI.WindowSize.Width)x$($Host.UI.RawUI.WindowSize.Height)]\"";
 
-    server.resize(87, 23);
-    let state = server.state();
+    let state = server.resize(87, 23);
     assert_eq!(state["cols"], 87, "{state:#}");
     assert_eq!(state["rows"], 23, "{state:#}");
-    server.type_line(print_size);
-    server.wait_text("[87x23]");
+    assert_the_shell_sees_the_grid(&server, &state, "first");
 
     // GitHub Actions のランナーの画面は 1024×768 で、それより大きいウィンドウにはならない。
-    server.resize(96, 30);
-    let state = server.state();
+    let state = server.resize(96, 30);
     assert_eq!(state["cols"], 96, "{state:#}");
     assert_eq!(state["rows"], 30, "{state:#}");
-    server.type_line(print_size);
-    server.wait_text("[96x30]");
+    assert_the_shell_sees_the_grid(&server, &state, "second");
 }
 
 /// 最小化中に書き換える余白。
@@ -209,9 +202,7 @@ fn osc_2_sets_the_window_title() {
 fn shell_exit_closes_its_tab_and_then_the_window() {
     let mut server = Server::start_cmd();
     server.wait_text(CMD_PROMPT);
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("two tabs", |state| tab_count(state) == 2);
-    server.wait_text(CMD_PROMPT);
+    server.open_tab(CMD_PROMPT);
 
     server.type_line("exit 3");
     server.wait_until("one tab", |state| tab_count(state) == 1);
@@ -270,9 +261,7 @@ fn each_tab_keeps_its_own_title() {
     server.type_line("[Console]::Write([char]27 + ']2;title-one' + [char]7)");
     wait_window_title(&server, "title-one");
 
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("two tabs", |state| tab_count(state) == 2);
-    server.wait_text("PS ");
+    server.open_tab("PS ");
     server.type_line("[Console]::Write([char]27 + ']2;title-two' + [char]7)");
     wait_window_title(&server, "title-two");
 
