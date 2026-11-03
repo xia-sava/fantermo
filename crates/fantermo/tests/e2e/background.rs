@@ -6,7 +6,7 @@ use crate::ui::{
     DPI_150_PERCENT, DPI_200_PERCENT, MIDDLE_LEFT, MIDDLE_RIGHT, TERMINAL_BACKGROUND,
     TERMINAL_BACKGROUND_SETTING, bands_color, bands_image, change_dpi, number,
     over_terminal_background, scroll_bar_edge, solid_image, start_uneven_with_setup,
-    start_with_background, wait_pixels,
+    start_with_background, wait_pixels, wait_pixels_in,
 };
 use serde_json::Value;
 
@@ -29,11 +29,31 @@ fn start_with_fit(fit: &str) -> (Server, BackdropArea) {
     (server, area)
 }
 
+/// 設定ファイルの `[background]` 以降を `background` に書き換える。
+fn rewrite_background(server: &Server, background: &str) {
+    std::fs::write(
+        server.dir().join("config.toml"),
+        format!("{TERMINAL_BACKGROUND_SETTING}{background}"),
+    )
+    .expect("failed to write the settings");
+}
+
+/// `image_opacity = 1` で表示方法 `fit` の [`BANDS_IMAGE`] を背景にする設定。
+fn fit_setting(fit: &str) -> String {
+    format!(
+        "[background]\nimage_opacity = 1.0\nfit = \"{fit}\"\n\n[[background.images]]\npath = '{BANDS_IMAGE}'\n"
+    )
+}
+
+/// 表示方法ごとの置き方。伸ばす（範囲全体に引き伸ばし、スクロールバーの列にも敷いて、タブバーには敷かない）、
+/// 覆う（はみ出した上下を切るので上下の帯は見えない）、全体が入る大きさで真ん中に置く（左右の余りは背景色）、元の
+/// 大きさで真ん中に置く（周りは背景色）、元の大きさで範囲の左上から敷き詰める。設定ファイルの書き換えで順に移る。
 #[test]
-fn a_stretched_background_image_shows_all_of_it_and_only_in_its_area() {
+fn each_fit_of_the_background_image_places_it_as_set() {
     let (server, area) = start_with_fit("stretch");
-    wait_pixels(
+    wait_pixels_in(
         &server,
+        "stretch",
         &[
             (area.at(0.25, 0.03), BAND_TOP),
             (area.at(0.25, 0.5), MIDDLE_LEFT),
@@ -41,19 +61,19 @@ fn a_stretched_background_image_shows_all_of_it_and_only_in_its_area() {
             (area.at(0.75, 0.97), BAND_BOTTOM),
         ],
     );
-    // スクロールバーの列にも敷き、タブバーには敷かない。
-    wait_pixels(&server, &[(scroll_bar_edge(&server.state()), MIDDLE_RIGHT)]);
+    wait_pixels_in(
+        &server,
+        "stretch reaches the scroll bar",
+        &[(scroll_bar_edge(&server.state()), MIDDLE_RIGHT)],
+    );
     let picture = server.picture();
     let (tab_x, tab_y) = area.at(0.75, 0.0);
     assert_ne!(picture.rgb(tab_x, tab_y - 1), BAND_TOP);
-}
 
-/// 範囲を覆うように広げ、はみ出した上下を切るので、上下の帯は見えない。
-#[test]
-fn a_filling_background_image_cuts_what_overflows() {
-    let (server, area) = start_with_fit("fill");
-    wait_pixels(
+    rewrite_background(&server, &fit_setting("fill"));
+    wait_pixels_in(
         &server,
+        "fill",
         &[
             (area.at(0.25, 0.03), MIDDLE_LEFT),
             (area.at(0.25, 0.97), MIDDLE_LEFT),
@@ -61,19 +81,16 @@ fn a_filling_background_image_cuts_what_overflows() {
             (area.at(0.75, 0.97), MIDDLE_RIGHT),
         ],
     );
-}
 
-/// 全体が入る大きさで真ん中に置き、左右の余りは背景色になる。
-#[test]
-fn a_fitted_background_image_is_whole_in_the_middle() {
-    let (server, area) = start_with_fit("fit");
+    rewrite_background(&server, &fit_setting("fit"));
     let side = area.height;
     let left = area.x + (area.width - side) / 2;
     let quarter = left + side / 4;
     let three_quarters = left + side * 3 / 4;
     let middle = area.y + side / 2;
-    wait_pixels(
+    wait_pixels_in(
         &server,
+        "fit",
         &[
             ((quarter, middle), MIDDLE_LEFT),
             ((three_quarters, middle), MIDDLE_RIGHT),
@@ -86,16 +103,13 @@ fn a_fitted_background_image_is_whole_in_the_middle() {
             ),
         ],
     );
-}
 
-/// 元の大きさで真ん中に置き、周りは背景色になる。
-#[test]
-fn a_centered_background_image_keeps_its_size() {
-    let (server, area) = start_with_fit("center");
+    rewrite_background(&server, &fit_setting("center"));
     let (x, y) = area.at(0.5, 0.5);
     let side = BANDS_SIDE;
-    wait_pixels(
+    wait_pixels_in(
         &server,
+        "center",
         &[
             ((x - side / 4, y), MIDDLE_LEFT),
             ((x + side / 4, y), MIDDLE_RIGHT),
@@ -107,16 +121,13 @@ fn a_centered_background_image_keeps_its_size() {
             ((x - side / 4, y + side * 3 / 4), TERMINAL_BACKGROUND),
         ],
     );
-}
 
-/// 元の大きさで範囲の左上から敷き詰める。プロンプトの文字を避けて、右下へ離れたところを見る。
-#[test]
-fn a_tiled_background_image_repeats_from_the_top_left() {
-    let (server, area) = start_with_fit("tile");
-    let side = BANDS_SIDE;
+    // 敷き詰めは、プロンプトの文字を避けて、右下へ離れたところを見る。
+    rewrite_background(&server, &fit_setting("tile"));
     let (left, top) = (area.x + 2 * side, area.y + side);
-    wait_pixels(
+    wait_pixels_in(
         &server,
+        "tile",
         &[
             ((left + side / 4, top + side / 2), MIDDLE_LEFT),
             ((left + side * 3 / 4, top + side / 2), MIDDLE_RIGHT),
@@ -239,19 +250,21 @@ fn a_tiled_background_image_reaches_the_right_and_bottom_edges() {
         expected.extend(tiled_scroll_bar_pixels(&state, 1.0));
         wait_pixels(&server, &expected);
     }
+
+    // 項目に書いた敷き詰めと不透明度でも、右端と下端の最後の 1 枚を描く。
+    rewrite_background(
+        &server,
+        &format!(
+            "[background]\nimage_opacity = 1.0\nfit = \"stretch\"\n\n[[background.images]]\npath = '{BANDS_IMAGE}'\nfit = \"tile\"\nimage_opacity = 0.5\n"
+        ),
+    );
+    let state = server.state();
+    let mut expected = tiled_edge_pixels(BackdropArea::of(&state), 0.5);
+    expected.extend(tiled_scroll_bar_pixels(&state, 0.5));
+    wait_pixels_in(&server, "an image entry", &expected);
 }
 
-/// 項目に書いた敷き詰めと不透明度でも、右端と下端の最後の 1 枚を描く。
-#[test]
-fn a_tiled_image_entry_reaches_the_right_and_bottom_edges_with_its_opacity() {
-    let (server, area) = start_uneven_with_background(&format!(
-        "[background]\nimage_opacity = 1.0\nfit = \"stretch\"\n\n[[background.images]]\npath = '{BANDS_IMAGE}'\nfit = \"tile\"\nimage_opacity = 0.5\n"
-    ));
-    let mut expected = tiled_edge_pixels(area, 0.5);
-    expected.extend(tiled_scroll_bar_pixels(&server.state(), 0.5));
-    wait_pixels(&server, &expected);
-}
-
+/// 不透明度で、画像の見える濃さが決まる。書かなければ既定の 0.2。
 #[test]
 fn the_opacity_of_the_background_image_sets_how_much_of_it_shows() {
     let settings = [
@@ -261,16 +274,18 @@ fn the_opacity_of_the_background_image_sets_how_much_of_it_shows() {
         // 既定の値。
         ("", 0.2),
     ];
+    let background = |opacity: &str| {
+        format!(
+            "[background]\nfit = \"stretch\"\n{opacity}\n[[background.images]]\npath = '{BANDS_IMAGE}'\n"
+        )
+    };
+    let server = start_with_background(&background(settings[0].0), |_| {});
+    let area = BackdropArea::of(&server.state());
     for (opacity, expected) in settings {
-        let server = start_with_background(
-            &format!(
-                "[background]\nfit = \"stretch\"\n{opacity}\n[[background.images]]\npath = '{BANDS_IMAGE}'\n"
-            ),
-            |_| {},
-        );
-        let area = BackdropArea::of(&server.state());
-        wait_pixels(
+        rewrite_background(&server, &background(opacity));
+        wait_pixels_in(
             &server,
+            opacity,
             &[
                 (
                     area.at(0.25, 0.5),
@@ -299,8 +314,9 @@ fn an_image_entry_overrides_the_fit_and_the_opacity_it_writes() {
     let area = BackdropArea::of(&server.state());
     let (left, top) = (area.x + 2 * BANDS_SIDE, area.y + BANDS_SIDE);
     let half_left = over_terminal_background(MIDDLE_LEFT, 0.5);
-    wait_pixels(
+    wait_pixels_in(
         &server,
+        "both from the entry",
         &[
             ((left + BANDS_SIDE / 4, top + BANDS_SIDE / 2), half_left),
             (
@@ -309,26 +325,23 @@ fn an_image_entry_overrides_the_fit_and_the_opacity_it_writes() {
             ),
         ],
     );
-    drop(server);
 
     // 不透明度だけ項目の値: 全体の表示方法で半透明。
-    let server = start_with_background(&format!("{WHOLE}{image}image_opacity = 0.5\n"), |_| {});
-    let area = BackdropArea::of(&server.state());
-    wait_pixels(
+    rewrite_background(&server, &format!("{WHOLE}{image}image_opacity = 0.5\n"));
+    wait_pixels_in(
         &server,
+        "the opacity from the entry",
         &[
             (area.at(0.25, 0.03), over_terminal_background(BAND_TOP, 0.5)),
             (area.at(0.25, 0.5), half_left),
         ],
     );
-    drop(server);
 
     // 表示方法だけ項目の値: 全体の不透明度で敷き詰める。
-    let server = start_with_background(&format!("{WHOLE}{image}fit = \"tile\"\n"), |_| {});
-    let area = BackdropArea::of(&server.state());
-    let (left, top) = (area.x + 2 * BANDS_SIDE, area.y + BANDS_SIDE);
-    wait_pixels(
+    rewrite_background(&server, &format!("{WHOLE}{image}fit = \"tile\"\n"));
+    wait_pixels_in(
         &server,
+        "the fit from the entry",
         &[
             ((left + BANDS_SIDE / 4, top + BANDS_SIDE / 2), MIDDLE_LEFT),
             (
@@ -400,12 +413,12 @@ fn unreadable_background_images_are_skipped() {
     assert_eq!(state["background"]["image"], BANDS_IMAGE, "{state:#}");
     let area = BackdropArea::of(&state);
     wait_pixels(&server, &[(area.at(0.25, 0.5), MIDDLE_LEFT)]);
-    drop(server);
 
-    let server = start_with_background(&entries(&[BROKEN_IMAGE, "no-such-file.png"]), write_broken);
-    let state = server.state();
-    assert_eq!(state["background"]["image"], Value::Null, "{state:#}");
-    let area = BackdropArea::of(&state);
+    // 全部読めなければ画像なし。
+    rewrite_background(&server, &entries(&[BROKEN_IMAGE, "no-such-file.png"]));
+    server.wait_until("the image to be dropped", |state| {
+        state["background"]["image"].is_null()
+    });
     wait_pixels(&server, &[(area.at(0.25, 0.5), TERMINAL_BACKGROUND)]);
 }
 

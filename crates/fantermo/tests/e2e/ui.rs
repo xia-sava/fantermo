@@ -532,6 +532,12 @@ pub fn blend(top: [u8; 3], bottom: [u8; 3], opacity: f64) -> [u8; 3] {
 /// `expected` の位置がすべて期待の色になるまで絵を読み直す。
 #[track_caller]
 pub fn wait_pixels(server: &Server, expected: &[((u32, u32), [u8; 3])]) {
+    wait_pixels_in(server, "", expected);
+}
+
+/// [`wait_pixels`] と同じ。続けて確認する段の名前 `stage` を、落ちたときの文に添える。
+#[track_caller]
+pub fn wait_pixels_in(server: &Server, stage: &str, expected: &[((u32, u32), [u8; 3])]) {
     let deadline = Instant::now() + PICTURE_TIMEOUT;
     loop {
         let picture = server.picture();
@@ -548,7 +554,7 @@ pub fn wait_pixels(server: &Server, expected: &[((u32, u32), [u8; 3])]) {
         }
         assert!(
             Instant::now() < deadline,
-            "{}\n{}",
+            "{stage}\n{}\n{}",
             wrong.join("\n"),
             server.log()
         );
