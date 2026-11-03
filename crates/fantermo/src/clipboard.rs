@@ -13,14 +13,15 @@ use windows::Win32::{
     },
 };
 
-/// クリップボードを開くのに失敗したときの、試す回数の上限（最初の 1 回を含む）。ほかのアプリが
+/// クリップボードを開くのを、合わせて何回まで試すか（最初の 1 回を含む）。ほかのアプリが
 /// 短い間だけ開いているところに当たっても、失敗にしないため。
 const OPEN_ATTEMPTS: u32 = 5;
 
 /// クリップボードを開くのをやり直すまでの待ち。
 const OPEN_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
-/// `attempt` を成功するまで、最大 `attempts` 回試す。失敗するたびに `interval` 待ち、最後の失敗は返す。
+/// `attempt` を成功するまで、合わせて最大 `attempts` 回（最初の 1 回を含む）試す。`attempts` が 0 でも
+/// 1 回は試す。失敗するたびに `interval` 待ち、最後の失敗は返す。
 fn retry<T, E>(
     attempts: u32,
     interval: Duration,
@@ -42,7 +43,7 @@ fn retry<T, E>(
 struct OpenedClipboard;
 
 impl OpenedClipboard {
-    /// 開く。ほかのアプリが開いていて失敗したら、[`OPEN_ATTEMPTS`] 回までやり直す。
+    /// 開く。ほかのアプリが開いていて失敗したら、合わせて [`OPEN_ATTEMPTS`] 回まで試す。
     fn open(owner: HWND) -> windows::core::Result<Self> {
         retry(OPEN_ATTEMPTS, OPEN_RETRY_INTERVAL, || {
             // SAFETY: owner は呼び出し元の有効なウィンドウ。閉じるのは Drop で一度だけ。
