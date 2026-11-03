@@ -50,9 +50,8 @@ use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::{
     app_files::path_key,
-    atlas,
     boxdraw::{Shape, arc},
-    bridge, font,
+    bridge, d2d_shape, font,
     image_decoder::{Decoded, Decoder},
 };
 
@@ -614,8 +613,8 @@ fn draw_generated(
             format: DXGI_FORMAT_B8G8R8A8_UNORM,
             alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
         },
-        dpiX: atlas::PIXEL_DPI,
-        dpiY: atlas::PIXEL_DPI,
+        dpiX: d2d_shape::PIXEL_DPI,
+        dpiY: d2d_shape::PIXEL_DPI,
         usage: D2D1_RENDER_TARGET_USAGE_NONE,
         minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
     };
@@ -677,8 +676,8 @@ fn draw_picture(
             format: DXGI_FORMAT_B8G8R8A8_UNORM,
             alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
         },
-        dpiX: atlas::PIXEL_DPI,
-        dpiY: atlas::PIXEL_DPI,
+        dpiX: d2d_shape::PIXEL_DPI,
+        dpiY: d2d_shape::PIXEL_DPI,
     };
     let size = D2D_SIZE_U {
         width: picture.width(),
@@ -717,7 +716,7 @@ fn draw_backend_picture(
     for (ink, shape) in picture_shapes(backend, area.side) {
         // SAFETY: brush は target が作ったブラシで、色は呼び出しの間は生きている。
         unsafe { brush.SetColor(&d2d_color(ink.color())) };
-        atlas::draw_shape(target, factory, brush, &shape)?;
+        d2d_shape::draw_shape(target, factory, brush, &shape)?;
     }
     // SAFETY: 描画中の target の変換を戻すだけ。
     unsafe { target.SetTransform(&Matrix3x2::identity()) };

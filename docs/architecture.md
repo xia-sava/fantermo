@@ -89,6 +89,8 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `renderer` | Direct3D 11 でウィンドウに描く．スワップチェーン，背景画像と端末の中の画像とタブのアイコンのテクスチャ |
 | `pipeline`・`cells.hlsl`・`shader` | 四角形のインスタンスを描くパイプライン，そのシェーダ，実行時のコンパイル（`D3DCompile`） |
 | `atlas` | グリフアトラス（2048×2048）．DirectWrite で組んだ文字を Direct2D で描く |
+| `text_placement` | 組んだ文字の送り幅とインクの範囲（`text_layout`），アトラスの場所への置き方（`place_text`）．`atlas` と `ui_font` が使う |
+| `d2d_shape` | `boxdraw::Shape` を Direct2D の描画先に描く．`atlas` と `tab_icon` が使う |
 | `font`・`ui_font` | 端末のフォントを探してセルの寸法を測る．タブバーのタイトルに使う Windows の UI のフォント |
 | `boxdraw`・`boxdraw/` | 罫線，ブロック要素，点字，Powerline の記号，レガシーコンピューティング記号の一部を形として組み立てる |
 | `decoration` | 下線・取り消し線・上線をセルの中の形として組み立てる |

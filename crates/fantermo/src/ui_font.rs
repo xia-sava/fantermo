@@ -17,9 +17,9 @@ use windows::Win32::{
 };
 
 use crate::{
-    atlas::{self, TextExtent},
     font::{self, POINTS_PER_INCH},
     tab_bar,
+    text_placement::{self, TextExtent},
 };
 
 /// メッセージのフォントを問い合わせられなかったときの書体。
@@ -86,7 +86,7 @@ impl UiFont {
 
     /// `text` を 1 行に組んだものと、その送り幅とインクの範囲。
     pub fn layout(&self, text: &str) -> windows::core::Result<(IDWriteTextLayout, TextExtent)> {
-        atlas::text_layout(&self.dwrite, &self.format, text, self.height_px as f32)
+        text_placement::text_layout(&self.dwrite, &self.format, text, self.height_px as f32)
     }
 }
 
