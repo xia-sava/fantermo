@@ -609,18 +609,35 @@ mod tests {
 
     #[test]
     fn painting_over_the_pixel_budget_discards_the_image() {
-        // 数バイトの繰り返しと行頭への復帰で、小さな画像のまま大きな塗りを起こす入力。
-        let rows = MAX_PAINTED_PIXELS / (u64::from(MAX_IMAGE_WIDTH) * 6) + 1;
-        let overpainted = "!4096~$".repeat(rows as usize);
-        assert_eq!(decode(1, overpainted.as_bytes()), None);
-        // 各画素を一度ずつ塗る最大の画像は通る。
-        let rows = MAX_IMAGE_HEIGHT as usize / 6;
-        let full = "!4096~-".repeat(rows);
-        let image = decode(1, full.as_bytes()).unwrap();
-        assert_eq!(image.width, MAX_IMAGE_WIDTH);
-        // 同じ場所を 4 回まで塗り直す出力は通る。
-        let layered = "!4096~$".repeat(4 * rows);
-        assert!(decode(1, layered.as_bytes()).is_some());
+        // 繰り返しと行頭への復帰で、数バイトから大きな塗りを起こす入力。
+        let row = format!("!{MAX_IMAGE_WIDTH}~$");
+        let row_pixels = u64::from(MAX_IMAGE_WIDTH * SIXEL_HEIGHT);
+        let rows = MAX_PAINTED_PIXELS / row_pixels + 1;
+        assert_eq!(decode(1, row.repeat(rows as usize).as_bytes()), None);
+    }
+
+    #[test]
+    fn the_pixel_budget_is_exact() {
+        let paint_one_pixel = |painted_pixels| {
+            let mut decoder = SixelDecoder::new(1);
+            decoder.painted_pixels = painted_pixels;
+            decoder.feed(b"@");
+            decoder.finish()
+        };
+        assert!(paint_one_pixel(MAX_PAINTED_PIXELS - 1).is_some());
+        assert_eq!(paint_one_pixel(MAX_PAINTED_PIXELS), None);
+    }
+
+    #[test]
+    fn repainting_up_to_the_budget_is_allowed() {
+        // 予算は最大の面積の MAX_REPAINT_FACTOR 倍。小さい画像でもその分まで塗り直せる。
+        const WIDTH: u32 = 64;
+        let max_area = u64::from(MAX_IMAGE_WIDTH) * u64::from(MAX_IMAGE_HEIGHT);
+        let row_pixels = u64::from(WIDTH * SIXEL_HEIGHT);
+        let rows = max_area * MAX_REPAINT_FACTOR / row_pixels;
+        let data = format!("!{WIDTH}~$").repeat(rows as usize);
+        let image = decode(1, data.as_bytes()).unwrap();
+        assert_eq!((image.width, image.height), (WIDTH, SIXEL_HEIGHT));
     }
 
     #[test]
@@ -635,6 +652,12 @@ mod tests {
         assert_eq!(decoder.finish(), None);
         // 読み終える時点で読みかけだったコマンドが上限を超えた場合も捨てる。
         assert_eq!(decode(1, b"@\"1;1;5000;1"), None);
+        // `"` を読みかけのままバイト数の上限を超えた場合も `None`。
+        let mut decoder = SixelDecoder::new(1);
+        decoder.feed(b"@\"1;1;100;100");
+        decoder.data_bytes = MAX_DATA_BYTES;
+        decoder.feed(b"@");
+        assert_eq!(decoder.finish(), None);
     }
 
     #[test]
