@@ -536,14 +536,9 @@ impl<T: Copy + PartialEq> RadioGroup<T> {
     }
 }
 
-/// 選択肢の型の違うラジオボタンの組を、まとめて知らせを振り分けるための操作。
-pub(super) trait RadioInput {
+impl<T> RadioGroup<T> {
     /// ID が `id` のコントロールが、この組のボタンか。
-    fn owns(&self, id: i32) -> bool;
-}
-
-impl<T> RadioInput for RadioGroup<T> {
-    fn owns(&self, id: i32) -> bool {
+    pub(super) fn owns(&self, id: i32) -> bool {
         usize::try_from(id - self.first_id).is_ok_and(|index| index < self.buttons.len())
     }
 }

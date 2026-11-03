@@ -9,7 +9,7 @@
 //! から届く。
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, Ref, RefCell},
     ops::RangeInclusive,
     path::PathBuf,
     sync::OnceLock,
@@ -67,7 +67,7 @@ mod widgets;
 
 use widgets::{
     Builder, ChoiceBox, DipRect, ListBox, NumberField, NumberInput, NumberKind, RadioGroup,
-    RadioInput, get_text, set_text,
+    get_text, set_text,
 };
 
 const CLASS: PCWSTR = w!("fantermo-settings-dialog");
@@ -144,6 +144,24 @@ const BUTTON_GAP: i32 = 8;
 const NUMBER_WIDTH: i32 = 72;
 /// フォントの一覧を開いたときに見せる行の数。
 const VISIBLE_FONTS: usize = 16;
+/// ページの左端と幅。
+const PAGE_LEFT: i32 = MARGIN + PAGES_WIDTH + MARGIN;
+const PAGE_WIDTH: i32 = CLIENT_WIDTH - PAGE_LEFT - MARGIN;
+/// ページの見出しの右に置くコントロールの左端と幅。
+const CONTROL_LEFT: i32 = PAGE_LEFT + LABEL_WIDTH;
+const CONTROL_WIDTH: i32 = CLIENT_WIDTH - CONTROL_LEFT - MARGIN;
+/// 下に並べるボタン（OK、キャンセル、適用）の上端。
+const BUTTON_TOP: i32 = CLIENT_HEIGHT - MARGIN - BUTTON_HEIGHT;
+
+/// ページの `index` 番目の行の上端。
+fn row(index: i32) -> i32 {
+    MARGIN + index * (ROW_HEIGHT + MARGIN)
+}
+
+/// 上端が `top` の行の見出しの矩形。
+fn label_rect(top: i32) -> DipRect {
+    [PAGE_LEFT, top + LABEL_OFFSET, LABEL_WIDTH, ROW_HEIGHT]
+}
 
 /// ページ。一覧の順。
 const PAGES: [&str; 6] = ["外観", "背景", "動作", "プロファイル", "キー", "色"];
@@ -606,41 +624,27 @@ pub fn run(owner: HWND, request: Request, host: &mut dyn Host) {
             0
         }
     };
-    let (hwnd, controls) = match create(owner) {
-        Ok(created) => created,
+    let state = match create(
+        owner,
+        &current,
+        fonts,
+        family_indices,
+        selected_font,
+        tab_bar_colors,
+        host,
+    ) {
+        Ok(state) => state,
         Err(e) => {
             tracing::warn!("failed to open the settings dialog: {e}");
             return;
         }
     };
-    let state = State {
-        hwnd,
-        controls,
-        fonts,
-        host: RefCell::new(host),
-        base: RefCell::new(current.clone()),
-        base_indices: RefCell::new(family_indices),
-        base_font: Cell::new(selected_font),
-        previewed: RefCell::new(current.clone()),
-        background_images: RefCell::new(current.background.images.clone()),
-        profiles: RefCell::new(current.profiles.clone()),
-        default_profile: Cell::new(current.default_profile_index()),
-        filling_profile: Cell::new(false),
-        keys: RefCell::new(current.keys.clone()),
-        key_rows: RefCell::new(Vec::new()),
-        colors: RefCell::new(current.colors.clone()),
-        tab_bar_defaults: tab_bar_colors,
-        swatch_brushes: RefCell::new(vec![HBRUSH::default(); COLOR_ITEMS.len()]),
-        custom_colors: Cell::new([COLORREF(0); CUSTOM_COLORS]),
-        font: Cell::new(HFONT::default()),
-        dpi: Cell::new(BASE_DPI),
-        closed: Cell::new(false),
-    };
+    let hwnd = state.hwnd;
     // SAFETY: owner は呼び出し元の有効なウィンドウ。
     let dpi = unsafe { GetDpiForWindow(owner) };
     // fill が警告の文の高さをこの DPI のフォントで測れるように、先に決める。
     state.set_dpi(dpi);
-    state.fill(&current, selected_font);
+    state.fill(&current);
     // SAFETY: hwnd は作ったばかりのウィンドウ。ポインタは modal::run が戻るまで有効で、WM_DESTROY で外す。
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, std::ptr::from_ref(&state) as isize) };
     if let Err(e) = place(owner, hwnd, dpi) {
@@ -660,12 +664,7 @@ pub fn run(owner: HWND, request: Request, host: &mut dyn Host) {
         // SAFETY: フォントはダイアログのために作ったもので、ダイアログはもう閉じている。
         unsafe { _ = DeleteObject(HGDIOBJ(font.0)) };
     }
-    for brush in state.swatch_brushes.take() {
-        if !brush.is_invalid() {
-            // SAFETY: ブラシは色の見本のために作ったもので、ダイアログはもう閉じている。
-            unsafe { _ = DeleteObject(HGDIOBJ(brush.0)) };
-        }
-    }
+    state.colors.delete_swatch_brushes();
 }
 
 fn register_class() -> windows::core::Result<()> {
@@ -762,8 +761,8 @@ const BACKGROUND_OPACITY_KIND: NumberKind<f32> = NumberKind {
 };
 
 /// 背景画像の一覧で選んでいる項目の不透明度の入力欄。読めなければ、既定の不透明度から動かす
-/// （[`State::step`] が渡す設定では、`background.image_opacity` を編集中の既定の不透明度に差し替えて
-/// ある）。
+/// （背景のページの [`Page::step_start`] では、`background.image_opacity` を編集中の既定の不透明度に
+/// 差し替えてある）。
 const BACKGROUND_ITEM_OPACITY_KIND: NumberKind<f32> = NumberKind {
     parse: |text| config::parse_input("background.image_opacity", text),
     format: format_opacity,
@@ -772,146 +771,97 @@ const BACKGROUND_ITEM_OPACITY_KIND: NumberKind<f32> = NumberKind {
     message: "選択した項目の不透明度は、0 から 1 までの数値を入力してください。",
 };
 
-/// ダイアログのコントロール。
+/// ダイアログ全体のコントロール。ページの中のコントロールは、それぞれのページが持つ。
 struct Controls {
     pages: ListBox,
-    /// 各ページに置くコントロール。[`PAGES`] の順。
-    page_controls: Vec<Vec<HWND>>,
-    font: HWND,
-    size: NumberField<f32>,
-    wide_glyph: RadioGroup<WideGlyph>,
-    scroll_bar_width: NumberField<u32>,
-    padding: NumberField<u32>,
-    paste_confirm: RadioGroup<PasteConfirm>,
-    paste_confirm_size: NumberField<u32>,
-    clipboard_read: RadioGroup<ClipboardRead>,
-    /// プロファイルの一覧。
-    profiles_list: ListBox,
-    /// 削除・既定にするのボタン。
-    profile_remove: HWND,
-    profile_default: HWND,
-    /// 一覧で選んでいるプロファイルの名前とコマンドライン。
-    profile_name: HWND,
-    profile_command: HWND,
-    /// コマンドラインの入力欄の下の警告の文と、文があるとその高さの分だけ下がるコントロール。
-    profile_command_warning: HWND,
-    profile_below_command_warning: [HWND; 4],
-    /// 一覧で選んでいるプロファイルの接続方式と、Cygwin のフォルダか
-    /// ディストリビューションの入力欄とその見出し。
-    profile_backend: ChoiceBox<BackendKind>,
-    profile_location_label: HWND,
-    profile_location: HWND,
-    /// プロファイルのアイコンの画像のファイルの入力欄と、選ぶボタン。
-    profile_icon: HWND,
-    profile_icon_choose: HWND,
-    /// 背景画像の一覧。
-    background_images: ListBox,
-    /// 背景画像の一覧の「削除」のボタン。
-    background_remove: HWND,
-    /// 既定の不透明度と表示方法。
-    background_opacity: NumberField<f32>,
-    background_fit: ChoiceBox<BackgroundFit>,
-    /// 一覧で選んでいる項目の表示方法。
-    background_item_fit: ChoiceBox<Option<BackgroundFit>>,
-    /// 一覧で選んでいる項目の不透明度の「既定」と「指定」のラジオボタンと、「指定」の値。
-    background_item_opacity_choice: RadioGroup<bool>,
-    background_item_opacity: NumberField<f32>,
-    /// 配色のラジオボタン。
-    color_scheme: RadioGroup<ColorScheme>,
-    /// キーの割り当ての一覧。
-    keys_list: ListBox,
-    /// 追加・変更・外す・既定に戻すのボタン。
-    key_buttons: [HWND; 4],
-    /// 色のページの行。[`COLOR_ITEMS`] の順。
-    color_rows: Vec<ColorRow>,
     error: HWND,
     /// すべてのコントロールと、96 DPI のときの矩形。上下の矢印のボタンは入れない（相手の入力欄に
     /// 付けて置く）。
     placed: Vec<(HWND, DipRect)>,
 }
 
-impl Controls {
-    /// 数の入力欄。上下の矢印の配置と、矢印と入力の知らせの振り分けは、これを順に回す。入力の知らせに
-    /// 自前の処理を持つもの（既定の不透明度と項目の不透明度の入力欄）は、`dialog_proc` でこれを回す分岐
-    /// より上で受ける。
-    fn number_fields(&self) -> impl Iterator<Item = &dyn NumberInput> {
-        [
-            &self.size as &dyn NumberInput,
-            &self.scroll_bar_width,
-            &self.padding,
-            &self.paste_confirm_size,
-            &self.background_opacity,
-            &self.background_item_opacity,
-        ]
-        .into_iter()
+/// 設定ダイアログのページ。ページは自分のコントロールと編集中の値を持ち、ダイアログ全体の状態には
+/// [`DialogContext`] を通して触る。
+trait Page {
+    /// ページに置くコントロール。ページを切り替えるときは、これをまとめて見せる・隠す。
+    fn controls(&self) -> &[HWND];
+
+    /// 数の入力欄。上下の矢印の配置と、矢印の知らせの振り分けは、すべてのページのこれを回す。
+    fn number_fields(&self) -> Vec<&dyn NumberInput> {
+        Vec::new()
     }
 
-    /// ラジオボタンの組。押したときの知らせの振り分けは、これを順に回す。自前の処理を持つもの（項目の
-    /// 不透明度の「既定」と「指定」、配色）は、`dialog_proc` でこれを回す分岐より上で受ける。
-    fn radio_groups(&self) -> impl Iterator<Item = &dyn RadioInput> {
-        [
-            &self.wide_glyph as &dyn RadioInput,
-            &self.paste_confirm,
-            &self.clipboard_read,
-            &self.background_item_opacity_choice,
-            &self.color_scheme,
-        ]
-        .into_iter()
+    /// 数の入力欄が読めないときに、上下の矢印で動かし始める値を取る設定。最後に書いたときの設定。
+    fn step_start(&self, ctx: &dyn DialogContext) -> Config {
+        ctx.base().clone()
     }
+
+    /// コントロールに設定 `config` の値を入れる。
+    fn fill(&self, ctx: &dyn DialogContext, config: &Config);
+
+    /// コントロールの値を `config` に入れる。読めない入力があれば、その文と入力欄を返す。
+    fn read(
+        &self,
+        ctx: &dyn DialogContext,
+        config: &mut Config,
+    ) -> Result<(), (&'static str, HWND)>;
+
+    /// コントロール `id` から知らせ `code`（`WM_COMMAND`）が届いた。このページのコントロールなら処理して
+    /// `true` を返す。
+    fn on_command(&self, ctx: &dyn DialogContext, id: i32, code: u32) -> bool;
+}
+
+/// ページから触る、ダイアログ全体の状態と操作。
+trait DialogContext {
+    /// ダイアログの HWND。ページが開くダイアログやメッセージボックスの持ち主にする。
+    fn hwnd(&self) -> HWND;
+    /// 最後に設定ファイルに書いたとき（書いていなければ開いたとき）の設定。
+    fn base(&self) -> Ref<'_, Config>;
+    /// コントロールのフォント。
+    fn font(&self) -> HFONT;
+    /// ダイアログのいまの DPI。
+    fn dpi(&self) -> u32;
+    /// すべてのコントロールと、96 DPI のときの矩形。
+    fn placed(&self) -> &[(HWND, DipRect)];
+    /// 編集中の設定を読み、読めれば端末に反映する（前に反映したものと同じなら何もしない）。読めな
+    /// ければエラーを見せる。
+    fn preview(&self);
+    /// 入力欄を打ったので、少し待ってから反映する。
+    fn schedule_preview(&self);
 }
 
 /// ダイアログの状態。ウィンドウプロシージャからも触るので、共有の参照だけで読み書きする。
 struct State<'a> {
     hwnd: HWND,
     controls: Controls,
-    fonts: Vec<FontChoice>,
+    appearance: AppearancePage,
+    background: BackgroundPage,
+    behavior: BehaviorPage,
+    profiles: ProfilesPage,
+    keys: KeysPage,
+    colors: ColorsPage,
     host: RefCell<&'a mut dyn Host>,
     /// 最後に設定ファイルに書いたとき（書いていなければ開いたとき）の設定。キャンセルでここへ戻す。
     base: RefCell<Config>,
-    /// `base.font.families` のそれぞれの、システムのフォントの中の番号。
-    base_indices: RefCell<Vec<Option<u32>>>,
-    /// `base` のときに選んでいたフォントの、一覧の中の位置。
-    base_font: Cell<usize>,
     /// 最後に端末に反映した設定。
     previewed: RefCell<Config>,
-    /// 編集中の背景画像の一覧。
-    background_images: RefCell<Vec<BackgroundImage>>,
-    /// 編集中のプロファイル。
-    profiles: RefCell<Vec<Profile>>,
-    /// 編集中の既定のプロファイルの、`profiles` の中の位置。
-    default_profile: Cell<usize>,
-    /// プロファイルの名前とコマンドラインの入力欄に、選んだプロファイルの値を入れている（その間に届く
-    /// EN_CHANGE を編集とみなさない）。
-    filling_profile: Cell<bool>,
-    /// 編集中のキーの割り当て。
-    keys: RefCell<Keymap>,
-    /// キーの割り当ての一覧の行。一覧の順。
-    key_rows: RefCell<Vec<KeyRow>>,
     font: Cell<HFONT>,
     dpi: Cell<u32>,
-    /// 編集中の色。
-    colors: RefCell<ColorsConfig>,
-    /// 書いていないタブバーの色として見せる色。
-    tab_bar_defaults: [Rgb; config::TAB_BAR_COLOR_KEYS.len()],
-    /// 色の見本を塗るブラシ。[`COLOR_ITEMS`] の順。
-    swatch_brushes: RefCell<Vec<HBRUSH>>,
-    /// 色を選ぶダイアログの「作成した色」。ダイアログを開いている間は覚えておく。
-    custom_colors: Cell<[COLORREF; CUSTOM_COLORS]>,
     closed: Cell<bool>,
 }
 
-/// 色を選ぶダイアログの「作成した色」の数。
-const CUSTOM_COLORS: usize = 16;
-
-/// 色のページの一行のコントロール。
-struct ColorRow {
-    swatch: HWND,
-    text: HWND,
-    reset: HWND,
-}
-
-/// ダイアログとコントロールを作る。大きさと位置は後で決める（[`place`]）。
-fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
+/// ダイアログとコントロールを作る。大きさと位置は後で決める（[`place`]）。`current` はいま使っている
+/// 設定で、フォントの一覧 `fonts` の `selected_font` 番目がいま使っているフォント（`family_indices` は
+/// `current.font.families` のそれぞれの、システムのフォントの中の番号）。
+fn create<'a>(
+    owner: HWND,
+    current: &Config,
+    fonts: Vec<FontChoice>,
+    family_indices: Vec<Option<u32>>,
+    selected_font: usize,
+    tab_bar_colors: [Rgb; config::TAB_BAR_COLOR_KEYS.len()],
+    host: &'a mut dyn Host,
+) -> windows::core::Result<State<'a>> {
     // SAFETY: 自分のモジュールのハンドルを問い合わせるだけ。
     let instance = unsafe { GetModuleHandleW(None)? };
     // SAFETY: クラスは登録済みで、文字列はこの呼び出しの間は生きている。
@@ -933,616 +883,22 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     };
     let mut b = Builder::new(hwnd, instance.into());
 
-    let page_left = MARGIN + PAGES_WIDTH + MARGIN;
-    let page_width = CLIENT_WIDTH - page_left - MARGIN;
-    let control_left = page_left + LABEL_WIDTH;
-    let control_width = CLIENT_WIDTH - control_left - MARGIN;
-    let button_top = CLIENT_HEIGHT - MARGIN - BUTTON_HEIGHT;
-    let row = |index: i32| MARGIN + index * (ROW_HEIGHT + MARGIN);
-    let label_rect = |top: i32| [page_left, top + LABEL_OFFSET, LABEL_WIDTH, ROW_HEIGHT];
-
     let pages = b.list(
         ID_PAGES,
-        [MARGIN, MARGIN, PAGES_WIDTH, button_top - 2 * MARGIN],
+        [MARGIN, MARGIN, PAGES_WIDTH, BUTTON_TOP - 2 * MARGIN],
         &[],
     )?;
     for page in PAGES {
         pages.add(page);
     }
 
-    // 外観
-    let mut appearance = Vec::new();
-    appearance.push(b.label("フォント(&F):", label_rect(row(0)))?);
-    let font = b.combo(
-        ID_FONT,
-        [control_left, row(0), control_width, ROW_HEIGHT],
-        std::iter::empty::<&str>(),
-    )?;
-    appearance.push(font);
-    // SAFETY: font は有効なコンボボックス。
-    unsafe { SendMessageW(font, CB_SETMINVISIBLE, Some(WPARAM(VISIBLE_FONTS)), None) };
-    appearance.push(b.label("サイズ(&S):", label_rect(row(1)))?);
-    let size = NumberField::create(
-        &mut b,
-        ID_SIZE,
-        ID_SIZE_SPIN,
-        [control_left, row(1), NUMBER_WIDTH, ROW_HEIGHT],
-        FONT_SIZE_KIND,
-    )?;
-    appearance.extend(size.controls());
-    appearance.push(b.label(
-        "ポイント（1〜128）",
-        [
-            control_left + NUMBER_WIDTH + BUTTON_GAP,
-            row(1) + LABEL_OFFSET,
-            control_width - NUMBER_WIDTH - BUTTON_GAP,
-            ROW_HEIGHT,
-        ],
-    )?);
-    appearance.push(b.label("セルより広い文字(&W):", label_rect(row(2)))?);
-    let wide_glyph = RadioGroup::create(
-        &mut b,
-        ID_WIDE_GLYPH,
-        &WideGlyph::ALL,
-        &WIDE_GLYPH_LABELS,
-        |index| {
-            [
-                control_left,
-                row(2) + index * ROW_HEIGHT,
-                control_width,
-                ROW_HEIGHT,
-            ]
-        },
-    )?;
-    appearance.extend_from_slice(wide_glyph.buttons());
-    let width_row = row(2) + WideGlyph::ALL.len() as i32 * ROW_HEIGHT + MARGIN;
-    appearance.push(b.label("スクロールバーの幅(&B):", label_rect(width_row))?);
-    let scroll_bar_width = NumberField::create(
-        &mut b,
-        ID_SCROLL_BAR_WIDTH,
-        ID_SCROLL_BAR_WIDTH_SPIN,
-        [control_left, width_row, NUMBER_WIDTH, ROW_HEIGHT],
-        SCROLL_BAR_WIDTH_KIND,
-    )?;
-    appearance.extend(scroll_bar_width.controls());
-    appearance.push(b.label(
-        "ピクセル（4〜64。画面の拡大率に合わせて広げる）",
-        [
-            control_left + NUMBER_WIDTH + BUTTON_GAP,
-            width_row + LABEL_OFFSET,
-            control_width - NUMBER_WIDTH - BUTTON_GAP,
-            ROW_HEIGHT,
-        ],
-    )?);
-    let padding_row = width_row + ROW_HEIGHT + MARGIN;
-    appearance.push(b.label("余白(&G):", label_rect(padding_row))?);
-    let padding = NumberField::create(
-        &mut b,
-        ID_PADDING,
-        ID_PADDING_SPIN,
-        [control_left, padding_row, NUMBER_WIDTH, ROW_HEIGHT],
-        PADDING_KIND,
-    )?;
-    appearance.extend(padding.controls());
-    appearance.push(b.label(
-        "ピクセル（0〜64。画面の拡大率に合わせて広げる）",
-        [
-            control_left + NUMBER_WIDTH + BUTTON_GAP,
-            padding_row + LABEL_OFFSET,
-            control_width - NUMBER_WIDTH - BUTTON_GAP,
-            ROW_HEIGHT,
-        ],
-    )?);
-
-    // 背景。上に既定の値の枠、下に背景画像の一覧と選択した項目の値の枠。
-    let mut background_page = Vec::new();
-    let inner_left = page_left + GROUP_PADDING;
-    let inner_width = page_width - 2 * GROUP_PADDING;
-    let background_control_left = inner_left + BACKGROUND_LABEL_WIDTH;
-    let background_control_width = inner_left + inner_width - background_control_left;
-    let background_label_rect = |top: i32| {
-        [
-            inner_left,
-            top + LABEL_OFFSET,
-            BACKGROUND_LABEL_WIDTH,
-            ROW_HEIGHT,
-        ]
-    };
-    let opacity_note_rect = |top: i32, left: i32| {
-        [
-            left + NUMBER_WIDTH + BUTTON_GAP,
-            top + LABEL_OFFSET,
-            inner_left + inner_width - left - NUMBER_WIDTH - BUTTON_GAP,
-            ROW_HEIGHT,
-        ]
-    };
-
-    let defaults_top = row(0);
-    let fit_row = defaults_top + GROUP_CAPTION_HEIGHT;
-    let opacity_row = fit_row + ROW_HEIGHT + BUTTON_GAP;
-    let defaults_bottom = opacity_row + ROW_HEIGHT + GROUP_PADDING;
-    background_page.push(b.group(
-        "既定",
-        [
-            page_left,
-            defaults_top,
-            page_width,
-            defaults_bottom - defaults_top,
-        ],
-    )?);
-    background_page.push(b.label("表示方法(&T):", background_label_rect(fit_row))?);
-    let background_fit = ChoiceBox::create(
-        &mut b,
-        ID_BACKGROUND_FIT,
-        [
-            background_control_left,
-            fit_row,
-            background_control_width,
-            ROW_HEIGHT,
-        ],
-        &BackgroundFit::ALL,
-        BACKGROUND_FIT_LABELS,
-    )?;
-    background_page.push(background_fit.hwnd());
-    background_page.push(b.label("不透明度(&Y):", background_label_rect(opacity_row))?);
-    let background_opacity = NumberField::create(
-        &mut b,
-        ID_BACKGROUND_OPACITY,
-        ID_BACKGROUND_OPACITY_SPIN,
-        [
-            background_control_left,
-            opacity_row,
-            NUMBER_WIDTH,
-            ROW_HEIGHT,
-        ],
-        BACKGROUND_OPACITY_KIND,
-    )?;
-    background_page.extend(background_opacity.controls());
-    background_page.push(b.label(
-        "0（透明）〜1（不透明）",
-        opacity_note_rect(opacity_row, background_control_left),
-    )?);
-
-    let images_top = defaults_bottom + BUTTON_GAP;
-    let list_top = images_top + GROUP_CAPTION_HEIGHT;
-    let item_fit_row = list_top + BACKGROUND_LIST_HEIGHT + BUTTON_GAP;
-    let item_opacity_row = item_fit_row + ROW_HEIGHT + BUTTON_GAP;
-    let custom_opacity_row = item_opacity_row + ROW_HEIGHT;
-    let images_bottom = custom_opacity_row + ROW_HEIGHT + GROUP_PADDING;
-    background_page.push(b.group(
-        "背景画像の一覧(&I)",
-        [
-            page_left,
-            images_top,
-            page_width,
-            images_bottom - images_top,
-        ],
-    )?);
-    let list_width = inner_width - BUTTON_GAP - BACKGROUND_BUTTON_WIDTH;
-    let background_images = b.list(
-        ID_BACKGROUND_IMAGES,
-        [inner_left, list_top, list_width, BACKGROUND_LIST_HEIGHT],
-        &[],
-    )?;
-    background_page.push(background_images.hwnd());
-    let image_button_rect = |index: i32| {
-        [
-            inner_left + list_width + BUTTON_GAP,
-            list_top + index * (BUTTON_HEIGHT + BUTTON_GAP),
-            BACKGROUND_BUTTON_WIDTH,
-            BUTTON_HEIGHT,
-        ]
-    };
-    background_page.push(b.button(
-        ID_BACKGROUND_ADD_FILES,
-        "ファイルを追加(&L)…",
-        image_button_rect(0),
-    )?);
-    background_page.push(b.button(
-        ID_BACKGROUND_ADD_FOLDER,
-        "フォルダを追加(&O)…",
-        image_button_rect(1),
-    )?);
-    let background_remove = b.button(ID_BACKGROUND_REMOVE, "削除(&D)", image_button_rect(2))?;
-    background_page.push(background_remove);
-    background_page.push(b.label(
-        "選択した項目の表示方法(&N):",
-        background_label_rect(item_fit_row),
-    )?);
-    // 先頭の「既定（…）」は、既定の表示方法を入れるときに書き直す。
-    let background_item_fit = ChoiceBox::create(
-        &mut b,
-        ID_BACKGROUND_ITEM_FIT,
-        [
-            background_control_left,
-            item_fit_row,
-            background_control_width,
-            ROW_HEIGHT,
-        ],
-        &ITEM_FIT_CHOICES,
-        std::iter::once("").chain(BACKGROUND_FIT_LABELS),
-    )?;
-    background_page.push(background_item_fit.hwnd());
-    background_page.push(b.label(
-        "選択した項目の不透明度(&H):",
-        background_label_rect(item_opacity_row),
-    )?);
-    // 「既定」の文字は、既定の不透明度を入れるときに書き直す。「指定」の右に入力欄を置く。
-    let background_item_opacity_choice = RadioGroup::create(
-        &mut b,
-        ID_BACKGROUND_ITEM_OPACITY_CHOICE,
-        &ITEM_OPACITY_CHOICES,
-        &["", "指定"],
-        |index| {
-            if index == 0 {
-                [
-                    background_control_left,
-                    item_opacity_row,
-                    background_control_width,
-                    ROW_HEIGHT,
-                ]
-            } else {
-                [
-                    background_control_left,
-                    custom_opacity_row,
-                    CUSTOM_OPACITY_WIDTH,
-                    ROW_HEIGHT,
-                ]
-            }
-        },
-    )?;
-    background_page.extend_from_slice(background_item_opacity_choice.buttons());
-    let custom_opacity_left = background_control_left + CUSTOM_OPACITY_WIDTH;
-    let background_item_opacity = NumberField::create(
-        &mut b,
-        ID_BACKGROUND_ITEM_OPACITY,
-        ID_BACKGROUND_ITEM_OPACITY_SPIN,
-        [
-            custom_opacity_left,
-            custom_opacity_row,
-            NUMBER_WIDTH,
-            ROW_HEIGHT,
-        ],
-        BACKGROUND_ITEM_OPACITY_KIND,
-    )?;
-    background_page.extend(background_item_opacity.controls());
-    background_page.push(b.label(
-        "0〜1",
-        opacity_note_rect(custom_opacity_row, custom_opacity_left),
-    )?);
-    background_page.push(b.label(
-        "新しいタブを開くたびに、一覧からランダムに 1 枚選ぶ（フォルダはその中の画像から選ぶ）。画像は、不透明度に応じて端末の背景色を重ねて薄くする。",
-        [
-            page_left,
-            images_bottom + BUTTON_GAP,
-            page_width,
-            2 * ROW_HEIGHT,
-        ],
-    )?);
-
-    // 動作
-    let mut behavior = Vec::new();
-    behavior.push(b.label("貼り付け前の確認(&P):", label_rect(row(0)))?);
-    let paste_confirm = RadioGroup::create(
-        &mut b,
-        ID_PASTE_CONFIRM,
-        &PasteConfirm::ALL,
-        &PASTE_CONFIRM_LABELS,
-        |index| {
-            [
-                control_left,
-                row(0) + index * ROW_HEIGHT,
-                control_width,
-                ROW_HEIGHT,
-            ]
-        },
-    )?;
-    behavior.extend_from_slice(paste_confirm.buttons());
-    behavior.push(b.label(
-        "改行を含む文字列を貼り付ける前に、内容を編集できるダイアログで確認する。「コマンドとして実行される可能性があるとき」は、アプリが bracketed paste を有効にしていないときなど。",
-        [
-            page_left,
-            row(0) + 3 * ROW_HEIGHT + MARGIN,
-            page_width,
-            3 * ROW_HEIGHT,
-        ],
-    )?);
-    let paste_size_row = row(0) + 6 * ROW_HEIGHT + 2 * MARGIN;
-    behavior.push(b.label("大きなテキストの確認(&Z):", label_rect(paste_size_row))?);
-    let paste_confirm_size = NumberField::create(
-        &mut b,
-        ID_PASTE_CONFIRM_SIZE,
-        ID_PASTE_CONFIRM_SIZE_SPIN,
-        [control_left, paste_size_row, NUMBER_WIDTH, ROW_HEIGHT],
-        PASTE_CONFIRM_SIZE_KIND,
-    )?;
-    behavior.extend(paste_confirm_size.controls());
-    behavior.push(b.label(
-        "KiB 以上は常に確認する（0 で無効）",
-        [
-            control_left + NUMBER_WIDTH + BUTTON_GAP,
-            paste_size_row + LABEL_OFFSET,
-            control_width - NUMBER_WIDTH - BUTTON_GAP,
-            ROW_HEIGHT,
-        ],
-    )?);
-    let clipboard_row = paste_size_row + ROW_HEIGHT + MARGIN;
-    behavior.push(b.label("クリップボードの読み取り(&L):", label_rect(clipboard_row))?);
-    let clipboard_read = RadioGroup::create(
-        &mut b,
-        ID_CLIPBOARD_READ,
-        &ClipboardRead::ALL,
-        &CLIPBOARD_READ_LABELS,
-        |index| {
-            [
-                control_left,
-                clipboard_row + index * ROW_HEIGHT,
-                control_width,
-                ROW_HEIGHT,
-            ]
-        },
-    )?;
-    behavior.extend_from_slice(clipboard_read.buttons());
-    behavior.push(b.label(
-        "アプリがクリップボードの内容を読み取ろうとしたとき（OSC 52）。アプリからの書き込みは、この設定に関係なく受け付ける。",
-        [
-            page_left,
-            clipboard_row + 3 * ROW_HEIGHT + MARGIN,
-            page_width,
-            2 * ROW_HEIGHT,
-        ],
-    )?);
-
-    // プロファイル
-    let mut profiles_page = Vec::new();
-    profiles_page.push(b.label(
-        "新しいタブで起動するプロファイル(&R):",
-        [page_left, row(0) + LABEL_OFFSET, page_width, ROW_HEIGHT],
-    )?);
-    let profiles_top = row(0) + ROW_HEIGHT;
-    let profiles_list = b.list(
-        ID_PROFILES,
-        [page_left, profiles_top, page_width, PROFILE_LIST_HEIGHT],
-        &[PROFILE_COLUMN_TAB_STOP],
-    )?;
-    profiles_page.push(profiles_list.hwnd());
-    let profile_buttons_top = profiles_top + PROFILE_LIST_HEIGHT + BUTTON_GAP;
-    let profile_button_width = (page_width - 2 * BUTTON_GAP) / 3;
-    let profile_button_rect = |index: i32| {
-        [
-            page_left + index * (profile_button_width + BUTTON_GAP),
-            profile_buttons_top,
-            profile_button_width,
-            BUTTON_HEIGHT,
-        ]
-    };
-    profiles_page.push(b.button(ID_PROFILE_ADD, "追加(&D)", profile_button_rect(0))?);
-    let profile_remove = b.button(ID_PROFILE_REMOVE, "削除(&L)", profile_button_rect(1))?;
-    profiles_page.push(profile_remove);
-    let profile_default = b.button(ID_PROFILE_DEFAULT, "既定にする(&J)", profile_button_rect(2))?;
-    profiles_page.push(profile_default);
-    let profile_name_row = profile_buttons_top + BUTTON_HEIGHT + MARGIN;
-    profiles_page.push(b.label("名前(&N):", label_rect(profile_name_row))?);
-    let profile_name = b.edit(
-        ID_PROFILE_NAME,
-        [control_left, profile_name_row, control_width, ROW_HEIGHT],
-    )?;
-    profiles_page.push(profile_name);
-    let profile_backend_row = profile_name_row + ROW_HEIGHT + MARGIN;
-    profiles_page.push(b.label("接続方式(&B):", label_rect(profile_backend_row))?);
-    let profile_backend = ChoiceBox::create(
-        &mut b,
-        ID_PROFILE_BACKEND,
-        [control_left, profile_backend_row, control_width, ROW_HEIGHT],
-        &BackendKind::ALL,
-        PROFILE_BACKEND_LABELS,
-    )?;
-    profiles_page.push(profile_backend.hwnd());
-    let profile_location_row = profile_backend_row + ROW_HEIGHT + MARGIN;
-    let profile_location_label = b.label(
-        profile_location_texts(BackendKind::Conpty).0,
-        label_rect(profile_location_row),
-    )?;
-    profiles_page.push(profile_location_label);
-    let profile_location = b.edit(
-        ID_PROFILE_LOCATION,
-        [
-            control_left,
-            profile_location_row,
-            control_width,
-            ROW_HEIGHT,
-        ],
-    )?;
-    profiles_page.push(profile_location);
-    let profile_command_row = profile_location_row + ROW_HEIGHT + MARGIN;
-    profiles_page.push(b.label("コマンドライン(&C):", label_rect(profile_command_row))?);
-    let profile_command = b.edit(
-        ID_PROFILE_COMMAND,
-        [control_left, profile_command_row, control_width, ROW_HEIGHT],
-    )?;
-    profiles_page.push(profile_command);
-    // 高さは文に合わせて決める（文がなければ 0）。
-    let profile_command_warning = b.static_text(
-        ID_PROFILE_COMMAND_WARNING,
-        WINDOW_EX_STYLE(0),
-        [
-            control_left,
-            profile_command_row + ROW_HEIGHT + LABEL_OFFSET,
-            control_width,
-            0,
-        ],
-    )?;
-    profiles_page.push(profile_command_warning);
-    let profile_icon_row = profile_command_row + ROW_HEIGHT + MARGIN;
-    let profile_icon_label = b.label("アイコン(&I):", label_rect(profile_icon_row))?;
-    profiles_page.push(profile_icon_label);
-    let profile_icon = b.edit(
-        ID_PROFILE_ICON,
-        [
-            control_left,
-            profile_icon_row,
-            control_width - BUTTON_GAP - BUTTON_WIDTH,
-            ROW_HEIGHT,
-        ],
-    )?;
-    profiles_page.push(profile_icon);
-    let profile_icon_cue = HSTRING::from("空欄なら自動で作成する");
-    // SAFETY: profile_icon は有効な入力欄で、文字列はこの呼び出しの間は生きている。
-    unsafe {
-        SendMessageW(
-            profile_icon,
-            EM_SETCUEBANNER,
-            Some(WPARAM(CUE_BANNER_ALWAYS)),
-            Some(LPARAM(profile_icon_cue.as_ptr() as isize)),
-        )
-    };
-    let profile_icon_choose = b.button(
-        ID_PROFILE_ICON_CHOOSE,
-        "参照(&E)…",
-        [
-            control_left + control_width - BUTTON_WIDTH,
-            profile_icon_row,
-            BUTTON_WIDTH,
-            ROW_HEIGHT,
-        ],
-    )?;
-    profiles_page.push(profile_icon_choose);
-    let profile_note = b.label(
-        "タブバーの「+」は既定のプロファイルを開き、「▾」か「+」の右クリックで一覧から選んで開く。fantermo を引数つきで起動したときは、「+」とキーとメニューの「新しいタブ」も引数のコマンドラインを使う。Cygwin と WSL のコマンドラインは Cygwin・WSL の中で実行するもの（空欄ならログインシェル）。変更は次に開くタブから反映される。",
-        [
-            page_left,
-            profile_icon_row + ROW_HEIGHT + MARGIN,
-            page_width,
-            PROFILE_NOTE_HEIGHT,
-        ],
-    )?;
-    profiles_page.push(profile_note);
-
-    // キー
-    let mut keys_page = Vec::new();
-    keys_page.push(b.label(
-        "キーの割り当て(&K):",
-        [page_left, row(0), page_width, ROW_HEIGHT],
-    )?);
-    let key_buttons_top = button_top - MARGIN - BUTTON_HEIGHT;
-    let keys_list = b.list(
-        ID_KEYS,
-        [
-            page_left,
-            row(0) + ROW_HEIGHT,
-            page_width,
-            key_buttons_top - BUTTON_GAP - row(0) - ROW_HEIGHT,
-        ],
-        &[KEY_COLUMN_TAB_STOP],
-    )?;
-    keys_page.push(keys_list.hwnd());
-    let key_button_width = (page_width - 3 * BUTTON_GAP) / 4;
-    let mut key_buttons = [HWND::default(); 4];
-    for (index, (id, text)) in [
-        (ID_KEY_ADD, "追加(&D)…"),
-        (ID_KEY_CHANGE, "変更(&E)…"),
-        (ID_KEY_REMOVE, "外す(&R)"),
-        (ID_KEY_RESET, "既定に戻す(&U)"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        key_buttons[index] = b.button(
-            id,
-            text,
-            [
-                page_left + index as i32 * (key_button_width + BUTTON_GAP),
-                key_buttons_top,
-                key_button_width,
-                BUTTON_HEIGHT,
-            ],
-        )?;
-        keys_page.push(key_buttons[index]);
-    }
-
-    // 色
-    let mut colors_page = Vec::new();
-    let mut color_rows = Vec::new();
-    // 端末の色の表の見出しの下に作る。
-    let mut color_scheme = None;
-    let mut top = MARGIN;
-    for (table_index, table) in ColorTable::ALL.into_iter().enumerate() {
-        colors_page.push(b.label(
-            COLOR_TABLE_LABELS[table_index],
-            [page_left, top + LABEL_OFFSET, page_width, COLOR_ROW_HEIGHT],
-        )?);
-        top += COLOR_ROW_HEIGHT;
-        if table == ColorTable::Terminal {
-            colors_page.push(b.label(
-                "配色(&M):",
-                [
-                    page_left + COLOR_LABEL_INDENT,
-                    top + LABEL_OFFSET,
-                    LABEL_WIDTH - COLOR_LABEL_INDENT,
-                    COLOR_ROW_HEIGHT,
-                ],
-            )?);
-            let scheme = RadioGroup::create(
-                &mut b,
-                ID_COLOR_SCHEME,
-                &ColorScheme::ALL,
-                &COLOR_SCHEME_LABELS,
-                |index| {
-                    [
-                        control_left + index * COLOR_SCHEME_WIDTH,
-                        top,
-                        COLOR_SCHEME_WIDTH,
-                        COLOR_ROW_HEIGHT,
-                    ]
-                },
-            )?;
-            colors_page.extend_from_slice(scheme.buttons());
-            color_scheme = Some(scheme);
-            top += COLOR_ROW_HEIGHT;
-        }
-        for label_text in color_labels(table) {
-            let id = ID_COLORS + color_rows.len() as i32 * COLOR_ID_STRIDE;
-            colors_page.push(b.label(
-                label_text,
-                [
-                    page_left + COLOR_LABEL_INDENT,
-                    top + LABEL_OFFSET,
-                    LABEL_WIDTH - COLOR_LABEL_INDENT,
-                    COLOR_ROW_HEIGHT,
-                ],
-            )?);
-            let swatch = b.static_text(
-                id + COLOR_SWATCH,
-                WS_EX_CLIENTEDGE,
-                [control_left, top + 2, SWATCH_WIDTH, COLOR_ROW_HEIGHT - 4],
-            )?;
-            let mut left = control_left + SWATCH_WIDTH + BUTTON_GAP;
-            let text = b.static_text(
-                id + COLOR_TEXT,
-                WINDOW_EX_STYLE(0),
-                [left, top + LABEL_OFFSET, COLOR_TEXT_WIDTH, COLOR_ROW_HEIGHT],
-            )?;
-            left += COLOR_TEXT_WIDTH + BUTTON_GAP;
-            let choose = b.button(
-                id + COLOR_CHOOSE,
-                "選択…",
-                [left, top, CHOOSE_WIDTH, COLOR_ROW_HEIGHT - 2],
-            )?;
-            left += CHOOSE_WIDTH + BUTTON_GAP;
-            let reset = b.button(
-                id + COLOR_RESET,
-                "既定に戻す",
-                [left, top, COLOR_RESET_WIDTH, COLOR_ROW_HEIGHT - 2],
-            )?;
-            colors_page.extend([swatch, text, choose, reset]);
-            color_rows.push(ColorRow {
-                swatch,
-                text,
-                reset,
-            });
-            top += COLOR_ROW_HEIGHT;
-        }
-    }
+    // Tab で移る順は作った順なので、ページの一覧の順に作る。
+    let appearance = AppearancePage::create(&mut b, fonts, family_indices, selected_font)?;
+    let background = BackgroundPage::create(&mut b)?;
+    let behavior = BehaviorPage::create(&mut b)?;
+    let profiles = ProfilesPage::create(&mut b)?;
+    let keys = KeysPage::create(&mut b)?;
+    let colors = ColorsPage::create(&mut b, tab_bar_colors)?;
 
     // 下のボタンと、入力のエラー
     let error = b.static_text(
@@ -1550,7 +906,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         WINDOW_EX_STYLE(0),
         [
             MARGIN,
-            button_top + LABEL_OFFSET,
+            BUTTON_TOP + LABEL_OFFSET,
             CLIENT_WIDTH - 2 * MARGIN - 3 * (BUTTON_WIDTH + BUTTON_GAP),
             ROW_HEIGHT,
         ],
@@ -1565,7 +921,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         - buttons.len() as i32 * BUTTON_WIDTH
         - (buttons.len() as i32 - 1) * BUTTON_GAP;
     for (id, text, default) in buttons {
-        let rect = [button_left, button_top, BUTTON_WIDTH, BUTTON_HEIGHT];
+        let rect = [button_left, BUTTON_TOP, BUTTON_WIDTH, BUTTON_HEIGHT];
         if default {
             b.default_button(id, text, rect)?;
         } else {
@@ -1574,26 +930,1062 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         button_left += BUTTON_WIDTH + BUTTON_GAP;
     }
 
-    Ok((
+    Ok(State {
         hwnd,
-        Controls {
+        controls: Controls {
             pages,
-            page_controls: vec![
-                appearance,
-                background_page,
-                behavior,
-                profiles_page,
-                keys_page,
-                colors_page,
+            error,
+            placed: b.placed,
+        },
+        appearance,
+        background,
+        behavior,
+        profiles,
+        keys,
+        colors,
+        host: RefCell::new(host),
+        base: RefCell::new(current.clone()),
+        previewed: RefCell::new(current.clone()),
+        font: Cell::new(HFONT::default()),
+        dpi: Cell::new(BASE_DPI),
+        closed: Cell::new(false),
+    })
+}
+
+/// 外観のページ。フォント、サイズ、セルより広い文字、スクロールバーの幅、余白。
+struct AppearancePage {
+    controls: Vec<HWND>,
+    font: HWND,
+    size: NumberField<f32>,
+    wide_glyph: RadioGroup<WideGlyph>,
+    scroll_bar_width: NumberField<u32>,
+    padding: NumberField<u32>,
+    /// フォントの一覧。
+    fonts: Vec<FontChoice>,
+    /// 最後に書いたときの設定（[`DialogContext::base`]）の `font.families` のそれぞれの、システムの
+    /// フォントの中の番号。
+    base_indices: RefCell<Vec<Option<u32>>>,
+    /// 最後に書いたときに選んでいたフォントの、一覧の中の位置。
+    base_font: Cell<usize>,
+}
+
+impl AppearancePage {
+    /// ページのコントロールを作る。フォントの一覧 `fonts` の `selected_font` 番目が、いま使っている
+    /// フォント（`family_indices` は `font.families` のそれぞれの、システムのフォントの中の番号）。
+    fn create(
+        b: &mut Builder,
+        fonts: Vec<FontChoice>,
+        family_indices: Vec<Option<u32>>,
+        selected_font: usize,
+    ) -> windows::core::Result<Self> {
+        let mut controls = Vec::new();
+        controls.push(b.label("フォント(&F):", label_rect(row(0)))?);
+        let font = b.combo(
+            ID_FONT,
+            [CONTROL_LEFT, row(0), CONTROL_WIDTH, ROW_HEIGHT],
+            std::iter::empty::<&str>(),
+        )?;
+        controls.push(font);
+        // SAFETY: font は有効なコンボボックス。
+        unsafe { SendMessageW(font, CB_SETMINVISIBLE, Some(WPARAM(VISIBLE_FONTS)), None) };
+        controls.push(b.label("サイズ(&S):", label_rect(row(1)))?);
+        let size = NumberField::create(
+            b,
+            ID_SIZE,
+            ID_SIZE_SPIN,
+            [CONTROL_LEFT, row(1), NUMBER_WIDTH, ROW_HEIGHT],
+            FONT_SIZE_KIND,
+        )?;
+        controls.extend(size.controls());
+        controls.push(b.label(
+            "ポイント（1〜128）",
+            [
+                CONTROL_LEFT + NUMBER_WIDTH + BUTTON_GAP,
+                row(1) + LABEL_OFFSET,
+                CONTROL_WIDTH - NUMBER_WIDTH - BUTTON_GAP,
+                ROW_HEIGHT,
             ],
+        )?);
+        controls.push(b.label("セルより広い文字(&W):", label_rect(row(2)))?);
+        let wide_glyph = RadioGroup::create(
+            b,
+            ID_WIDE_GLYPH,
+            &WideGlyph::ALL,
+            &WIDE_GLYPH_LABELS,
+            |index| {
+                [
+                    CONTROL_LEFT,
+                    row(2) + index * ROW_HEIGHT,
+                    CONTROL_WIDTH,
+                    ROW_HEIGHT,
+                ]
+            },
+        )?;
+        controls.extend_from_slice(wide_glyph.buttons());
+        let width_row = row(2) + WideGlyph::ALL.len() as i32 * ROW_HEIGHT + MARGIN;
+        controls.push(b.label("スクロールバーの幅(&B):", label_rect(width_row))?);
+        let scroll_bar_width = NumberField::create(
+            b,
+            ID_SCROLL_BAR_WIDTH,
+            ID_SCROLL_BAR_WIDTH_SPIN,
+            [CONTROL_LEFT, width_row, NUMBER_WIDTH, ROW_HEIGHT],
+            SCROLL_BAR_WIDTH_KIND,
+        )?;
+        controls.extend(scroll_bar_width.controls());
+        controls.push(b.label(
+            "ピクセル（4〜64。画面の拡大率に合わせて広げる）",
+            [
+                CONTROL_LEFT + NUMBER_WIDTH + BUTTON_GAP,
+                width_row + LABEL_OFFSET,
+                CONTROL_WIDTH - NUMBER_WIDTH - BUTTON_GAP,
+                ROW_HEIGHT,
+            ],
+        )?);
+        let padding_row = width_row + ROW_HEIGHT + MARGIN;
+        controls.push(b.label("余白(&G):", label_rect(padding_row))?);
+        let padding = NumberField::create(
+            b,
+            ID_PADDING,
+            ID_PADDING_SPIN,
+            [CONTROL_LEFT, padding_row, NUMBER_WIDTH, ROW_HEIGHT],
+            PADDING_KIND,
+        )?;
+        controls.extend(padding.controls());
+        controls.push(b.label(
+            "ピクセル（0〜64。画面の拡大率に合わせて広げる）",
+            [
+                CONTROL_LEFT + NUMBER_WIDTH + BUTTON_GAP,
+                padding_row + LABEL_OFFSET,
+                CONTROL_WIDTH - NUMBER_WIDTH - BUTTON_GAP,
+                ROW_HEIGHT,
+            ],
+        )?);
+        Ok(Self {
+            controls,
             font,
             size,
             wide_glyph,
             scroll_bar_width,
             padding,
+            fonts,
+            base_indices: RefCell::new(family_indices),
+            base_font: Cell::new(selected_font),
+        })
+    }
+
+    /// 設定ファイルに書けた。フォントを選び直していれば、選んでいるフォントを最後に書いたときの
+    /// フォントにする。`base` は書く前の、最後に書いたときの設定。
+    fn saved(&self, base: &Config) {
+        // SAFETY: コンボボックスは有効なウィンドウ。
+        let selected = unsafe { SendMessageW(self.font, CB_GETCURSEL, None, None) }.0;
+        if let Ok(selected) = usize::try_from(selected)
+            && selected != self.base_font.get()
+            && let Some(choice) = self.fonts.get(selected)
+        {
+            let indices =
+                families_choosing(&base.font.families, &self.base_indices.borrow(), choice)
+                    .into_iter()
+                    .map(|(_, index)| index)
+                    .collect();
+            *self.base_indices.borrow_mut() = indices;
+            self.base_font.set(selected);
+        }
+    }
+}
+
+impl Page for AppearancePage {
+    fn controls(&self) -> &[HWND] {
+        &self.controls
+    }
+
+    fn number_fields(&self) -> Vec<&dyn NumberInput> {
+        vec![
+            &self.size as &dyn NumberInput,
+            &self.scroll_bar_width,
+            &self.padding,
+        ]
+    }
+
+    /// コントロールに設定 `config` と、一覧の最後に書いたときのフォントを入れる。
+    fn fill(&self, _ctx: &dyn DialogContext, config: &Config) {
+        for font in &self.fonts {
+            // SAFETY: コンボボックスは有効なウィンドウで、文字列はこの呼び出しの間は生きている。
+            unsafe {
+                SendMessageW(
+                    self.font,
+                    CB_ADDSTRING,
+                    None,
+                    Some(LPARAM(HSTRING::from(font.name.as_str()).as_ptr() as isize)),
+                )
+            };
+        }
+        // SAFETY: コンボボックスは有効なウィンドウ。
+        unsafe {
+            SendMessageW(
+                self.font,
+                CB_SETCURSEL,
+                Some(WPARAM(self.base_font.get())),
+                None,
+            )
+        };
+        self.size.fill(config.font.size_pt);
+        self.wide_glyph.fill(config.font.wide_glyph);
+        self.scroll_bar_width.fill(config.scroll_bar.width);
+        self.padding.fill(config.window.padding);
+    }
+
+    fn read(
+        &self,
+        _ctx: &dyn DialogContext,
+        config: &mut Config,
+    ) -> Result<(), (&'static str, HWND)> {
+        // SAFETY: コンボボックスは有効なウィンドウ。
+        let selected = unsafe { SendMessageW(self.font, CB_GETCURSEL, None, None) }.0;
+        if let Ok(selected) = usize::try_from(selected)
+            && selected != self.base_font.get()
+            && let Some(choice) = self.fonts.get(selected)
+        {
+            config.font.families =
+                families_choosing(&config.font.families, &self.base_indices.borrow(), choice)
+                    .into_iter()
+                    .map(|(name, _)| name)
+                    .collect();
+        }
+        config.font.size_pt = self.size.read()?;
+        if let Some(wide_glyph) = self.wide_glyph.read() {
+            config.font.wide_glyph = wide_glyph;
+        }
+        config.scroll_bar.width = self.scroll_bar_width.read()?;
+        config.window.padding = self.padding.read()?;
+        Ok(())
+    }
+
+    fn on_command(&self, ctx: &dyn DialogContext, id: i32, code: u32) -> bool {
+        match (id, code) {
+            (ID_FONT, CBN_SELCHANGE) => ctx.preview(),
+            // ラジオボタンは、押したらすぐ反映する。
+            (id, BN_CLICKED) if self.wide_glyph.owns(id) => ctx.preview(),
+            // 数の入力欄は、打ち終わるのを待って反映する。
+            (id, EN_CHANGE) if self.number_fields().iter().any(|field| field.owns(id)) => {
+                ctx.schedule_preview();
+            }
+            _ => return false,
+        }
+        true
+    }
+}
+
+/// 背景のページ。上に既定の値の枠、下に背景画像の一覧と選択した項目の値の枠。
+struct BackgroundPage {
+    controls: Vec<HWND>,
+    /// 背景画像の一覧。
+    background_images: ListBox,
+    /// 背景画像の一覧の「削除」のボタン。
+    background_remove: HWND,
+    /// 既定の不透明度と表示方法。
+    background_opacity: NumberField<f32>,
+    background_fit: ChoiceBox<BackgroundFit>,
+    /// 一覧で選んでいる項目の表示方法。
+    background_item_fit: ChoiceBox<Option<BackgroundFit>>,
+    /// 一覧で選んでいる項目の不透明度の「既定」と「指定」のラジオボタンと、「指定」の値。
+    background_item_opacity_choice: RadioGroup<bool>,
+    background_item_opacity: NumberField<f32>,
+    /// 編集中の背景画像の一覧。
+    images: RefCell<Vec<BackgroundImage>>,
+}
+
+impl BackgroundPage {
+    /// ページのコントロールを作る。
+    fn create(b: &mut Builder) -> windows::core::Result<Self> {
+        let mut controls = Vec::new();
+        let inner_left = PAGE_LEFT + GROUP_PADDING;
+        let inner_width = PAGE_WIDTH - 2 * GROUP_PADDING;
+        let background_control_left = inner_left + BACKGROUND_LABEL_WIDTH;
+        let background_control_width = inner_left + inner_width - background_control_left;
+        let background_label_rect = |top: i32| {
+            [
+                inner_left,
+                top + LABEL_OFFSET,
+                BACKGROUND_LABEL_WIDTH,
+                ROW_HEIGHT,
+            ]
+        };
+        let opacity_note_rect = |top: i32, left: i32| {
+            [
+                left + NUMBER_WIDTH + BUTTON_GAP,
+                top + LABEL_OFFSET,
+                inner_left + inner_width - left - NUMBER_WIDTH - BUTTON_GAP,
+                ROW_HEIGHT,
+            ]
+        };
+
+        let defaults_top = row(0);
+        let fit_row = defaults_top + GROUP_CAPTION_HEIGHT;
+        let opacity_row = fit_row + ROW_HEIGHT + BUTTON_GAP;
+        let defaults_bottom = opacity_row + ROW_HEIGHT + GROUP_PADDING;
+        controls.push(b.group(
+            "既定",
+            [
+                PAGE_LEFT,
+                defaults_top,
+                PAGE_WIDTH,
+                defaults_bottom - defaults_top,
+            ],
+        )?);
+        controls.push(b.label("表示方法(&T):", background_label_rect(fit_row))?);
+        let background_fit = ChoiceBox::create(
+            b,
+            ID_BACKGROUND_FIT,
+            [
+                background_control_left,
+                fit_row,
+                background_control_width,
+                ROW_HEIGHT,
+            ],
+            &BackgroundFit::ALL,
+            BACKGROUND_FIT_LABELS,
+        )?;
+        controls.push(background_fit.hwnd());
+        controls.push(b.label("不透明度(&Y):", background_label_rect(opacity_row))?);
+        let background_opacity = NumberField::create(
+            b,
+            ID_BACKGROUND_OPACITY,
+            ID_BACKGROUND_OPACITY_SPIN,
+            [
+                background_control_left,
+                opacity_row,
+                NUMBER_WIDTH,
+                ROW_HEIGHT,
+            ],
+            BACKGROUND_OPACITY_KIND,
+        )?;
+        controls.extend(background_opacity.controls());
+        controls.push(b.label(
+            "0（透明）〜1（不透明）",
+            opacity_note_rect(opacity_row, background_control_left),
+        )?);
+
+        let images_top = defaults_bottom + BUTTON_GAP;
+        let list_top = images_top + GROUP_CAPTION_HEIGHT;
+        let item_fit_row = list_top + BACKGROUND_LIST_HEIGHT + BUTTON_GAP;
+        let item_opacity_row = item_fit_row + ROW_HEIGHT + BUTTON_GAP;
+        let custom_opacity_row = item_opacity_row + ROW_HEIGHT;
+        let images_bottom = custom_opacity_row + ROW_HEIGHT + GROUP_PADDING;
+        controls.push(b.group(
+            "背景画像の一覧(&I)",
+            [
+                PAGE_LEFT,
+                images_top,
+                PAGE_WIDTH,
+                images_bottom - images_top,
+            ],
+        )?);
+        let list_width = inner_width - BUTTON_GAP - BACKGROUND_BUTTON_WIDTH;
+        let background_images = b.list(
+            ID_BACKGROUND_IMAGES,
+            [inner_left, list_top, list_width, BACKGROUND_LIST_HEIGHT],
+            &[],
+        )?;
+        controls.push(background_images.hwnd());
+        let image_button_rect = |index: i32| {
+            [
+                inner_left + list_width + BUTTON_GAP,
+                list_top + index * (BUTTON_HEIGHT + BUTTON_GAP),
+                BACKGROUND_BUTTON_WIDTH,
+                BUTTON_HEIGHT,
+            ]
+        };
+        controls.push(b.button(
+            ID_BACKGROUND_ADD_FILES,
+            "ファイルを追加(&L)…",
+            image_button_rect(0),
+        )?);
+        controls.push(b.button(
+            ID_BACKGROUND_ADD_FOLDER,
+            "フォルダを追加(&O)…",
+            image_button_rect(1),
+        )?);
+        let background_remove = b.button(ID_BACKGROUND_REMOVE, "削除(&D)", image_button_rect(2))?;
+        controls.push(background_remove);
+        controls.push(b.label(
+            "選択した項目の表示方法(&N):",
+            background_label_rect(item_fit_row),
+        )?);
+        // 先頭の「既定（…）」は、既定の表示方法を入れるときに書き直す。
+        let background_item_fit = ChoiceBox::create(
+            b,
+            ID_BACKGROUND_ITEM_FIT,
+            [
+                background_control_left,
+                item_fit_row,
+                background_control_width,
+                ROW_HEIGHT,
+            ],
+            &ITEM_FIT_CHOICES,
+            std::iter::once("").chain(BACKGROUND_FIT_LABELS),
+        )?;
+        controls.push(background_item_fit.hwnd());
+        controls.push(b.label(
+            "選択した項目の不透明度(&H):",
+            background_label_rect(item_opacity_row),
+        )?);
+        // 「既定」の文字は、既定の不透明度を入れるときに書き直す。「指定」の右に入力欄を置く。
+        let background_item_opacity_choice = RadioGroup::create(
+            b,
+            ID_BACKGROUND_ITEM_OPACITY_CHOICE,
+            &ITEM_OPACITY_CHOICES,
+            &["", "指定"],
+            |index| {
+                if index == 0 {
+                    [
+                        background_control_left,
+                        item_opacity_row,
+                        background_control_width,
+                        ROW_HEIGHT,
+                    ]
+                } else {
+                    [
+                        background_control_left,
+                        custom_opacity_row,
+                        CUSTOM_OPACITY_WIDTH,
+                        ROW_HEIGHT,
+                    ]
+                }
+            },
+        )?;
+        controls.extend_from_slice(background_item_opacity_choice.buttons());
+        let custom_opacity_left = background_control_left + CUSTOM_OPACITY_WIDTH;
+        let background_item_opacity = NumberField::create(
+            b,
+            ID_BACKGROUND_ITEM_OPACITY,
+            ID_BACKGROUND_ITEM_OPACITY_SPIN,
+            [
+                custom_opacity_left,
+                custom_opacity_row,
+                NUMBER_WIDTH,
+                ROW_HEIGHT,
+            ],
+            BACKGROUND_ITEM_OPACITY_KIND,
+        )?;
+        controls.extend(background_item_opacity.controls());
+        controls.push(b.label(
+            "0〜1",
+            opacity_note_rect(custom_opacity_row, custom_opacity_left),
+        )?);
+        controls.push(b.label(
+            "新しいタブを開くたびに、一覧からランダムに 1 枚選ぶ（フォルダはその中の画像から選ぶ）。画像は、不透明度に応じて端末の背景色を重ねて薄くする。",
+            [
+                PAGE_LEFT,
+                images_bottom + BUTTON_GAP,
+                PAGE_WIDTH,
+                2 * ROW_HEIGHT,
+            ],
+        )?);
+        Ok(Self {
+            controls,
+            background_images,
+            background_remove,
+            background_opacity,
+            background_fit,
+            background_item_fit,
+            background_item_opacity_choice,
+            background_item_opacity,
+            images: RefCell::new(Vec::new()),
+        })
+    }
+
+    /// 背景画像の一覧を作り直し、`selected` 番目（一覧より後ろなら最後）を選ぶ。`None` なら選ばない。
+    fn refresh_background_images(&self, selected: Option<usize>) {
+        let list = self.background_images;
+        let images = self.images.borrow();
+        list.reset_with(images.iter().map(background_row_text));
+        if let Some(selected) = selected
+            && !images.is_empty()
+        {
+            list.select(selected.min(images.len() - 1));
+        }
+        drop(images);
+        self.update_background_buttons();
+    }
+
+    /// 背景画像の一覧で選んでいる位置。
+    fn selected_background_image(&self) -> Option<usize> {
+        self.background_images
+            .selected()
+            .filter(|&index| index < self.images.borrow().len())
+    }
+
+    /// 背景画像の一覧で選んでいるときだけ「削除」と項目の表示方法・不透明度を触れるようにし、表示方法と
+    /// 不透明度に選んでいる項目の値を見せる。不透明度の入力欄は「指定」のときだけ触れる。
+    fn update_background_buttons(&self) {
+        let selected = self
+            .selected_background_image()
+            .and_then(|index| self.images.borrow().get(index).cloned());
+        let buttons = self.background_item_opacity_choice.buttons();
+        for &control in [self.background_remove, self.background_item_fit.hwnd()]
+            .iter()
+            .chain(buttons)
+        {
+            // SAFETY: control はダイアログの子の有効なウィンドウ。
+            unsafe { _ = EnableWindow(control, selected.is_some()) };
+        }
+        match &selected {
+            Some(image) => self.background_item_fit.fill(image.fit),
+            None => self.background_item_fit.clear(),
+        }
+        let opacity = selected.as_ref().map(|image| image.image_opacity);
+        let custom = opacity.flatten();
+        match opacity {
+            Some(opacity) => self.background_item_opacity_choice.fill(opacity.is_some()),
+            None => self.background_item_opacity_choice.clear(),
+        }
+        self.enable_item_opacity(custom.is_some());
+        // 値が変わったときだけ書く（書くと EN_CHANGE が届いて、端末への反映の予約が掛かる）。借用は
+        // 持っていない。
+        self.background_item_opacity.fill_if_changed(custom);
+    }
+
+    /// 項目の不透明度の入力欄と上下の矢印を、`enabled` なら触れるようにする。
+    fn enable_item_opacity(&self, enabled: bool) {
+        for control in self.background_item_opacity.controls() {
+            // SAFETY: control はダイアログの子の有効なウィンドウ。
+            unsafe { _ = EnableWindow(control, enabled) };
+        }
+    }
+
+    /// 項目の不透明度で「指定」を選んでいるか。
+    fn custom_item_opacity(&self) -> bool {
+        self.background_item_opacity_choice.read() == Some(true)
+    }
+
+    /// 編集中の既定の表示方法。
+    fn default_fit(&self, ctx: &dyn DialogContext) -> BackgroundFit {
+        self.background_fit
+            .read()
+            .unwrap_or(ctx.base().background.fit)
+    }
+
+    /// 編集中の既定の不透明度。読めなければ `None`。
+    fn default_opacity(&self) -> Option<f32> {
+        self.background_opacity.read().ok()
+    }
+
+    /// 項目の表示方法の先頭の選択肢と、不透明度の「既定」のラジオボタンに、編集中の既定の値を添える。
+    /// 既定の不透明度が読めなければ、ラジオボタンは前の添え書きのままにする。
+    fn refresh_background_defaults(&self, ctx: &dyn DialogContext) {
+        let fit = default_choice_label(fit_label(self.default_fit(ctx)));
+        self.background_item_fit.relabel(None, &fit);
+        if let Some(opacity) = self.default_opacity()
+            && let Some(button) = self.background_item_opacity_choice.button(false)
+        {
+            set_text(button, &default_choice_label(&format_opacity(opacity)));
+        }
+    }
+
+    /// 背景画像の一覧の `index` 番目の行を、編集中の項目に合わせて書き直す（選んだままにする）。
+    fn refresh_background_row(&self, index: usize) {
+        let Some(text) = self.images.borrow().get(index).map(background_row_text) else {
+            return;
+        };
+        self.background_images.replace_row(index, &text);
+    }
+
+    /// 一覧で選んでいる項目の表示方法のコンボボックスが変わった。
+    fn on_background_item_fit(&self, ctx: &dyn DialogContext) {
+        let Some(index) = self.selected_background_image() else {
+            return;
+        };
+        let Some(fit) = self.background_item_fit.read() else {
+            return;
+        };
+        self.images.borrow_mut()[index].fit = fit;
+        self.refresh_background_row(index);
+        ctx.preview();
+    }
+
+    /// 一覧で選んでいる項目の不透明度の入力欄が変わった。「指定」で読めれば項目に入れる。端末への反映は
+    /// 少し待つ（読めなければ、反映するときにエラーを見せる）。
+    fn on_background_item_opacity(&self, ctx: &dyn DialogContext) {
+        if let Some(index) = self.selected_background_image()
+            && self.custom_item_opacity()
+            && let Ok(opacity) = self.background_item_opacity.read()
+        {
+            self.set_item_opacity(index, Some(opacity));
+        }
+        ctx.schedule_preview();
+    }
+
+    /// 一覧で選んでいる項目の不透明度の「既定」か「指定」が選ばれた。「指定」で入力欄が読めなければ、
+    /// 既定の不透明度を入れる。
+    fn on_background_item_opacity_choice(&self, ctx: &dyn DialogContext) {
+        let Some(index) = self.selected_background_image() else {
+            return;
+        };
+        let custom = self.custom_item_opacity();
+        self.enable_item_opacity(custom);
+        if custom {
+            let opacity = self
+                .background_item_opacity
+                .read()
+                .ok()
+                .or_else(|| self.default_opacity())
+                .unwrap_or(ctx.base().background.image_opacity);
+            // 借用は持っていない（入力欄の EN_CHANGE はこの中で届く）。
+            self.background_item_opacity.fill(opacity);
+            self.set_item_opacity(index, Some(opacity));
+        } else {
+            self.background_item_opacity.clear();
+            self.set_item_opacity(index, None);
+        }
+        ctx.preview();
+    }
+
+    /// 一覧の `index` 番目の項目の不透明度を `opacity` にし、変わったら一覧の行を書き直す。
+    fn set_item_opacity(&self, index: usize, opacity: Option<f32>) {
+        let changed = {
+            let mut images = self.images.borrow_mut();
+            let changed = images[index].image_opacity != opacity;
+            images[index].image_opacity = opacity;
+            changed
+        };
+        if changed {
+            self.refresh_background_row(index);
+        }
+    }
+
+    /// 背景画像の一覧のボタン `id` が押された。
+    fn on_background_button(&self, ctx: &dyn DialogContext, id: i32) {
+        let selected = match id {
+            ID_BACKGROUND_ADD_FILES => {
+                let filters = image_filters();
+                let chosen = match file_dialog::open_files(ctx.hwnd(), "背景画像を追加", &filters)
+                {
+                    Ok(chosen) => chosen,
+                    Err(e) => {
+                        tracing::warn!("failed to choose background images: {e}");
+                        return;
+                    }
+                };
+                self.add_background_images(chosen)
+            }
+            ID_BACKGROUND_ADD_FOLDER => {
+                let chosen = match file_dialog::open_folder(ctx.hwnd(), "背景画像のフォルダを追加")
+                {
+                    Ok(chosen) => chosen,
+                    Err(e) => {
+                        tracing::warn!("failed to choose a background image folder: {e}");
+                        return;
+                    }
+                };
+                self.add_background_images(chosen.into_iter().collect())
+            }
+            ID_BACKGROUND_REMOVE => {
+                let Some(index) = self.selected_background_image() else {
+                    return;
+                };
+                self.images.borrow_mut().remove(index);
+                Some(index)
+            }
+            _ => return,
+        };
+        let Some(selected) = selected else {
+            return;
+        };
+        self.refresh_background_images(Some(selected));
+        ctx.preview();
+        // SAFETY: 一覧はダイアログの子の有効なウィンドウ。押したボタンが押せなくなることがあるので、
+        // 一覧へ戻す。
+        unsafe { _ = SetFocus(Some(self.background_images.hwnd())) };
+    }
+
+    /// 背景画像の一覧の最後に `paths` を足す（同じものがあれば足さない）。足した最後の位置を返し、
+    /// 何も足さなければ `None`。
+    fn add_background_images(&self, paths: Vec<PathBuf>) -> Option<usize> {
+        let mut images = self.images.borrow_mut();
+        let mut added = None;
+        for path in paths {
+            let text = path.to_string_lossy().into_owned();
+            if images
+                .iter()
+                .any(|image| image.path.eq_ignore_ascii_case(&text))
+            {
+                continue;
+            }
+            images.push(BackgroundImage::new(text));
+            added = Some(images.len() - 1);
+        }
+        added
+    }
+}
+
+impl Page for BackgroundPage {
+    fn controls(&self) -> &[HWND] {
+        &self.controls
+    }
+
+    fn number_fields(&self) -> Vec<&dyn NumberInput> {
+        vec![&self.background_opacity, &self.background_item_opacity]
+    }
+
+    /// 既定の不透明度は、入力欄が読めればその値にする（項目の不透明度が読めないときは、既定の
+    /// 不透明度から動かす）。
+    fn step_start(&self, ctx: &dyn DialogContext) -> Config {
+        let mut start = ctx.base().clone();
+        if let Some(opacity) = self.default_opacity() {
+            start.background.image_opacity = opacity;
+        }
+        start
+    }
+
+    fn fill(&self, ctx: &dyn DialogContext, config: &Config) {
+        self.background_opacity
+            .fill(config.background.image_opacity);
+        self.background_fit.fill(config.background.fit);
+        self.refresh_background_defaults(ctx);
+        *self.images.borrow_mut() = config.background.images.clone();
+        self.refresh_background_images(None);
+    }
+
+    fn read(
+        &self,
+        _ctx: &dyn DialogContext,
+        config: &mut Config,
+    ) -> Result<(), (&'static str, HWND)> {
+        // 選んでいる項目の値は、読めたときに項目へ入れている。ここでは読めるかだけを見る。
+        if self.selected_background_image().is_some() && self.custom_item_opacity() {
+            self.background_item_opacity.read()?;
+        }
+        config.background.images = self.images.borrow().clone();
+        config.background.image_opacity = self.background_opacity.read()?;
+        if let Some(fit) = self.background_fit.read() {
+            config.background.fit = fit;
+        }
+        Ok(())
+    }
+
+    fn on_command(&self, ctx: &dyn DialogContext, id: i32, code: u32) -> bool {
+        match (id, code) {
+            (ID_BACKGROUND_IMAGES, LBN_SELCHANGE) => self.update_background_buttons(),
+            (
+                ID_BACKGROUND_ADD_FILES | ID_BACKGROUND_ADD_FOLDER | ID_BACKGROUND_REMOVE,
+                BN_CLICKED,
+            ) => self.on_background_button(ctx, id),
+            (ID_BACKGROUND_FIT, CBN_SELCHANGE) => {
+                self.refresh_background_defaults(ctx);
+                ctx.preview();
+            }
+            (ID_BACKGROUND_OPACITY, EN_CHANGE) => {
+                self.refresh_background_defaults(ctx);
+                ctx.schedule_preview();
+            }
+            (ID_BACKGROUND_ITEM_FIT, CBN_SELCHANGE) => self.on_background_item_fit(ctx),
+            (ID_BACKGROUND_ITEM_OPACITY, EN_CHANGE) => self.on_background_item_opacity(ctx),
+            (id, BN_CLICKED) if self.background_item_opacity_choice.owns(id) => {
+                self.on_background_item_opacity_choice(ctx);
+            }
+            _ => return false,
+        }
+        true
+    }
+}
+
+/// 動作のページ。貼り付け前の確認、大きなテキストの確認、クリップボードの読み取り。
+struct BehaviorPage {
+    controls: Vec<HWND>,
+    paste_confirm: RadioGroup<PasteConfirm>,
+    paste_confirm_size: NumberField<u32>,
+    clipboard_read: RadioGroup<ClipboardRead>,
+}
+
+impl BehaviorPage {
+    /// ページのコントロールを作る。
+    fn create(b: &mut Builder) -> windows::core::Result<Self> {
+        let mut controls = Vec::new();
+        controls.push(b.label("貼り付け前の確認(&P):", label_rect(row(0)))?);
+        let paste_confirm = RadioGroup::create(
+            b,
+            ID_PASTE_CONFIRM,
+            &PasteConfirm::ALL,
+            &PASTE_CONFIRM_LABELS,
+            |index| {
+                [
+                    CONTROL_LEFT,
+                    row(0) + index * ROW_HEIGHT,
+                    CONTROL_WIDTH,
+                    ROW_HEIGHT,
+                ]
+            },
+        )?;
+        controls.extend_from_slice(paste_confirm.buttons());
+        controls.push(b.label(
+            "改行を含む文字列を貼り付ける前に、内容を編集できるダイアログで確認する。「コマンドとして実行される可能性があるとき」は、アプリが bracketed paste を有効にしていないときなど。",
+            [
+                PAGE_LEFT,
+                row(0) + 3 * ROW_HEIGHT + MARGIN,
+                PAGE_WIDTH,
+                3 * ROW_HEIGHT,
+            ],
+        )?);
+        let paste_size_row = row(0) + 6 * ROW_HEIGHT + 2 * MARGIN;
+        controls.push(b.label("大きなテキストの確認(&Z):", label_rect(paste_size_row))?);
+        let paste_confirm_size = NumberField::create(
+            b,
+            ID_PASTE_CONFIRM_SIZE,
+            ID_PASTE_CONFIRM_SIZE_SPIN,
+            [CONTROL_LEFT, paste_size_row, NUMBER_WIDTH, ROW_HEIGHT],
+            PASTE_CONFIRM_SIZE_KIND,
+        )?;
+        controls.extend(paste_confirm_size.controls());
+        controls.push(b.label(
+            "KiB 以上は常に確認する（0 で無効）",
+            [
+                CONTROL_LEFT + NUMBER_WIDTH + BUTTON_GAP,
+                paste_size_row + LABEL_OFFSET,
+                CONTROL_WIDTH - NUMBER_WIDTH - BUTTON_GAP,
+                ROW_HEIGHT,
+            ],
+        )?);
+        let clipboard_row = paste_size_row + ROW_HEIGHT + MARGIN;
+        controls.push(b.label("クリップボードの読み取り(&L):", label_rect(clipboard_row))?);
+        let clipboard_read = RadioGroup::create(
+            b,
+            ID_CLIPBOARD_READ,
+            &ClipboardRead::ALL,
+            &CLIPBOARD_READ_LABELS,
+            |index| {
+                [
+                    CONTROL_LEFT,
+                    clipboard_row + index * ROW_HEIGHT,
+                    CONTROL_WIDTH,
+                    ROW_HEIGHT,
+                ]
+            },
+        )?;
+        controls.extend_from_slice(clipboard_read.buttons());
+        controls.push(b.label(
+            "アプリがクリップボードの内容を読み取ろうとしたとき（OSC 52）。アプリからの書き込みは、この設定に関係なく受け付ける。",
+            [
+                PAGE_LEFT,
+                clipboard_row + 3 * ROW_HEIGHT + MARGIN,
+                PAGE_WIDTH,
+                2 * ROW_HEIGHT,
+            ],
+        )?);
+        Ok(Self {
+            controls,
             paste_confirm,
             paste_confirm_size,
             clipboard_read,
+        })
+    }
+}
+
+impl Page for BehaviorPage {
+    fn controls(&self) -> &[HWND] {
+        &self.controls
+    }
+
+    fn number_fields(&self) -> Vec<&dyn NumberInput> {
+        vec![&self.paste_confirm_size]
+    }
+
+    fn fill(&self, _ctx: &dyn DialogContext, config: &Config) {
+        self.paste_confirm.fill(config.paste.confirm);
+        self.paste_confirm_size.fill(config.paste.confirm_size);
+        self.clipboard_read.fill(config.clipboard.read);
+    }
+
+    fn read(
+        &self,
+        _ctx: &dyn DialogContext,
+        config: &mut Config,
+    ) -> Result<(), (&'static str, HWND)> {
+        if let Some(confirm) = self.paste_confirm.read() {
+            config.paste.confirm = confirm;
+        }
+        config.paste.confirm_size = self.paste_confirm_size.read()?;
+        if let Some(read) = self.clipboard_read.read() {
+            config.clipboard.read = read;
+        }
+        Ok(())
+    }
+
+    fn on_command(&self, ctx: &dyn DialogContext, id: i32, code: u32) -> bool {
+        match (id, code) {
+            // ラジオボタンは、押したらすぐ反映する。
+            (id, BN_CLICKED) if self.paste_confirm.owns(id) || self.clipboard_read.owns(id) => {
+                ctx.preview();
+            }
+            // 数の入力欄は、打ち終わるのを待って反映する。
+            (id, EN_CHANGE) if self.number_fields().iter().any(|field| field.owns(id)) => {
+                ctx.schedule_preview();
+            }
+            _ => return false,
+        }
+        true
+    }
+}
+
+/// プロファイルのページ。プロファイルの一覧と、一覧で選んでいるプロファイルの値。
+struct ProfilesPage {
+    controls: Vec<HWND>,
+    /// プロファイルの一覧。
+    profiles_list: ListBox,
+    /// 削除・既定にするのボタン。
+    profile_remove: HWND,
+    profile_default: HWND,
+    /// 一覧で選んでいるプロファイルの名前とコマンドライン。
+    profile_name: HWND,
+    profile_command: HWND,
+    /// コマンドラインの入力欄の下の警告の文と、文があるとその高さの分だけ下がるコントロール。
+    profile_command_warning: HWND,
+    profile_below_command_warning: [HWND; 4],
+    /// 一覧で選んでいるプロファイルの接続方式と、Cygwin のフォルダか
+    /// ディストリビューションの入力欄とその見出し。
+    profile_backend: ChoiceBox<BackendKind>,
+    profile_location_label: HWND,
+    profile_location: HWND,
+    /// プロファイルのアイコンの画像のファイルの入力欄と、選ぶボタン。
+    profile_icon: HWND,
+    profile_icon_choose: HWND,
+    /// 編集中のプロファイル。
+    profiles: RefCell<Vec<Profile>>,
+    /// 編集中の既定のプロファイルの、`profiles` の中の位置。
+    default_profile: Cell<usize>,
+    /// プロファイルの名前とコマンドラインの入力欄に、選んだプロファイルの値を入れている（その間に届く
+    /// EN_CHANGE を編集とみなさない）。
+    filling_profile: Cell<bool>,
+}
+
+impl ProfilesPage {
+    /// ページのコントロールを作る。
+    fn create(b: &mut Builder) -> windows::core::Result<Self> {
+        let mut controls = Vec::new();
+        controls.push(b.label(
+            "新しいタブで起動するプロファイル(&R):",
+            [PAGE_LEFT, row(0) + LABEL_OFFSET, PAGE_WIDTH, ROW_HEIGHT],
+        )?);
+        let profiles_top = row(0) + ROW_HEIGHT;
+        let profiles_list = b.list(
+            ID_PROFILES,
+            [PAGE_LEFT, profiles_top, PAGE_WIDTH, PROFILE_LIST_HEIGHT],
+            &[PROFILE_COLUMN_TAB_STOP],
+        )?;
+        controls.push(profiles_list.hwnd());
+        let profile_buttons_top = profiles_top + PROFILE_LIST_HEIGHT + BUTTON_GAP;
+        let profile_button_width = (PAGE_WIDTH - 2 * BUTTON_GAP) / 3;
+        let profile_button_rect = |index: i32| {
+            [
+                PAGE_LEFT + index * (profile_button_width + BUTTON_GAP),
+                profile_buttons_top,
+                profile_button_width,
+                BUTTON_HEIGHT,
+            ]
+        };
+        controls.push(b.button(ID_PROFILE_ADD, "追加(&D)", profile_button_rect(0))?);
+        let profile_remove = b.button(ID_PROFILE_REMOVE, "削除(&L)", profile_button_rect(1))?;
+        controls.push(profile_remove);
+        let profile_default =
+            b.button(ID_PROFILE_DEFAULT, "既定にする(&J)", profile_button_rect(2))?;
+        controls.push(profile_default);
+        let profile_name_row = profile_buttons_top + BUTTON_HEIGHT + MARGIN;
+        controls.push(b.label("名前(&N):", label_rect(profile_name_row))?);
+        let profile_name = b.edit(
+            ID_PROFILE_NAME,
+            [CONTROL_LEFT, profile_name_row, CONTROL_WIDTH, ROW_HEIGHT],
+        )?;
+        controls.push(profile_name);
+        let profile_backend_row = profile_name_row + ROW_HEIGHT + MARGIN;
+        controls.push(b.label("接続方式(&B):", label_rect(profile_backend_row))?);
+        let profile_backend = ChoiceBox::create(
+            b,
+            ID_PROFILE_BACKEND,
+            [CONTROL_LEFT, profile_backend_row, CONTROL_WIDTH, ROW_HEIGHT],
+            &BackendKind::ALL,
+            PROFILE_BACKEND_LABELS,
+        )?;
+        controls.push(profile_backend.hwnd());
+        let profile_location_row = profile_backend_row + ROW_HEIGHT + MARGIN;
+        let profile_location_label = b.label(
+            profile_location_texts(BackendKind::Conpty).0,
+            label_rect(profile_location_row),
+        )?;
+        controls.push(profile_location_label);
+        let profile_location = b.edit(
+            ID_PROFILE_LOCATION,
+            [
+                CONTROL_LEFT,
+                profile_location_row,
+                CONTROL_WIDTH,
+                ROW_HEIGHT,
+            ],
+        )?;
+        controls.push(profile_location);
+        let profile_command_row = profile_location_row + ROW_HEIGHT + MARGIN;
+        controls.push(b.label("コマンドライン(&C):", label_rect(profile_command_row))?);
+        let profile_command = b.edit(
+            ID_PROFILE_COMMAND,
+            [CONTROL_LEFT, profile_command_row, CONTROL_WIDTH, ROW_HEIGHT],
+        )?;
+        controls.push(profile_command);
+        // 高さは文に合わせて決める（文がなければ 0）。
+        let profile_command_warning = b.static_text(
+            ID_PROFILE_COMMAND_WARNING,
+            WINDOW_EX_STYLE(0),
+            [
+                CONTROL_LEFT,
+                profile_command_row + ROW_HEIGHT + LABEL_OFFSET,
+                CONTROL_WIDTH,
+                0,
+            ],
+        )?;
+        controls.push(profile_command_warning);
+        let profile_icon_row = profile_command_row + ROW_HEIGHT + MARGIN;
+        let profile_icon_label = b.label("アイコン(&I):", label_rect(profile_icon_row))?;
+        controls.push(profile_icon_label);
+        let profile_icon = b.edit(
+            ID_PROFILE_ICON,
+            [
+                CONTROL_LEFT,
+                profile_icon_row,
+                CONTROL_WIDTH - BUTTON_GAP - BUTTON_WIDTH,
+                ROW_HEIGHT,
+            ],
+        )?;
+        controls.push(profile_icon);
+        let profile_icon_cue = HSTRING::from("空欄なら自動で作成する");
+        // SAFETY: profile_icon は有効な入力欄で、文字列はこの呼び出しの間は生きている。
+        unsafe {
+            SendMessageW(
+                profile_icon,
+                EM_SETCUEBANNER,
+                Some(WPARAM(CUE_BANNER_ALWAYS)),
+                Some(LPARAM(profile_icon_cue.as_ptr() as isize)),
+            )
+        };
+        let profile_icon_choose = b.button(
+            ID_PROFILE_ICON_CHOOSE,
+            "参照(&E)…",
+            [
+                CONTROL_LEFT + CONTROL_WIDTH - BUTTON_WIDTH,
+                profile_icon_row,
+                BUTTON_WIDTH,
+                ROW_HEIGHT,
+            ],
+        )?;
+        controls.push(profile_icon_choose);
+        let profile_note = b.label(
+            "タブバーの「+」は既定のプロファイルを開き、「▾」か「+」の右クリックで一覧から選んで開く。fantermo を引数つきで起動したときは、「+」とキーとメニューの「新しいタブ」も引数のコマンドラインを使う。Cygwin と WSL のコマンドラインは Cygwin・WSL の中で実行するもの（空欄ならログインシェル）。変更は次に開くタブから反映される。",
+            [
+                PAGE_LEFT,
+                profile_icon_row + ROW_HEIGHT + MARGIN,
+                PAGE_WIDTH,
+                PROFILE_NOTE_HEIGHT,
+            ],
+        )?;
+        controls.push(profile_note);
+        Ok(Self {
+            controls,
             profiles_list,
             profile_remove,
             profile_default,
@@ -1611,21 +2003,861 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             profile_location,
             profile_icon,
             profile_icon_choose,
-            background_images,
-            background_remove,
-            background_opacity,
-            background_fit,
-            background_item_fit,
-            background_item_opacity_choice,
-            background_item_opacity,
-            color_scheme: color_scheme.expect("the terminal colors are listed"),
+            profiles: RefCell::new(Vec::new()),
+            default_profile: Cell::new(0),
+            filling_profile: Cell::new(false),
+        })
+    }
+
+    /// プロファイルの一覧を作り直し、`selected` 番目（一覧より後ろなら最後）を選んで、名前と
+    /// コマンドラインの入力欄にその値を入れる。
+    fn refresh_profiles(&self, ctx: &dyn DialogContext, selected: usize) {
+        let list = self.profiles_list;
+        let profiles = self.profiles.borrow();
+        list.reset_with(profiles.iter().enumerate().map(|(index, profile)| {
+            profile_row_text(profile, index == self.default_profile.get())
+        }));
+        let index = selected.min(profiles.len().saturating_sub(1));
+        drop(profiles);
+        list.select(index);
+        self.on_profile_selected(ctx);
+    }
+
+    /// プロファイルの一覧で選んでいる位置。
+    fn selected_profile(&self) -> Option<usize> {
+        self.profiles_list
+            .selected()
+            .filter(|&index| index < self.profiles.borrow().len())
+    }
+
+    /// プロファイルの一覧で選んだものが変わった。名前とコマンドラインの入力欄に値を入れ、ボタンを
+    /// 押せるかを決める。
+    fn on_profile_selected(&self, ctx: &dyn DialogContext) {
+        let selected = self.selected_profile();
+        let profile = selected.and_then(|index| self.profiles.borrow().get(index).cloned());
+        self.filling_profile.set(true);
+        set_text(
+            self.profile_name,
+            profile.as_ref().map_or("", |profile| &profile.name),
+        );
+        set_text(
+            self.profile_command,
+            profile.as_ref().map_or("", |profile| &profile.command),
+        );
+        let backend = profile
+            .as_ref()
+            .map_or_else(BackendKind::default, |p| p.backend);
+        self.profile_backend.fill(backend);
+        let location = profile.as_ref().and_then(|profile| {
+            profile
+                .cygwin_root
+                .as_deref()
+                .or(profile.distribution.as_deref())
+        });
+        set_text(self.profile_location, location.unwrap_or(""));
+        set_text(
+            self.profile_icon,
+            profile
+                .as_ref()
+                .and_then(|profile| profile.icon.as_deref())
+                .unwrap_or(""),
+        );
+        self.filling_profile.set(false);
+        self.show_profile_backend(backend);
+        self.show_profile_command_warning(ctx);
+        let count = self.profiles.borrow().len();
+        for (control, enabled) in [
+            (self.profile_remove, selected.is_some() && count > 1),
+            (
+                self.profile_default,
+                selected.is_some_and(|index| index != self.default_profile.get()),
+            ),
+            (self.profile_name, selected.is_some()),
+            (self.profile_command, selected.is_some()),
+            (self.profile_backend.hwnd(), selected.is_some()),
+            (
+                self.profile_location,
+                selected.is_some() && backend.is_bridge(),
+            ),
+            (self.profile_icon, selected.is_some()),
+            (self.profile_icon_choose, selected.is_some()),
+        ] {
+            // SAFETY: control はダイアログの子の有効なウィンドウ。
+            unsafe { _ = EnableWindow(control, enabled) };
+        }
+    }
+
+    /// 場所の入力欄の見出しと、コマンドラインと場所の入力欄が空のときに薄く見せる文字を、接続方式
+    /// `backend` に合わせる。
+    fn show_profile_backend(&self, backend: BackendKind) {
+        let (label, cue) = profile_location_texts(backend);
+        set_text(self.profile_location_label, label);
+        let command_cue = if backend.is_bridge() {
+            "空欄ならログインシェル"
+        } else {
+            ""
+        };
+        for (control, text) in [
+            (self.profile_location, cue),
+            (self.profile_command, command_cue),
+        ] {
+            let text = HSTRING::from(text);
+            // SAFETY: control は有効な入力欄で、文字列はこの呼び出しの間は生きている。
+            unsafe {
+                SendMessageW(
+                    control,
+                    EM_SETCUEBANNER,
+                    Some(WPARAM(CUE_BANNER_ALWAYS)),
+                    Some(LPARAM(text.as_ptr() as isize)),
+                )
+            };
+        }
+    }
+
+    /// コマンドラインの入力欄の下の警告の文を、選んでいるプロファイルに合わせる。文があれば、その高さの
+    /// 分だけ下の行をずらす。
+    fn show_profile_command_warning(&self, ctx: &dyn DialogContext) {
+        let warning = self.selected_profile().and_then(|index| {
+            self.profiles
+                .borrow()
+                .get(index)
+                .and_then(profile_command_warning)
+        });
+        let dpi = ctx.dpi();
+        let placed = ctx.placed();
+        set_text(self.profile_command_warning, warning.unwrap_or(""));
+        let Some(&(_, [left, top, width, _])) = placed
+            .iter()
+            .find(|(control, _)| *control == self.profile_command_warning)
+        else {
+            return;
+        };
+        let width = scale(width, dpi);
+        let height = warning.map_or(0, |text| {
+            wrapped_text_height(self.profile_command_warning, ctx.font(), text, width)
+        });
+        // SAFETY: 警告の文はダイアログの子の有効なウィンドウ。
+        unsafe {
+            _ = MoveWindow(
+                self.profile_command_warning,
+                scale(left, dpi),
+                scale(top, dpi),
+                width,
+                height,
+                true,
+            );
+        }
+        let shift = if height > 0 {
+            height + scale(LABEL_OFFSET, dpi)
+        } else {
+            0
+        };
+        for &(control, [left, top, _, _]) in placed {
+            if !self.profile_below_command_warning.contains(&control) {
+                continue;
+            }
+            // SAFETY: control はダイアログの子の有効なウィンドウ。
+            unsafe {
+                _ = SetWindowPos(
+                    control,
+                    None,
+                    scale(left, dpi),
+                    scale(top, dpi) + shift,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+        }
+    }
+
+    /// 選んでいるプロファイルの接続方式が変わった。場所の入力欄を空にして見出しを替え、プロファイルに
+    /// 入れる。
+    fn on_profile_backend_changed(&self, ctx: &dyn DialogContext) {
+        let Some(index) = self.selected_profile() else {
+            return;
+        };
+        let Some(backend) = self.profile_backend.read() else {
+            return;
+        };
+        self.profiles.borrow_mut()[index].backend = backend;
+        self.filling_profile.set(true);
+        set_text(self.profile_location, "");
+        self.filling_profile.set(false);
+        self.show_profile_backend(backend);
+        // SAFETY: 入力欄は有効なウィンドウ。
+        unsafe { _ = EnableWindow(self.profile_location, backend.is_bridge()) };
+        self.on_profile_edited(ctx);
+    }
+
+    /// アイコンの「参照…」が押された。選んだファイルの絶対パスを入力欄に入れる（入力欄の変更の知らせで
+    /// プロファイルに入る）。
+    fn on_profile_icon_choose(&self, ctx: &dyn DialogContext) {
+        let chosen = match file_dialog::open_file(ctx.hwnd(), "アイコンの選択", &icon_filters())
+        {
+            Ok(chosen) => chosen,
+            Err(e) => {
+                tracing::warn!("failed to choose a profile icon: {e}");
+                return;
+            }
+        };
+        if let Some(path) = chosen {
+            set_text(self.profile_icon, &path.to_string_lossy());
+        }
+    }
+
+    /// プロファイルの名前かコマンドラインの入力欄が変わった。選んでいるプロファイルに入れ、一覧の行を
+    /// 書き直す。端末への反映は少し待つ（次に開くタブから使うので、反映しても見た目は変わらない）。
+    fn on_profile_edited(&self, ctx: &dyn DialogContext) {
+        if self.filling_profile.get() {
+            return;
+        }
+        let Some(index) = self.selected_profile() else {
+            return;
+        };
+        let name = get_text(self.profile_name).trim().to_owned();
+        let command = get_text(self.profile_command).trim().to_owned();
+        let location = get_text(self.profile_location).trim().to_owned();
+        let icon = get_text(self.profile_icon).trim().to_owned();
+        let text = {
+            let mut profiles = self.profiles.borrow_mut();
+            let profile = &mut profiles[index];
+            profile.name = name;
+            profile.command = command;
+            set_profile_location(profile, location);
+            profile.icon = (!icon.is_empty()).then_some(icon);
+            profile_row_text(profile, index == self.default_profile.get())
+        };
+        self.profiles_list.replace_row(index, &text);
+        self.show_profile_command_warning(ctx);
+        ctx.schedule_preview();
+    }
+
+    /// プロファイルのボタン `id` が押された。
+    fn on_profile_button(&self, ctx: &dyn DialogContext, id: i32) {
+        let selected = match id {
+            ID_PROFILE_ADD => {
+                let mut profiles = self.profiles.borrow_mut();
+                let name = new_profile_name(&profiles);
+                profiles.push(Profile::new(
+                    &name,
+                    config::DEFAULT_COMMAND_LINE,
+                    BackendKind::default(),
+                ));
+                profiles.len() - 1
+            }
+            ID_PROFILE_REMOVE => {
+                let Some(index) = self.selected_profile() else {
+                    return;
+                };
+                let mut profiles = self.profiles.borrow_mut();
+                if profiles.len() <= 1 {
+                    return;
+                }
+                profiles.remove(index);
+                let default = self.default_profile.get();
+                // 既定のものを消したら先頭を、その前を消したら一つ前へずらす。
+                self.default_profile.set(match default.cmp(&index) {
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => default - 1,
+                    std::cmp::Ordering::Less => default,
+                });
+                index
+            }
+            ID_PROFILE_DEFAULT => {
+                let Some(index) = self.selected_profile() else {
+                    return;
+                };
+                self.default_profile.set(index);
+                index
+            }
+            _ => return,
+        };
+        self.refresh_profiles(ctx, selected);
+        ctx.preview();
+        let focus = if id == ID_PROFILE_ADD {
+            self.profile_name
+        } else {
+            self.profiles_list.hwnd()
+        };
+        // SAFETY: focus はダイアログの子の有効なウィンドウ。押したボタンが押せなくなることがあるので移す。
+        unsafe { _ = SetFocus(Some(focus)) };
+        if id == ID_PROFILE_ADD {
+            // SAFETY: 入力欄は有効なウィンドウ。名前をすぐ打ち替えられるように全体を選ぶ。
+            unsafe {
+                SendMessageW(
+                    focus,
+                    EM_SETSEL,
+                    Some(WPARAM(SELECT_FROM_START)),
+                    Some(LPARAM(SELECT_TO_END)),
+                )
+            };
+        }
+    }
+}
+
+impl Page for ProfilesPage {
+    fn controls(&self) -> &[HWND] {
+        &self.controls
+    }
+
+    fn fill(&self, ctx: &dyn DialogContext, config: &Config) {
+        *self.profiles.borrow_mut() = config.profiles.clone();
+        self.default_profile.set(config.default_profile_index());
+        self.refresh_profiles(ctx, config.default_profile_index());
+    }
+
+    fn read(
+        &self,
+        ctx: &dyn DialogContext,
+        config: &mut Config,
+    ) -> Result<(), (&'static str, HWND)> {
+        let profiles = self.profiles.borrow().clone();
+        if let Err((index, field, message)) = check_profiles(&profiles) {
+            // エラーのあるプロファイルを選び、その入力欄へ移れるようにする。
+            if self.selected_profile() != Some(index) {
+                self.profiles_list.select(index);
+                self.on_profile_selected(ctx);
+            }
+            let control = match field {
+                ProfileField::Name => self.profile_name,
+                ProfileField::Command => self.profile_command,
+            };
+            return Err((message, control));
+        }
+        config.default_profile = default_profile_name(
+            &profiles,
+            self.default_profile.get(),
+            ctx.base().default_profile.as_deref(),
+        );
+        config.profiles = profiles;
+        Ok(())
+    }
+
+    fn on_command(&self, ctx: &dyn DialogContext, id: i32, code: u32) -> bool {
+        match (id, code) {
+            (ID_PROFILES, LBN_SELCHANGE) => self.on_profile_selected(ctx),
+            (ID_PROFILE_ADD | ID_PROFILE_REMOVE | ID_PROFILE_DEFAULT, BN_CLICKED) => {
+                self.on_profile_button(ctx, id);
+            }
+            (
+                ID_PROFILE_NAME | ID_PROFILE_COMMAND | ID_PROFILE_LOCATION | ID_PROFILE_ICON,
+                EN_CHANGE,
+            ) => {
+                self.on_profile_edited(ctx);
+            }
+            (ID_PROFILE_ICON_CHOOSE, BN_CLICKED) => self.on_profile_icon_choose(ctx),
+            (ID_PROFILE_BACKEND, CBN_SELCHANGE) => self.on_profile_backend_changed(ctx),
+            _ => return false,
+        }
+        true
+    }
+}
+
+/// キーのページ。キーの割り当ての一覧と、追加・変更・外す・既定に戻すのボタン。
+struct KeysPage {
+    controls: Vec<HWND>,
+    /// キーの割り当ての一覧。
+    keys_list: ListBox,
+    /// 追加・変更・外す・既定に戻すのボタン。
+    key_buttons: [HWND; 4],
+    /// 編集中のキーの割り当て。
+    keys: RefCell<Keymap>,
+    /// キーの割り当ての一覧の行。一覧の順。
+    key_rows: RefCell<Vec<KeyRow>>,
+}
+
+impl KeysPage {
+    /// ページのコントロールを作る。
+    fn create(b: &mut Builder) -> windows::core::Result<Self> {
+        let mut controls = Vec::new();
+        controls.push(b.label(
+            "キーの割り当て(&K):",
+            [PAGE_LEFT, row(0), PAGE_WIDTH, ROW_HEIGHT],
+        )?);
+        let key_buttons_top = BUTTON_TOP - MARGIN - BUTTON_HEIGHT;
+        let keys_list = b.list(
+            ID_KEYS,
+            [
+                PAGE_LEFT,
+                row(0) + ROW_HEIGHT,
+                PAGE_WIDTH,
+                key_buttons_top - BUTTON_GAP - row(0) - ROW_HEIGHT,
+            ],
+            &[KEY_COLUMN_TAB_STOP],
+        )?;
+        controls.push(keys_list.hwnd());
+        let key_button_width = (PAGE_WIDTH - 3 * BUTTON_GAP) / 4;
+        let mut key_buttons = [HWND::default(); 4];
+        for (index, (id, text)) in [
+            (ID_KEY_ADD, "追加(&D)…"),
+            (ID_KEY_CHANGE, "変更(&E)…"),
+            (ID_KEY_REMOVE, "外す(&R)"),
+            (ID_KEY_RESET, "既定に戻す(&U)"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            key_buttons[index] = b.button(
+                id,
+                text,
+                [
+                    PAGE_LEFT + index as i32 * (key_button_width + BUTTON_GAP),
+                    key_buttons_top,
+                    key_button_width,
+                    BUTTON_HEIGHT,
+                ],
+            )?;
+            controls.push(key_buttons[index]);
+        }
+        Ok(Self {
+            controls,
             keys_list,
             key_buttons,
+            keys: RefCell::new(Keymap::default()),
+            key_rows: RefCell::new(Vec::new()),
+        })
+    }
+
+    /// キーの割り当ての一覧を作り直し、`selected` の行（なければ同じ動作の行、それもなければ先頭）を
+    /// 選ぶ。
+    fn refresh_keys(&self, selected: Option<KeyRow>) {
+        let rows = key_rows(&self.keys.borrow());
+        let list = self.keys_list;
+        list.reset_with(rows.iter().copied().map(key_row_text));
+        let index = selected
+            .and_then(|selected| {
+                rows.iter()
+                    .position(|row| *row == selected)
+                    .or_else(|| rows.iter().position(|(action, _)| *action == selected.0))
+            })
+            .unwrap_or(0);
+        list.select(index);
+        *self.key_rows.borrow_mut() = rows;
+        self.update_key_buttons();
+    }
+
+    /// キーの割り当ての一覧で選んでいる行。
+    fn selected_key_row(&self) -> Option<KeyRow> {
+        let index = self.keys_list.selected()?;
+        self.key_rows.borrow().get(index).copied()
+    }
+
+    /// 選んでいる行で押せるボタンだけを押せるようにする。
+    fn update_key_buttons(&self) {
+        let row = self.selected_key_row();
+        let has_combo = row.is_some_and(|(_, combo)| combo.is_some());
+        let not_default =
+            row.is_some_and(|(action, _)| !is_default_binding(&self.keys.borrow(), action));
+        let [add, change, remove, reset] = self.key_buttons;
+        for (button, enabled) in [
+            (add, row.is_some()),
+            (change, has_combo),
+            (remove, has_combo),
+            (reset, not_default),
+        ] {
+            // SAFETY: button はダイアログの子の有効なウィンドウ。
+            unsafe { _ = EnableWindow(button, enabled) };
+        }
+    }
+
+    /// キーのボタン `id` が押された。
+    fn on_key_button(&self, ctx: &dyn DialogContext, id: i32) {
+        let Some((action, combo)) = self.selected_key_row() else {
+            return;
+        };
+        let selected = match id {
+            ID_KEY_ADD => {
+                let Some(new) = self.capture_key(ctx, action) else {
+                    return;
+                };
+                if !self.assign(ctx, action, new, None) {
+                    return;
+                }
+                (action, Some(new))
+            }
+            ID_KEY_CHANGE => {
+                let Some(old) = combo else {
+                    return;
+                };
+                let Some(new) = self.capture_key(ctx, action) else {
+                    return;
+                };
+                if !self.assign(ctx, action, new, Some(old)) {
+                    return;
+                }
+                (action, Some(new))
+            }
+            ID_KEY_REMOVE => {
+                let Some(old) = combo else {
+                    return;
+                };
+                self.keys.borrow_mut().bind(old, None);
+                (action, None)
+            }
+            ID_KEY_RESET => {
+                self.keys.borrow_mut().reset_action(action);
+                (action, combo)
+            }
+            _ => return,
+        };
+        self.refresh_keys(Some(selected));
+        ctx.preview();
+        // SAFETY: 一覧はダイアログの子の有効なウィンドウ。押したボタンが押せなくなることがあるので、
+        // 一覧へ戻す。
+        unsafe { _ = SetFocus(Some(self.keys_list.hwnd())) };
+    }
+
+    /// 動作 `action` に割り当てるキーを、押したキーを読み取るダイアログで読む。
+    fn capture_key(&self, ctx: &dyn DialogContext, action: Action) -> Option<KeyCombo> {
+        let prompt = format!(
+            "「{}」に割り当てるキーを押してください。",
+            action_label(action)
+        );
+        key_capture::capture(ctx.hwnd(), &prompt, ctx.font(), ctx.dpi())
+    }
+
+    /// 組み合わせ `new` を動作 `action` に割り当てる。`replacing` があれば、その組み合わせを外す。`new`
+    /// をほかの動作に割り当てていれば、割り当て直すかを尋ね、やめたら `false`。
+    fn assign(
+        &self,
+        ctx: &dyn DialogContext,
+        action: Action,
+        new: KeyCombo,
+        replacing: Option<KeyCombo>,
+    ) -> bool {
+        let bound = self.keys.borrow().lookup_combo(new);
+        if bound == Some(action) && replacing.is_none_or(|old| old == new) {
+            return true;
+        }
+        if let Some(other) = bound
+            && other != action
+        {
+            let text = format!(
+                "{} は「{}」に割り当てられています。「{}」に割り当て直しますか？",
+                new.label(),
+                action_label(other),
+                action_label(action)
+            );
+            // SAFETY: hwnd は有効なウィンドウで、文字列はこの呼び出しの間は生きている。借用は持っていない。
+            let answer = unsafe {
+                MessageBoxW(
+                    Some(ctx.hwnd()),
+                    &HSTRING::from(text),
+                    &HSTRING::from(TITLE),
+                    MB_YESNO | MB_ICONQUESTION,
+                )
+            };
+            if answer != IDYES {
+                return false;
+            }
+        }
+        let mut keys = self.keys.borrow_mut();
+        if let Some(old) = replacing {
+            keys.bind(old, None);
+        }
+        keys.bind(new, Some(action));
+        true
+    }
+}
+
+impl Page for KeysPage {
+    fn controls(&self) -> &[HWND] {
+        &self.controls
+    }
+
+    fn fill(&self, _ctx: &dyn DialogContext, config: &Config) {
+        *self.keys.borrow_mut() = config.keys.clone();
+        self.refresh_keys(None);
+    }
+
+    fn read(
+        &self,
+        _ctx: &dyn DialogContext,
+        config: &mut Config,
+    ) -> Result<(), (&'static str, HWND)> {
+        config.keys = self.keys.borrow().clone();
+        Ok(())
+    }
+
+    fn on_command(&self, ctx: &dyn DialogContext, id: i32, code: u32) -> bool {
+        match (id, code) {
+            (ID_KEYS, LBN_SELCHANGE) => self.update_key_buttons(),
+            (ID_KEYS, LBN_DBLCLK) => self.on_key_button(ctx, ID_KEY_CHANGE),
+            (ID_KEY_ADD | ID_KEY_CHANGE | ID_KEY_REMOVE | ID_KEY_RESET, BN_CLICKED) => {
+                self.on_key_button(ctx, id);
+            }
+            _ => return false,
+        }
+        true
+    }
+}
+
+/// 色を選ぶダイアログの「作成した色」の数。
+const CUSTOM_COLORS: usize = 16;
+
+/// 色のページの一行のコントロール。
+struct ColorRow {
+    swatch: HWND,
+    text: HWND,
+    reset: HWND,
+}
+
+/// 色のページ。配色と、端末・タブバー・スクロールバーの色の表。
+struct ColorsPage {
+    controls: Vec<HWND>,
+    /// 配色のラジオボタン。
+    color_scheme: RadioGroup<ColorScheme>,
+    /// 色のページの行。[`COLOR_ITEMS`] の順。
+    color_rows: Vec<ColorRow>,
+    /// 編集中の色。
+    colors: RefCell<ColorsConfig>,
+    /// 書いていないタブバーの色として見せる色。
+    tab_bar_defaults: [Rgb; config::TAB_BAR_COLOR_KEYS.len()],
+    /// 色の見本を塗るブラシ。[`COLOR_ITEMS`] の順。
+    swatch_brushes: RefCell<Vec<HBRUSH>>,
+    /// 色を選ぶダイアログの「作成した色」。ダイアログを開いている間は覚えておく。
+    custom_colors: Cell<[COLORREF; CUSTOM_COLORS]>,
+}
+
+impl ColorsPage {
+    /// ページのコントロールを作る。`tab_bar_defaults` は、書いていないタブバーの色として見せる色。
+    fn create(
+        b: &mut Builder,
+        tab_bar_defaults: [Rgb; config::TAB_BAR_COLOR_KEYS.len()],
+    ) -> windows::core::Result<Self> {
+        let mut controls = Vec::new();
+        let mut color_rows = Vec::new();
+        // 端末の色の表の見出しの下に作る。
+        let mut color_scheme = None;
+        let mut top = MARGIN;
+        for (table_index, table) in ColorTable::ALL.into_iter().enumerate() {
+            controls.push(b.label(
+                COLOR_TABLE_LABELS[table_index],
+                [PAGE_LEFT, top + LABEL_OFFSET, PAGE_WIDTH, COLOR_ROW_HEIGHT],
+            )?);
+            top += COLOR_ROW_HEIGHT;
+            if table == ColorTable::Terminal {
+                controls.push(b.label(
+                    "配色(&M):",
+                    [
+                        PAGE_LEFT + COLOR_LABEL_INDENT,
+                        top + LABEL_OFFSET,
+                        LABEL_WIDTH - COLOR_LABEL_INDENT,
+                        COLOR_ROW_HEIGHT,
+                    ],
+                )?);
+                let scheme = RadioGroup::create(
+                    b,
+                    ID_COLOR_SCHEME,
+                    &ColorScheme::ALL,
+                    &COLOR_SCHEME_LABELS,
+                    |index| {
+                        [
+                            CONTROL_LEFT + index * COLOR_SCHEME_WIDTH,
+                            top,
+                            COLOR_SCHEME_WIDTH,
+                            COLOR_ROW_HEIGHT,
+                        ]
+                    },
+                )?;
+                controls.extend_from_slice(scheme.buttons());
+                color_scheme = Some(scheme);
+                top += COLOR_ROW_HEIGHT;
+            }
+            for label_text in color_labels(table) {
+                let id = ID_COLORS + color_rows.len() as i32 * COLOR_ID_STRIDE;
+                controls.push(b.label(
+                    label_text,
+                    [
+                        PAGE_LEFT + COLOR_LABEL_INDENT,
+                        top + LABEL_OFFSET,
+                        LABEL_WIDTH - COLOR_LABEL_INDENT,
+                        COLOR_ROW_HEIGHT,
+                    ],
+                )?);
+                let swatch = b.static_text(
+                    id + COLOR_SWATCH,
+                    WS_EX_CLIENTEDGE,
+                    [CONTROL_LEFT, top + 2, SWATCH_WIDTH, COLOR_ROW_HEIGHT - 4],
+                )?;
+                let mut left = CONTROL_LEFT + SWATCH_WIDTH + BUTTON_GAP;
+                let text = b.static_text(
+                    id + COLOR_TEXT,
+                    WINDOW_EX_STYLE(0),
+                    [left, top + LABEL_OFFSET, COLOR_TEXT_WIDTH, COLOR_ROW_HEIGHT],
+                )?;
+                left += COLOR_TEXT_WIDTH + BUTTON_GAP;
+                let choose = b.button(
+                    id + COLOR_CHOOSE,
+                    "選択…",
+                    [left, top, CHOOSE_WIDTH, COLOR_ROW_HEIGHT - 2],
+                )?;
+                left += CHOOSE_WIDTH + BUTTON_GAP;
+                let reset = b.button(
+                    id + COLOR_RESET,
+                    "既定に戻す",
+                    [left, top, COLOR_RESET_WIDTH, COLOR_ROW_HEIGHT - 2],
+                )?;
+                controls.extend([swatch, text, choose, reset]);
+                color_rows.push(ColorRow {
+                    swatch,
+                    text,
+                    reset,
+                });
+                top += COLOR_ROW_HEIGHT;
+            }
+        }
+        Ok(Self {
+            controls,
+            color_scheme: color_scheme.expect("the terminal colors are listed"),
             color_rows,
-            error,
-            placed: b.placed,
-        },
-    ))
+            colors: RefCell::new(ColorsConfig::default()),
+            tab_bar_defaults,
+            swatch_brushes: RefCell::new(vec![HBRUSH::default(); COLOR_ITEMS.len()]),
+            custom_colors: Cell::new([COLORREF(0); CUSTOM_COLORS]),
+        })
+    }
+
+    /// 色のページのすべての色を、編集中の色に合わせる（配色や端末の色を変えると、ほかの色の既定の
+    /// 色も変わる）。
+    fn refresh_colors(&self) {
+        for item in 0..self.color_rows.len() {
+            self.refresh_color(item);
+        }
+    }
+
+    /// テーブル `table` の `index` 番目の色の、編集中の色での既定の色。
+    fn default_color(&self, table: ColorTable, index: usize) -> Rgb {
+        default_color(&self.colors.borrow(), &self.tab_bar_defaults, table, index)
+    }
+
+    /// 色のページの `item` 番目の色の、見本・値・既定に戻すボタンを、編集中の色に合わせる。
+    fn refresh_color(&self, item: usize) {
+        let (table, index) = COLOR_ITEMS[item];
+        let written = self.colors.borrow().table(table)[index];
+        let color = written.unwrap_or(self.default_color(table, index));
+        let row = &self.color_rows[item];
+        let text = match written {
+            Some(_) => format_color(color),
+            None => format!("{}（既定）", format_color(color)),
+        };
+        set_text(row.text, &text);
+        // SAFETY: 色を渡してブラシを作るだけ。
+        let brush = unsafe { CreateSolidBrush(colorref(color)) };
+        let previous = std::mem::replace(&mut self.swatch_brushes.borrow_mut()[item], brush);
+        // SAFETY: row のコントロールはダイアログの子の有効なウィンドウ。
+        unsafe {
+            _ = EnableWindow(row.reset, written.is_some());
+            _ = InvalidateRect(Some(row.swatch), None, true);
+        }
+        if !previous.is_invalid() {
+            // SAFETY: 前のブラシは、描き直しを頼んだ見本がもう使わない（WM_CTLCOLORSTATIC で渡すのは
+            // いまのブラシ）。
+            unsafe { _ = DeleteObject(HGDIOBJ(previous.0)) };
+        }
+    }
+
+    /// 色のページのボタン `id` が押された。
+    fn on_color_button(&self, ctx: &dyn DialogContext, id: i32) {
+        let offset = id - ID_COLORS;
+        let item = (offset / COLOR_ID_STRIDE) as usize;
+        let Some(&(table, index)) = COLOR_ITEMS.get(item) else {
+            return;
+        };
+        let new = match offset % COLOR_ID_STRIDE {
+            COLOR_CHOOSE => {
+                let written = self.colors.borrow().table(table)[index];
+                let current = written.unwrap_or(self.default_color(table, index));
+                let Some(chosen) = self.choose_color(ctx, current) else {
+                    return;
+                };
+                Some(chosen)
+            }
+            COLOR_RESET => None,
+            _ => return,
+        };
+        self.colors.borrow_mut().table_mut(table)[index] = new;
+        self.refresh_colors();
+        ctx.preview();
+    }
+
+    /// 配色のラジオボタンが押された。
+    fn on_color_scheme(&self, ctx: &dyn DialogContext) {
+        let Some(scheme) = self.color_scheme.read() else {
+            return;
+        };
+        self.colors.borrow_mut().scheme = scheme;
+        self.refresh_colors();
+        ctx.preview();
+    }
+
+    /// 色を選ぶダイアログを、`current` を選んだ状態で開く。やめたら `None`。
+    fn choose_color(&self, ctx: &dyn DialogContext, current: Rgb) -> Option<Rgb> {
+        let mut custom = self.custom_colors.get();
+        let mut choose = CHOOSECOLORW {
+            lStructSize: size_of::<CHOOSECOLORW>() as u32,
+            hwndOwner: ctx.hwnd(),
+            rgbResult: colorref(current),
+            lpCustColors: custom.as_mut_ptr(),
+            Flags: CC_RGBINIT | CC_FULLOPEN,
+            ..Default::default()
+        };
+        // SAFETY: choose は初期化済みで、custom はこの呼び出しの間は生きている 16 個の COLORREF。
+        // 借用は持っていない。
+        let chosen = unsafe { ChooseColorW(&mut choose) }.as_bool();
+        self.custom_colors.set(custom);
+        chosen.then(|| rgb_of(choose.rgbResult))
+    }
+
+    /// 色の見本 `control` を塗るブラシ。色の見本でなければ `None`。
+    fn swatch_brush(&self, control: HWND) -> Option<HBRUSH> {
+        let item = self
+            .color_rows
+            .iter()
+            .position(|row| row.swatch == control)?;
+        self.swatch_brushes.borrow().get(item).copied()
+    }
+
+    /// 色の見本を塗るブラシを消す。ダイアログが閉じてから呼ぶ。
+    fn delete_swatch_brushes(&self) {
+        for brush in self.swatch_brushes.take() {
+            if !brush.is_invalid() {
+                // SAFETY: ブラシは色の見本のために作ったもので、ダイアログはもう閉じている。
+                unsafe { _ = DeleteObject(HGDIOBJ(brush.0)) };
+            }
+        }
+    }
+}
+
+impl Page for ColorsPage {
+    fn controls(&self) -> &[HWND] {
+        &self.controls
+    }
+
+    fn fill(&self, _ctx: &dyn DialogContext, config: &Config) {
+        *self.colors.borrow_mut() = config.colors.clone();
+        self.color_scheme.fill(config.colors.scheme);
+        self.refresh_colors();
+    }
+
+    fn read(
+        &self,
+        _ctx: &dyn DialogContext,
+        config: &mut Config,
+    ) -> Result<(), (&'static str, HWND)> {
+        config.colors = self.colors.borrow().clone();
+        Ok(())
+    }
+
+    fn on_command(&self, ctx: &dyn DialogContext, id: i32, code: u32) -> bool {
+        match (id, code) {
+            (id, BN_CLICKED) if id >= ID_COLORS => self.on_color_button(ctx, id),
+            (id, BN_CLICKED) if self.color_scheme.owns(id) => self.on_color_scheme(ctx),
+            _ => return false,
+        }
+        true
+    }
 }
 
 /// ダイアログを、DPI が `dpi` のときの大きさにして、呼び出し元のウィンドウの真ん中に置く。
@@ -1689,800 +2921,27 @@ fn scale(value: i32, dpi: u32) -> i32 {
 }
 
 impl State<'_> {
-    /// コントロールに、設定 `config` と、一覧の `selected_font` 番目のフォントを入れる。
-    fn fill(&self, config: &Config, selected_font: usize) {
-        let c = &self.controls;
-        for font in &self.fonts {
-            // SAFETY: コンボボックスは有効なウィンドウで、文字列はこの呼び出しの間は生きている。
-            unsafe {
-                SendMessageW(
-                    c.font,
-                    CB_ADDSTRING,
-                    None,
-                    Some(LPARAM(HSTRING::from(font.name.as_str()).as_ptr() as isize)),
-                )
-            };
-        }
-        // SAFETY: コンボボックスは有効なウィンドウ。
-        unsafe { SendMessageW(c.font, CB_SETCURSEL, Some(WPARAM(selected_font)), None) };
-        c.size.fill(config.font.size_pt);
-        c.wide_glyph.fill(config.font.wide_glyph);
-        c.scroll_bar_width.fill(config.scroll_bar.width);
-        c.padding.fill(config.window.padding);
-        c.paste_confirm.fill(config.paste.confirm);
-        c.paste_confirm_size.fill(config.paste.confirm_size);
-        c.clipboard_read.fill(config.clipboard.read);
-        *self.profiles.borrow_mut() = config.profiles.clone();
-        self.default_profile.set(config.default_profile_index());
-        self.refresh_profiles(config.default_profile_index());
-        c.background_opacity.fill(config.background.image_opacity);
-        c.background_fit.fill(config.background.fit);
-        self.refresh_background_defaults();
-        *self.background_images.borrow_mut() = config.background.images.clone();
-        self.refresh_background_images(None);
-        *self.keys.borrow_mut() = config.keys.clone();
-        self.refresh_keys(None);
-        *self.colors.borrow_mut() = config.colors.clone();
-        c.color_scheme.fill(config.colors.scheme);
-        self.refresh_colors();
+    /// ページ。[`PAGES`] の順。
+    fn pages(&self) -> [&dyn Page; PAGES.len()] {
+        [
+            &self.appearance,
+            &self.background,
+            &self.behavior,
+            &self.profiles,
+            &self.keys,
+            &self.colors,
+        ]
     }
 
-    /// 色のページのすべての色を、編集中の色に合わせる（配色や端末の色を変えると、ほかの色の既定の
-    /// 色も変わる）。
-    fn refresh_colors(&self) {
-        for item in 0..self.controls.color_rows.len() {
-            self.refresh_color(item);
-        }
-    }
-
-    /// テーブル `table` の `index` 番目の色の、編集中の色での既定の色。
-    fn default_color(&self, table: ColorTable, index: usize) -> Rgb {
-        default_color(&self.colors.borrow(), &self.tab_bar_defaults, table, index)
-    }
-
-    /// 色のページの `item` 番目の色の、見本・値・既定に戻すボタンを、編集中の色に合わせる。
-    fn refresh_color(&self, item: usize) {
-        let (table, index) = COLOR_ITEMS[item];
-        let written = self.colors.borrow().table(table)[index];
-        let color = written.unwrap_or(self.default_color(table, index));
-        let row = &self.controls.color_rows[item];
-        let text = match written {
-            Some(_) => format_color(color),
-            None => format!("{}（既定）", format_color(color)),
-        };
-        set_text(row.text, &text);
-        // SAFETY: 色を渡してブラシを作るだけ。
-        let brush = unsafe { CreateSolidBrush(colorref(color)) };
-        let previous = std::mem::replace(&mut self.swatch_brushes.borrow_mut()[item], brush);
-        // SAFETY: row のコントロールはダイアログの子の有効なウィンドウ。
-        unsafe {
-            _ = EnableWindow(row.reset, written.is_some());
-            _ = InvalidateRect(Some(row.swatch), None, true);
-        }
-        if !previous.is_invalid() {
-            // SAFETY: 前のブラシは、描き直しを頼んだ見本がもう使わない（WM_CTLCOLORSTATIC で渡すのは
-            // いまのブラシ）。
-            unsafe { _ = DeleteObject(HGDIOBJ(previous.0)) };
-        }
-    }
-
-    /// 色のページのボタン `id` が押された。
-    fn on_color_button(&self, id: i32) {
-        let offset = id - ID_COLORS;
-        let item = (offset / COLOR_ID_STRIDE) as usize;
-        let Some(&(table, index)) = COLOR_ITEMS.get(item) else {
-            return;
-        };
-        let new = match offset % COLOR_ID_STRIDE {
-            COLOR_CHOOSE => {
-                let written = self.colors.borrow().table(table)[index];
-                let current = written.unwrap_or(self.default_color(table, index));
-                let Some(chosen) = self.choose_color(current) else {
-                    return;
-                };
-                Some(chosen)
-            }
-            COLOR_RESET => None,
-            _ => return,
-        };
-        self.colors.borrow_mut().table_mut(table)[index] = new;
-        self.refresh_colors();
-        self.preview();
-    }
-
-    /// 配色のラジオボタンが押された。
-    fn on_color_scheme(&self) {
-        let Some(scheme) = self.controls.color_scheme.read() else {
-            return;
-        };
-        self.colors.borrow_mut().scheme = scheme;
-        self.refresh_colors();
-        self.preview();
-    }
-
-    /// 色を選ぶダイアログを、`current` を選んだ状態で開く。やめたら `None`。
-    fn choose_color(&self, current: Rgb) -> Option<Rgb> {
-        let mut custom = self.custom_colors.get();
-        let mut choose = CHOOSECOLORW {
-            lStructSize: size_of::<CHOOSECOLORW>() as u32,
-            hwndOwner: self.hwnd,
-            rgbResult: colorref(current),
-            lpCustColors: custom.as_mut_ptr(),
-            Flags: CC_RGBINIT | CC_FULLOPEN,
-            ..Default::default()
-        };
-        // SAFETY: choose は初期化済みで、custom はこの呼び出しの間は生きている 16 個の COLORREF。
-        // 借用は持っていない。
-        let chosen = unsafe { ChooseColorW(&mut choose) }.as_bool();
-        self.custom_colors.set(custom);
-        chosen.then(|| rgb_of(choose.rgbResult))
-    }
-
-    /// 色の見本 `control` を塗るブラシ。色の見本でなければ `None`。
-    fn swatch_brush(&self, control: HWND) -> Option<HBRUSH> {
-        let item = self
-            .controls
-            .color_rows
-            .iter()
-            .position(|row| row.swatch == control)?;
-        self.swatch_brushes.borrow().get(item).copied()
-    }
-
-    /// プロファイルの一覧を作り直し、`selected` 番目（一覧より後ろなら最後）を選んで、名前と
-    /// コマンドラインの入力欄にその値を入れる。
-    fn refresh_profiles(&self, selected: usize) {
-        let list = self.controls.profiles_list;
-        let profiles = self.profiles.borrow();
-        list.reset_with(profiles.iter().enumerate().map(|(index, profile)| {
-            profile_row_text(profile, index == self.default_profile.get())
-        }));
-        let index = selected.min(profiles.len().saturating_sub(1));
-        drop(profiles);
-        list.select(index);
-        self.on_profile_selected();
-    }
-
-    /// プロファイルの一覧で選んでいる位置。
-    fn selected_profile(&self) -> Option<usize> {
-        self.controls
-            .profiles_list
-            .selected()
-            .filter(|&index| index < self.profiles.borrow().len())
-    }
-
-    /// プロファイルの一覧で選んだものが変わった。名前とコマンドラインの入力欄に値を入れ、ボタンを
-    /// 押せるかを決める。
-    fn on_profile_selected(&self) {
-        let c = &self.controls;
-        let selected = self.selected_profile();
-        let profile = selected.and_then(|index| self.profiles.borrow().get(index).cloned());
-        self.filling_profile.set(true);
-        set_text(
-            c.profile_name,
-            profile.as_ref().map_or("", |profile| &profile.name),
-        );
-        set_text(
-            c.profile_command,
-            profile.as_ref().map_or("", |profile| &profile.command),
-        );
-        let backend = profile
-            .as_ref()
-            .map_or_else(BackendKind::default, |p| p.backend);
-        c.profile_backend.fill(backend);
-        let location = profile.as_ref().and_then(|profile| {
-            profile
-                .cygwin_root
-                .as_deref()
-                .or(profile.distribution.as_deref())
-        });
-        set_text(c.profile_location, location.unwrap_or(""));
-        set_text(
-            c.profile_icon,
-            profile
-                .as_ref()
-                .and_then(|profile| profile.icon.as_deref())
-                .unwrap_or(""),
-        );
-        self.filling_profile.set(false);
-        self.show_profile_backend(backend);
-        self.show_profile_command_warning();
-        let count = self.profiles.borrow().len();
-        for (control, enabled) in [
-            (c.profile_remove, selected.is_some() && count > 1),
-            (
-                c.profile_default,
-                selected.is_some_and(|index| index != self.default_profile.get()),
-            ),
-            (c.profile_name, selected.is_some()),
-            (c.profile_command, selected.is_some()),
-            (c.profile_backend.hwnd(), selected.is_some()),
-            (
-                c.profile_location,
-                selected.is_some() && backend.is_bridge(),
-            ),
-            (c.profile_icon, selected.is_some()),
-            (c.profile_icon_choose, selected.is_some()),
-        ] {
-            // SAFETY: control はダイアログの子の有効なウィンドウ。
-            unsafe { _ = EnableWindow(control, enabled) };
-        }
-    }
-
-    /// 場所の入力欄の見出しと、コマンドラインと場所の入力欄が空のときに薄く見せる文字を、接続方式
-    /// `backend` に合わせる。
-    fn show_profile_backend(&self, backend: BackendKind) {
-        let c = &self.controls;
-        let (label, cue) = profile_location_texts(backend);
-        set_text(c.profile_location_label, label);
-        let command_cue = if backend.is_bridge() {
-            "空欄ならログインシェル"
-        } else {
-            ""
-        };
-        for (control, text) in [(c.profile_location, cue), (c.profile_command, command_cue)] {
-            let text = HSTRING::from(text);
-            // SAFETY: control は有効な入力欄で、文字列はこの呼び出しの間は生きている。
-            unsafe {
-                SendMessageW(
-                    control,
-                    EM_SETCUEBANNER,
-                    Some(WPARAM(CUE_BANNER_ALWAYS)),
-                    Some(LPARAM(text.as_ptr() as isize)),
-                )
-            };
-        }
-    }
-
-    /// コマンドラインの入力欄の下の警告の文を、選んでいるプロファイルに合わせる。文があれば、その高さの
-    /// 分だけ下の行をずらす。
-    fn show_profile_command_warning(&self) {
-        let warning = self.selected_profile().and_then(|index| {
-            self.profiles
-                .borrow()
-                .get(index)
-                .and_then(profile_command_warning)
-        });
-        let c = &self.controls;
-        let dpi = self.dpi.get();
-        set_text(c.profile_command_warning, warning.unwrap_or(""));
-        let Some(&(_, [left, top, width, _])) = c
-            .placed
-            .iter()
-            .find(|(control, _)| *control == c.profile_command_warning)
-        else {
-            return;
-        };
-        let width = scale(width, dpi);
-        let height = warning.map_or(0, |text| {
-            wrapped_text_height(c.profile_command_warning, self.font.get(), text, width)
-        });
-        // SAFETY: 警告の文はダイアログの子の有効なウィンドウ。
-        unsafe {
-            _ = MoveWindow(
-                c.profile_command_warning,
-                scale(left, dpi),
-                scale(top, dpi),
-                width,
-                height,
-                true,
-            );
-        }
-        let shift = if height > 0 {
-            height + scale(LABEL_OFFSET, dpi)
-        } else {
-            0
-        };
-        for &(control, [left, top, _, _]) in &c.placed {
-            if !c.profile_below_command_warning.contains(&control) {
-                continue;
-            }
-            // SAFETY: control はダイアログの子の有効なウィンドウ。
-            unsafe {
-                _ = SetWindowPos(
-                    control,
-                    None,
-                    scale(left, dpi),
-                    scale(top, dpi) + shift,
-                    0,
-                    0,
-                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-                );
-            }
-        }
-    }
-
-    /// 選んでいるプロファイルの接続方式が変わった。場所の入力欄を空にして見出しを替え、プロファイルに
-    /// 入れる。
-    fn on_profile_backend_changed(&self) {
-        let c = &self.controls;
-        let Some(index) = self.selected_profile() else {
-            return;
-        };
-        let Some(backend) = c.profile_backend.read() else {
-            return;
-        };
-        self.profiles.borrow_mut()[index].backend = backend;
-        self.filling_profile.set(true);
-        set_text(c.profile_location, "");
-        self.filling_profile.set(false);
-        self.show_profile_backend(backend);
-        // SAFETY: 入力欄は有効なウィンドウ。
-        unsafe { _ = EnableWindow(c.profile_location, backend.is_bridge()) };
-        self.on_profile_edited();
-    }
-
-    /// アイコンの「参照…」が押された。選んだファイルの絶対パスを入力欄に入れる（入力欄の変更の知らせで
-    /// プロファイルに入る）。
-    fn on_profile_icon_choose(&self) {
-        let chosen = match file_dialog::open_file(self.hwnd, "アイコンの選択", &icon_filters())
-        {
-            Ok(chosen) => chosen,
-            Err(e) => {
-                tracing::warn!("failed to choose a profile icon: {e}");
-                return;
-            }
-        };
-        if let Some(path) = chosen {
-            set_text(self.controls.profile_icon, &path.to_string_lossy());
-        }
-    }
-
-    /// プロファイルの名前かコマンドラインの入力欄が変わった。選んでいるプロファイルに入れ、一覧の行を
-    /// 書き直す。端末への反映は少し待つ（次に開くタブから使うので、反映しても見た目は変わらない）。
-    fn on_profile_edited(&self) {
-        if self.filling_profile.get() {
-            return;
-        }
-        let Some(index) = self.selected_profile() else {
-            return;
-        };
-        let name = get_text(self.controls.profile_name).trim().to_owned();
-        let command = get_text(self.controls.profile_command).trim().to_owned();
-        let location = get_text(self.controls.profile_location).trim().to_owned();
-        let icon = get_text(self.controls.profile_icon).trim().to_owned();
-        let text = {
-            let mut profiles = self.profiles.borrow_mut();
-            let profile = &mut profiles[index];
-            profile.name = name;
-            profile.command = command;
-            set_profile_location(profile, location);
-            profile.icon = (!icon.is_empty()).then_some(icon);
-            profile_row_text(profile, index == self.default_profile.get())
-        };
-        self.controls.profiles_list.replace_row(index, &text);
-        self.show_profile_command_warning();
-        self.schedule_preview();
-    }
-
-    /// プロファイルのボタン `id` が押された。
-    fn on_profile_button(&self, id: i32) {
-        let selected = match id {
-            ID_PROFILE_ADD => {
-                let mut profiles = self.profiles.borrow_mut();
-                let name = new_profile_name(&profiles);
-                profiles.push(Profile::new(
-                    &name,
-                    config::DEFAULT_COMMAND_LINE,
-                    BackendKind::default(),
-                ));
-                profiles.len() - 1
-            }
-            ID_PROFILE_REMOVE => {
-                let Some(index) = self.selected_profile() else {
-                    return;
-                };
-                let mut profiles = self.profiles.borrow_mut();
-                if profiles.len() <= 1 {
-                    return;
-                }
-                profiles.remove(index);
-                let default = self.default_profile.get();
-                // 既定のものを消したら先頭を、その前を消したら一つ前へずらす。
-                self.default_profile.set(match default.cmp(&index) {
-                    std::cmp::Ordering::Equal => 0,
-                    std::cmp::Ordering::Greater => default - 1,
-                    std::cmp::Ordering::Less => default,
-                });
-                index
-            }
-            ID_PROFILE_DEFAULT => {
-                let Some(index) = self.selected_profile() else {
-                    return;
-                };
-                self.default_profile.set(index);
-                index
-            }
-            _ => return,
-        };
-        self.refresh_profiles(selected);
-        self.preview();
-        let focus = if id == ID_PROFILE_ADD {
-            self.controls.profile_name
-        } else {
-            self.controls.profiles_list.hwnd()
-        };
-        // SAFETY: focus はダイアログの子の有効なウィンドウ。押したボタンが押せなくなることがあるので移す。
-        unsafe { _ = SetFocus(Some(focus)) };
-        if id == ID_PROFILE_ADD {
-            // SAFETY: 入力欄は有効なウィンドウ。名前をすぐ打ち替えられるように全体を選ぶ。
-            unsafe {
-                SendMessageW(
-                    focus,
-                    EM_SETSEL,
-                    Some(WPARAM(SELECT_FROM_START)),
-                    Some(LPARAM(SELECT_TO_END)),
-                )
-            };
-        }
-    }
-
-    /// 背景画像の一覧を作り直し、`selected` 番目（一覧より後ろなら最後）を選ぶ。`None` なら選ばない。
-    fn refresh_background_images(&self, selected: Option<usize>) {
-        let list = self.controls.background_images;
-        let images = self.background_images.borrow();
-        list.reset_with(images.iter().map(background_row_text));
-        if let Some(selected) = selected
-            && !images.is_empty()
-        {
-            list.select(selected.min(images.len() - 1));
-        }
-        drop(images);
-        self.update_background_buttons();
-    }
-
-    /// 背景画像の一覧で選んでいる位置。
-    fn selected_background_image(&self) -> Option<usize> {
-        self.controls
-            .background_images
-            .selected()
-            .filter(|&index| index < self.background_images.borrow().len())
-    }
-
-    /// 背景画像の一覧で選んでいるときだけ「削除」と項目の表示方法・不透明度を触れるようにし、表示方法と
-    /// 不透明度に選んでいる項目の値を見せる。不透明度の入力欄は「指定」のときだけ触れる。
-    fn update_background_buttons(&self) {
-        let c = &self.controls;
-        let selected = self
-            .selected_background_image()
-            .and_then(|index| self.background_images.borrow().get(index).cloned());
-        let buttons = c.background_item_opacity_choice.buttons();
-        for &control in [c.background_remove, c.background_item_fit.hwnd()]
-            .iter()
-            .chain(buttons)
-        {
-            // SAFETY: control はダイアログの子の有効なウィンドウ。
-            unsafe { _ = EnableWindow(control, selected.is_some()) };
-        }
-        match &selected {
-            Some(image) => c.background_item_fit.fill(image.fit),
-            None => c.background_item_fit.clear(),
-        }
-        let opacity = selected.as_ref().map(|image| image.image_opacity);
-        let custom = opacity.flatten();
-        match opacity {
-            Some(opacity) => c.background_item_opacity_choice.fill(opacity.is_some()),
-            None => c.background_item_opacity_choice.clear(),
-        }
-        self.enable_item_opacity(custom.is_some());
-        // 値が変わったときだけ書く（書くと EN_CHANGE が届いて、端末への反映の予約が掛かる）。借用は
-        // 持っていない。
-        c.background_item_opacity.fill_if_changed(custom);
-    }
-
-    /// 項目の不透明度の入力欄と上下の矢印を、`enabled` なら触れるようにする。
-    fn enable_item_opacity(&self, enabled: bool) {
-        for control in self.controls.background_item_opacity.controls() {
-            // SAFETY: control はダイアログの子の有効なウィンドウ。
-            unsafe { _ = EnableWindow(control, enabled) };
-        }
-    }
-
-    /// 項目の不透明度で「指定」を選んでいるか。
-    fn custom_item_opacity(&self) -> bool {
-        self.controls.background_item_opacity_choice.read() == Some(true)
-    }
-
-    /// 編集中の既定の表示方法。
-    fn default_fit(&self) -> BackgroundFit {
-        self.controls
-            .background_fit
-            .read()
-            .unwrap_or(self.base.borrow().background.fit)
-    }
-
-    /// 編集中の既定の不透明度。読めなければ `None`。
-    fn default_opacity(&self) -> Option<f32> {
-        self.controls.background_opacity.read().ok()
-    }
-
-    /// 項目の表示方法の先頭の選択肢と、不透明度の「既定」のラジオボタンに、編集中の既定の値を添える。
-    /// 既定の不透明度が読めなければ、ラジオボタンは前の添え書きのままにする。
-    fn refresh_background_defaults(&self) {
-        let c = &self.controls;
-        let fit = default_choice_label(fit_label(self.default_fit()));
-        c.background_item_fit.relabel(None, &fit);
-        if let Some(opacity) = self.default_opacity()
-            && let Some(button) = c.background_item_opacity_choice.button(false)
-        {
-            set_text(button, &default_choice_label(&format_opacity(opacity)));
-        }
-    }
-
-    /// 背景画像の一覧の `index` 番目の行を、編集中の項目に合わせて書き直す（選んだままにする）。
-    fn refresh_background_row(&self, index: usize) {
-        let Some(text) = self
-            .background_images
-            .borrow()
-            .get(index)
-            .map(background_row_text)
-        else {
-            return;
-        };
-        self.controls.background_images.replace_row(index, &text);
-    }
-
-    /// 一覧で選んでいる項目の表示方法のコンボボックスが変わった。
-    fn on_background_item_fit(&self) {
-        let Some(index) = self.selected_background_image() else {
-            return;
-        };
-        let Some(fit) = self.controls.background_item_fit.read() else {
-            return;
-        };
-        self.background_images.borrow_mut()[index].fit = fit;
-        self.refresh_background_row(index);
-        self.preview();
-    }
-
-    /// 一覧で選んでいる項目の不透明度の入力欄が変わった。「指定」で読めれば項目に入れる。端末への反映は
-    /// 少し待つ（読めなければ、反映するときにエラーを見せる）。
-    fn on_background_item_opacity(&self) {
-        if let Some(index) = self.selected_background_image()
-            && self.custom_item_opacity()
-            && let Ok(opacity) = self.controls.background_item_opacity.read()
-        {
-            self.set_item_opacity(index, Some(opacity));
-        }
-        self.schedule_preview();
-    }
-
-    /// 一覧で選んでいる項目の不透明度の「既定」か「指定」が選ばれた。「指定」で入力欄が読めなければ、
-    /// 既定の不透明度を入れる。
-    fn on_background_item_opacity_choice(&self) {
-        let Some(index) = self.selected_background_image() else {
-            return;
-        };
-        let c = &self.controls;
-        let custom = self.custom_item_opacity();
-        self.enable_item_opacity(custom);
-        if custom {
-            let opacity = c
-                .background_item_opacity
-                .read()
-                .ok()
-                .or_else(|| self.default_opacity())
-                .unwrap_or(self.base.borrow().background.image_opacity);
-            // 借用は持っていない（入力欄の EN_CHANGE はこの中で届く）。
-            c.background_item_opacity.fill(opacity);
-            self.set_item_opacity(index, Some(opacity));
-        } else {
-            c.background_item_opacity.clear();
-            self.set_item_opacity(index, None);
-        }
-        self.preview();
-    }
-
-    /// 一覧の `index` 番目の項目の不透明度を `opacity` にし、変わったら一覧の行を書き直す。
-    fn set_item_opacity(&self, index: usize, opacity: Option<f32>) {
-        let changed = {
-            let mut images = self.background_images.borrow_mut();
-            let changed = images[index].image_opacity != opacity;
-            images[index].image_opacity = opacity;
-            changed
-        };
-        if changed {
-            self.refresh_background_row(index);
-        }
-    }
-
-    /// 背景画像の一覧のボタン `id` が押された。
-    fn on_background_button(&self, id: i32) {
-        let selected = match id {
-            ID_BACKGROUND_ADD_FILES => {
-                let filters = image_filters();
-                let chosen = match file_dialog::open_files(self.hwnd, "背景画像を追加", &filters)
-                {
-                    Ok(chosen) => chosen,
-                    Err(e) => {
-                        tracing::warn!("failed to choose background images: {e}");
-                        return;
-                    }
-                };
-                self.add_background_images(chosen)
-            }
-            ID_BACKGROUND_ADD_FOLDER => {
-                let chosen = match file_dialog::open_folder(self.hwnd, "背景画像のフォルダを追加")
-                {
-                    Ok(chosen) => chosen,
-                    Err(e) => {
-                        tracing::warn!("failed to choose a background image folder: {e}");
-                        return;
-                    }
-                };
-                self.add_background_images(chosen.into_iter().collect())
-            }
-            ID_BACKGROUND_REMOVE => {
-                let Some(index) = self.selected_background_image() else {
-                    return;
-                };
-                self.background_images.borrow_mut().remove(index);
-                Some(index)
-            }
-            _ => return,
-        };
-        let Some(selected) = selected else {
-            return;
-        };
-        self.refresh_background_images(Some(selected));
-        self.preview();
-        // SAFETY: 一覧はダイアログの子の有効なウィンドウ。押したボタンが押せなくなることがあるので、
-        // 一覧へ戻す。
-        unsafe { _ = SetFocus(Some(self.controls.background_images.hwnd())) };
-    }
-
-    /// 背景画像の一覧の最後に `paths` を足す（同じものがあれば足さない）。足した最後の位置を返し、
-    /// 何も足さなければ `None`。
-    fn add_background_images(&self, paths: Vec<PathBuf>) -> Option<usize> {
-        let mut images = self.background_images.borrow_mut();
-        let mut added = None;
-        for path in paths {
-            let text = path.to_string_lossy().into_owned();
-            if images
-                .iter()
-                .any(|image| image.path.eq_ignore_ascii_case(&text))
-            {
-                continue;
-            }
-            images.push(BackgroundImage::new(text));
-            added = Some(images.len() - 1);
-        }
-        added
-    }
-
-    /// キーの割り当ての一覧を作り直し、`selected` の行（なければ同じ動作の行、それもなければ先頭）を
-    /// 選ぶ。
-    fn refresh_keys(&self, selected: Option<KeyRow>) {
-        let c = &self.controls;
-        let rows = key_rows(&self.keys.borrow());
-        let list = c.keys_list;
-        list.reset_with(rows.iter().copied().map(key_row_text));
-        let index = selected
-            .and_then(|selected| {
-                rows.iter()
-                    .position(|row| *row == selected)
-                    .or_else(|| rows.iter().position(|(action, _)| *action == selected.0))
-            })
-            .unwrap_or(0);
-        list.select(index);
-        *self.key_rows.borrow_mut() = rows;
-        self.update_key_buttons();
-    }
-
-    /// キーの割り当ての一覧で選んでいる行。
-    fn selected_key_row(&self) -> Option<KeyRow> {
-        let index = self.controls.keys_list.selected()?;
-        self.key_rows.borrow().get(index).copied()
-    }
-
-    /// 選んでいる行で押せるボタンだけを押せるようにする。
-    fn update_key_buttons(&self) {
-        let row = self.selected_key_row();
-        let has_combo = row.is_some_and(|(_, combo)| combo.is_some());
-        let not_default =
-            row.is_some_and(|(action, _)| !is_default_binding(&self.keys.borrow(), action));
-        let [add, change, remove, reset] = self.controls.key_buttons;
-        for (button, enabled) in [
-            (add, row.is_some()),
-            (change, has_combo),
-            (remove, has_combo),
-            (reset, not_default),
-        ] {
-            // SAFETY: button はダイアログの子の有効なウィンドウ。
-            unsafe { _ = EnableWindow(button, enabled) };
-        }
-    }
-
-    /// キーのボタン `id` が押された。
-    fn on_key_button(&self, id: i32) {
-        let Some((action, combo)) = self.selected_key_row() else {
-            return;
-        };
-        let selected = match id {
-            ID_KEY_ADD => {
-                let Some(new) = self.capture_key(action) else {
-                    return;
-                };
-                if !self.assign(action, new, None) {
-                    return;
-                }
-                (action, Some(new))
-            }
-            ID_KEY_CHANGE => {
-                let Some(old) = combo else {
-                    return;
-                };
-                let Some(new) = self.capture_key(action) else {
-                    return;
-                };
-                if !self.assign(action, new, Some(old)) {
-                    return;
-                }
-                (action, Some(new))
-            }
-            ID_KEY_REMOVE => {
-                let Some(old) = combo else {
-                    return;
-                };
-                self.keys.borrow_mut().bind(old, None);
-                (action, None)
-            }
-            ID_KEY_RESET => {
-                self.keys.borrow_mut().reset_action(action);
-                (action, combo)
-            }
-            _ => return,
-        };
-        self.refresh_keys(Some(selected));
-        self.preview();
-        // SAFETY: 一覧はダイアログの子の有効なウィンドウ。押したボタンが押せなくなることがあるので、
-        // 一覧へ戻す。
-        unsafe { _ = SetFocus(Some(self.controls.keys_list.hwnd())) };
-    }
-
-    /// 動作 `action` に割り当てるキーを、押したキーを読み取るダイアログで読む。
-    fn capture_key(&self, action: Action) -> Option<KeyCombo> {
-        let prompt = format!(
-            "「{}」に割り当てるキーを押してください。",
-            action_label(action)
-        );
-        key_capture::capture(self.hwnd, &prompt, self.font.get(), self.dpi.get())
-    }
-
-    /// 組み合わせ `new` を動作 `action` に割り当てる。`replacing` があれば、その組み合わせを外す。`new`
-    /// をほかの動作に割り当てていれば、割り当て直すかを尋ね、やめたら `false`。
-    fn assign(&self, action: Action, new: KeyCombo, replacing: Option<KeyCombo>) -> bool {
-        let bound = self.keys.borrow().lookup_combo(new);
-        if bound == Some(action) && replacing.is_none_or(|old| old == new) {
-            return true;
-        }
-        if let Some(other) = bound
-            && other != action
-        {
-            let text = format!(
-                "{} は「{}」に割り当てられています。「{}」に割り当て直しますか？",
-                new.label(),
-                action_label(other),
-                action_label(action)
-            );
-            // SAFETY: hwnd は有効なウィンドウで、文字列はこの呼び出しの間は生きている。借用は持っていない。
-            let answer = unsafe {
-                MessageBoxW(
-                    Some(self.hwnd),
-                    &HSTRING::from(text),
-                    &HSTRING::from(TITLE),
-                    MB_YESNO | MB_ICONQUESTION,
-                )
-            };
-            if answer != IDYES {
-                return false;
-            }
-        }
-        let mut keys = self.keys.borrow_mut();
-        if let Some(old) = replacing {
-            keys.bind(old, None);
-        }
-        keys.bind(new, Some(action));
-        true
+    /// コントロールに設定 `config` を入れる。
+    fn fill(&self, config: &Config) {
+        // 読む順（[`Self::read`]）と同じ順に入れる。
+        self.appearance.fill(self, config);
+        self.behavior.fill(self, config);
+        self.profiles.fill(self, config);
+        self.background.fill(self, config);
+        self.keys.fill(self, config);
+        self.colors.fill(self, config);
     }
 
     /// DPI を `dpi` にし、フォントを作り直してコントロールを並べ直す。
@@ -2509,11 +2968,16 @@ impl State<'_> {
         let dpi = self.dpi.get();
         let c = &self.controls;
         let font = self.font.get();
+        let number_fields: Vec<&dyn NumberInput> = self
+            .pages()
+            .into_iter()
+            .flat_map(|page| page.number_fields())
+            .collect();
         let all = c
             .placed
             .iter()
             .map(|(control, _)| *control)
-            .chain(c.number_fields().map(|field| field.spin()));
+            .chain(number_fields.iter().map(|field| field.spin()));
         for control in all {
             // SAFETY: control はダイアログの子で、フォントはダイアログが閉じるまで消さない。
             unsafe {
@@ -2539,17 +3003,16 @@ impl State<'_> {
             }
         }
         // 上下の矢印は、入力欄を置いたあとで付ける（付けるときに入力欄の幅を詰める）。
-        for field in c.number_fields() {
+        for field in &number_fields {
             field.attach_spin();
         }
-        self.show_profile_command_warning();
+        self.profiles.show_profile_command_warning(self);
     }
 
     /// `page` 番目のページのコントロールだけを見せる。
     fn show_page(&self, page: usize) {
-        let c = &self.controls;
-        c.pages.select(page);
-        for (index, controls) in c.page_controls.iter().enumerate() {
+        self.controls.pages.select(page);
+        for (index, controls) in self.pages().into_iter().map(Page::controls).enumerate() {
             let show = if index == page { SW_SHOW } else { SW_HIDE };
             for &control in controls {
                 // SAFETY: control はダイアログの子の有効なウィンドウ。
@@ -2560,73 +3023,18 @@ impl State<'_> {
 
     /// コントロールから編集中の設定を組み立てる。読めない入力があれば、その文と入力欄を返す。
     fn read(&self) -> Result<Config, (&'static str, HWND)> {
-        let c = &self.controls;
         let mut config = self.base.borrow().clone();
-        // SAFETY: コンボボックスは有効なウィンドウ。
-        let selected = unsafe { SendMessageW(c.font, CB_GETCURSEL, None, None) }.0;
-        if let Ok(selected) = usize::try_from(selected)
-            && selected != self.base_font.get()
-            && let Some(choice) = self.fonts.get(selected)
-        {
-            config.font.families =
-                families_choosing(&config.font.families, &self.base_indices.borrow(), choice)
-                    .into_iter()
-                    .map(|(name, _)| name)
-                    .collect();
-        }
-        config.font.size_pt = c.size.read()?;
-        if let Some(wide_glyph) = c.wide_glyph.read() {
-            config.font.wide_glyph = wide_glyph;
-        }
-        config.scroll_bar.width = c.scroll_bar_width.read()?;
-        config.window.padding = c.padding.read()?;
-        if let Some(confirm) = c.paste_confirm.read() {
-            config.paste.confirm = confirm;
-        }
-        config.paste.confirm_size = c.paste_confirm_size.read()?;
-        if let Some(read) = c.clipboard_read.read() {
-            config.clipboard.read = read;
-        }
-        let profiles = self.profiles.borrow().clone();
-        if let Err((index, field, message)) = check_profiles(&profiles) {
-            // エラーのあるプロファイルを選び、その入力欄へ移れるようにする。
-            if self.selected_profile() != Some(index) {
-                c.profiles_list.select(index);
-                self.on_profile_selected();
-            }
-            let control = match field {
-                ProfileField::Name => c.profile_name,
-                ProfileField::Command => c.profile_command,
-            };
-            return Err((message, control));
-        }
-        config.default_profile = default_profile_name(
-            &profiles,
-            self.default_profile.get(),
-            self.base.borrow().default_profile.as_deref(),
-        );
-        config.profiles = profiles;
-        // 選んでいる項目の値は、読めたときに項目へ入れている。ここでは読めるかだけを見る。
-        if self.selected_background_image().is_some() && self.custom_item_opacity() {
-            c.background_item_opacity.read()?;
-        }
-        config.background.images = self.background_images.borrow().clone();
-        config.background.image_opacity = c.background_opacity.read()?;
-        if let Some(fit) = c.background_fit.read() {
-            config.background.fit = fit;
-        }
-        config.keys = self.keys.borrow().clone();
-        config.colors = self.colors.borrow().clone();
+        // 読めない入力がいくつかあれば、この順で最初のもののエラーを見せる。
+        self.appearance.read(self, &mut config)?;
+        self.behavior.read(self, &mut config)?;
+        self.profiles.read(self, &mut config)?;
+        self.background.read(self, &mut config)?;
+        self.keys.read(self, &mut config)?;
+        self.colors.read(self, &mut config)?;
         Ok(config)
     }
 
-    /// 編集中の設定を読み、読めれば端末に反映する（前に反映したものと同じなら何もしない）。読めな
-    /// ければエラーを見せる。
-    fn preview(&self) {
-        _ = self.preview_edited();
-    }
-
-    /// [`Self::preview`] をして、読めた設定を返す。読めなければ、見せた文と入力欄を返す。
+    /// [`DialogContext::preview`] をして、読めた設定を返す。読めなければ、見せた文と入力欄を返す。
     fn preview_edited(&self) -> Result<Config, (&'static str, HWND)> {
         // SAFETY: hwnd は有効なウィンドウ。掛けていないタイマーを止めても害はない。
         unsafe { _ = KillTimer(Some(self.hwnd), PREVIEW_TIMER_ID) };
@@ -2662,10 +3070,9 @@ impl State<'_> {
                 // 読めない入力欄のページを見せて、その入力欄へ移る。エラーメッセージは preview_edited が
                 // 見せている。
                 if let Some(page) = self
-                    .controls
-                    .page_controls
-                    .iter()
-                    .position(|controls| controls.contains(&control))
+                    .pages()
+                    .into_iter()
+                    .position(|page| page.controls().contains(&control))
                 {
                     self.show_page(page);
                 }
@@ -2691,20 +3098,7 @@ impl State<'_> {
             };
             return false;
         }
-        // SAFETY: コンボボックスは有効なウィンドウ。
-        let selected = unsafe { SendMessageW(self.controls.font, CB_GETCURSEL, None, None) }.0;
-        if let Ok(selected) = usize::try_from(selected)
-            && selected != self.base_font.get()
-            && let Some(choice) = self.fonts.get(selected)
-        {
-            let indices =
-                families_choosing(&base.font.families, &self.base_indices.borrow(), choice)
-                    .into_iter()
-                    .map(|(_, index)| index)
-                    .collect();
-            *self.base_indices.borrow_mut() = indices;
-            self.base_font.set(selected);
-        }
+        self.appearance.saved(&base);
         *self.base.borrow_mut() = edited;
         true
     }
@@ -2723,7 +3117,49 @@ impl State<'_> {
         unsafe { _ = DestroyWindow(self.hwnd) };
     }
 
-    /// 入力欄を打ったので、少し待ってから反映する。
+    /// 上下の矢印のボタン `spin` が押された。相手の入力欄の数を `delta` の向きに一つ動かす。入力欄が
+    /// 読めなければ、その入力欄のページの [`Page::step_start`] の設定の値から動かす。
+    fn step(&self, spin: HWND, delta: i32) {
+        for page in self.pages() {
+            let fields = page.number_fields();
+            let Some(field) = fields.iter().find(|field| field.spin() == spin) else {
+                continue;
+            };
+            let start = page.step_start(self);
+            // 借用は持っていない（入力欄の EN_CHANGE はこの中で届く）。
+            field.step(delta, &start);
+            break;
+        }
+        // 矢印は打ち間違えないので、待たずに反映する。
+        self.preview();
+    }
+}
+
+impl DialogContext for State<'_> {
+    fn hwnd(&self) -> HWND {
+        self.hwnd
+    }
+
+    fn base(&self) -> Ref<'_, Config> {
+        self.base.borrow()
+    }
+
+    fn font(&self) -> HFONT {
+        self.font.get()
+    }
+
+    fn dpi(&self) -> u32 {
+        self.dpi.get()
+    }
+
+    fn placed(&self) -> &[(HWND, DipRect)] {
+        &self.controls.placed
+    }
+
+    fn preview(&self) {
+        _ = self.preview_edited();
+    }
+
     fn schedule_preview(&self) {
         // SAFETY: hwnd は有効なウィンドウ。同じ番号のタイマーは掛け直しになる。
         if unsafe {
@@ -2741,26 +3177,6 @@ impl State<'_> {
             );
             self.preview();
         }
-    }
-
-    /// 上下の矢印のボタン `spin` が押された。相手の入力欄の数を `delta` の向きに一つ動かす。入力欄が
-    /// 読めなければ、最後に書いたときの設定の値から動かす。ただし既定の不透明度は、入力欄が読めれば
-    /// その値にする（項目の不透明度が読めないときは、既定の不透明度から動かす）。
-    fn step(&self, spin: HWND, delta: i32) {
-        let mut start = self.base.borrow().clone();
-        if let Some(opacity) = self.default_opacity() {
-            start.background.image_opacity = opacity;
-        }
-        // 借用は持っていない（入力欄の EN_CHANGE はこの中で届く）。
-        if let Some(field) = self
-            .controls
-            .number_fields()
-            .find(|field| field.spin() == spin)
-        {
-            field.step(delta, &start);
-        }
-        // 矢印は打ち間違えないので、待たずに反映する。
-        self.preview();
     }
 }
 
@@ -2903,61 +3319,18 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         state.show_page(page);
                     }
                 }
-                (ID_FONT, CBN_SELCHANGE) => {
-                    state.preview();
+                // ページのコントロールの ID はページの間で重ならないので、受け持つページが処理したら
+                // 止める。
+                _ => {
+                    _ = state
+                        .pages()
+                        .into_iter()
+                        .any(|page| page.on_command(state, id, code));
                 }
-                (ID_PROFILES, LBN_SELCHANGE) => state.on_profile_selected(),
-                (ID_PROFILE_ADD | ID_PROFILE_REMOVE | ID_PROFILE_DEFAULT, BN_CLICKED) => {
-                    state.on_profile_button(id);
-                }
-                (
-                    ID_PROFILE_NAME | ID_PROFILE_COMMAND | ID_PROFILE_LOCATION | ID_PROFILE_ICON,
-                    EN_CHANGE,
-                ) => {
-                    state.on_profile_edited();
-                }
-                (ID_PROFILE_ICON_CHOOSE, BN_CLICKED) => state.on_profile_icon_choose(),
-                (ID_PROFILE_BACKEND, CBN_SELCHANGE) => state.on_profile_backend_changed(),
-                (ID_BACKGROUND_IMAGES, LBN_SELCHANGE) => state.update_background_buttons(),
-                (
-                    ID_BACKGROUND_ADD_FILES | ID_BACKGROUND_ADD_FOLDER | ID_BACKGROUND_REMOVE,
-                    BN_CLICKED,
-                ) => state.on_background_button(id),
-                (ID_BACKGROUND_FIT, CBN_SELCHANGE) => {
-                    state.refresh_background_defaults();
-                    state.preview();
-                }
-                (ID_BACKGROUND_OPACITY, EN_CHANGE) => {
-                    state.refresh_background_defaults();
-                    state.schedule_preview();
-                }
-                (ID_BACKGROUND_ITEM_FIT, CBN_SELCHANGE) => state.on_background_item_fit(),
-                (ID_BACKGROUND_ITEM_OPACITY, EN_CHANGE) => state.on_background_item_opacity(),
-                (id, BN_CLICKED) if state.controls.background_item_opacity_choice.owns(id) => {
-                    state.on_background_item_opacity_choice();
-                }
-                (ID_KEYS, LBN_SELCHANGE) => state.update_key_buttons(),
-                (ID_KEYS, LBN_DBLCLK) => state.on_key_button(ID_KEY_CHANGE),
-                (ID_KEY_ADD | ID_KEY_CHANGE | ID_KEY_REMOVE | ID_KEY_RESET, BN_CLICKED) => {
-                    state.on_key_button(id);
-                }
-                (id, BN_CLICKED) if id >= ID_COLORS => state.on_color_button(id),
-                (id, BN_CLICKED) if state.controls.color_scheme.owns(id) => {
-                    state.on_color_scheme();
-                }
-                // ほかの処理の要らないラジオボタンは、押したらすぐ反映する。
-                (id, BN_CLICKED) if state.controls.radio_groups().any(|group| group.owns(id)) => {
-                    state.preview();
-                }
-                // ほかの処理の要らない数の入力欄は、打ち終わるのを待って反映する。
-                (id, EN_CHANGE) if state.controls.number_fields().any(|field| field.owns(id)) => {
-                    state.schedule_preview();
-                }
-                _ => {}
             }
             LRESULT(0)
         }
-        WM_CTLCOLORSTATIC => match state.swatch_brush(HWND(lparam.0 as *mut _)) {
+        WM_CTLCOLORSTATIC => match state.colors.swatch_brush(HWND(lparam.0 as *mut _)) {
             Some(brush) => LRESULT(brush.0 as isize),
             // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
             None => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
@@ -3086,7 +3459,7 @@ mod tests {
     #[test]
     fn number_fields_read_what_they_show() {
         // `parse` に渡す項目の名前の誤りは、このテストだけが見つける。`NumberKind` の定数を足したら、
-        // ここにも足す（`Controls::number_fields` はウィンドウが要るので使えない）。
+        // ここにも足す（`Page::number_fields` はウィンドウが要るので使えない）。
         fn reads_back<T: Copy + PartialEq + std::fmt::Debug>(kind: &NumberKind<T>) {
             let value = (kind.start)(&Config::default());
             assert_eq!(
