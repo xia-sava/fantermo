@@ -28,7 +28,7 @@ use crate::tab_icon::{self, RealIcon};
 pub const MAX_TEXTURE_SIDE: u32 = 16384;
 
 /// 1 ピクセルのバイト数（乗算済みアルファの BGRA）。
-pub const BYTES_PER_PIXEL: u32 = 4;
+const BYTES_PER_PIXEL: u32 = 4;
 
 /// タブのアイコンの画像で、大きさを見るコマの数の上限。
 const MAX_ICON_FRAMES: u32 = 32;
@@ -61,6 +61,16 @@ impl Decoded {
         })
     }
 
+    /// 幅 `width`、高さ `height` の、すべてのバイトが 0（透明）の画像。
+    pub fn blank(width: u32, height: u32) -> Self {
+        let length = width as usize * height as usize * BYTES_PER_PIXEL as usize;
+        Self {
+            width,
+            height,
+            pixels: vec![0; length],
+        }
+    }
+
     pub fn width(&self) -> u32 {
         self.width
     }
@@ -72,6 +82,11 @@ impl Decoded {
     /// 乗算済みアルファの BGRA のバイト列。
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
+    }
+
+    /// 書き込める乗算済みアルファの BGRA のバイト列。長さは変えられない。
+    pub fn pixels_mut(&mut self) -> &mut [u8] {
+        &mut self.pixels
     }
 
     /// 一行のバイト数。
@@ -198,12 +213,16 @@ impl Decoder {
                 fitted_height,
                 WICBitmapInterpolationModeFant,
             )?;
-            let stride = side * BYTES_PER_PIXEL;
-            let mut pixels = vec![0; (stride * side) as usize];
+            let mut decoded = Decoded::blank(side, side);
+            let stride = decoded.stride();
             let start = (y * stride + x * BYTES_PER_PIXEL) as usize;
             let length = ((fitted_height - 1) * stride + fitted_width * BYTES_PER_PIXEL) as usize;
-            scaler.CopyPixels(std::ptr::null(), stride, &mut pixels[start..start + length])?;
-            Decoded::new(side, side, pixels).ok_or_else(windows::core::Error::empty)
+            scaler.CopyPixels(
+                std::ptr::null(),
+                stride,
+                &mut decoded.pixels_mut()[start..start + length],
+            )?;
+            Ok(decoded)
         }
     }
 
@@ -246,11 +265,9 @@ impl Decoder {
                 )?;
                 scaler.cast()?
             };
-            let stride = stored_width * BYTES_PER_PIXEL;
-            let mut pixels = vec![0; (stride * stored_height) as usize];
-            source.CopyPixels(std::ptr::null(), stride, &mut pixels)?;
-            Decoded::new(stored_width, stored_height, pixels)
-                .ok_or_else(windows::core::Error::empty)
+            let mut decoded = Decoded::blank(stored_width, stored_height);
+            source.CopyPixels(std::ptr::null(), decoded.stride(), decoded.pixels_mut())?;
+            Ok(decoded)
         }
     }
 }
@@ -372,6 +389,17 @@ mod tests {
         assert_eq!((decoded.width(), decoded.height()), (SIDE, SIDE));
         assert_eq!(decoded.pixels().len(), (SIDE * SIDE * 4) as usize);
         assert!(decoded.pixels().chunks(4).any(|pixel| pixel[3] > 0));
+    }
+
+    #[test]
+    fn blank_images_are_transparent_and_have_the_right_length() {
+        let mut image = Decoded::blank(3, 2);
+        assert_eq!((image.width(), image.height(), image.stride()), (3, 2, 12));
+        assert_eq!(image.pixels(), [0; 24]);
+        image.pixels_mut()[5] = 7;
+        assert_eq!(image.pixels().len(), 24);
+        assert_eq!(image.pixels()[5], 7);
+        assert!(Decoded::blank(0, 4).pixels().is_empty());
     }
 
     #[test]

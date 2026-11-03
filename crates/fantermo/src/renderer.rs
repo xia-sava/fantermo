@@ -245,11 +245,11 @@ impl Renderer {
             }
             match vt.image_pixels(&view.key) {
                 Ok(Some(pixels)) => {
-                    // 作れなければ `Decoded::new` が警告する。次のフレームでも読み直す。
-                    if let Some(decoded) =
-                        Decoded::new(pixels.width, pixels.height, pixels.to_premultiplied_bgra())
+                    // `Decoded::new` が警告する。作れなかったものは `None` で覚える。
+                    match Decoded::new(pixels.width, pixels.height, pixels.to_premultiplied_bgra())
                     {
-                        self.add_terminal_image(owner, view.key, &decoded);
+                        Some(decoded) => self.add_terminal_image(owner, view.key, &decoded),
+                        None => self.terminal_images.insert(owner, view.key, None, 0),
                     }
                 }
                 Ok(None) => {}

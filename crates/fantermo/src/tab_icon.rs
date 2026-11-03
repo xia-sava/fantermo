@@ -45,13 +45,7 @@ use windows::{
 };
 use windows_numerics::{Matrix3x2, Vector2};
 
-use crate::{
-    atlas,
-    background::{BYTES_PER_PIXEL, Decoded},
-    boxdraw::Shape,
-    bridge,
-    paint::arc,
-};
+use crate::{atlas, background::Decoded, boxdraw::Shape, bridge, paint::arc};
 
 /// プロファイル名から選ぶ背景の色。青・水色・青緑・緑・藍・紫の淡い色で、警告に使う赤・橙・黄は入れない。
 /// 濃い色の絵と頭文字が読め、明るいタブの白と灰色のどちらからも、暗いタブからも分かれる明るさの色だけを
@@ -546,11 +540,10 @@ pub fn draw_generated(
     };
     ended?;
     drop(target);
-    let stride = size * BYTES_PER_PIXEL;
-    let mut pixels = vec![0; (stride * size) as usize];
+    let mut decoded = Decoded::blank(size, size);
     // SAFETY: 描き終えたビットマップから、stride × 高さのバイトへ写す。
-    unsafe { bitmap.CopyPixels(std::ptr::null(), stride, &mut pixels)? };
-    Decoded::new(size, size, pixels).ok_or_else(windows::core::Error::empty)
+    unsafe { bitmap.CopyPixels(std::ptr::null(), decoded.stride(), decoded.pixels_mut())? };
+    Ok(decoded)
 }
 
 /// 正方形、絵、頭文字の順に描く。
