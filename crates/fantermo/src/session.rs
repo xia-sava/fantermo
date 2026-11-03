@@ -117,6 +117,9 @@ pub struct Session {
     pub selecting: bool,
     /// Ctrl を押している間の、マウスを載せているリンク。下線を引き、カーソルを手の形にする。
     pub hovered_link: Option<Link>,
+    /// `hovered_link` を探したセル（桁、行）。同じセルの上の移動では探し直さない。画面の中身や
+    /// 表示している範囲が変わったら捨てる。
+    pub hovered_cell: Option<(u16, u16)>,
     /// Ctrl を押しながら左ボタンを押したリンクの URI。同じリンクの上で離したら開く。
     pub pressed_link: Option<String>,
     /// 表示していない間にベルが鳴った。タブに印を付け、表示したら消す。
@@ -181,6 +184,7 @@ impl Session {
             wheel_report_remainder: 0,
             selecting: false,
             hovered_link: None,
+            hovered_cell: None,
             pressed_link: None,
             bell_marked: false,
             background_image: None,
@@ -204,6 +208,7 @@ impl Session {
     pub fn release_pointer(&mut self) {
         self.selecting = false;
         self.pressed_link = None;
+        self.hovered_cell = None;
         if self.hovered_link.take().is_some() {
             self.vt.set_link_underline(Vec::new());
         }

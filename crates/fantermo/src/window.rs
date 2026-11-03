@@ -1519,11 +1519,11 @@ impl App {
         }
     }
 
-    /// ウィンドウのクライアント領域の中の位置にあるリンク。
-    fn link_at(&self, x: i32, y: i32) -> Option<Link> {
+    /// ウィンドウのクライアント領域の中の位置にあるセル（桁、行）。セルの外（端末の画面の余白、
+    /// スクロールバー）なら `None`。
+    fn cell_at(&self, x: i32, y: i32) -> Option<(u16, u16)> {
         let (x, y) = self.client_to_terminal(x, y);
         let size = self.session().vt.size();
-        // セルの外（端末の画面の余白、スクロールバー）にはリンクはない。
         if x < 0
             || y < 0
             || x as u32 >= u32::from(size.cols) * size.cell_width_px
@@ -1533,6 +1533,17 @@ impl App {
         }
         let col = (x as u32 / size.cell_width_px).min(u32::from(u16::MAX)) as u16;
         let row = (y as u32 / size.cell_height_px).min(u32::from(u16::MAX)) as u16;
+        Some((col, row))
+    }
+
+    /// ウィンドウのクライアント領域の中の位置にあるリンク。
+    fn link_at(&self, x: i32, y: i32) -> Option<Link> {
+        let (col, row) = self.cell_at(x, y)?;
+        self.link_in_cell(col, row)
+    }
+
+    /// セルにあるリンク。
+    fn link_in_cell(&self, col: u16, row: u16) -> Option<Link> {
         self.session().vt.link_at(col, row).unwrap_or_else(|e| {
             tracing::warn!("failed to look for a link: {e}");
             None
@@ -1540,12 +1551,17 @@ impl App {
     }
 
     /// マウスを載せているリンクを探し直す。`modifier_held` はリンクを開く修飾キー（Ctrl）を押している
-    /// か。変わったら、下線を引き直し、カーソルの形を変える。
+    /// か。変わったら、下線を引き直し、カーソルの形を変える。前回と同じセルの上なら探し直さない。
     fn refresh_hovered_link(&mut self, modifier_held: bool) {
-        let link = match self.pointer_in_window {
-            Some((x, y)) if modifier_held && !self.session().selecting => self.link_at(x, y),
+        let cell = match self.pointer_in_window {
+            Some((x, y)) if modifier_held && !self.session().selecting => self.cell_at(x, y),
             _ => None,
         };
+        if cell.is_some() && cell == self.session().hovered_cell {
+            return;
+        }
+        self.session_mut().hovered_cell = cell;
+        let link = cell.and_then(|(col, row)| self.link_in_cell(col, row));
         if link == self.session().hovered_link {
             return;
         }
@@ -1570,6 +1586,7 @@ impl App {
     /// 修飾キーをいま押しているかで、マウスを載せているリンクを探し直す。画面の中身や表示している
     /// 範囲が変わったときに使う。
     fn refresh_hovered_link_now(&mut self) {
+        self.session_mut().hovered_cell = None;
         if self.pointer_in_window.is_none() && self.session().hovered_link.is_none() {
             return;
         }

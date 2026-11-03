@@ -148,23 +148,33 @@ fn url_prefix_at(chars: &[char], start: usize) -> Option<&'static str> {
 /// `start` から始まる URL の終わり（含まない）。URL に使える文字が続くところまで進め、終わりの
 /// 句読点と、対になっていない閉じ括弧を除く。
 fn url_end(chars: &[char], start: usize, prefix_len: usize) -> usize {
-    let mut end = start + prefix_len;
-    while end < chars.len() && is_url_char(chars[end]) {
+    let body = start + prefix_len;
+    // 括弧の種類ごとの、URL の中の閉じと開きの数。末尾を外すたびに数え直さないよう、進みながら数える。
+    let mut closing_counts = [0usize; CLOSING_BRACKETS.len()];
+    let mut opening_counts = [0usize; CLOSING_BRACKETS.len()];
+    let mut end = start;
+    while end < chars.len() && (end < body || is_url_char(chars[end])) {
+        for (kind, &(close, open)) in CLOSING_BRACKETS.iter().enumerate() {
+            if chars[end] == close {
+                closing_counts[kind] += 1;
+            } else if chars[end] == open {
+                opening_counts[kind] += 1;
+            }
+        }
         end += 1;
     }
-    let body = start + prefix_len;
     while end > body {
         let last = chars[end - 1];
-        let unbalanced_bracket = CLOSING_BRACKETS
+        let bracket_kind = CLOSING_BRACKETS
             .iter()
-            .find(|(close, _)| *close == last)
-            .is_some_and(|&(close, open)| {
-                let url = &chars[start..end];
-                url.iter().filter(|&&c| c == close).count()
-                    > url.iter().filter(|&&c| c == open).count()
-            });
+            .position(|&(close, _)| close == last);
+        let unbalanced_bracket =
+            bracket_kind.is_some_and(|kind| closing_counts[kind] > opening_counts[kind]);
         if !TRAILING_PUNCTUATION.contains(&last) && !unbalanced_bracket {
             break;
+        }
+        if let Some(kind) = bracket_kind {
+            closing_counts[kind] -= 1;
         }
         end -= 1;
     }
@@ -414,6 +424,16 @@ mod tests {
         ] {
             assert_eq!(url_in(line).as_deref(), Some(url), "{line}");
         }
+    }
+
+    #[test]
+    fn a_long_run_of_closing_brackets_is_handled_at_once() {
+        // 129 行 × 300 桁の論理行に当たる長さ。
+        let length = 129 * 300;
+        let line = format!("https://example.com/a{}", ")".repeat(length));
+        assert_eq!(url_in(&line).as_deref(), Some("https://example.com/a"));
+        let line = format!("https://example.com/({}", ")".repeat(length));
+        assert_eq!(url_in(&line).as_deref(), Some("https://example.com/()"));
     }
 
     #[test]
