@@ -143,7 +143,7 @@ IME の確定した文字と，キーを伴わない `WM_CHAR` は `on_text_unit
 
 ### リサイズ
 
-`WM_SIZE` で `App::on_resize` がスワップチェーンの大きさを変え，`layout` が各領域を計算し直し，`resize_sessions` がすべての端末（表示していないものも）を同じ桁数と行数にします．`Session::resize` は大きさが変わったときだけ `Vt::resize` とバックエンドの `resize` を呼びます．ConPTY とブリッジは，前に伝えた大きさと同じなら伝えません．
+`WM_SIZE` で `App::on_resize` がスワップチェーンの大きさを変え，`layout` が各領域を計算し直し，`resize_sessions` がすべての端末（表示していないものも）を同じ桁数と行数にします．最小化（`SIZE_MINIMIZED`）の `WM_SIZE` では何もしません（大きさ 0 を端末へ伝えないため）．設定の読み直しと DPI の変更からの `fit_to_client` も，最小化中は何もしません．`Session::resize` は大きさが変わったときだけ `Vt::resize` とバックエンドの `resize` を呼びます．ConPTY とブリッジは，前に伝えた大きさと同じなら伝えません．
 
 ウィンドウの大きさが基準です．フォント，スクロールバーの幅，余白を変えても，ウィンドウの位置と大きさは変えず，いまのクライアント領域で桁数と行数を決め直します．
 
@@ -156,7 +156,7 @@ IME の確定した文字と，キーを伴わない `WM_CHAR` は `on_text_unit
 
 ### DPI の変更
 
-`WM_DPICHANGED` で，`App::apply_dpi` が端末のフォントと UI のフォントを測り直してアトラスを作り直し，アイコンを付け直し，推奨の矩形へ `SetWindowPos` します．変わったあとの大きさ（`WM_GETDPISCALEDSIZE`）は既定の処理に任せ，Windows が DPI の比で拡大・縮小します．そのあと届く `WM_SIZE` で桁数と行数が決まります．クライアント領域の大きさが変わらず `WM_SIZE` が届かないときのために，最後に `on_resize` を呼びます．`state.toml` は位置と大きさをピクセルのまま覚え，DPI は書きません．
+`WM_DPICHANGED` で，`App::apply_dpi` が端末のフォントと UI のフォントを測り直してアトラスを作り直し，アイコンを付け直し，推奨の矩形へ `SetWindowPos` します．変わったあとの大きさ（`WM_GETDPISCALEDSIZE`）は既定の処理に任せ，Windows が DPI の比で拡大・縮小します．そのあと届く `WM_SIZE` で桁数と行数が決まります．クライアント領域の大きさが変わらず `WM_SIZE` が届かないときのために，最後に `fit_to_client`（`on_resize`）を呼びます．最小化中は呼んでも何もせず，戻したときの `WM_SIZE` に任せます．`state.toml` は位置と大きさをピクセルのまま覚え，DPI は書きません．
 
 タブバーとスクロールバーの寸法は DPI から決め（`paint::scale`），端末のフォントによりません．設定ダイアログと文字のダイアログは開くときにモニターの DPI（`GetDpiForWindow`）を読みます．
 

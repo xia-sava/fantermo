@@ -14,6 +14,7 @@
 //! | `POST /e2e/tab/new`、`/e2e/tab/new/<プロファイルの位置>`、`/e2e/tab/close`、`/e2e/tab/select/<位置>` | タブの操作 |
 //! | `POST /e2e/window/size/<桁数>/<行数>` | 端末がその大きさになるようにウィンドウの大きさを変える |
 //! | `POST /e2e/window/lower` | ウィンドウを同じデスクトップの Z オーダーのいちばん下へ移す |
+//! | `POST /e2e/window/minimize`、`/e2e/window/restore` | ウィンドウを最小化する、元の大きさに戻す（`ShowWindow`。`SW_RESTORE` は最大化も解く）。そのあとの状態を返す |
 //! | `POST /e2e/window/block/<ミリ秒>` | 答えを返してから、ウィンドウのスレッドをその時間だけ止める |
 //! | `POST /e2e/paste` | 本文の文字を、クリップボードから読んだものとして貼り付ける |
 //! | `POST /e2e/dialog/button/<ID>` | 開いているダイアログのそのボタンを押す |
@@ -238,6 +239,10 @@ pub enum Request {
     },
     /// ウィンドウを同じデスクトップの Z オーダーのいちばん下へ移す。
     LowerWindow,
+    /// ウィンドウを最小化する。
+    MinimizeWindow,
+    /// 最小化したウィンドウを元に戻す。
+    RestoreWindow,
     /// ウィンドウのスレッドをこのミリ秒だけ止める。
     BlockWindow(u64),
     Paste(String),
@@ -495,6 +500,8 @@ fn parse_request(method: &str, path: &str, body: Vec<u8>) -> Result<Request, Res
             rows: parse_number(rows)?,
         }),
         ("POST", ["e2e", "window", "lower"]) => Ok(Request::LowerWindow),
+        ("POST", ["e2e", "window", "minimize"]) => Ok(Request::MinimizeWindow),
+        ("POST", ["e2e", "window", "restore"]) => Ok(Request::RestoreWindow),
         ("POST", ["e2e", "window", "block", milliseconds]) => {
             Ok(Request::BlockWindow(parse_number(milliseconds)?))
         }

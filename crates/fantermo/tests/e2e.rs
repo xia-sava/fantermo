@@ -195,6 +195,55 @@ fn resizing_the_window_changes_the_grid_and_reaches_the_shell() {
     server.wait_text("[96x30]");
 }
 
+/// 最小化中に書き換える余白。
+const MINIMIZED_PADDING: u64 = 40;
+
+/// 最小化しても桁数と行数は変わらず、戻すと元の大きさになる。最小化中に設定を読み直しても同じで、戻したときに
+/// 新しい余白とフォントで決め直す。
+#[test]
+fn minimizing_the_window_keeps_the_grid() {
+    let server = Server::start("[font]\nsize = 10\n", &["cmd.exe", "/k", "prompt", "e2e$G"]);
+    server.wait_text(CMD_PROMPT);
+    server.resize(87, 23);
+    let before = server.state();
+    assert_eq!(before["cols"], 87, "{before:#}");
+    assert_eq!(before["rows"], 23, "{before:#}");
+
+    let minimized = server.minimize();
+    assert_eq!(number(&minimized["client_width"]), 0, "{minimized:#}");
+    assert_eq!(minimized["cols"], before["cols"], "{minimized:#}");
+    assert_eq!(minimized["rows"], before["rows"], "{minimized:#}");
+
+    let restored = server.restore();
+    assert_eq!(restored["cols"], before["cols"], "{restored:#}");
+    assert_eq!(restored["rows"], before["rows"], "{restored:#}");
+
+    // 最小化中の設定の読み直しは、桁数と行数を変えない。
+    server.minimize();
+    let cell_height = number(&before["cell_height"]);
+    std::fs::write(
+        server.dir().join("config.toml"),
+        format!("[font]\nsize = 20\n[window]\npadding = {MINIMIZED_PADDING}\n"),
+    )
+    .expect("failed to write the settings");
+    let reloaded = server.wait_until("taller cells", |state| {
+        number(&state["cell_height"]) > cell_height
+    });
+    assert_eq!(reloaded["cols"], before["cols"], "{reloaded:#}");
+    assert_eq!(reloaded["rows"], before["rows"], "{reloaded:#}");
+
+    let restored = server.restore();
+    assert_eq!(
+        number(&restored["terminal_x"]),
+        MINIMIZED_PADDING,
+        "{restored:#}"
+    );
+    assert!(
+        number(&restored["cols"]) < number(&before["cols"]),
+        "{restored:#}"
+    );
+}
+
 #[test]
 fn osc_2_sets_the_window_title() {
     let server = Server::start_powershell();

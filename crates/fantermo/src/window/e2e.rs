@@ -38,11 +38,12 @@ use windows::{
                 LB_GETCURSEL, LB_GETTEXT, LB_GETTEXTLEN, LB_SETCURSEL, LBN_SELCHANGE,
                 MENUITEMINFOW, MFS_CHECKED, MFS_GRAYED, MFS_HILITE, MFT_SEPARATOR, MIIM_BITMAP,
                 MIIM_FTYPE, MIIM_STATE, MIIM_STRING, MIIM_SUBMENU, MN_GETHMENU, PostMessageW,
-                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetWindowPos,
-                SetWindowTextW, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_ENDSESSION,
-                WM_GETDPISCALEDSIZE, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
-                WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NOTIFY,
-                WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP,
+                SHOW_WINDOW_CMD, SW_MINIMIZE, SW_RESTORE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+                SWP_NOZORDER, SendMessageW, SetWindowPos, SetWindowTextW, ShowWindow,
+                WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_ENDSESSION, WM_GETDPISCALEDSIZE,
+                WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+                WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NOTIFY, WM_QUERYENDSESSION, WM_RBUTTONDOWN,
+                WM_RBUTTONUP,
             },
         },
     },
@@ -145,6 +146,8 @@ fn run(hwnd: HWND, Pending { request, reply }: Pending, with_app: &WithApp) {
             answer(resize_window(hwnd, cols, rows, with_app));
         }
         Request::LowerWindow => answer(lower_window(hwnd)),
+        Request::MinimizeWindow => answer(show_window(hwnd, SW_MINIMIZE, with_app)),
+        Request::RestoreWindow => answer(show_window(hwnd, SW_RESTORE, with_app)),
         // 答えを返してから、メッセージを処理しないまま止まる。応答しないウィンドウの代わり。
         Request::BlockWindow(milliseconds) => {
             answer(Response::json(&json!({})));
@@ -232,6 +235,16 @@ fn resize_window(hwnd: HWND, cols: u16, rows: u16, with_app: &WithApp) -> Respon
     if let Err(e) = moved {
         return Response::internal_error(format!("cannot resize the window: {e}"));
     }
+    let mut response = None;
+    with_app(&mut |app| response = Some(Response::json(&app.e2e_state())));
+    response.unwrap_or_else(|| Response::internal_error("the window is busy with another message"))
+}
+
+/// ウィンドウの表示の状態を `command`（最小化か、元に戻す）にして、そのあとの状態を返す。
+fn show_window(hwnd: HWND, command: SHOW_WINDOW_CMD, with_app: &WithApp) -> Response {
+    // SAFETY: hwnd は有効なウィンドウ。WM_SIZE がこの場で届くが、借用は持っていない。戻り値は前に見えていたかで、
+    // 失敗ではない。
+    unsafe { _ = ShowWindow(hwnd, command) };
     let mut response = None;
     with_app(&mut |app| response = Some(Response::json(&app.e2e_state())));
     response.unwrap_or_else(|| Response::internal_error("the window is busy with another message"))
@@ -1167,6 +1180,8 @@ impl App {
             Request::Quit
             | Request::ResizeWindow { .. }
             | Request::LowerWindow
+            | Request::MinimizeWindow
+            | Request::RestoreWindow
             | Request::BlockWindow(_)
             | Request::SendMessage { .. }
             | Request::Mouse(_)

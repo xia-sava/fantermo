@@ -44,6 +44,7 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
 | `POST /e2e/tab/new`、`/e2e/tab/new/<プロファイルの位置>`、`/e2e/tab/close`、`/e2e/tab/select/<位置>` | タブの操作 |
 | `POST /e2e/window/size/<桁数>/<行数>` | ウィンドウの大きさを変えて、そのあとの状態を返す |
 | `POST /e2e/window/lower` | ウィンドウを同じデスクトップの Z オーダーのいちばん下へ移す（別デスクトップのスレッドには前面に出す権利がなく、いちばん上へは移せない） |
+| `POST /e2e/window/minimize`、`/e2e/window/restore` | ウィンドウを `ShowWindow` で最小化する、元の大きさに戻す（`SW_RESTORE`。最大化も解く）。そのあとの状態を返す（最小化中のクライアント領域は 0×0） |
 | `POST /e2e/window/block/<ミリ秒>` | 答えを返してから、ウィンドウのスレッドをその時間だけ止める（応答しないウィンドウの代わり） |
 | `POST /e2e/paste` | 本文の文字を、クリップボードから読んだものとして貼り付ける（`paste.confirm` と `paste.confirm_size` に従う） |
 | `POST /e2e/dialog/button/<ID>` | 開いているダイアログのボタンを押す（`TaskDialogIndirect` は `TDM_CLICK_BUTTON`、ほかは `WM_COMMAND`。メッセージボックスは押せない） |

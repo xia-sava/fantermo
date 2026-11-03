@@ -58,8 +58,8 @@ use windows::{
                 GetClientRect, GetForegroundWindow, GetGUIThreadInfo, GetLastActivePopup,
                 GetMessageW, GetWindowLongPtrW, GetWindowRect, HTCLIENT, IDC_ARROW, IDC_HAND,
                 IsIconic, KillTimer, LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostMessageW,
-                PostQuitMessage, RegisterClassExW, SPI_GETWHEELSCROLLLINES, SW_RESTORE,
-                SW_SHOWDEFAULT, SW_SHOWMAXIMIZED, SWP_NOACTIVATE, SWP_NOZORDER,
+                PostQuitMessage, RegisterClassExW, SIZE_MINIMIZED, SPI_GETWHEELSCROLLLINES,
+                SW_RESTORE, SW_SHOWDEFAULT, SW_SHOWMAXIMIZED, SWP_NOACTIVATE, SWP_NOZORDER,
                 SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetCursor, SetForegroundWindow,
                 SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
                 SystemParametersInfoW, TranslateMessage, WA_INACTIVE, WHEEL_DELTA, WINDOW_EX_STYLE,
@@ -2366,6 +2366,17 @@ impl App {
         self.layout(width, height);
     }
 
+    /// いまのクライアント領域の大きさに合わせる。最小化していれば何もしない（大きさ 0 を端末に伝えないため。
+    /// 戻したときに届く WM_SIZE で合わせる）。
+    fn fit_to_client(&mut self) {
+        // SAFETY: self.hwnd は有効なウィンドウ。
+        if unsafe { IsIconic(self.hwnd) }.as_bool() {
+            return;
+        }
+        let (width, height) = client_size(self.hwnd);
+        self.on_resize(width, height);
+    }
+
     /// クライアント領域の大きさが `width` × `height` のときの、端末を描く領域に合わせる。
     fn layout(&mut self, width: u32, height: u32) {
         let insets = self.insets(self.dpi);
@@ -2502,8 +2513,7 @@ impl App {
             self.apply_dpi(self.dpi);
         }
         if font_changed || insets_changed {
-            let (width, height) = client_size(self.hwnd);
-            self.layout(width, height);
+            self.fit_to_client();
             self.invalidate();
         }
     }
@@ -3381,6 +3391,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             with_app(&mut |app| app.render());
             LRESULT(0)
         }
+        // 最小化の大きさ 0 を伝えると、端末が 1×1 になり、シェルや TUI のアプリへ届く。
+        WM_SIZE if wparam.0 as u32 == SIZE_MINIMIZED => LRESULT(0),
         WM_SIZE => {
             let width = (lparam.0 & 0xffff) as u32;
             let height = ((lparam.0 >> 16) & 0xffff) as u32;
@@ -3643,8 +3655,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 tracing::warn!("failed to apply the DPI change: {e}");
             }
             // クライアント領域の大きさが変わらず WM_SIZE が届かなかったときも、セルの寸法を合わせる。
-            let (width, height) = client_size(hwnd);
-            with_app(&mut |app| app.on_resize(width, height));
+            with_app(&mut |app| app.fit_to_client());
             LRESULT(0)
         }
         // × と Alt+F4。メニューの終了と、最後の端末が終わったときと同じく、状態を書いてから閉じる。

@@ -446,6 +446,18 @@ impl Server {
         self.post(&format!("/e2e/window/size/{cols}/{rows}"), b"");
     }
 
+    /// ウィンドウを最小化して、そのあとの状態を返す。
+    pub fn minimize(&self) -> Value {
+        let answer = self.post("/e2e/window/minimize", b"");
+        serde_json::from_slice(&answer).expect("the answer is not JSON")
+    }
+
+    /// 最小化したウィンドウを元に戻して、そのあとの状態を返す。
+    pub fn restore(&self) -> Value {
+        let answer = self.post("/e2e/window/restore", b"");
+        serde_json::from_slice(&answer).expect("the answer is not JSON")
+    }
+
     pub fn state(&self) -> Value {
         let (status, body) = self.request("GET", "/e2e/state", b"");
         assert_eq!(status, STATUS_OK, "{}", String::from_utf8_lossy(&body));
