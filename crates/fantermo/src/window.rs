@@ -1428,7 +1428,7 @@ impl App {
 
     /// 確認を待っている依頼を見るよう、ウィンドウに知らせる。
     fn post_clipboard_prompt(&self) {
-        poster(self.hwnd, WM_APP_CLIPBOARD_PROMPT, WPARAM(0))();
+        post_or_warn(self.hwnd, WM_APP_CLIPBOARD_PROMPT, WPARAM(0));
     }
 
     /// いまのクリップボードの文字列を、端末 `id` のアプリへ答える。文字列がなければ空で答える。
@@ -3187,10 +3187,14 @@ fn grid_size(font: &Font, area: Area) -> GridSize {
 fn poster(hwnd: HWND, message: u32, wparam: WPARAM) -> impl Fn() + Send + Sync + 'static {
     // HWND はスレッドをまたいで渡せないので、値だけを持たせる。PostMessageW はどのスレッドからでも呼べる。
     let hwnd_value = hwnd.0 as isize;
-    move || {
-        if let Err(e) = post(HWND(hwnd_value as *mut _), message, wparam) {
-            warn_post_failed(message, &e);
-        }
+    move || post_or_warn(HWND(hwnd_value as *mut _), message, wparam)
+}
+
+/// `hwnd` に `message` を `wparam` を添えて積む。失敗は [`warn_post_failed`] で残す。どのスレッドから
+/// 呼んでもよい。
+fn post_or_warn(hwnd: HWND, message: u32, wparam: WPARAM) {
+    if let Err(e) = post(hwnd, message, wparam) {
+        warn_post_failed(message, &e);
     }
 }
 
@@ -3846,8 +3850,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         // 途中なので、積んであとで見る。
         WM_ENABLE => {
             if wparam.0 != 0 {
-                poster(hwnd, WM_APP_CLIPBOARD_PROMPT, WPARAM(0))();
-                poster(hwnd, WM_APP_LAUNCH, WPARAM(0))();
+                post_or_warn(hwnd, WM_APP_CLIPBOARD_PROMPT, WPARAM(0));
+                post_or_warn(hwnd, WM_APP_LAUNCH, WPARAM(0));
             }
             LRESULT(0)
         }
@@ -3865,7 +3869,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             if !accepted {
                 return LRESULT(0);
             }
-            poster(hwnd, WM_APP_LAUNCH, WPARAM(LAUNCH_ARRIVED))();
+            post_or_warn(hwnd, WM_APP_LAUNCH, WPARAM(LAUNCH_ARRIVED));
             LRESULT(instance::ACCEPTED)
         }
         WM_APP_LAUNCH => {
@@ -3879,8 +3883,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         // メニューを閉じたら、待っていた確認と起動を見直す。
         WM_EXITMENULOOP => {
-            poster(hwnd, WM_APP_CLIPBOARD_PROMPT, WPARAM(0))();
-            poster(hwnd, WM_APP_LAUNCH, WPARAM(0))();
+            post_or_warn(hwnd, WM_APP_CLIPBOARD_PROMPT, WPARAM(0));
+            post_or_warn(hwnd, WM_APP_LAUNCH, WPARAM(0));
             LRESULT(0)
         }
         // 知らせが続けて届くたびにタイマーを掛け直し、止んでから一度だけ読み直す。
