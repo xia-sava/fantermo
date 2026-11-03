@@ -14,7 +14,7 @@ use std::{
         process::CommandExt,
     },
     path::{Path, PathBuf},
-    process::{ChildStdin, ChildStdout, Command, Stdio},
+    process::{ChildStdout, Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -233,7 +233,8 @@ impl Drop for Bridge {
         if let Err(e) = self.send(&ToBridge::Quit) {
             tracing::debug!("the bridge has already stopped reading: {e}");
         }
-        // 書くためのスレッドは、書いている途中の単位を書き終えたら、残りを捨てて標準入力を閉じて抜ける。
+        // 書くためのスレッドは、書いている途中の単位を書き終えたら、残りを捨てて終了の依頼を書き、
+        // 標準入力を閉じて抜ける。
         // ブリッジはそれで子プロセスを終わらせて終わる。終わらなければ止める。
         self.input = None;
         let Some(process) = self.process.take() else {
@@ -529,24 +530,28 @@ fn encode(message: &ToBridge) -> Vec<u8> {
     protocol::encode(message).expect("データは MAX_PAYLOAD_LEN までに分けて送る")
 }
 
-/// `queued` の単位を標準入力に書く。チャネルが閉じるか `closing` が立ったら（破棄したら）標準入力を
-/// 閉じて抜ける。入力が遅い相手へ大きな貼り付けを流している途中でも、残りを待たずに閉じる。
-fn write_input(mut stdin: ChildStdin, queued: &mpsc::Receiver<Vec<u8>>, closing: &AtomicBool) {
+/// `queued` の単位を `stdin` に書く。チャネルが閉じたら抜ける。`closing` が立ったら（破棄したら）、
+/// 受け取った単位と残りは捨てて、終了の依頼を一度だけ書いて抜ける。入力が遅い相手へ大きな貼り付けを
+/// 流している途中でも、残りを待たずに閉じる。
+fn write_input(mut stdin: impl Write, queued: &mpsc::Receiver<Vec<u8>>, closing: &AtomicBool) {
     for bytes in queued {
-        if closing.load(Ordering::Relaxed) {
+        let closed = closing.load(Ordering::Relaxed);
+        let bytes = if closed {
+            encode(&ToBridge::Quit)
+        } else {
+            bytes
+        };
+        if let Err(e) = stdin.write_all(&bytes).and_then(|()| stdin.flush()) {
+            // ブリッジが終わったあと（終了の依頼を送るときなど）。
+            if e.kind() == io::ErrorKind::BrokenPipe {
+                tracing::debug!("the bridge has closed its input: {e}");
+            } else {
+                tracing::warn!("failed to write to the bridge: {e}");
+            }
             return;
         }
-        match stdin.write_all(&bytes).and_then(|()| stdin.flush()) {
-            Ok(()) => {}
-            // ブリッジが終わったあと（終了の依頼を送るときなど）。
-            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
-                tracing::debug!("the bridge has closed its input: {e}");
-                return;
-            }
-            Err(e) => {
-                tracing::warn!("failed to write to the bridge: {e}");
-                return;
-            }
+        if closed {
+            return;
         }
     }
 }
@@ -803,6 +808,46 @@ mod tests {
             protocol::encode_into(message, &mut out).unwrap();
         }
         out
+    }
+
+    fn read_all(mut written: &[u8]) -> Vec<ToBridge> {
+        let mut messages = Vec::new();
+        while let Some(message) = protocol::read_message(&mut written).unwrap() {
+            messages.push(message);
+        }
+        messages
+    }
+
+    #[test]
+    fn write_input_writes_data_then_only_quit_once_closing() {
+        let closing = AtomicBool::new(false);
+        let mut written = Vec::new();
+
+        let (sender, queued) = mpsc::channel();
+        sender
+            .send(encode(&ToBridge::Data(b"before".to_vec())))
+            .unwrap();
+        drop(sender);
+        write_input(&mut written, &queued, &closing);
+        assert_eq!(read_all(&written), [ToBridge::Data(b"before".to_vec())]);
+
+        written.clear();
+        closing.store(true, Ordering::Relaxed);
+        let (sender, queued) = mpsc::channel();
+        sender
+            .send(encode(&ToBridge::Data(b"after".to_vec())))
+            .unwrap();
+        sender
+            .send(encode(&ToBridge::Resize(window_size(GridSize {
+                cols: 80,
+                rows: 24,
+                cell_width_px: 8,
+                cell_height_px: 16,
+            }))))
+            .unwrap();
+        sender.send(encode(&ToBridge::Quit)).unwrap();
+        write_input(&mut written, &queued, &closing);
+        assert_eq!(read_all(&written), [ToBridge::Quit]);
     }
 
     #[test]
