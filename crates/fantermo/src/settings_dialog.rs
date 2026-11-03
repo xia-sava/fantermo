@@ -1439,8 +1439,8 @@ struct Controls {
 
 impl Controls {
     /// 数の入力欄。上下の矢印の配置と、矢印と入力の知らせの振り分けは、これを順に回す。入力の知らせに
-    /// 自前の処理を持つもの（既定の不透明度と項目の不透明度の入力欄）は、`dialog_proc` でこれを回す腕より
-    /// 上で受ける。
+    /// 自前の処理を持つもの（既定の不透明度と項目の不透明度の入力欄）は、`dialog_proc` でこれを回す分岐
+    /// より上で受ける。
     fn number_fields(&self) -> impl Iterator<Item = &dyn NumberInput> {
         [
             &self.size as &dyn NumberInput,
@@ -1454,7 +1454,7 @@ impl Controls {
     }
 
     /// ラジオボタンの組。押したときの知らせの振り分けは、これを順に回す。自前の処理を持つもの（項目の
-    /// 不透明度の「既定」と「指定」、配色）は、`dialog_proc` でこれを回す腕より上で受ける。
+    /// 不透明度の「既定」と「指定」、配色）は、`dialog_proc` でこれを回す分岐より上で受ける。
     fn radio_groups(&self) -> impl Iterator<Item = &dyn RadioInput> {
         [
             &self.wide_glyph as &dyn RadioInput,
