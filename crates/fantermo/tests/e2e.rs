@@ -156,6 +156,7 @@ fn tabs_open_switch_and_close() {
     server.press("ctrl+shift+t");
     let state = server.wait_until("three tabs", |state| tab_count(state) == 3);
     assert_eq!(state["active"], 2);
+    server.wait_text(CMD_PROMPT);
     server.press("ctrl+shift+w");
     let state = server.wait_until("two tabs again", |state| tab_count(state) == 2);
     assert_eq!(state["active"], 1);
@@ -5935,7 +5936,7 @@ fn the_keys_page_adds_changes_removes_and_resets_bindings() {
 
     // 足した組み合わせは端末で動く。
     server.press("ctrl+shift+n");
-    server.wait_until("two tabs", |state| tab_count(state) == 2);
+    wait_tabs(&server, 2);
     server.press("ctrl+shift+w");
     server.wait_until("one tab", |state| tab_count(state) == 1);
 
