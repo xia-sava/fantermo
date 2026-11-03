@@ -600,7 +600,7 @@ fn write_input(mut stdin: impl Write, queued: &mpsc::Receiver<Vec<u8>>, closing:
 /// `budget` の上限に達していれば、受け取られるまで待つ（[`send_all`]）。`closing` が立っていれば（破棄した
 /// あとなら）、閉じたことは知らせない。
 fn read_output(
-    stdout: ChildStdout,
+    mut stdout: ChildStdout,
     process: &OwnedHandle,
     closing: &AtomicBool,
     sender: &mpsc::Sender<Event>,
@@ -608,7 +608,8 @@ fn read_output(
     wake: &dyn Fn() -> bool,
 ) {
     let mut reader = OutputReader::default();
-    let closed = process::read_until_closed(stdout, READ_BUFFER_SIZE, "the bridge", |chunk| {
+    // stdout は、ブリッジの終了を待つ間も開いたままにし、この関数を抜けるときに閉じる。
+    let closed = process::read_until_closed(&mut stdout, READ_BUFFER_SIZE, "the bridge", |chunk| {
         let events = reader.push(chunk);
         let done = reader.done;
         send_all(sender, budget, events, wake);
