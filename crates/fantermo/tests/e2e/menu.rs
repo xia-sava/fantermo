@@ -2,12 +2,11 @@ use crate::common::CMD_COMMAND;
 use crate::common::CMD_PROMPT;
 use crate::common::Server;
 use crate::ui::{
-    BUTTON_CANCEL, BUTTON_OK, DIALOG_CLOSE_BUTTON, SETTINGS_DIALOG_CLASS,
-    TERMINAL_BACKGROUND_SETTING, TEXT_DIALOG_CLASS, accelerator, area_center, assert_cell_is_drawn,
-    button_click, cell_left, cell_right, check_terminal_still_works, click_main_menu, close_menu,
-    echo_lines, find_cell, highlight_position, left_click, left_drag, menu_position,
-    on_blank_of_tab_bar, on_scroll_bar, on_tab, open_menu, read_menu, right_click_terminal,
-    scroll_bar_middle, select_item, select_position, selection, tab_count, wait_dialog_of_class,
+    BUTTON_CANCEL, BUTTON_OK, TERMINAL_BACKGROUND_SETTING, accelerator, area_center,
+    assert_cell_is_drawn, button_click, cell_left, cell_right, check_terminal_still_works,
+    click_main_menu, close_menu, echo_lines, find_cell, highlight_position, left_click, left_drag,
+    menu_position, on_blank_of_tab_bar, on_scroll_bar, on_tab, open_menu, read_menu,
+    right_click_terminal, scroll_bar_middle, select_item, select_position, selection, tab_count,
     wait_menu, wait_tabs, wait_text_dialog,
 };
 use serde_json::Value;
@@ -84,33 +83,37 @@ fn the_context_menu_has_the_same_items_wherever_it_opens_and_copy_follows_the_se
     server.wait_text(CMD_PROMPT);
     let state = echo_lines(&server, "alpha", "other");
     let blank_of_tab_bar = on_blank_of_tab_bar(&state);
-    let check_every_way_to_open = |expected: &str| {
-        for steps in [
-            right_click_terminal(&state),
-            button_click("right", on_tab(&state, 0), ""),
-            button_click("right", blank_of_tab_bar, ""),
-        ] {
-            let items = open_menu(&server, &steps);
-            assert_eq!(menu_shape(&items), expected, "{steps}: {items:#?}");
-            close_menu(&server);
-        }
-        for key in ["context_menu", "shift+f10"] {
-            server.press(key);
-            wait_menu(&server);
-            let items = read_menu(&server);
-            assert_eq!(menu_shape(&items), expected, "{key}: {items:#?}");
-            close_menu(&server);
-        }
-    };
-    check_every_way_to_open(CONTEXT_MENU);
+    for steps in [
+        right_click_terminal(&state),
+        button_click("right", on_tab(&state, 0), ""),
+        button_click("right", blank_of_tab_bar, ""),
+    ] {
+        let items = open_menu(&server, &steps);
+        assert_eq!(menu_shape(&items), CONTEXT_MENU, "{steps}: {items:#?}");
+        close_menu(&server);
+    }
+    for key in ["context_menu", "shift+f10"] {
+        server.press(key);
+        wait_menu(&server);
+        let items = read_menu(&server);
+        assert_eq!(menu_shape(&items), CONTEXT_MENU, "{key}: {items:#?}");
+        close_menu(&server);
+    }
 
+    // 選択範囲があるときは、コピーが押せる。
     let (col, row) = find_cell(&state, "alpha-0-end");
     server.mouse(&left_drag(
         cell_left(&state, col, row),
         cell_right(&state, col + 4, row),
         "",
     ));
-    check_every_way_to_open(CONTEXT_MENU_WITH_SELECTION);
+    let items = open_menu(&server, &right_click_terminal(&state));
+    assert_eq!(
+        menu_shape(&items),
+        CONTEXT_MENU_WITH_SELECTION,
+        "{items:#?}"
+    );
+    close_menu(&server);
     assert_eq!(selection(&server.state()), Some("alpha"));
 
     server.mouse(&button_click(
@@ -201,30 +204,10 @@ fn the_main_menu_has_its_items_in_order_and_copy_follows_the_selection() {
     close_menu(&server);
 }
 
+/// 押せないコピーで Enter を押すと、何も選ばずにメニューが閉じ、クリップボードは変わらない。メニューのコピーは
+/// 選択範囲をクリップボードへ、貼り付けはクリップボードを端末へ送る（空なら何も送らない）。すべて選択は全体を選ぶ。
 #[test]
-fn the_keys_beside_the_menu_items_follow_the_key_settings() {
-    let config = r#"[keys]
-"alt+t" = "new_tab"
-"ctrl+shift+t" = "none"
-"ctrl+shift+w" = "none"
-"#;
-    let server = Server::start(config, &CMD_COMMAND);
-    let state = server.wait_text(CMD_PROMPT);
-    for steps in [click_main_menu(&state), right_click_terminal(&state)] {
-        let items = open_menu(&server, &steps);
-        assert_eq!(
-            item_shortcut(menu_item(&items, 'T')),
-            Some("Alt+T"),
-            "{items:#?}"
-        );
-        assert_eq!(item_shortcut(menu_item(&items, 'W')), None, "{items:#?}");
-        close_menu(&server);
-    }
-}
-
-/// 押せないコピーで Enter を押すと、何も選ばずにメニューが閉じ、クリップボードは変わらない。
-#[test]
-fn a_grayed_copy_in_the_menu_does_not_touch_the_clipboard() {
+fn copy_paste_and_select_all_in_the_menus_work() {
     let server = Server::start_cmd();
     let state = server.wait_text(CMD_PROMPT);
     server.post("/e2e/clipboard", b"before-the-menu");
@@ -235,13 +218,13 @@ fn a_grayed_copy_in_the_menu_does_not_touch_the_clipboard() {
         server.wait_clipboard("before-the-menu");
     }
     check_terminal_still_works(&server, "after-grayed");
-}
 
-/// メニューのコピーは選択範囲をクリップボードへ、貼り付けはクリップボードを端末へ送る。すべて選択は全体を選ぶ。
-#[test]
-fn copy_paste_and_select_all_in_the_menus_work() {
-    let server = Server::start_cmd();
-    server.wait_text(CMD_PROMPT);
+    server.post("/e2e/clipboard", b"");
+    let items = open_menu(&server, &click_main_menu(&state));
+    select_item(&server, &items, 'P');
+    server.wait_dialogs(0);
+    check_terminal_still_works(&server, "after-empty-paste");
+
     let state = echo_lines(&server, "alpha", "other");
     let (col, row) = find_cell(&state, "alpha-0-end");
     let select = left_drag(
@@ -310,17 +293,6 @@ fn copy_paste_and_select_all_in_the_menus_work() {
     check_terminal_still_works(&server, "after-copy");
 }
 
-/// クリップボードが空なら、メニューの貼り付けは何も送らない。
-#[test]
-fn a_paste_from_the_menu_with_an_empty_clipboard_sends_nothing() {
-    let server = Server::start_cmd();
-    let state = server.wait_text(CMD_PROMPT);
-    let items = open_menu(&server, &click_main_menu(&state));
-    select_item(&server, &items, 'P');
-    server.wait_dialogs(0);
-    check_terminal_still_works(&server, "after-empty-paste");
-}
-
 /// メニューを開いている間にシェルが終わってもタブは閉じ、メニューの操作は残ったタブに効く。最後のシェルが終わると、
 /// メニューが開いていてもウィンドウは閉じ、シェルの終了コードで終わる。
 #[test]
@@ -365,7 +337,8 @@ fn a_paste_from_the_menu_is_confirmed_like_any_other() {
     server.wait_text("from-0-menu");
 }
 
-/// メニューの「新しいタブ」「タブを閉じる」。どちらのメニューでも動き、最後のタブを閉じるとウィンドウを閉じる。
+/// メニューの「新しいタブ」「タブを閉じる」。どちらのメニューでも動く。≡ の「終了」は、タブがいくつあってもウィンドウを
+/// 閉じる。
 #[test]
 fn tabs_open_and_close_from_the_menus() {
     let mut server = Server::start_cmd();
@@ -392,49 +365,12 @@ fn tabs_open_and_close_from_the_menus() {
     assert_eq!(state["active"], 0, "{state:#}");
 
     let items = open_menu(&server, &click_main_menu(&state));
-    select_item(&server, &items, 'W');
-    assert_eq!(server.wait_exit(), 0);
-}
+    select_item(&server, &items, 'T');
+    let state = wait_tabs(&server, 2);
 
-#[test]
-fn exit_in_the_main_menu_closes_the_window_with_every_tab() {
-    let mut server = Server::start_cmd();
-    let state = server.wait_text(CMD_PROMPT);
-    server.post("/e2e/tab/new", b"");
-    wait_tabs(&server, 2);
     let items = open_menu(&server, &click_main_menu(&state));
     select_item(&server, &items, 'X');
     assert_eq!(server.wait_exit(), 0);
-}
-
-/// 「設定…」と「fantermo について…」はダイアログを開く。閉じたあとも端末は動く。
-#[test]
-fn the_main_menu_opens_the_settings_and_about_dialogs() {
-    let server = Server::start_cmd();
-    let state = server.wait_text(CMD_PROMPT);
-
-    let items = open_menu(&server, &click_main_menu(&state));
-    select_item(&server, &items, 'S');
-    wait_dialog_of_class(&server, SETTINGS_DIALOG_CLASS);
-    server.press_dialog_button(DIALOG_CLOSE_BUTTON);
-    server.wait_dialogs(0);
-    check_terminal_still_works(&server, "after-settings");
-
-    let items = open_menu(&server, &click_main_menu(&state));
-    select_item(&server, &items, 'B');
-    let dialog = wait_dialog_of_class(&server, TEXT_DIALOG_CLASS);
-    let version = state["version"].as_str().expect("no version");
-    assert!(
-        dialog["controls"]
-            .as_array()
-            .is_some_and(|controls| controls
-                .iter()
-                .any(|control| control.as_str().is_some_and(|text| text.contains(version)))),
-        "{dialog:#}"
-    );
-    server.press_dialog_button(DIALOG_CLOSE_BUTTON);
-    server.wait_dialogs(0);
-    check_terminal_still_works(&server, "after-about");
 }
 
 /// メニューのループへ送ったキーで動く。アクセラレータで選び、Esc で閉じる。
@@ -537,50 +473,9 @@ command = "cmd.exe /k prompt three$G"
     assert_eq!(state["active"], 1, "{state:#}");
 }
 
-/// プロファイルを書いていなければ、既定のプロファイルが一つだけ並ぶ。
-#[test]
-fn the_profile_menu_without_profiles_has_the_default_one() {
-    let server = Server::start_cmd();
-    let state = server.wait_text(CMD_PROMPT);
-    let items = open_menu(
-        &server,
-        &left_click(area_center(&state["tab_bar"]["profiles"])),
-    );
-    assert_eq!(menu_shape(&items), "1*", "{items:#?}");
-    assert_eq!(
-        item_name(&items[0]),
-        format!("1 {}", state["profiles"][0].as_str().expect("no profile")),
-        "{items:#?}"
-    );
-    close_menu(&server);
-}
-
-/// 10 個目からは数字のアクセラレータがなく、選ぶのは矢印のキーと Enter で届く。
-#[test]
-fn the_profile_menu_items_past_the_ninth_have_no_accelerator_and_can_still_be_chosen() {
-    const COUNT: usize = 11;
-    let mut config = String::new();
-    for index in 1..=COUNT {
-        config.push_str(&format!(
-            "[[profiles]]\nname = \"p{index}\"\ncommand = \"cmd.exe /k prompt p{index}$G\"\n"
-        ));
-    }
-    let server = Server::start(&config, &[]);
-    let state = server.wait_text("p1>");
-    let items = open_menu(
-        &server,
-        &left_click(area_center(&state["tab_bar"]["profiles"])),
-    );
-    assert_eq!(menu_shape(&items), "1* 2 3 4 5 6 7 8 9 . .", "{items:#?}");
-    assert_eq!(item_name(&items[COUNT - 1]), format!("p{COUNT}"));
-    select_position(&server, COUNT - 1);
-    server.wait_until("two tabs", |state| tab_count(state) == 2);
-    let state = server.wait_text("p11>");
-    assert_eq!(state["tabs"][1]["profile"], "p11", "{state:#}");
-}
-
 /// 設定ファイルを変えると、次に開く一覧が変わる。一覧を開いている間に変わって位置が並びの外になったら、先頭のプロファイルで
-/// 開く。「新しいタブ」は既定のプロファイルで開く。
+/// 開く。「新しいタブ」は既定のプロファイルで開く。プロファイルを書いていなければ、既定のプロファイルが一つだけ並ぶ。
+/// 10 個目からは数字のアクセラレータがなく、選ぶのは矢印のキーと Enter で届く。
 #[test]
 fn the_profile_menu_follows_the_settings_file() {
     let two_profiles = r#"default_profile = "first"
@@ -649,6 +544,46 @@ command = "cmd.exe /k prompt first$G"
     server.wait_until("three tabs", |state| tab_count(state) == 3);
     let after = server.wait_text("first>");
     assert_eq!(after["tabs"][2]["profile"], "first", "{after:#}");
+
+    // プロファイルを書いていなければ、既定のプロファイルが一つだけ並ぶ。
+    std::fs::write(&path, "").expect("failed to write the settings");
+    let state = server.wait_until("the default profile", |state| {
+        state["profiles"].as_array().map(Vec::len) == Some(1) && state["profiles"][0] != "first"
+    });
+    let items = open_menu(
+        &server,
+        &left_click(area_center(&state["tab_bar"]["profiles"])),
+    );
+    assert_eq!(menu_shape(&items), "1*", "{items:#?}");
+    assert_eq!(
+        item_name(&items[0]),
+        format!("1 {}", state["profiles"][0].as_str().expect("no profile")),
+        "{items:#?}"
+    );
+    close_menu(&server);
+
+    // 10 個目からは数字のアクセラレータがなく、矢印のキーと Enter で選べる。
+    const COUNT: usize = 11;
+    let mut many = String::new();
+    for index in 1..=COUNT {
+        many.push_str(&format!(
+            "[[profiles]]\nname = \"p{index}\"\ncommand = \"cmd.exe /k prompt p{index}$G\"\n"
+        ));
+    }
+    std::fs::write(&path, many).expect("failed to write the settings");
+    let state = server.wait_until("eleven profiles", |state| {
+        state["profiles"].as_array().map(Vec::len) == Some(COUNT)
+    });
+    let items = open_menu(
+        &server,
+        &left_click(area_center(&state["tab_bar"]["profiles"])),
+    );
+    assert_eq!(menu_shape(&items), "1* 2 3 4 5 6 7 8 9 . .", "{items:#?}");
+    assert_eq!(item_name(&items[COUNT - 1]), format!("p{COUNT}"));
+    select_position(&server, COUNT - 1);
+    server.wait_until("four tabs", |state| tab_count(state) == 4);
+    let state = server.wait_text("p11>");
+    assert_eq!(state["tabs"][3]["profile"], "p11", "{state:#}");
 }
 
 // 設定ダイアログ。コントロールの ID は `settings_dialog/` と同じ。

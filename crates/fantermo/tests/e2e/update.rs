@@ -242,6 +242,11 @@ fn the_update_button_is_grayed_unless_installed_by_the_installer() {
         &dialog_text(&dialog),
         "インストーラでインストールした場合にのみ",
     );
+    let version = server.state()["version"]
+        .as_str()
+        .expect("no version")
+        .to_owned();
+    assert_contains(&dialog_text(&dialog), &version);
     assert!(!control_enabled(&server, ID_CHECK_UPDATE));
     let (status, _) = server.request("POST", &format!("/e2e/dialog/click/{ID_CHECK_UPDATE}"), b"");
     assert_eq!(status, 400);
