@@ -57,7 +57,7 @@ use crate::{
     image_decoder::{Decoded, Decoder, MAX_TEXTURE_SIDE},
     paint::{Area, Paint},
     pipeline::{CellPipeline, DrawList, Instance, InstanceKind},
-    tab_icon::{self, TabIcon},
+    tab_icon::{Generator, TabIcon},
     ui_font::UiFont,
 };
 
@@ -105,6 +105,8 @@ pub struct Renderer {
     images: HashMap<PathBuf, ImageTexture>,
     /// 端末の中の画像。テクスチャを作れなかったものは `None` で覚え、作り直さない。
     terminal_images: ImageCache<Option<ImageTexture>>,
+    /// タブのアイコンのピクセルを作るもの。初めて作るときに作る。
+    tab_icon_generator: Option<Generator>,
     /// タブのアイコンと一辺ごとのテクスチャ。作れなかったものは `None` で覚え、作り直さない。
     tab_icons: HashMap<(TabIcon, u32), Option<ImageTexture>>,
     /// 前のフレームでアトラスに入らず飛ばした数。0 は全部入った。
@@ -229,6 +231,7 @@ impl Renderer {
             decoder: None,
             images: HashMap::new(),
             terminal_images: ImageCache::new(TERMINAL_IMAGE_TEXTURE_LIMIT),
+            tab_icon_generator: None,
             tab_icons: HashMap::new(),
             skipped_last_frame: 0,
         };
@@ -645,43 +648,13 @@ impl Renderer {
     /// タブのアイコン `icon` の一辺 `side` のピクセル。画像が読めなければ、警告して自動で作る。自動で作るときは、
     /// 本物のアイコンを読めればそれを背景の正方形に載せ、読めなければ自前の絵を描く。
     pub fn tab_icon_pixels(&mut self, icon: &TabIcon, side: u32) -> windows::core::Result<Decoded> {
-        let decoder = match &self.decoder {
-            Some(decoder) => decoder,
-            None => self.decoder.insert(Decoder::new()?),
+        let generator = match &self.tab_icon_generator {
+            Some(generator) => generator,
+            None => self
+                .tab_icon_generator
+                .insert(Generator::new(self.atlas.dwrite())?),
         };
-        if let Some(path) = &icon.image {
-            match decoder.decode_icon(path, side) {
-                Ok(decoded) => {
-                    tracing::info!("loaded the tab icon {} at {side} px", path.display());
-                    return Ok(decoded);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "failed to read the tab icon {}, generating one: {e}",
-                        path.display()
-                    );
-                }
-            }
-        }
-        let picture_side = tab_icon::picture_side(side, icon.initial.is_some());
-        let picture = icon.real.as_ref().and_then(|real| {
-            decoder
-                .decode_real_icon(real, picture_side)
-                .inspect_err(|e| {
-                    tracing::warn!("failed to read the icon {real:?}, drawing one: {e}");
-                })
-                .ok()
-        });
-        let (factory, dwrite, family) = self.atlas.tab_icon_resources();
-        let font = tab_icon::InitialFont { dwrite, family };
-        tab_icon::draw_generated(
-            decoder.factory(),
-            factory,
-            &font,
-            icon,
-            picture.as_ref(),
-            side,
-        )
+        generator.pixels(icon, side, self.atlas.ui_font_family())
     }
 
     /// 作ったタブのアイコンのうち、`keep` が偽のものを捨てる。

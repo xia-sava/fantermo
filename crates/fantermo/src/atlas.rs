@@ -312,10 +312,14 @@ impl GlyphAtlas {
         (self.side, self.side)
     }
 
-    /// タブのアイコンを描くのに使う、Direct2D のファクトリと、DirectWrite のファクトリと、UI のフォントの
-    /// 書体の名前。
-    pub fn tab_icon_resources(&self) -> (&ID2D1Factory1, &IDWriteFactory, &str) {
-        (&self.factory, &self.dwrite, &self.ui_font.family)
+    /// DirectWrite のファクトリ。
+    pub fn dwrite(&self) -> &IDWriteFactory {
+        &self.dwrite
+    }
+
+    /// UI のフォントの書体の名前。
+    pub fn ui_font_family(&self) -> &str {
+        &self.ui_font.family
     }
 
     /// 覚えている場所を捨て、テクスチャを空にする。

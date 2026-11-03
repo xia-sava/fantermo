@@ -26,11 +26,11 @@ use windows::{
                     D2D1_PIXEL_FORMAT,
                 },
                 D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_BITMAP_PROPERTIES,
-                D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_FEATURE_LEVEL_DEFAULT,
-                D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-                D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
-                D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, ID2D1Factory1, ID2D1RenderTarget,
-                ID2D1SolidColorBrush,
+                D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+                D2D1_FEATURE_LEVEL_DEFAULT, D2D1_RENDER_TARGET_PROPERTIES,
+                D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
+                D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, D2D1CreateFactory, ID2D1Factory1,
+                ID2D1RenderTarget, ID2D1SolidColorBrush,
             },
             DirectWrite::{
                 DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD, IDWriteFactory,
@@ -50,7 +50,7 @@ use crate::{
     atlas,
     boxdraw::{Shape, arc},
     bridge, font,
-    image_decoder::Decoded,
+    image_decoder::{Decoded, Decoder},
 };
 
 /// プロファイル名から選ぶ背景の色。青・水色・青緑・緑・藍・紫の淡い色で、警告に使う赤・橙・黄は入れない。
@@ -357,7 +357,7 @@ fn picture_square(size: f32, has_initial: bool) -> Square {
 }
 
 /// 一辺 `size` のアイコンの中の、絵の一辺。
-pub fn picture_side(size: u32, has_initial: bool) -> u32 {
+fn picture_side(size: u32, has_initial: bool) -> u32 {
     picture_square(size as f32, has_initial).side as u32
 }
 
@@ -474,15 +474,79 @@ fn penguin_shapes(side: f32) -> Vec<(Ink, Shape)> {
     ]
 }
 
+/// タブのアイコンのピクセルを作るもの。画像のファイルと本物のアイコンを WIC で読み、自動で作る絵を
+/// Direct2D で描く。Direct3D のデバイスは使わない。COM を初期化したスレッドで作って使う。
+pub struct Generator {
+    decoder: Decoder,
+    d2d: ID2D1Factory1,
+    dwrite: IDWriteFactory,
+}
+
+impl Generator {
+    pub fn new(dwrite: &IDWriteFactory) -> windows::core::Result<Self> {
+        // SAFETY: 既定の設定でファクトリを作るだけ。
+        let d2d = unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
+        Ok(Self {
+            decoder: Decoder::new()?,
+            d2d,
+            dwrite: dwrite.clone(),
+        })
+    }
+
+    /// `icon` の一辺 `side` のピクセル。頭文字は書体 `family` で描く。画像が読めなければ、警告して自動で作る。
+    /// 自動で作るときは、本物のアイコンを読めればそれを背景の正方形に載せ、読めなければ自前の絵を描く。
+    pub fn pixels(
+        &self,
+        icon: &TabIcon,
+        side: u32,
+        family: &str,
+    ) -> windows::core::Result<Decoded> {
+        if let Some(path) = &icon.image {
+            match self.decoder.decode_icon(path, side) {
+                Ok(decoded) => {
+                    tracing::info!("loaded the tab icon {} at {side} px", path.display());
+                    return Ok(decoded);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to read the tab icon {}, generating one: {e}",
+                        path.display()
+                    );
+                }
+            }
+        }
+        let picture = icon.real.as_ref().and_then(|real| {
+            self.decoder
+                .decode_real_icon(real, picture_side(side, icon.initial.is_some()))
+                .inspect_err(|e| {
+                    tracing::warn!("failed to read the icon {real:?}, drawing one: {e}");
+                })
+                .ok()
+        });
+        let font = InitialFont {
+            dwrite: &self.dwrite,
+            family,
+        };
+        draw_generated(
+            self.decoder.factory(),
+            &self.d2d,
+            &font,
+            icon,
+            picture.as_ref(),
+            side,
+        )
+    }
+}
+
 /// 頭文字を組む書体。
-pub struct InitialFont<'a> {
-    pub dwrite: &'a IDWriteFactory,
-    pub family: &'a str,
+struct InitialFont<'a> {
+    dwrite: &'a IDWriteFactory,
+    family: &'a str,
 }
 
 /// `icon` の画像を使わない形の絵を、一辺 `size` ピクセルの乗算済みアルファの BGRA に描く。`picture` は読んだ
 /// 本物のアイコン（一辺は [`picture_side`]）で、なければ接続方式の絵を描く。
-pub fn draw_generated(
+fn draw_generated(
     wic: &IWICImagingFactory,
     factory: &ID2D1Factory1,
     font: &InitialFont,
