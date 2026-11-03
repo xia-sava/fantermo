@@ -1,6 +1,8 @@
+use crate::common::CMD_COMMAND;
+use crate::common::CMD_PROMPT;
 use crate::common::Server;
 use crate::ui::{
-    BUTTON_CANCEL, BUTTON_OK, CMD_COMMAND, CMD_PROMPT, DIALOG_CLOSE_BUTTON, SETTINGS_DIALOG_CLASS,
+    BUTTON_CANCEL, BUTTON_OK, DIALOG_CLOSE_BUTTON, SETTINGS_DIALOG_CLASS,
     TERMINAL_BACKGROUND_SETTING, TEXT_DIALOG_CLASS, accelerator, area_center, assert_cell_is_drawn,
     button_click, cell_left, cell_right, check_terminal_still_works, click_main_menu, close_menu,
     echo_lines, find_cell, highlight_position, left_click, left_drag, menu_position, on_scroll_bar,

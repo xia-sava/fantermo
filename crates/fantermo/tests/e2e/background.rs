@@ -1,8 +1,10 @@
+use crate::common::CMD_COMMAND;
+use crate::common::CMD_PROMPT;
 use crate::common::Server;
 use crate::ui::{
-    BAND_BOTTOM, BAND_HEIGHT, BAND_TOP, BANDS_IMAGE, BANDS_SIDE, BackdropArea, CMD_COMMAND,
-    CMD_PROMPT, DPI_100_PERCENT, DPI_150_PERCENT, DPI_200_PERCENT, MIDDLE_LEFT, MIDDLE_RIGHT,
-    TERMINAL_BACKGROUND, TERMINAL_BACKGROUND_SETTING, bands_color, bands_image, change_dpi, number,
+    BAND_BOTTOM, BAND_HEIGHT, BAND_TOP, BANDS_IMAGE, BANDS_SIDE, BackdropArea, DPI_100_PERCENT,
+    DPI_150_PERCENT, DPI_200_PERCENT, MIDDLE_LEFT, MIDDLE_RIGHT, TERMINAL_BACKGROUND,
+    TERMINAL_BACKGROUND_SETTING, bands_color, bands_image, change_dpi, number,
     over_terminal_background, scroll_bar_edge, solid_image, start_uneven_with_setup,
     start_with_background, tab_count, wait_pixels,
 };

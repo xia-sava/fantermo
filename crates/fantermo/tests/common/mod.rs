@@ -38,6 +38,12 @@ use windows::{
     core::HSTRING,
 };
 
+/// `cmd.exe` を [`CMD_PROMPT`] のプロンプトで起動する引数。
+pub const CMD_COMMAND: [&str; 4] = ["cmd.exe", "/k", "prompt", "e2e$G"];
+
+/// [`CMD_COMMAND`] のプロンプト。
+pub const CMD_PROMPT: &str = "e2e>";
+
 /// テストの実行ファイルごとの、起動の連番。
 static SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
@@ -316,9 +322,9 @@ impl Server {
         self.dir.join("port").exists()
     }
 
-    /// 既定の設定で、`cmd.exe` をプロンプト `e2e>` で起動する。
+    /// 既定の設定で、`cmd.exe` をプロンプト [`CMD_PROMPT`] で起動する。
     pub fn start_cmd() -> Self {
-        Self::start("", &["cmd.exe", "/k", "prompt", "e2e$G"])
+        Self::start("", &CMD_COMMAND)
     }
 
     /// 既定の設定で、PowerShell を起動する。

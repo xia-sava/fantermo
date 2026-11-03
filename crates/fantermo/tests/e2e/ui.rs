@@ -1,4 +1,6 @@
 use crate::common;
+use crate::common::CMD_COMMAND;
+use crate::common::CMD_PROMPT;
 use crate::common::Server;
 use fantermo_core::state;
 use fantermo_core::state::State;
@@ -10,9 +12,6 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
-
-/// `Server::start_cmd` のプロンプト。
-pub const CMD_PROMPT: &str = "e2e>";
 
 /// Cygwin の `sleep` が動き出す、または終わるのを待つ上限。
 pub const CYGWIN_SLEEP_TIMEOUT: Duration = Duration::from_secs(60);
@@ -168,9 +167,6 @@ pub fn cell_pixel(state: &Value, col: u32, row: u32, dx: u32, dy: u32) -> (u32, 
         at("terminal_y", "cell_height", row, dy),
     )
 }
-
-/// `cmd.exe` を [`CMD_PROMPT`] のプロンプトで起動する引数。
-pub const CMD_COMMAND: [&str; 4] = ["cmd.exe", "/k", "prompt", "e2e$G"];
 
 /// 状態のファイルの `[window]`。ファイルがなかったり読めなければ失敗にする。
 #[track_caller]

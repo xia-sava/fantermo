@@ -1,9 +1,11 @@
+use crate::common::CMD_COMMAND;
+use crate::common::CMD_PROMPT;
 use crate::common::Server;
 use crate::common::processes;
 use crate::ui::{
-    CMD_COMMAND, CMD_LONG_COMMAND, CMD_LONG_PROCESS, CMD_PROMPT, SH_LONG_COMMAND, current_window,
-    cygwin_config, quit, saved_window, start_with_state, tab_count, unique_sleep_seconds,
-    wait_cmd_ready, wait_cygwin_sleep, wait_sh_ready, wait_text_dialog, wsl_config,
+    CMD_LONG_COMMAND, CMD_LONG_PROCESS, SH_LONG_COMMAND, current_window, cygwin_config, quit,
+    saved_window, start_with_state, tab_count, unique_sleep_seconds, wait_cmd_ready,
+    wait_cygwin_sleep, wait_sh_ready, wait_text_dialog, wsl_config,
 };
 
 /// ログオフの問い合わせ（`WM_QUERYENDSESSION`）と、その結果の知らせ（`WM_ENDSESSION`）の名前。

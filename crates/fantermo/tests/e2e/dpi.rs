@@ -1,11 +1,13 @@
 use crate::common;
+use crate::common::CMD_COMMAND;
+use crate::common::CMD_PROMPT;
 use crate::common::Server;
 use crate::ui::{
-    BAND_BOTTOM, BAND_HEIGHT, BAND_TOP, BANDS_IMAGE, BANDS_SIDE, BackdropArea, CMD_COMMAND,
-    CMD_PROMPT, DPI_100_PERCENT, DPI_150_PERCENT, DPI_200_PERCENT, DRAG_PIXELS, INK_DIFFERENCE,
-    MIDDLE_LEFT, MIDDLE_RIGHT, ONE_PROFILE, PAGE_APPEARANCE, PICTURE_POLL_INTERVAL,
-    PICTURE_TIMEOUT, Point, TERMINAL_BACKGROUND, TERMINAL_BACKGROUND_SETTING, UNEVEN_WINDOW,
-    area_center, assert_cell_is_drawn, assert_controls_fit, assert_layout_fits_the_client,
+    BAND_BOTTOM, BAND_HEIGHT, BAND_TOP, BANDS_IMAGE, BANDS_SIDE, BackdropArea, DPI_100_PERCENT,
+    DPI_150_PERCENT, DPI_200_PERCENT, DRAG_PIXELS, INK_DIFFERENCE, MIDDLE_LEFT, MIDDLE_RIGHT,
+    ONE_PROFILE, PAGE_APPEARANCE, PICTURE_POLL_INTERVAL, PICTURE_TIMEOUT, Point,
+    TERMINAL_BACKGROUND, TERMINAL_BACKGROUND_SETTING, UNEVEN_WINDOW, area_center,
+    assert_cell_is_drawn, assert_controls_fit, assert_layout_fits_the_client,
     assert_the_shell_sees_the_grid, blend, cell_center, cell_left, cell_pixel, cell_right,
     change_dpi, check_terminal_still_works, click_main_menu, close_menu, color_is_close,
     current_window, fill_scrollback, find_cell, left_click, left_drag, newest_offset, number,

@@ -1,9 +1,11 @@
 use crate::common;
+use crate::common::CMD_COMMAND;
+use crate::common::CMD_PROMPT;
 use crate::common::Server;
 use crate::ui::{
-    BAND_BOTTOM, BAND_TOP, BANDS_IMAGE, BUTTON_CANCEL, BackdropArea, CMD_COMMAND, CMD_PROMPT,
-    EMPTY_COL, EMPTY_ROWS_BELOW, ID_CANCEL, ID_NO, ID_OK, ID_YES, MENU_POLL_INTERVAL, MENU_TIMEOUT,
-    ONE_PROFILE, PAGE_APPEARANCE, SETTINGS_DIALOG_CLASS, SYSTEM_DIALOG_CLASS, TERMINAL_BACKGROUND,
+    BAND_BOTTOM, BAND_TOP, BANDS_IMAGE, BUTTON_CANCEL, BackdropArea, EMPTY_COL, EMPTY_ROWS_BELOW,
+    ID_CANCEL, ID_NO, ID_OK, ID_YES, MENU_POLL_INTERVAL, MENU_TIMEOUT, ONE_PROFILE,
+    PAGE_APPEARANCE, SETTINGS_DIALOG_CLASS, SYSTEM_DIALOG_CLASS, TERMINAL_BACKGROUND,
     TEXT_DIALOG_CLASS, assert_cell_is_drawn, assert_controls_fit, assert_layout_fits_the_client,
     cell_pixel, check_terminal_still_works, click, close_message_box, config_path, control,
     control_enabled, current_window, dialog_text, find_cell, number, number_of, open_settings,

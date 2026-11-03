@@ -1,7 +1,9 @@
+use crate::common::CMD_COMMAND;
+use crate::common::CMD_PROMPT;
 use crate::common::Server;
 use crate::ui::{
-    BUTTON_CANCEL, BUTTON_OK, CMD_COMMAND, CMD_PROMPT, check_terminal_still_works, control, number,
-    read_controls, wait_text_dialog,
+    BUTTON_CANCEL, BUTTON_OK, check_terminal_still_works, control, number, read_controls,
+    wait_text_dialog,
 };
 use serde_json::Value;
 
@@ -30,7 +32,7 @@ fn paste_commands(bytes: usize, tail: &str) -> String {
 
 #[test]
 fn a_paste_just_under_the_size_is_not_confirmed() {
-    let server = Server::start(PASTE_NEVER_CONFIRMS, &["cmd.exe", "/k", "prompt", "e2e$G"]);
+    let server = Server::start(PASTE_NEVER_CONFIRMS, &CMD_COMMAND);
     server.wait_text(CMD_PROMPT);
     server.paste(&paste_commands(DEFAULT_PASTE_CONFIRM_BYTES - 1, "small"));
     let state = server.wait_text("marker-0-small");
@@ -39,7 +41,7 @@ fn a_paste_just_under_the_size_is_not_confirmed() {
 
 #[test]
 fn a_paste_of_the_size_is_confirmed_and_can_be_cancelled() {
-    let server = Server::start(PASTE_NEVER_CONFIRMS, &["cmd.exe", "/k", "prompt", "e2e$G"]);
+    let server = Server::start(PASTE_NEVER_CONFIRMS, &CMD_COMMAND);
     server.wait_text(CMD_PROMPT);
 
     server.paste(&paste_commands(DEFAULT_PASTE_CONFIRM_BYTES, "cancelled"));
@@ -163,7 +165,7 @@ fn the_text_dialog_follows_a_dpi_change() {
 #[test]
 fn a_large_paste_is_not_confirmed_when_the_size_is_zero() {
     let config = format!("{PASTE_NEVER_CONFIRMS}confirm_size = 0\n");
-    let server = Server::start(&config, &["cmd.exe", "/k", "prompt", "e2e$G"]);
+    let server = Server::start(&config, &CMD_COMMAND);
     server.wait_text(CMD_PROMPT);
     server.paste(&paste_commands(4 * DEFAULT_PASTE_CONFIRM_BYTES, "large"));
     let state = server.wait_text("marker-0-large");
@@ -172,10 +174,7 @@ fn a_large_paste_is_not_confirmed_when_the_size_is_zero() {
 
 #[test]
 fn a_paste_with_newlines_is_confirmed_when_the_setting_asks_for_it() {
-    let server = Server::start(
-        "[paste]\nconfirm = \"multiline\"\n",
-        &["cmd.exe", "/k", "prompt", "e2e$G"],
-    );
+    let server = Server::start("[paste]\nconfirm = \"multiline\"\n", &CMD_COMMAND);
     server.wait_text(CMD_PROMPT);
     server.paste("echo multi-%ERRORLEVEL%-line\n");
     let controls = wait_text_dialog(&server);

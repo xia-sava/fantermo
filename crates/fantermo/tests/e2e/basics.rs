@@ -1,5 +1,7 @@
+use crate::common::CMD_COMMAND;
+use crate::common::CMD_PROMPT;
 use crate::common::Server;
-use crate::ui::{CMD_PROMPT, cygwin_config, number, tab_count, wsl_config};
+use crate::ui::{cygwin_config, number, tab_count, wsl_config};
 use std::io::Cursor;
 use std::path::PathBuf;
 
@@ -153,7 +155,7 @@ const MINIMIZED_PADDING: u64 = 40;
 /// 新しい余白とフォントで決め直す。
 #[test]
 fn minimizing_the_window_keeps_the_grid() {
-    let server = Server::start("[font]\nsize = 10\n", &["cmd.exe", "/k", "prompt", "e2e$G"]);
+    let server = Server::start("[font]\nsize = 10\n", &CMD_COMMAND);
     server.wait_text(CMD_PROMPT);
     server.resize(87, 23);
     let before = server.state();
@@ -347,7 +349,7 @@ command = "cmd.exe /k prompt two$G"
 
 #[test]
 fn the_settings_are_read_again_when_the_file_changes() {
-    let server = Server::start("[font]\nsize = 10\n", &["cmd.exe", "/k", "prompt", "e2e$G"]);
+    let server = Server::start("[font]\nsize = 10\n", &CMD_COMMAND);
     let state = server.wait_text(CMD_PROMPT);
     let before = number(&state["cell_height"]);
     let path = server.dir().join("config.toml");

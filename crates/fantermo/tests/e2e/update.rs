@@ -1,4 +1,6 @@
 use crate::common;
+use crate::common::CMD_COMMAND;
+use crate::common::CMD_PROMPT;
 use crate::common::Server;
 use crate::common::release_host::Gate;
 use crate::common::release_host::ReleaseHost;
@@ -10,10 +12,10 @@ use crate::common::signing::hex;
 use crate::common::signing::sha256;
 use crate::common::signing::sha256_hex;
 use crate::ui::{
-    CMD_COMMAND, CMD_PROMPT, DIALOG_CLOSE_BUTTON, ID_CANCEL, ID_NO, ID_OK, ID_YES,
-    SETTINGS_DIALOG_CLASS, TEXT_DIALOG_CLASS, check_terminal_still_works, click, click_main_menu,
-    close_message_box, control_enabled, dialog_text, open_menu, open_settings, select_item,
-    wait_dialog_of_class, wait_message_box, wait_message_box_with, wait_top_dialog,
+    DIALOG_CLOSE_BUTTON, ID_CANCEL, ID_NO, ID_OK, ID_YES, SETTINGS_DIALOG_CLASS, TEXT_DIALOG_CLASS,
+    check_terminal_still_works, click, click_main_menu, close_message_box, control_enabled,
+    dialog_text, open_menu, open_settings, select_item, wait_dialog_of_class, wait_message_box,
+    wait_message_box_with, wait_top_dialog,
 };
 use serde_json::Value;
 use std::path::PathBuf;

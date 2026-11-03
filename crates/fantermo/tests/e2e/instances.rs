@@ -1,9 +1,11 @@
+use crate::common::CMD_COMMAND;
+use crate::common::CMD_PROMPT;
 use crate::common::LONG_WAIT_CHILDREN_SECONDS;
 use crate::common::LaunchAgain;
 use crate::common::Server;
 use crate::ui::{
-    CMD_COMMAND, CMD_PROMPT, ONE_PROFILE, TWO_PROMPT_PROFILES, click_main_menu, close_menu,
-    close_message_box, cygwin_config, number, open_menu, open_settings, press_cancel, tab_count,
+    ONE_PROFILE, TWO_PROMPT_PROFILES, click_main_menu, close_menu, close_message_box,
+    cygwin_config, number, open_menu, open_settings, press_cancel, tab_count,
     wait_message_box_with, wsl_config,
 };
 use serde_json::Value;

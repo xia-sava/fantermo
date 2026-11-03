@@ -1,8 +1,9 @@
+use crate::common::CMD_PROMPT;
 use crate::common::Server;
 use crate::ui::{
-    CMD_PROMPT, DRAG_PIXELS, EMPTY_COL, EMPTY_ROWS_BELOW, Point, area_center, button_click,
-    cell_center, cell_left, cell_right, close_menu, cygwin_config, echo_lines, fill_scrollback,
-    find_cell, left_click, left_drag, left_press_and_move, newest_offset, number, on_close_button,
+    DRAG_PIXELS, EMPTY_COL, EMPTY_ROWS_BELOW, Point, area_center, button_click, cell_center,
+    cell_left, cell_right, close_menu, cygwin_config, echo_lines, fill_scrollback, find_cell,
+    left_click, left_drag, left_press_and_move, newest_offset, number, on_close_button,
     on_scroll_bar, on_tab, on_thumb, scroll_bar_middle, scroll_offset, selection, step, tab_count,
     thumb_length, thumb_top, wait_menu, wait_sh_ready, wait_tabs, wsl_config,
 };

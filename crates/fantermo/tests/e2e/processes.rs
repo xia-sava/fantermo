@@ -1,10 +1,10 @@
+use crate::common::CMD_COMMAND;
 use crate::common::Server;
 use crate::common::processes;
 use crate::common::processes::Process;
 use crate::ui::{
-    CMD_COMMAND, CMD_LONG_COMMAND, CMD_LONG_PROCESS, SH_LONG_COMMAND, cygwin_config,
-    cygwin_sleep_is_running, tab_count, unique_sleep_seconds, wait_cmd_ready, wait_cygwin_sleep,
-    wait_sh_ready, wsl_config,
+    CMD_LONG_COMMAND, CMD_LONG_PROCESS, SH_LONG_COMMAND, cygwin_config, cygwin_sleep_is_running,
+    tab_count, unique_sleep_seconds, wait_cmd_ready, wait_cygwin_sleep, wait_sh_ready, wsl_config,
 };
 use std::thread;
 use std::time::Duration;
@@ -53,7 +53,7 @@ const CYGWIN_SLEEP_SETTLE: Duration = Duration::from_secs(2);
 
 #[test]
 fn closing_the_window_ends_the_child_processes_of_every_tab() {
-    let server = Server::start_watching_children("", &["cmd.exe", "/k", "prompt", "e2e$G"]);
+    let server = Server::start_watching_children("", &CMD_COMMAND);
     let wait_pings = |server: &Server| {
         processes::wait_descendants_named(server.pid(), CMD_LONG_PROCESS, 2);
     };

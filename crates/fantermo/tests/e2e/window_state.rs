@@ -1,8 +1,7 @@
+use crate::common::CMD_COMMAND;
+use crate::common::CMD_PROMPT;
 use crate::common::Server;
-use crate::ui::{
-    CMD_COMMAND, CMD_PROMPT, current_window, number, quit, saved_window, seeded_state,
-    start_with_state,
-};
+use crate::ui::{current_window, number, quit, saved_window, seeded_state, start_with_state};
 use fantermo_core::state;
 use fantermo_core::state::WindowState;
 use serde_json::Value;
