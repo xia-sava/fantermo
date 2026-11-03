@@ -9,7 +9,7 @@
 use fantermo_core::{config::TAB_BAR_COLOR_KEYS, frame::Rgb, vt};
 
 use crate::{
-    paint::{Area, Corner, Icon, Paint, mix, scale},
+    paint::{Area, Corner, Icon, Paint, collect_colors, mix, override_colors, scale},
     tab_icon::TabIcon,
 };
 
@@ -572,18 +572,14 @@ impl Palette {
 
     /// 設定の色 `colors`（[`TAB_BAR_COLOR_KEYS`] の順）のうち、書いた色だけで上書きした色。
     pub fn with_colors(mut self, colors: &[Option<Rgb>]) -> Self {
-        for (field, color) in self.fields_mut().into_iter().zip(colors) {
-            if let Some(color) = color {
-                *field = *color;
-            }
-        }
+        override_colors(self.fields_mut(), colors);
         self
     }
 
     /// 色の並び。[`TAB_BAR_COLOR_KEYS`] の順。
     pub fn colors(&self) -> [Rgb; TAB_BAR_COLOR_KEYS.len()] {
         let mut copy = *self;
-        copy.fields_mut().map(|field| *field)
+        collect_colors(copy.fields_mut())
     }
 
     /// 色の欄。[`TAB_BAR_COLOR_KEYS`] の順。
@@ -1320,22 +1316,17 @@ mod tests {
     ];
 
     #[test]
-    fn colors_from_the_settings_replace_only_the_written_ones() {
-        let fields = COLOR_FIELDS;
-        let written = Rgb { r: 1, g: 2, b: 3 };
-        for (index, (name, field)) in fields.iter().enumerate() {
+    fn the_colour_fields_follow_the_order_of_the_keys() {
+        let palette = palette();
+        let colors = palette.colors();
+        for (index, (name, field)) in COLOR_FIELDS.iter().enumerate() {
             assert_eq!(TAB_BAR_COLOR_KEYS[index], *name);
-            let mut colors = [None; TAB_BAR_COLOR_KEYS.len()];
-            colors[index] = Some(written);
-            let palette = palette().with_colors(&colors);
-            assert_eq!(field(&palette), written, "{name}");
-            for (other, (_, other_field)) in fields.iter().enumerate() {
-                if other != index {
-                    assert_eq!(other_field(&palette), other_field(&super::tests::palette()));
-                }
-            }
+            assert_eq!(colors[index], field(&palette), "{name}");
         }
-        assert_eq!(palette().with_colors(&[None; 9]), palette());
+        let written = Rgb { r: 1, g: 2, b: 3 };
+        let mut overrides = [None; TAB_BAR_COLOR_KEYS.len()];
+        overrides[TAB_BAR_COLOR_KEYS.len() - 1] = Some(written);
+        assert_eq!(palette.with_colors(&overrides).bell, written);
     }
 
     #[test]

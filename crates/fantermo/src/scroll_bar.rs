@@ -10,7 +10,7 @@
 
 use fantermo_core::{config::SCROLL_BAR_COLOR_KEYS, frame::Rgb, vt::ScrollPosition};
 
-use crate::paint::{Area, Icon, Paint, mix, scale};
+use crate::paint::{Area, Icon, Paint, collect_colors, mix, override_colors, scale};
 
 /// トラックの上下の端とつまみの間の空き（96 DPI でのピクセル）。
 const TRACK_MARGIN: u32 = 2;
@@ -211,18 +211,14 @@ impl Palette {
 
     /// 設定の色 `colors`（[`SCROLL_BAR_COLOR_KEYS`] の順）のうち、書いた色だけで上書きした色。
     pub fn with_colors(mut self, colors: &[Option<Rgb>]) -> Self {
-        for (field, color) in self.fields_mut().into_iter().zip(colors) {
-            if let Some(color) = color {
-                *field = *color;
-            }
-        }
+        override_colors(self.fields_mut(), colors);
         self
     }
 
     /// 色の並び。[`SCROLL_BAR_COLOR_KEYS`] の順。
     pub fn colors(&self) -> [Rgb; SCROLL_BAR_COLOR_KEYS.len()] {
         let mut copy = *self;
-        copy.fields_mut().map(|field| *field)
+        collect_colors(copy.fields_mut())
     }
 
     /// 色の欄。[`SCROLL_BAR_COLOR_KEYS`] の順。
@@ -687,7 +683,7 @@ mod tests {
     type ColorField = (&'static str, fn(&Palette) -> Rgb);
 
     #[test]
-    fn colors_from_the_settings_replace_only_the_written_ones() {
+    fn the_colour_fields_follow_the_order_of_the_keys() {
         let fields: [ColorField; 4] = [
             ("track", |p| p.track),
             ("thumb", |p| p.thumb),
@@ -701,19 +697,15 @@ mod tests {
             b: 255,
         };
         let defaults = Palette::from_terminal(black, white);
-        let written = Rgb { r: 1, g: 2, b: 3 };
+        let colors = defaults.colors();
         for (index, (name, field)) in fields.iter().enumerate() {
             assert_eq!(SCROLL_BAR_COLOR_KEYS[index], *name);
-            let mut colors = [None; SCROLL_BAR_COLOR_KEYS.len()];
-            colors[index] = Some(written);
-            let palette = defaults.with_colors(&colors);
-            assert_eq!(field(&palette), written, "{name}");
-            for (other, (_, other_field)) in fields.iter().enumerate() {
-                if other != index {
-                    assert_eq!(other_field(&palette), other_field(&defaults));
-                }
-            }
+            assert_eq!(colors[index], field(&defaults), "{name}");
         }
+        let written = Rgb { r: 1, g: 2, b: 3 };
+        let mut overrides = [None; SCROLL_BAR_COLOR_KEYS.len()];
+        overrides[SCROLL_BAR_COLOR_KEYS.len() - 1] = Some(written);
+        assert_eq!(defaults.with_colors(&overrides).dragged_thumb, written);
         // ひな形に例として書いた値は、黒の背景と白の文字のときの既定の色。
         let examples: Vec<String> = fields
             .iter()

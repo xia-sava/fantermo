@@ -31,6 +31,20 @@ pub fn mix(from: Rgb, to: Rgb, ratio: f32) -> Rgb {
     }
 }
 
+/// 色の欄 `fields` のうち、`colors` の同じ位置に色を書いてあるものだけをその色にする。
+pub fn override_colors<const N: usize>(fields: [&mut Rgb; N], colors: &[Option<Rgb>]) {
+    for (field, color) in fields.into_iter().zip(colors) {
+        if let Some(color) = color {
+            *field = *color;
+        }
+    }
+}
+
+/// 色の欄 `fields` の色を、欄の並びのまま配列にする。
+pub fn collect_colors<const N: usize>(fields: [&mut Rgb; N]) -> [Rgb; N] {
+    fields.map(|field| *field)
+}
+
 /// バックバッファ（ウィンドウのクライアント領域）の中の矩形。単位はピクセル。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Area {
@@ -193,6 +207,40 @@ mod tests {
             Shape::Polygon { points, .. } => points,
             other => panic!("not a polygon: {other:?}"),
         }
+    }
+
+    #[test]
+    fn override_colors_replaces_only_the_written_ones() {
+        let original = [
+            Rgb { r: 1, g: 1, b: 1 },
+            Rgb { r: 2, g: 2, b: 2 },
+            Rgb { r: 3, g: 3, b: 3 },
+        ];
+        let written = Rgb { r: 9, g: 8, b: 7 };
+        for index in 0..original.len() {
+            let mut colors = original;
+            let mut overrides = [None; 3];
+            overrides[index] = Some(written);
+            let [a, b, c] = &mut colors;
+            override_colors([a, b, c], &overrides);
+            let mut expected = original;
+            expected[index] = written;
+            assert_eq!(colors, expected);
+        }
+        let mut colors = original;
+        let [a, b, c] = &mut colors;
+        override_colors([a, b, c], &[None; 3]);
+        assert_eq!(colors, original);
+    }
+
+    #[test]
+    fn collect_colors_keeps_the_order_of_the_fields() {
+        let mut colors = [Rgb { r: 1, g: 1, b: 1 }, Rgb { r: 2, g: 2, b: 2 }];
+        let [a, b] = &mut colors;
+        assert_eq!(
+            collect_colors([b, a]),
+            [Rgb { r: 2, g: 2, b: 2 }, Rgb { r: 1, g: 1, b: 1 }]
+        );
     }
 
     fn near(a: (f32, f32), b: (f32, f32)) -> bool {
