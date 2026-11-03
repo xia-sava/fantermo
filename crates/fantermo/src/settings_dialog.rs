@@ -120,9 +120,8 @@ const ID_BACKGROUND_FIT: i32 = 456;
 const ID_BACKGROUND_ITEM_FIT: i32 = 457;
 const ID_BACKGROUND_ITEM_OPACITY: i32 = 458;
 const ID_BACKGROUND_ITEM_OPACITY_SPIN: i32 = 459;
-/// 項目の不透明度の「既定」と「指定」のラジオボタン。
-const ID_BACKGROUND_ITEM_OPACITY_DEFAULT: i32 = 460;
-const ID_BACKGROUND_ITEM_OPACITY_CUSTOM: i32 = 461;
+/// 項目の不透明度の「既定」と「指定」のラジオボタン。[`ITEM_OPACITY_CHOICES`] の順に ID が続く。
+const ID_BACKGROUND_ITEM_OPACITY_CHOICE: i32 = 460;
 const ID_KEYS: i32 = 500;
 const ID_KEY_ADD: i32 = 501;
 const ID_KEY_CHANGE: i32 = 502;
@@ -1143,6 +1142,91 @@ impl<T: Copy> NumberInput for NumberField<T> {
     }
 }
 
+/// ラジオボタンの組。選択肢の順にボタンが並び、ID も続く。
+struct RadioGroup<T: 'static> {
+    /// 先頭のボタンの ID。
+    first_id: i32,
+    /// ボタン。`choices` の順。
+    buttons: Vec<HWND>,
+    choices: &'static [T],
+}
+
+impl<T: Copy + PartialEq> RadioGroup<T> {
+    /// 選択肢 `choices` のボタンを、それぞれの表示 `labels` で、選択肢の位置 `rect_of(位置)` に作る。ID は
+    /// `first_id` から続く。先頭のボタンだけが Tab で止まり、グループを始める。
+    fn create(
+        b: &mut Builder,
+        first_id: i32,
+        choices: &'static [T],
+        labels: &[&str],
+        rect_of: impl Fn(i32) -> DipRect,
+    ) -> windows::core::Result<Self> {
+        let mut buttons = Vec::with_capacity(labels.len());
+        for (index, text) in (0..).zip(labels) {
+            buttons.push(b.radio(first_id + index, text, rect_of(index), index == 0)?);
+        }
+        Ok(Self {
+            first_id,
+            buttons,
+            choices,
+        })
+    }
+
+    /// ボタン。選択肢の順。
+    fn buttons(&self) -> &[HWND] {
+        &self.buttons
+    }
+
+    /// 選択肢 `value` のボタン。
+    fn button(&self, value: T) -> Option<HWND> {
+        let index = self.choices.iter().position(|&choice| choice == value)?;
+        self.buttons.get(index).copied()
+    }
+
+    /// `value` のボタンだけを選ぶ。
+    fn fill(&self, value: T) {
+        self.check(self.choices.iter().position(|&choice| choice == value));
+    }
+
+    /// どのボタンも選ばない。
+    fn clear(&self) {
+        self.check(None);
+    }
+
+    /// `index` 番目のボタンだけを選ぶ。`None` ならどれも選ばない。
+    fn check(&self, index: Option<usize>) {
+        for (i, &button) in self.buttons.iter().enumerate() {
+            let state = if Some(i) == index { BST_CHECKED.0 } else { 0 };
+            // SAFETY: button はダイアログの子の有効なボタン。
+            unsafe { SendMessageW(button, BM_SETCHECK, Some(WPARAM(state as usize)), None) };
+        }
+    }
+
+    /// 選んでいるボタンの選択肢。どれも選んでいなければ `None`。
+    fn read(&self) -> Option<T> {
+        let index = self.buttons.iter().position(|&button| {
+            // SAFETY: button はダイアログの子の有効なボタン。
+            unsafe { SendMessageW(button, BM_GETCHECK, None, None) }.0 == BST_CHECKED.0 as isize
+        })?;
+        self.choices.get(index).copied()
+    }
+}
+
+/// 選択肢の型の違うラジオボタンの組を、まとめて知らせを振り分けるための操作。
+trait RadioInput {
+    /// ID が `id` のコントロールが、この組のボタンか。
+    fn owns(&self, id: i32) -> bool;
+}
+
+impl<T> RadioInput for RadioGroup<T> {
+    fn owns(&self, id: i32) -> bool {
+        usize::try_from(id - self.first_id).is_ok_and(|index| index < self.buttons.len())
+    }
+}
+
+/// 項目の不透明度の「既定」と「指定」。「指定」なら `true`。
+const ITEM_OPACITY_CHOICES: [bool; 2] = [false, true];
+
 /// `font.size_pt` の入力欄。
 const FONT_SIZE_FIELD: NumberKind<f32> = NumberKind {
     parse: config::parse_font_size,
@@ -1204,12 +1288,12 @@ struct Controls {
     page_controls: Vec<Vec<HWND>>,
     font: HWND,
     size: NumberField<f32>,
-    wide_glyph: [HWND; WideGlyph::ALL.len()],
+    wide_glyph: RadioGroup<WideGlyph>,
     scroll_bar_width: NumberField<u32>,
     padding: NumberField<u32>,
-    paste_confirm: [HWND; PasteConfirm::ALL.len()],
+    paste_confirm: RadioGroup<PasteConfirm>,
     paste_confirm_size: NumberField<u32>,
-    clipboard_read: [HWND; ClipboardRead::ALL.len()],
+    clipboard_read: RadioGroup<ClipboardRead>,
     /// プロファイルの一覧。
     profiles_list: ListBox,
     /// 削除・既定にするのボタン。
@@ -1239,11 +1323,10 @@ struct Controls {
     /// 一覧で選んでいる項目の表示方法。
     background_item_fit: HWND,
     /// 一覧で選んでいる項目の不透明度の「既定」と「指定」のラジオボタンと、「指定」の値。
-    background_item_opacity_default: HWND,
-    background_item_opacity_custom: HWND,
+    background_item_opacity_choice: RadioGroup<bool>,
     background_item_opacity: NumberField<f32>,
-    /// 配色のラジオボタン。[`ColorScheme::ALL`] の順。
-    color_scheme: [HWND; 2],
+    /// 配色のラジオボタン。
+    color_scheme: RadioGroup<ColorScheme>,
     /// キーの割り当ての一覧。
     keys_list: ListBox,
     /// 追加・変更・外す・既定に戻すのボタン。
@@ -1266,6 +1349,18 @@ impl Controls {
             &self.paste_confirm_size,
             &self.background_opacity,
             &self.background_item_opacity,
+        ]
+        .into_iter()
+    }
+
+    /// ラジオボタンの組。押したときの知らせの振り分けは、これを順に回す。
+    fn radio_groups(&self) -> impl Iterator<Item = &dyn RadioInput> {
+        [
+            &self.wide_glyph as &dyn RadioInput,
+            &self.paste_confirm,
+            &self.clipboard_read,
+            &self.background_item_opacity_choice,
+            &self.color_scheme,
         ]
         .into_iter()
     }
@@ -1391,17 +1486,21 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         ],
     )?);
     appearance.push(b.label("セルより広い文字(&W):", label_rect(row(2)))?);
-    let mut wide_glyph = [HWND::default(); WideGlyph::ALL.len()];
-    for (index, text) in WIDE_GLYPH_LABELS.iter().enumerate() {
-        let top = row(2) + index as i32 * ROW_HEIGHT;
-        wide_glyph[index] = b.radio(
-            ID_WIDE_GLYPH + index as i32,
-            text,
-            [control_left, top, control_width, ROW_HEIGHT],
-            index == 0,
-        )?;
-        appearance.push(wide_glyph[index]);
-    }
+    let wide_glyph = RadioGroup::create(
+        &mut b,
+        ID_WIDE_GLYPH,
+        &WideGlyph::ALL,
+        &WIDE_GLYPH_LABELS,
+        |index| {
+            [
+                control_left,
+                row(2) + index * ROW_HEIGHT,
+                control_width,
+                ROW_HEIGHT,
+            ]
+        },
+    )?;
+    appearance.extend_from_slice(wide_glyph.buttons());
     let width_row = row(2) + WideGlyph::ALL.len() as i32 * ROW_HEIGHT + MARGIN;
     appearance.push(b.label("スクロールバーの幅(&B):", label_rect(width_row))?);
     let scroll_bar_width = NumberField::create(
@@ -1570,30 +1669,31 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         "選択した項目の不透明度(&H):",
         background_label_rect(item_opacity_row),
     )?);
-    let background_item_opacity_default = b.radio(
-        ID_BACKGROUND_ITEM_OPACITY_DEFAULT,
-        "",
-        [
-            background_control_left,
-            item_opacity_row,
-            background_control_width,
-            ROW_HEIGHT,
-        ],
-        true,
+    // 「既定」の文字は、既定の不透明度を入れるときに書き直す。「指定」の右に入力欄を置く。
+    let background_item_opacity_choice = RadioGroup::create(
+        &mut b,
+        ID_BACKGROUND_ITEM_OPACITY_CHOICE,
+        &ITEM_OPACITY_CHOICES,
+        &["", "指定"],
+        |index| {
+            if index == 0 {
+                [
+                    background_control_left,
+                    item_opacity_row,
+                    background_control_width,
+                    ROW_HEIGHT,
+                ]
+            } else {
+                [
+                    background_control_left,
+                    custom_opacity_row,
+                    CUSTOM_OPACITY_WIDTH,
+                    ROW_HEIGHT,
+                ]
+            }
+        },
     )?;
-    background_page.push(background_item_opacity_default);
-    let background_item_opacity_custom = b.radio(
-        ID_BACKGROUND_ITEM_OPACITY_CUSTOM,
-        "指定",
-        [
-            background_control_left,
-            custom_opacity_row,
-            CUSTOM_OPACITY_WIDTH,
-            ROW_HEIGHT,
-        ],
-        false,
-    )?;
-    background_page.push(background_item_opacity_custom);
+    background_page.extend_from_slice(background_item_opacity_choice.buttons());
     let custom_opacity_left = background_control_left + CUSTOM_OPACITY_WIDTH;
     let background_item_opacity = NumberField::create(
         &mut b,
@@ -1625,17 +1725,21 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     // 動作
     let mut behavior = Vec::new();
     behavior.push(b.label("貼り付け前の確認(&P):", label_rect(row(0)))?);
-    let mut paste_confirm = [HWND::default(); PasteConfirm::ALL.len()];
-    for (index, text) in PASTE_CONFIRM_LABELS.iter().enumerate() {
-        let top = row(0) + index as i32 * ROW_HEIGHT;
-        paste_confirm[index] = b.radio(
-            ID_PASTE_CONFIRM + index as i32,
-            text,
-            [control_left, top, control_width, ROW_HEIGHT],
-            index == 0,
-        )?;
-        behavior.push(paste_confirm[index]);
-    }
+    let paste_confirm = RadioGroup::create(
+        &mut b,
+        ID_PASTE_CONFIRM,
+        &PasteConfirm::ALL,
+        &PASTE_CONFIRM_LABELS,
+        |index| {
+            [
+                control_left,
+                row(0) + index * ROW_HEIGHT,
+                control_width,
+                ROW_HEIGHT,
+            ]
+        },
+    )?;
+    behavior.extend_from_slice(paste_confirm.buttons());
     behavior.push(b.label(
         "改行を含む文字列を貼り付ける前に、内容を編集できるダイアログで確認する。「コマンドとして実行される可能性があるとき」は、アプリが bracketed paste を有効にしていないときなど。",
         [
@@ -1666,17 +1770,21 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     )?);
     let clipboard_row = paste_size_row + ROW_HEIGHT + MARGIN;
     behavior.push(b.label("クリップボードの読み取り(&L):", label_rect(clipboard_row))?);
-    let mut clipboard_read = [HWND::default(); ClipboardRead::ALL.len()];
-    for (index, text) in CLIPBOARD_READ_LABELS.iter().enumerate() {
-        let top = clipboard_row + index as i32 * ROW_HEIGHT;
-        clipboard_read[index] = b.radio(
-            ID_CLIPBOARD_READ + index as i32,
-            text,
-            [control_left, top, control_width, ROW_HEIGHT],
-            index == 0,
-        )?;
-        behavior.push(clipboard_read[index]);
-    }
+    let clipboard_read = RadioGroup::create(
+        &mut b,
+        ID_CLIPBOARD_READ,
+        &ClipboardRead::ALL,
+        &CLIPBOARD_READ_LABELS,
+        |index| {
+            [
+                control_left,
+                clipboard_row + index * ROW_HEIGHT,
+                control_width,
+                ROW_HEIGHT,
+            ]
+        },
+    )?;
+    behavior.extend_from_slice(clipboard_read.buttons());
     behavior.push(b.label(
         "アプリがクリップボードの内容を読み取ろうとしたとき（OSC 52）。アプリからの書き込みは、この設定に関係なく受け付ける。",
         [
@@ -1855,7 +1963,8 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     // 色
     let mut colors_page = Vec::new();
     let mut color_rows = Vec::new();
-    let mut color_scheme = [HWND::default(); 2];
+    // 端末の色の表の見出しの下に作る。
+    let mut color_scheme = None;
     let mut top = MARGIN;
     for (table_index, table) in ColorTable::ALL.into_iter().enumerate() {
         colors_page.push(b.label(
@@ -1873,20 +1982,22 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
                     COLOR_ROW_HEIGHT,
                 ],
             )?);
-            for (index, text) in COLOR_SCHEME_LABELS.iter().enumerate() {
-                color_scheme[index] = b.radio(
-                    ID_COLOR_SCHEME + index as i32,
-                    text,
+            let scheme = RadioGroup::create(
+                &mut b,
+                ID_COLOR_SCHEME,
+                &ColorScheme::ALL,
+                &COLOR_SCHEME_LABELS,
+                |index| {
                     [
-                        control_left + index as i32 * COLOR_SCHEME_WIDTH,
+                        control_left + index * COLOR_SCHEME_WIDTH,
                         top,
                         COLOR_SCHEME_WIDTH,
                         COLOR_ROW_HEIGHT,
-                    ],
-                    index == 0,
-                )?;
-                colors_page.push(color_scheme[index]);
-            }
+                    ]
+                },
+            )?;
+            colors_page.extend_from_slice(scheme.buttons());
+            color_scheme = Some(scheme);
             top += COLOR_ROW_HEIGHT;
         }
         for label_text in color_labels(table) {
@@ -2005,10 +2116,9 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             background_opacity,
             background_fit,
             background_item_fit,
-            background_item_opacity_default,
-            background_item_opacity_custom,
+            background_item_opacity_choice,
             background_item_opacity,
-            color_scheme,
+            color_scheme: color_scheme.expect("the terminal colors are listed"),
             keys_list,
             key_buttons,
             color_rows,
@@ -2096,21 +2206,12 @@ impl State<'_> {
         // SAFETY: コンボボックスは有効なウィンドウ。
         unsafe { SendMessageW(c.font, CB_SETCURSEL, Some(WPARAM(selected_font)), None) };
         c.size.fill(config.font.size_pt);
-        let wide_glyph = WideGlyph::ALL
-            .iter()
-            .position(|&value| value == config.font.wide_glyph);
-        check_one(&c.wide_glyph, wide_glyph);
+        c.wide_glyph.fill(config.font.wide_glyph);
         c.scroll_bar_width.fill(config.scroll_bar.width);
         c.padding.fill(config.window.padding);
-        let paste_confirm = PasteConfirm::ALL
-            .iter()
-            .position(|&value| value == config.paste.confirm);
-        check_one(&c.paste_confirm, paste_confirm);
+        c.paste_confirm.fill(config.paste.confirm);
         c.paste_confirm_size.fill(config.paste.confirm_size);
-        let clipboard_read = ClipboardRead::ALL
-            .iter()
-            .position(|&value| value == config.clipboard.read);
-        check_one(&c.clipboard_read, clipboard_read);
+        c.clipboard_read.fill(config.clipboard.read);
         *self.profiles.borrow_mut() = config.profiles.clone();
         self.default_profile.set(config.default_profile_index());
         self.refresh_profiles(config.default_profile_index());
@@ -2128,10 +2229,7 @@ impl State<'_> {
         *self.keys.borrow_mut() = config.keys.clone();
         self.refresh_keys(None);
         *self.colors.borrow_mut() = config.colors.clone();
-        let scheme = ColorScheme::ALL
-            .iter()
-            .position(|&value| value == config.colors.scheme);
-        check_one(&c.color_scheme, scheme);
+        c.color_scheme.fill(config.colors.scheme);
         self.refresh_colors();
     }
 
@@ -2200,10 +2298,10 @@ impl State<'_> {
 
     /// 配色のラジオボタンが押された。
     fn on_color_scheme(&self) {
-        let Some(index) = checked(&self.controls.color_scheme) else {
+        let Some(scheme) = self.controls.color_scheme.read() else {
             return;
         };
-        self.colors.borrow_mut().scheme = ColorScheme::ALL[index];
+        self.colors.borrow_mut().scheme = scheme;
         self.refresh_colors();
         self.preview();
     }
@@ -2570,12 +2668,11 @@ impl State<'_> {
         let selected = self
             .selected_background_image()
             .and_then(|index| self.background_images.borrow().get(index).cloned());
-        for control in [
-            c.background_remove,
-            c.background_item_fit,
-            c.background_item_opacity_default,
-            c.background_item_opacity_custom,
-        ] {
+        let buttons = c.background_item_opacity_choice.buttons();
+        for &control in [c.background_remove, c.background_item_fit]
+            .iter()
+            .chain(buttons)
+        {
             // SAFETY: control はダイアログの子の有効なウィンドウ。
             unsafe { _ = EnableWindow(control, selected.is_some()) };
         }
@@ -2587,14 +2684,10 @@ impl State<'_> {
         // SAFETY: コンボボックスは有効なウィンドウ。
         unsafe { SendMessageW(c.background_item_fit, CB_SETCURSEL, Some(WPARAM(fit)), None) };
         let custom = opacity.flatten();
-        let choice = opacity.map(|opacity| usize::from(opacity.is_some()));
-        check_one(
-            &[
-                c.background_item_opacity_default,
-                c.background_item_opacity_custom,
-            ],
-            choice,
-        );
+        match opacity {
+            Some(opacity) => c.background_item_opacity_choice.fill(opacity.is_some()),
+            None => c.background_item_opacity_choice.clear(),
+        }
         self.enable_item_opacity(custom.is_some());
         // 値が変わったときだけ書く（書くと EN_CHANGE が届いて、端末への反映の予約が掛かる）。借用は
         // 持っていない。
@@ -2614,7 +2707,7 @@ impl State<'_> {
 
     /// 項目の不透明度で「指定」を選んでいるか。
     fn custom_item_opacity(&self) -> bool {
-        checked(&[self.controls.background_item_opacity_custom]).is_some()
+        self.controls.background_item_opacity_choice.read() == Some(true)
     }
 
     /// 編集中の既定の表示方法。
@@ -2660,11 +2753,10 @@ impl State<'_> {
                 None,
             );
         }
-        if let Some(opacity) = self.default_opacity() {
-            set_text(
-                c.background_item_opacity_default,
-                &default_choice_label(&format_opacity(opacity)),
-            );
+        if let Some(opacity) = self.default_opacity()
+            && let Some(button) = c.background_item_opacity_choice.button(false)
+        {
+            set_text(button, &default_choice_label(&format_opacity(opacity)));
         }
     }
 
@@ -3038,17 +3130,17 @@ impl State<'_> {
                     .collect();
         }
         config.font.size_pt = c.size.read()?;
-        if let Some(index) = checked(&c.wide_glyph) {
-            config.font.wide_glyph = WideGlyph::ALL[index];
+        if let Some(wide_glyph) = c.wide_glyph.read() {
+            config.font.wide_glyph = wide_glyph;
         }
         config.scroll_bar.width = c.scroll_bar_width.read()?;
         config.window.padding = c.padding.read()?;
-        if let Some(index) = checked(&c.paste_confirm) {
-            config.paste.confirm = PasteConfirm::ALL[index];
+        if let Some(confirm) = c.paste_confirm.read() {
+            config.paste.confirm = confirm;
         }
         config.paste.confirm_size = c.paste_confirm_size.read()?;
-        if let Some(index) = checked(&c.clipboard_read) {
-            config.clipboard.read = ClipboardRead::ALL[index];
+        if let Some(read) = c.clipboard_read.read() {
+            config.clipboard.read = read;
         }
         let profiles = self.profiles.borrow().clone();
         if let Err((index, field, message)) = check_profiles(&profiles) {
@@ -3351,23 +3443,6 @@ fn get_text(control: HWND) -> String {
     String::from_utf16_lossy(&buffer[..copied])
 }
 
-/// ラジオボタンの並び `buttons` のうち、`index` 番目だけを選ぶ。
-fn check_one(buttons: &[HWND], index: Option<usize>) {
-    for (i, &button) in buttons.iter().enumerate() {
-        let state = if Some(i) == index { BST_CHECKED.0 } else { 0 };
-        // SAFETY: button は有効なボタン。
-        unsafe { SendMessageW(button, BM_SETCHECK, Some(WPARAM(state as usize)), None) };
-    }
-}
-
-/// ラジオボタンの並び `buttons` のうち、選んでいるものの位置。
-fn checked(buttons: &[HWND]) -> Option<usize> {
-    buttons.iter().position(|&button| {
-        // SAFETY: button は有効なボタン。
-        unsafe { SendMessageW(button, BM_GETCHECK, None, None) }.0 == BST_CHECKED.0 as isize
-    })
-}
-
 /// ダイアログに結び付けた状態。WM_DESTROY で外すまで有効。
 fn state_of<'a>(dialog: HWND) -> Option<&'a State<'a>> {
     // SAFETY: GWLP_USERDATA には run が入れた State のポインタか 0 が入っている。
@@ -3432,32 +3507,20 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 }
                 (ID_BACKGROUND_ITEM_FIT, CBN_SELCHANGE) => state.on_background_item_fit(),
                 (ID_BACKGROUND_ITEM_OPACITY, EN_CHANGE) => state.on_background_item_opacity(),
-                (
-                    ID_BACKGROUND_ITEM_OPACITY_DEFAULT | ID_BACKGROUND_ITEM_OPACITY_CUSTOM,
-                    BN_CLICKED,
-                ) => state.on_background_item_opacity_choice(),
+                (id, BN_CLICKED) if state.controls.background_item_opacity_choice.owns(id) => {
+                    state.on_background_item_opacity_choice();
+                }
                 (ID_KEYS, LBN_SELCHANGE) => state.update_key_buttons(),
                 (ID_KEYS, LBN_DBLCLK) => state.on_key_button(ID_KEY_CHANGE),
                 (ID_KEY_ADD | ID_KEY_CHANGE | ID_KEY_REMOVE | ID_KEY_RESET, BN_CLICKED) => {
                     state.on_key_button(id);
                 }
                 (id, BN_CLICKED) if id >= ID_COLORS => state.on_color_button(id),
-                (id, BN_CLICKED)
-                    if (ID_COLOR_SCHEME..ID_COLOR_SCHEME + ColorScheme::ALL.len() as i32)
-                        .contains(&id) =>
-                {
+                (id, BN_CLICKED) if state.controls.color_scheme.owns(id) => {
                     state.on_color_scheme();
                 }
-                (id, BN_CLICKED)
-                    if (ID_WIDE_GLYPH..ID_WIDE_GLYPH + WideGlyph::ALL.len() as i32)
-                        .contains(&id)
-                        || (ID_PASTE_CONFIRM
-                            ..ID_PASTE_CONFIRM + PasteConfirm::ALL.len() as i32)
-                            .contains(&id)
-                        || (ID_CLIPBOARD_READ
-                            ..ID_CLIPBOARD_READ + ClipboardRead::ALL.len() as i32)
-                            .contains(&id) =>
-                {
+                // ほかの処理の要らないラジオボタンは、押したらすぐ反映する。
+                (id, BN_CLICKED) if state.controls.radio_groups().any(|group| group.owns(id)) => {
                     state.preview();
                 }
                 // ほかの処理の要らない数の入力欄は、打ち終わるのを待って反映する。
