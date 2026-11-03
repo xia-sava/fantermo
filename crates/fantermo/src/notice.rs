@@ -48,6 +48,10 @@ const SEPARATOR: &str = "\n\n";
 /// メッセージボックスのウィンドウのクラス名。
 const MESSAGE_BOX_CLASS: &str = "#32770";
 
+/// 列挙したウィンドウのクラス名を読む長さ（UTF-16 の単位）。[`MESSAGE_BOX_CLASS`] より長いクラス名は、
+/// 途中までで違うと分かれば足りる。
+const CLASS_CAPACITY: usize = 16;
+
 /// メッセージボックスのタイトル。
 const TITLE: &str = "fantermo";
 
@@ -166,7 +170,7 @@ fn is_warning_box(
 extern "system" fn close_if_message_box(hwnd: HWND, lparam: LPARAM) -> BOOL {
     // SAFETY: lparam は close_message_box が渡した BoxSearch を指し、列挙の間は生きている。
     let search = unsafe { &mut *(lparam.0 as *mut BoxSearch) };
-    let mut class = [0u16; 16];
+    let mut class = [0u16; CLASS_CAPACITY];
     // SAFETY: hwnd は列挙されたウィンドウで、class は書き込める。
     let class_length = unsafe { GetClassNameW(hwnd, &mut class) }.max(0) as usize;
     let mut title = [0u16; TITLE_CAPACITY];
@@ -286,11 +290,13 @@ mod tests {
         queue
     }
 
-    /// 主ウィンドウ、警告のメッセージボックス、クリップボードの確認、ほかのウィンドウのハンドル。
+    /// 主ウィンドウ、警告のメッセージボックス、クリップボードの確認、ほかのウィンドウ、主ウィンドウでない
+    /// 持ち主のハンドル。
     const MAIN: HWND = HWND(1 as _);
     const WARNING: HWND = HWND(2 as _);
     const CLIPBOARD_PROMPT: HWND = HWND(3 as _);
     const OTHER: HWND = HWND(4 as _);
+    const OTHER_OWNER: HWND = HWND(5 as _);
 
     fn is_closed(hwnd: HWND, class: &str, owner: HWND, title: &str) -> bool {
         let candidate = Candidate {
@@ -305,17 +311,24 @@ mod tests {
     #[test]
     fn only_the_warning_box_is_closed() {
         assert!(is_closed(WARNING, MESSAGE_BOX_CLASS, MAIN, TITLE));
-        // クリップボードの確認は、クラスもタイトルも持ち主も同じ。
-        assert!(!is_closed(CLIPBOARD_PROMPT, MESSAGE_BOX_CLASS, MAIN, TITLE));
-        // 更新の確認。
+        // クリップボードの確認は、クラスもタイトルも持ち主も同じなので、ハンドルで除く。
+        assert_eq!(clipboard_prompt::TITLE, TITLE);
+        assert!(!is_closed(
+            CLIPBOARD_PROMPT,
+            MESSAGE_BOX_CLASS,
+            MAIN,
+            clipboard_prompt::TITLE
+        ));
+        // 更新の確認は、タイトルで除く。
+        assert_ne!(crate::update::prompt::TITLE, TITLE);
         assert!(!is_closed(
             OTHER,
             MESSAGE_BOX_CLASS,
             MAIN,
-            "fantermo の更新"
+            crate::update::prompt::TITLE
         ));
         assert!(!is_closed(OTHER, "fantermo-text-dialog", MAIN, TITLE));
-        assert!(!is_closed(OTHER, MESSAGE_BOX_CLASS, OTHER, TITLE));
+        assert!(!is_closed(OTHER, MESSAGE_BOX_CLASS, OTHER_OWNER, TITLE));
         let unowned = Candidate {
             hwnd: OTHER,
             class: MESSAGE_BOX_CLASS,

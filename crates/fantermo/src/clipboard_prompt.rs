@@ -31,6 +31,9 @@ pub enum Choice {
     Deny,
 }
 
+/// ダイアログのタイトル。
+pub(crate) const TITLE: &str = "fantermo";
+
 /// 「許可」のボタンの ID。
 const ID_ALLOW: i32 = 1001;
 /// 「拒否」のボタンの ID。
@@ -73,6 +76,7 @@ fn choice_of_button(button: i32) -> Choice {
 /// `owner` のウィンドウに確認のダイアログ（本文 `text`）を出し、答えを返す。閉じるまで戻らない。出せなければ
 /// 拒否とする。
 pub fn ask(owner: HWND, text: &str) -> Choice {
+    let title = HSTRING::from(TITLE);
     let content = HSTRING::from(text);
     let buttons = [
         TASKDIALOG_BUTTON {
@@ -92,7 +96,7 @@ pub fn ask(owner: HWND, text: &str) -> Choice {
         cbSize: size_of::<TASKDIALOGCONFIG>() as u32,
         hwndParent: owner,
         dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW,
-        pszWindowTitle: w!("fantermo"),
+        pszWindowTitle: PCWSTR(title.as_ptr()),
         Anonymous1: TASKDIALOGCONFIG_0 {
             pszMainIcon: TD_WARNING_ICON,
         },

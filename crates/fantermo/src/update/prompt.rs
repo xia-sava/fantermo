@@ -15,7 +15,7 @@ use super::{CheckError, Comparison, Downloaded, Event, Release, current_version,
 use crate::logging;
 
 /// メッセージボックスのタイトル。
-const TITLE: &str = "fantermo の更新";
+pub(crate) const TITLE: &str = "fantermo の更新";
 
 /// 結果を見せたあとにすること。
 pub enum Next {

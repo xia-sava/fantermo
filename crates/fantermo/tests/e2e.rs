@@ -1074,7 +1074,13 @@ fn cygwin_clipboard_read_dialog_stays_when_the_settings_warning_is_withdrawn() {
     std::fs::write(&path, format!("[font\n{config}")).expect("failed to write the settings");
     server.wait_dialogs(2);
     std::fs::write(&path, &config).expect("failed to write the settings");
-    server.wait_dialogs(1);
+    let state = server.wait_dialogs(1);
+    // 残ったのは確認のダイアログで、主ウィンドウは無効のまま。
+    assert!(
+        dialog_text(&state["dialogs"][0]).contains("許可(&A)"),
+        "{state:#}"
+    );
+    assert_eq!(state["window_enabled"], false, "{state:#}");
 
     server.press_dialog_button(BUTTON_ALLOW);
     server.wait_dialogs(0);
