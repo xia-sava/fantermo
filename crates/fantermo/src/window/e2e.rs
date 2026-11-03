@@ -178,6 +178,7 @@ fn run(hwnd: HWND, Pending { request, reply }: Pending, with_app: &WithApp) {
         Request::StepDialogSpin { id, delta } => answer(step_dialog_spin(hwnd, id, delta)),
         Request::PressDialogKey(combo) => answer(press_dialog_key(hwnd, combo)),
         Request::CloseDialog => answer(close_dialog(hwnd)),
+        Request::ChangeDialogDpi(dpi) => answer(change_dialog_dpi(hwnd, dpi)),
         // 押すとダイアログを開くボタンは、閉じるまで送った先から戻らない。答えを先に返す。順番は `Request::Mouse` と
         // 同じく保たれる。
         Request::ClickDialogButton(id) => match button_to_click(hwnd, id) {
@@ -965,6 +966,23 @@ fn close_dialog(main: HWND) -> Response {
     }
 }
 
+/// いちばん上のダイアログに、DPI が `dpi` に変わったことを `WM_DPICHANGED` で知らせ、そのあとのダイアログの大きさと
+/// コントロール（[`dialog_controls`]）を返す。推奨の矩形は、ダイアログのクライアント領域をモニターの DPI
+/// （`GetDpiForWindow`）からの比で拡大・縮小して作り、左上は動かさない。ダイアログはこの場で並べ直す。
+fn change_dialog_dpi(main: HWND, dpi: u32) -> Response {
+    let dialog = match top_dialog(main) {
+        Ok(dialog) => dialog,
+        Err(response) => return response,
+    };
+    // SAFETY: dialog は有効なウィンドウ。
+    let from = unsafe { GetDpiForWindow(dialog) };
+    if from == 0 {
+        return Response::internal_error("cannot read the DPI of the dialog");
+    }
+    send_dpi_changed(dialog, dpi, &dpi_scaled_rect(dialog, from, dpi));
+    dialog_controls(main)
+}
+
 /// 開いているメニューの項目。
 struct MenuItem {
     /// 項目の文字。アクセラレータの `&` と、キーの組み合わせの前のタブも含む。
@@ -1204,7 +1222,8 @@ impl App {
             | Request::ClickDialogButton(_)
             | Request::StepDialogSpin { .. }
             | Request::PressDialogKey(_)
-            | Request::CloseDialog => (
+            | Request::CloseDialog
+            | Request::ChangeDialogDpi(_) => (
                 Response::internal_error("handled outside of the borrow"),
                 None,
             ),

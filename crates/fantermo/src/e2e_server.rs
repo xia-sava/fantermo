@@ -26,6 +26,7 @@
 //! | `POST /e2e/dialog/spin/<ID>/<回数>` | 上下の矢印を押す（`UDN_DELTAPOS` が届く） |
 //! | `POST /e2e/dialog/key/<組み合わせ>` | ダイアログのループへキーを積む |
 //! | `POST /e2e/dialog/close` | ダイアログの × を押す（`WM_CLOSE`） |
+//! | `POST /e2e/dialog/dpichanged/<DPI>` | いちばん上のダイアログに `WM_DPICHANGED` を送り、そのあとのコントロールの JSON を返す |
 //! | `GET /e2e/clipboard` | クリップボードの文字列の JSON |
 //! | `POST /e2e/clipboard` | クリップボードを本文の文字で置き換える |
 //! | `POST /e2e/message/<名前>`、`/e2e/message/<名前>/<wParam>` | ウィンドウにメッセージを送り、戻り値の JSON を返す（[`WindowMessage`]） |
@@ -67,7 +68,7 @@ const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
 /// 受け取る本文の上限。
 const MAX_BODY_LEN: usize = 16 << 20;
 
-/// `POST /e2e/message/dpichanged/<DPI>` で受ける DPI の上限。Windows の表示の倍率の上限（500%）より少し大きい値。
+/// `POST /e2e/message/dpichanged/<DPI>` と `POST /e2e/dialog/dpichanged/<DPI>` で受ける DPI の上限。Windows の表示の倍率の上限（500%）より少し大きい値。
 const MAX_DPI: usize = 576;
 
 const STATUS_OK: u16 = 200;
@@ -274,6 +275,8 @@ pub enum Request {
     },
     PressDialogKey(KeyCombo),
     CloseDialog,
+    /// いちばん上のダイアログに、DPI がこの値に変わったことを知らせる。
+    ChangeDialogDpi(u32),
     ReadClipboard,
     WriteClipboard(String),
     SendMessage {
@@ -506,6 +509,9 @@ fn parse_request(method: &str, path: &str, body: Vec<u8>) -> Result<Request, Res
             .map(Request::PressDialogKey)
             .map_err(Response::bad_request),
         ("POST", ["e2e", "dialog", "close"]) => Ok(Request::CloseDialog),
+        ("POST", ["e2e", "dialog", "dpichanged", dpi]) => {
+            parse_dpi(dpi).map(Request::ChangeDialogDpi)
+        }
         ("GET", ["e2e", "clipboard"]) => Ok(Request::ReadClipboard),
         ("POST", ["e2e", "clipboard"]) => parse_text(body).map(Request::WriteClipboard),
         ("POST", ["e2e", "tab", "close"]) => Ok(Request::CloseTab),
@@ -563,6 +569,17 @@ fn parse_message(name: &str, wparam: usize) -> Result<Request, Response> {
         )));
     }
     Ok(Request::SendMessage { message, wparam })
+}
+
+/// ダイアログに知らせる DPI。1 から [`MAX_DPI`] まで。
+fn parse_dpi(text: &str) -> Result<u32, Response> {
+    let dpi: usize = parse_number(text)?;
+    if !(1..=MAX_DPI).contains(&dpi) {
+        return Err(Response::bad_request(format!(
+            "a DPI from 1 to {MAX_DPI} is expected: {dpi}"
+        )));
+    }
+    Ok(dpi as u32)
 }
 
 fn parse_message_in_borrow(name: &str, wparam: usize) -> Result<Request, Response> {
@@ -864,11 +881,18 @@ mod tests {
             parse("POST /e2e/dialog/close HTTP/1.1\r\n\r\n"),
             Ok(Request::CloseDialog)
         );
+        assert_eq!(
+            parse("POST /e2e/dialog/dpichanged/384 HTTP/1.1\r\n\r\n"),
+            Ok(Request::ChangeDialogDpi(384))
+        );
         for request in [
             "POST /e2e/dialog/text/x HTTP/1.1\r\n\r\n",
             "POST /e2e/dialog/select/100/x HTTP/1.1\r\n\r\n",
             "POST /e2e/dialog/spin/202/x HTTP/1.1\r\n\r\n",
             "POST /e2e/dialog/key/nothing HTTP/1.1\r\n\r\n",
+            "POST /e2e/dialog/dpichanged/0 HTTP/1.1\r\n\r\n",
+            "POST /e2e/dialog/dpichanged/577 HTTP/1.1\r\n\r\n",
+            "POST /e2e/dialog/dpichanged/x HTTP/1.1\r\n\r\n",
         ] {
             assert_eq!(parse(request).unwrap_err().status, STATUS_BAD_REQUEST);
         }

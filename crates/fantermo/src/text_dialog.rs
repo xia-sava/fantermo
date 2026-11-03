@@ -4,6 +4,9 @@
 //! ボタンを押せば入力欄の文字列を返し、IDCANCEL のボタンや Esc なら何も返さない。ほかのボタンを押せば、その
 //! ボタンを返して閉じる（`Dialog::on_button` が閉じないと答えたものを除く）。リンクを押せば既定のアプリで
 //! 開く。
+//!
+//! 寸法とフォントは、開くときに呼び出し元のウィンドウのモニターの DPI で決め、開いている間に DPI が変われば
+//! （`WM_DPICHANGED`）その DPI で作り直す。
 
 use std::{
     cell::{Cell, RefCell},
@@ -13,7 +16,7 @@ use std::{
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM},
-        Graphics::Gdi::{GetTextExtentPoint32W, HFONT},
+        Graphics::Gdi::{GetTextExtentPoint32W, HFONT, LOGFONTW},
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Controls::{
@@ -26,10 +29,10 @@ use windows::{
                 ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, ES_WANTRETURN,
                 GetClientRect, HMENU, IDCANCEL, IDOK, MSG, MoveWindow, SW_SHOW, SWP_NOZORDER,
                 SendMessageW, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE,
-                WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_KEYDOWN, WM_NOTIFY, WM_SIZE,
-                WS_CAPTION, WS_CHILD, WS_DISABLED, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT,
-                WS_EX_DLGMODALFRAME, WS_HSCROLL, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME,
-                WS_VISIBLE, WS_VSCROLL,
+                WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_KEYDOWN,
+                WM_NOTIFY, WM_SIZE, WS_CAPTION, WS_CHILD, WS_DISABLED, WS_EX_CLIENTEDGE,
+                WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_HSCROLL, WS_POPUP, WS_SYSMENU,
+                WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
             },
         },
     },
@@ -165,9 +168,12 @@ struct TextDialogState<'a> {
     buttons: RefCell<Vec<HWND>>,
     /// 入力欄とボタンのフォント。
     font: RefCell<OwnedFont>,
+    /// 開いたときの入力欄のフォントと、そのときの DPI。DPI が変わったら、これを拡大・縮小して作り直す。
+    opened_font: Cell<(LOGFONTW, u32)>,
     /// 入力欄の上の行のフォント。行がなければ作らない。
     header_font: RefCell<OwnedFont>,
-    /// 寸法を決める DPI。
+    /// 寸法とフォントを決める DPI。開いたときはモニターの DPI で、開いている間に DPI が変われば
+    /// （`WM_DPICHANGED`）その DPI にする。
     dpi: Cell<u32>,
     /// 閉じたわけ。ボタンで閉じるまでは `None`。
     result: RefCell<Option<Closed>>,
@@ -308,6 +314,7 @@ fn create(
     // 入力欄は端末と同じ書体にして、少し小さくする。
     let mut logfont = font.logfont();
     logfont.lfHeight = (logfont.lfHeight as f32 * FONT_RATIO) as i32;
+    state.opened_font.set((logfont, dpi));
     state.font.replace(OwnedFont::create(&logfont));
     set_control_font(state);
     if !dialog.header.is_empty() {
@@ -340,6 +347,29 @@ fn create(
     Ok(hwnd)
 }
 
+/// DPI を `dpi` にし、入力欄とボタンのフォントと、入力欄の上の行のフォントを作り直す。コントロールを
+/// 並べ直すのは呼び出し元。
+fn set_dpi(state: &TextDialogState, dpi: u32) {
+    state.dpi.set(dpi);
+    let (mut logfont, opened_dpi) = state.opened_font.get();
+    logfont.lfHeight = font_height_at(logfont.lfHeight, opened_dpi, dpi);
+    let previous = state.font.replace(OwnedFont::create(&logfont));
+    set_control_font(state);
+    // 前のフォントは、どのコントロールももう使っていない。
+    drop(previous);
+    if !state.header.borrow().is_empty() {
+        create_header_font(state, dpi);
+    }
+}
+
+/// DPI が `from` のときのフォントの高さ `height`（`LOGFONTW` の `lfHeight`）を、DPI が `to` のときの高さにする。
+fn font_height_at(height: i32, from: u32, to: u32) -> i32 {
+    if from == 0 {
+        return height;
+    }
+    (height as f32 * to as f32 / from as f32).round() as i32
+}
+
 /// 入力欄とボタンに、入力欄のフォントを付ける。
 fn set_control_font(state: &TextDialogState) {
     let font = state.font.borrow().handle();
@@ -350,6 +380,7 @@ fn set_control_font(state: &TextDialogState) {
 }
 
 /// 入力欄の上の行に、DPI が `dpi` のときの Windows のメッセージのフォントを付け、1 行の高さを測る。
+/// フォントの設定を読めなければ、いまのフォントのままにする。
 fn create_header_font(state: &TextDialogState, dpi: u32) {
     let Some(font) = OwnedFont::message(dpi) else {
         return;
@@ -580,6 +611,14 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
             LRESULT(0)
         }
+        WM_DPICHANGED => {
+            set_dpi(state, dialog::dpi_of(wparam));
+            // SAFETY: lparam は WM_DPICHANGED で受け取ったもの。
+            unsafe { dialog::move_to_suggested_rect(hwnd, lparam) };
+            // 大きさが変わると WM_SIZE でも並べ直すが、変わらなければ届かないので、ここでも並べる。
+            layout(hwnd, state);
+            LRESULT(0)
+        }
         WM_CLOSE => {
             dialog::destroy(hwnd);
             LRESULT(0)
@@ -614,5 +653,15 @@ mod tests {
         assert_eq!(to_crlf("a\nb"), "a\r\nb");
         assert_eq!(to_crlf("a\r\nb"), "a\r\nb");
         assert_eq!(from_crlf("a\r\nb\r\n"), "a\nb\n");
+    }
+
+    #[test]
+    fn the_font_height_follows_the_dpi() {
+        assert_eq!(font_height_at(-24, 192, 384), -48);
+        assert_eq!(font_height_at(-24, 192, 96), -12);
+        assert_eq!(font_height_at(-24, 192, 144), -18);
+        // 開いたときの DPI なら、開いたときの高さのまま。開いたときの DPI が 0 なら変えない。
+        assert_eq!(font_height_at(-13, 96, 96), -13);
+        assert_eq!(font_height_at(-13, 0, 96), -13);
     }
 }

@@ -820,6 +820,61 @@ fn a_paste_of_the_size_is_confirmed_and_can_be_cancelled() {
     assert!(!text.contains("marker-0-cancelled"), "{text}");
 }
 
+/// 編集のダイアログは、開いている間に DPI が変われば、その DPI の寸法で並べ直し、フォントを作り直す。モニターの DPI は
+/// 変えられないので、ダイアログへ送った `WM_DPICHANGED` への反応を見る。
+#[test]
+fn the_text_dialog_follows_a_dpi_change() {
+    /// 入力欄の上の行（大きさを添える文）のコントロール ID。
+    const HEADER_ID: i32 = 200;
+    let server = Server::start(PASTE_NEVER_CONFIRMS, &CMD_COMMAND);
+    server.wait_text(CMD_PROMPT);
+    server.paste(&paste_commands(DEFAULT_PASTE_CONFIRM_BYTES, "dpi"));
+    wait_text_dialog(&server);
+    let before = read_controls(&server);
+    let dpi = 2 * number(&before["dpi"]);
+
+    let (status, body) = server.request("POST", &format!("/e2e/dialog/dpichanged/{dpi}"), b"");
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let after: Value = serde_json::from_slice(&body).expect("the controls are not JSON");
+    // 推奨の矩形どおりに、クライアント領域が DPI の比で大きくなる。
+    for key in ["client_width", "client_height"] {
+        assert_eq!(
+            number(&after[key]),
+            2 * number(&before[key]),
+            "{key}: {after:#}"
+        );
+    }
+    // ボタンの大きさと余白は 96 DPI のときのピクセルから決めるので、DPI の比ちょうどになる。
+    let right_margin = |dialog: &Value, id: i32| {
+        let button = control(dialog, id);
+        number(&dialog["client_width"]) - number(&button["x"]) - number(&button["width"])
+    };
+    for id in [BUTTON_OK, BUTTON_CANCEL] {
+        for key in ["width", "height"] {
+            assert_eq!(
+                number(&control(&after, id)[key]),
+                2 * number(&control(&before, id)[key]),
+                "{id} {key}: {after:#}"
+            );
+        }
+        assert_eq!(
+            right_margin(&after, id),
+            2 * right_margin(&before, id),
+            "{id}: {after:#}"
+        );
+    }
+    // 上の行はメッセージのフォントの 1 行の高さなので、フォントを作り直すと高くなる。
+    assert!(
+        number(&control(&after, HEADER_ID)["height"])
+            > number(&control(&before, HEADER_ID)["height"]),
+        "{before:#}\n{after:#}"
+    );
+
+    server.press_dialog_button(BUTTON_CANCEL);
+    server.wait_dialogs(0);
+    check_terminal_still_works(&server, "after-text-dialog-dpi");
+}
+
 #[test]
 fn a_large_paste_is_not_confirmed_when_the_size_is_zero() {
     let config = format!("{PASTE_NEVER_CONFIRMS}confirm_size = 0\n");
