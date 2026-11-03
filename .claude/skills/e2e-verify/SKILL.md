@@ -10,7 +10,7 @@ description: fantermo の e2e テストと、制御の口（feature e2e）での
 要求にはヘッダー `X-Fantermo-Token` でトークンを付ける（付いていない、合わないものは 403）。一つの接続で要求を続けて送れ（keep-alive）、
 次の要求が 10 秒来ない接続は閉じる。`Server::request` は接続を使い回し、閉じられていたら繋ぎ直す。手で `curl` などで使うときもトークンを付ける。
 実装は `crates/fantermo/src/e2e_server.rs`（受ける側）と `crates/fantermo/src/window/e2e.rs`（ウィンドウのスレッド側）、
-テストの土台は `crates/fantermo/tests/common/mod.rs`、テストは `crates/fantermo/tests/e2e.rs`。
+テストの土台は `crates/fantermo/tests/common/mod.rs`、テストは `crates/fantermo/tests/e2e/`（話題ごとのファイル `basics.rs` `processes.rs` `mouse.rs` `menu.rs` `settings.rs` `update.rs` `dpi.rs` など。複数の話題が使う補助は `ui.rs`）。テストの名前にはファイル名（モジュール）が前に付く（`mouse::the_wheel_scrolls_the_scrollback`）。名前の一部での絞り込みと `--skip` は、これまでの名前のままで効く。
 
 ## 実行
 
@@ -96,7 +96,7 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
 - 起動の前に置くファイル: `Server::start_with_setup` の `prepare` が一時フォルダで呼ばれる。`state.toml` の初期値（`common::STATE_FILE`）はここで置く。閉じたあとの中身は `state_file()` で、`Server` を破棄する前に読む。
 - 背景画像: `common::encode_png` で作った PNG を `prepare` で置き、設定には相対パスで書く（設定ファイルのフォルダから辿る）。候補が一枚なら選び方はランダムにならない。位置は状態の `background` の範囲から決め、文字のないところを見る。画素は `wait_pixels` で待ち、背景色を `[colors] background` で固定して比べる。合成の丸めとソフトウェアの描画の差の分、許容の幅を持たせる（`BACKGROUND_COLOR_TOLERANCE`）。スクロールバーのトラックはマウスを載せた絵が撮れないので、つまみを押したまま（ドラッグ）か、つまみの外を押し続けて絵を読む（`assert_scroll_bar_colors`）。スクロールバーの色は `[colors.scroll_bar]` で固定する。
 - ログオフ: `send_message` で `queryendsession`・`endsession` を送り、`state_file()` を読む。書かれたかどうかは、送る前にファイルを消して見る。OS がプロセスごと終わらせるところは `processes::terminate` で fantermo だけを終わらせて真似る。fantermo のほかのプロセスは OS に終わらされないので、残らないことの確認は実際のログオフより厳しい。
-- マウス: `Server::mouse` に行を渡す（`e2e.rs` の `left_click`・`left_drag`・`button_click`・`wheel`・`step` で作る）。位置はセルなら `cell_center`・`cell_left`・`cell_right`、ほかは状態の `scroll_bar`・`tab_bar` から決める。文字の位置は `find_cell`。
+- マウス: `Server::mouse` に行を渡す（`tests/e2e/ui.rs` の `left_click`・`left_drag`・`button_click`・`wheel`・`step` で作る）。位置はセルなら `cell_center`・`cell_left`・`cell_right`、ほかは状態の `scroll_bar`・`tab_bar` から決める。文字の位置は `find_cell`。
   - 答えを先に返してから送る（メニューを開くと閉じるまで戻らないため）。続く要求はそのあとに処理されるので、次に読む状態には送った分が入っている。最後のタブの閉じるボタンでウィンドウが終わっても答えは返る。
   - ダブルクリックは `GetDoubleClickTime` の間隔の中で判定するので、一つの要求に続けて書く（別の要求にすると、負荷が高いと間に合わない）。逆に、同じ位置を間隔の中で押すとダブルクリックになるので、選び直すときは別の位置を挟む。つまみの外を押して離す 1 ページの送りも一つの要求に書く（250 ms で繰り返しが始まる）。押し続けるのを見るときは `left-down` だけ送り、`wait_until` で待つ。
   - 押していることは `wParam`（`MK_*`）に、修飾キーはそれに加えてウィンドウのスレッドのキーボードの状態（`SetKeyboardState`。`keyboard::current_mods` が読む）に、送る間だけ入れる。書いていない修飾キーは離した状態にする。別デスクトップのスレッドの `GetKeyState` にも利用者が本物のキーボードで押した修飾キーが見えることがあり、そのまま読むと Shift で報告が選択に変わるなど、テストが時々落ちる。

@@ -13,7 +13,7 @@ e2e = []
 # `required-features` により、feature なしの `cargo test` はこのテストのために fantermo.exe を作り直さない。
 [[test]]
 name = "e2e"
-path = "tests/e2e.rs"
+path = "tests/e2e/main.rs"
 required-features = ["e2e"]
 
 [dependencies]

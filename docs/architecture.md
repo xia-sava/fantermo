@@ -348,7 +348,7 @@ run-hidden は利用者のセッションのウィンドウステーション（
    - 固定の選択肢のコンボボックスなら `ChoiceBox`．選択肢と画面の名前を渡します．`CBN_SELCHANGE` の処理は `on_command` に書きます．
    - 変えたときに反映のほかにも処理が要るものは，`on_command` の，数の入力欄やラジオボタンをまとめて受ける分岐より上に，その ID の分岐を書きます．
 5. 書き方を改めるとき（キーの名前を変える，型を変える）は，`config::migrate` の `STEPS` の最後に手順を足します．今の書き方には何もしない手順にします．
-6. テスト: `config/read.rs` の `template_shows_every_setting_with_its_default`・`all_items_are_read` と範囲のテスト（`SCALARS` の項目は，ひな形の項目，入力欄の範囲，既定値に戻す書き戻しのテストが一覧から数えます．`invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults` は設定の文字列に読めない値を 1 行足すまで落ちます．`all_items_are_read` と `config_edit.rs` の `customized()` は手で書いた値なので，足さなくても落ちませんが，既定値と違う値を足します．`customized()` に足すと，`settings_replace_the_commented_lines_of_the_template` の期待値にもその行の置き換えが要ります），`config_edit.rs` の書き戻しのテスト，設定ダイアログの e2e（`crates/fantermo/tests/e2e.rs`）．利用者に見える項目なら README も．
+6. テスト: `config/read.rs` の `template_shows_every_setting_with_its_default`・`all_items_are_read` と範囲のテスト（`SCALARS` の項目は，ひな形の項目，入力欄の範囲，既定値に戻す書き戻しのテストが一覧から数えます．`invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults` は設定の文字列に読めない値を 1 行足すまで落ちます．`all_items_are_read` と `config_edit.rs` の `customized()` は手で書いた値なので，足さなくても落ちませんが，既定値と違う値を足します．`customized()` に足すと，`settings_replace_the_commented_lines_of_the_template` の期待値にもその行の置き換えが要ります），`config_edit.rs` の書き戻しのテスト，設定ダイアログの e2e（`crates/fantermo/tests/e2e/settings.rs`）．利用者に見える項目なら README も．
 
 ### キーの割り当てを足す
 
@@ -385,7 +385,7 @@ run-hidden は利用者のセッションのウィンドウステーション（
 ## 7. テスト
 
 - **単体のテスト**: `./tools/dev.sh test`．各モジュールの `#[cfg(test)]` のほか，`crates/fantermo-core/tests/key_encoding.rs`（libghostty-vt のキーの符号化を固定する）と `crates/run-hidden/tests/usage.rs`．ウィンドウや描画に依存しない計算（`tab_bar`，`scroll_bar`，`window/layout.rs` の配置の関数など）は関数に分けて単体でテストします．
-- **e2e**: `./tools/dev.sh test --features e2e`．実際の fantermo を run-hidden で別デスクトップに起動し，制御の口で操作して画面の文字と絵を読みます．テストは `crates/fantermo/tests/e2e.rs`，土台は `crates/fantermo/tests/common/`．実行のしかた，書き方，環境変数，落とし穴は `.claude/skills/e2e-verify` にあります．
+- **e2e**: `./tools/dev.sh test --features e2e`．実際の fantermo を run-hidden で別デスクトップに起動し，制御の口で操作して画面の文字と絵を読みます．テストは `crates/fantermo/tests/e2e/`（話題ごとのファイルに分け，複数の話題が使う補助は `ui.rs`），土台は `crates/fantermo/tests/common/`．実行のしかた，書き方，環境変数，落とし穴は `.claude/skills/e2e-verify` にあります．
 - **画面の書き出し**: `FANTERMO_DUMP=<ディレクトリ>` を付けると，fantermo が `screen.txt`（画面の文字と大きさ）と `frame.png`（描いたバックバッファ）を定期的に書き出します（`dump.rs`）．Direct3D のウィンドウはウィンドウの DC から撮れないので，画面を使わずに描画を見るときに使います．
 - **ブリッジのテスト**: `./tools/bridge.sh test <cygwin|linux|all>`．`crates/fantermo-bridge/tests/protocol.rs` が，ブリッジをパイプで起動してプロトコルの単位で話します．
 - **CI**（`.github/workflows/ci.yml`）:
