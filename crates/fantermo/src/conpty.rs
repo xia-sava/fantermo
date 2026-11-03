@@ -34,7 +34,7 @@ use fantermo_core::{
 use windows::{
     Wdk::System::Threading::{NtQueryInformationProcess, PROCESSINFOCLASS},
     Win32::{
-        Foundation::{HANDLE, WAIT_OBJECT_0},
+        Foundation::{ERROR_MORE_DATA, HANDLE, WAIT_OBJECT_0},
         System::{
             Console::{COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole},
             Diagnostics::ToolHelp::{
@@ -85,8 +85,11 @@ const TERMINATED_EXIT_CODE: u32 = 1;
 const CLOSING_AT_EXIT_TIMEOUT: Duration =
     Duration::from_millis(CLOSE_TIMEOUT_MS as u64 + STALLED_CONNECTION.as_millis() as u64 + 2000);
 
-/// Job の中のプロセスの一覧を読む数の上限。
-const MAX_JOB_PROCESSES: usize = 1024;
+/// Job の中のプロセスの一覧を、まず何個の分の領域で読むか。入りきらなければ広げて読み直す。
+const INITIAL_JOB_PROCESSES: usize = 1024;
+
+/// Job の中のプロセスの一覧を読む回数の上限。読み直す間にもプロセスが増えうるので、一度で足りるとは限らない。
+const JOB_PROCESS_LIST_ATTEMPTS: usize = 3;
 
 /// 実行ファイルの先頭から、サブシステムを読むために読む長さ。
 const IMAGE_HEADER_LEN: usize = 4096;
@@ -557,34 +560,62 @@ fn tab_job() -> windows::core::Result<OwnedHandle> {
     Ok(job)
 }
 
-/// `job` の中で動いているプロセスの番号。多すぎる分は読まない。
+/// `job` の中で動いているプロセスの番号。
 fn job_process_ids(job: &OwnedHandle) -> windows::core::Result<Vec<u32>> {
-    // 構造体の末尾が可変長の配列なので、並びの合う `usize` の配列で確保する。
-    let words = (size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>()
-        + MAX_JOB_PROCESSES * size_of::<usize>())
-    .div_ceil(size_of::<usize>());
-    let mut buffer = vec![0usize; words];
-    let list = buffer
-        .as_mut_ptr()
-        .cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
-    // SAFETY: buffer は指定した長さの分だけ書き込め、構造体の並びを満たす。
-    unsafe {
-        QueryInformationJobObject(
-            Some(HANDLE(job.as_raw_handle())),
-            JobObjectBasicProcessIdList,
-            list.cast(),
-            (words * size_of::<usize>()) as u32,
-            None,
-        )?;
+    job_process_ids_with_capacity(job, INITIAL_JOB_PROCESSES)
+}
+
+/// [`job_process_ids`] の中身。まず `capacity` 個の分の領域で読み、入りきらなければ（`ERROR_MORE_DATA`）、
+/// 領域を倍と Job の中のプロセスの数の大きい方まで広げて、合わせて [`JOB_PROCESS_LIST_ATTEMPTS`] 回まで読む。
+fn job_process_ids_with_capacity(
+    job: &OwnedHandle,
+    capacity: usize,
+) -> windows::core::Result<Vec<u32>> {
+    let list_offset = std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList);
+    let mut capacity = capacity.max(1);
+    let mut attempts = 1;
+    loop {
+        // 構造体の末尾が可変長の配列なので、並びの合う `usize` の配列で確保する。
+        let words = (list_offset + capacity * size_of::<usize>()).div_ceil(size_of::<usize>());
+        let mut buffer = vec![0usize; words];
+        let list = buffer
+            .as_mut_ptr()
+            .cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+        // SAFETY: buffer は渡す長さの分だけ書き込め、構造体の大きさ以上で、構造体の並びを満たす。
+        let queried = unsafe {
+            QueryInformationJobObject(
+                Some(HANDLE(job.as_raw_handle())),
+                JobObjectBasicProcessIdList,
+                list.cast(),
+                (words * size_of::<usize>()) as u32,
+                None,
+            )
+        };
+        match queried {
+            Ok(()) => {}
+            Err(e)
+                if e.code() == ERROR_MORE_DATA.to_hresult()
+                    && attempts < JOB_PROCESS_LIST_ATTEMPTS =>
+            {
+                // SAFETY: 先頭の構造体は buffer の中にあり、0 で埋めてあるか QueryInformationJobObject が書いた。
+                let assigned = unsafe { (*list).NumberOfAssignedProcesses } as usize;
+                capacity = capacity.saturating_mul(2).max(assigned);
+                attempts += 1;
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+        let slots = (words * size_of::<usize>() - list_offset) / size_of::<usize>();
+        // SAFETY: 先頭の構造体と、ProcessIdList から slots 個は buffer の中にあり、0 で埋めてあるか
+        // QueryInformationJobObject が書いた。読む数は slots を超えない。
+        let pids = unsafe {
+            std::slice::from_raw_parts(
+                (&raw const (*list).ProcessIdList).cast::<usize>(),
+                ((*list).NumberOfProcessIdsInList as usize).min(slots),
+            )
+        };
+        return Ok(pids.iter().map(|&pid| pid as u32).collect());
     }
-    // SAFETY: QueryInformationJobObject が先頭の構造体と、ProcessIdList の NumberOfProcessIdsInList 個を書いた。
-    let pids = unsafe {
-        std::slice::from_raw_parts(
-            (&raw const (*list).ProcessIdList).cast::<usize>(),
-            (*list).NumberOfProcessIdsInList as usize,
-        )
-    };
-    Ok(pids.iter().map(|&pid| pid as u32).collect())
 }
 
 /// プロセスがコンソールのプログラムか。実行ファイルの PE ヘッダーのサブシステムで見る。読めなければ偽。
@@ -1113,6 +1144,56 @@ mod tests {
             }
             assert!(Instant::now() < deadline, "the child has no console host");
             thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    /// Job の中のプロセスが用意した領域に入りきらなくても、領域を広げて全部を読む。入りきらないと
+    /// `QueryInformationJobObject` が `ERROR_MORE_DATA` で失敗することも見る。
+    #[test]
+    fn the_processes_of_a_job_are_read_beyond_the_initial_capacity() {
+        /// ping が送る回数（1 秒に 1 回）。テストの間は動いていて、片づけに失敗しても自分で終わる。
+        const PING_COUNT: u32 = 30;
+
+        let command_line = format!("cmd.exe /c ping.exe -n {PING_COUNT} 127.0.0.1");
+        let options = SpawnOptions {
+            command_line: &command_line,
+            env: &[],
+            size: SIZE,
+            working_folder: None,
+        };
+        let mut pty = ConPty::spawn(&options, Arc::new(|| {})).unwrap();
+        let job = pty.job.take().expect("the child is not in a job");
+        let deadline = Instant::now() + TIMEOUT;
+        let all = loop {
+            pty.drain_output(&mut |_| {});
+            let pids = job_process_ids(&job).unwrap();
+            // cmd と ping。
+            if pids.len() >= 2 {
+                break pids;
+            }
+            assert!(Instant::now() < deadline, "the job has {pids:?}");
+            thread::sleep(POLL_INTERVAL);
+        };
+
+        let mut list = JOBOBJECT_BASIC_PROCESS_ID_LIST::default();
+        // SAFETY: list は渡す長さの分だけ書き込める。
+        let queried = unsafe {
+            QueryInformationJobObject(
+                Some(HANDLE(job.as_raw_handle())),
+                JobObjectBasicProcessIdList,
+                (&raw mut list).cast(),
+                size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() as u32,
+                None,
+            )
+        };
+        assert_eq!(
+            queried.map_err(|e| e.code()),
+            Err(ERROR_MORE_DATA.to_hresult())
+        );
+
+        let read = job_process_ids_with_capacity(&job, 1).unwrap();
+        for pid in &all {
+            assert!(read.contains(pid), "{pid} is missing from {read:?}");
         }
     }
 
