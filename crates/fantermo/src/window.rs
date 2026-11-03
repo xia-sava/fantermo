@@ -30,7 +30,9 @@ use fantermo_core::{
 };
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM},
+        Foundation::{
+            ERROR_INVALID_WINDOW_HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+        },
         Graphics::{
             DirectWrite::IDWriteFactory,
             Gdi::{
@@ -3088,10 +3090,25 @@ fn poster(hwnd: HWND, message: u32, wparam: WPARAM) -> impl Fn() + Send + Sync +
     // HWND はスレッドをまたいで渡せないので、値だけを持たせる。PostMessageW はどのスレッドからでも呼べる。
     let hwnd_value = hwnd.0 as isize;
     move || {
-        // SAFETY: ウィンドウがすでに壊れていれば失敗するだけで、害はない。
-        unsafe {
-            _ = PostMessageW(Some(HWND(hwnd_value as *mut _)), message, wparam, LPARAM(0));
+        if let Err(e) = post(HWND(hwnd_value as *mut _), message, wparam) {
+            warn_post_failed(message, &e);
         }
+    }
+}
+
+/// `hwnd` に `message` を `wparam` を添えて積む。どのスレッドから呼んでもよい。
+fn post(hwnd: HWND, message: u32, wparam: WPARAM) -> windows::core::Result<()> {
+    // SAFETY: ウィンドウがすでに壊れていれば失敗するだけで、害はない。
+    unsafe { PostMessageW(Some(hwnd), message, wparam, LPARAM(0)) }
+}
+
+/// [`post`] の失敗を残す。ウィンドウが壊れたあと（閉じる途中に届いた出力や終了の知らせ）は害がないので
+/// debug にとどめる。ほかの失敗（キューがいっぱいなど）は、知らせを失ってそのタブの出力が止まりうるので warn。
+fn warn_post_failed(message: u32, error: &windows::core::Error) {
+    if error.code() == ERROR_INVALID_WINDOW_HANDLE.to_hresult() {
+        tracing::debug!("the window is gone; did not post message {message:#06x}: {error}");
+    } else {
+        tracing::warn!("failed to post message {message:#06x}: {error}");
     }
 }
 
@@ -3514,6 +3531,31 @@ fn bring_to_front(hwnd: HWND) {
     }
 }
 
+thread_local! {
+    /// 借用が重なって飛ばした [`WM_APP_WAKE`] の宛先のウィンドウと `wparam`。読むためのスレッドは、ウィンドウの
+    /// スレッドが受け取り始めるまで次の知らせを積まず、上限に達すれば読むのも待つので、飛ばしたままにすると
+    /// そのタブの出力が止まる。
+    static SKIPPED_WAKES: RefCell<Vec<(HWND, WPARAM)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// 借用が重なって [`WM_APP_WAKE`] を飛ばしたことを覚える。同じ宛先は重ねない。
+fn remember_skipped_wake(hwnd: HWND, wparam: WPARAM) {
+    SKIPPED_WAKES.with_borrow_mut(|wakes| {
+        if !wakes.contains(&(hwnd, wparam)) {
+            wakes.push((hwnd, wparam));
+        }
+    });
+}
+
+/// 借用が重なって飛ばした [`WM_APP_WAKE`] を積み直す。借用を手放したところで呼ぶ。
+fn repost_skipped_wakes() {
+    for (hwnd, wparam) in SKIPPED_WAKES.take() {
+        if let Err(e) = post(hwnd, WM_APP_WAKE, wparam) {
+            warn_post_failed(WM_APP_WAKE, &e);
+        }
+    }
+}
+
 /// `hwnd` の `GWLP_USERDATA` に入っている値を、App のポインタとして読む。参照は作らないので、App を結び付けて
 /// いないウィンドウや、破棄したウィンドウ（0 が返る）のハンドルでもよい。
 fn app_pointer(hwnd: HWND) -> *const RefCell<App> {
@@ -3553,8 +3595,17 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         // 借りている間は DestroyWindow を呼ばないので、action の間も解放されない。
         let app = unsafe { &*app };
         match app.try_borrow_mut() {
-            Ok(mut app) => action(&mut app),
-            Err(_) => tracing::debug!("skipped reentrant message {msg:#06x}"),
+            Ok(mut borrowed) => {
+                action(&mut borrowed);
+                drop(borrowed);
+                repost_skipped_wakes();
+            }
+            Err(_) => {
+                tracing::debug!("skipped reentrant message {msg:#06x}");
+                if msg == WM_APP_WAKE {
+                    remember_skipped_wake(hwnd, wparam);
+                }
+            }
         }
     };
 

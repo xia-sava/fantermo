@@ -2,8 +2,9 @@
 //! 起動し、標準入出力のパイプでプロトコル（`fantermo-bridge-protocol`）の単位をやり取りする。
 //!
 //! 書き込みは書くためのスレッドに任せ、ウィンドウのスレッドは待たない。出力は読むためのスレッドで単位に
-//! 分け、データと子プロセスの終了をチャネルで渡す。標準エラー出力はログへ流す。起動できないときや
-//! ブリッジがエラーで終わったときは、その理由を赤い文字で端末に出し、タブは開いたままにする。
+//! 分け、データと子プロセスの終了をチャネルで渡す。チャネルの中のデータのバイト数は [`OutputBudget`] で
+//! 上限を置く。標準エラー出力はログへ流す。起動できないときやブリッジがエラーで終わったときは、その理由を
+//! 赤い文字で端末に出し、タブは開いたままにする。
 
 use std::{
     env,
@@ -37,6 +38,8 @@ use windows::Win32::{
         CREATE_NO_WINDOW, GetExitCodeProcess, INFINITE, TerminateProcess, WaitForSingleObject,
     },
 };
+
+use crate::output_budget::{MAX_PENDING_OUTPUT, OutputBudget};
 
 /// Cygwin 向けのブリッジの実行ファイルの名前と、開発中にビルドしたものを探すときのターゲット。
 const CYGWIN_BRIDGE: (&str, &str) = ("fantermo-bridge.exe", "x86_64-pc-cygwin");
@@ -89,6 +92,8 @@ pub struct Bridge {
     /// ブリッジのプロセス。起動できなかったときは `None`。
     process: Option<Arc<OwnedHandle>>,
     events: mpsc::Receiver<Event>,
+    /// `events` に入っていて、まだ受け取っていない [`Event::Output`] のバイト数。
+    budget: Arc<OutputBudget>,
     /// 破棄して、ブリッジに終わってもらっている。読むためのスレッドは、閉じたことを知らせない。
     closing: Arc<AtomicBool>,
     /// 最後に伝えた大きさ。
@@ -102,10 +107,13 @@ impl Bridge {
     /// エラーにはせず、その理由を端末に出すバックエンドを返す。
     pub fn spawn(target: Target, options: &SpawnOptions, wake: Wake) -> io::Result<Self> {
         let (sender, events) = mpsc::channel();
+        let budget = Arc::new(OutputBudget::new(MAX_PENDING_OUTPUT));
         let size = window_size(options.size);
         let command = match bridge_command(target, options) {
             Ok(command) => command,
-            Err(message) => return Ok(Self::failed(&message, sender, events, size, &wake)),
+            Err(message) => {
+                return Ok(Self::failed(&message, sender, events, budget, size, &wake));
+            }
         };
         let mut command = command;
         command
@@ -120,7 +128,7 @@ impl Bridge {
                     "ブリッジを起動できませんでした（{}）: {e}",
                     command.get_program().to_string_lossy()
                 );
-                return Ok(Self::failed(&message, sender, events, size, &wake));
+                return Ok(Self::failed(&message, sender, events, budget, size, &wake));
             }
         };
         let (Some(stdin), Some(stdout), Some(stderr)) =
@@ -147,7 +155,8 @@ impl Bridge {
         thread::Builder::new().name("bridge-reader".into()).spawn({
             let process = Arc::clone(&process);
             let closing = Arc::clone(&closing);
-            move || read_output(stdout, &process, &closing, &sender, &*wake)
+            let budget = Arc::clone(&budget);
+            move || read_output(stdout, &process, &closing, &sender, &budget, &*wake)
         })?;
         thread::Builder::new()
             .name("bridge-stderr".into())
@@ -157,6 +166,7 @@ impl Bridge {
             input: Some(input),
             process: Some(process),
             events,
+            budget,
             closing,
             size,
             exit: None,
@@ -168,16 +178,19 @@ impl Bridge {
         message: &str,
         sender: mpsc::Sender<Event>,
         events: mpsc::Receiver<Event>,
+        budget: Arc<OutputBudget>,
         size: WindowSize,
         wake: &Wake,
     ) -> Self {
         tracing::warn!("{message}");
-        _ = sender.send(Event::Output(error_text(message)));
-        wake();
+        if send_all(&sender, &budget, vec![Event::Output(error_text(message))]) {
+            wake();
+        }
         Self {
             input: None,
             process: None,
             events,
+            budget,
             closing: Arc::new(AtomicBool::new(false)),
             size,
             exit: None,
@@ -214,9 +227,13 @@ impl Backend for Bridge {
     }
 
     fn drain_output(&mut self, sink: &mut dyn FnMut(&[u8])) {
+        self.budget.receiving();
         while let Ok(event) = self.events.try_recv() {
             match event {
-                Event::Output(data) => sink(&data),
+                Event::Output(data) => {
+                    sink(&data);
+                    self.budget.drained(data.len());
+                }
                 Event::Exit(code) => self.exit = Some(code),
             }
         }
@@ -230,6 +247,9 @@ impl Backend for Bridge {
 impl Drop for Bridge {
     fn drop(&mut self) {
         self.closing.store(true, Ordering::Relaxed);
+        // 上限で待っている読むためのスレッドの待ちを解く。読むためのスレッドは、このあとに読んだ出力を捨てながら
+        // 読み続けるので、ブリッジの標準出力への書き込みは止まったままにならない。
+        self.budget.close();
         if let Err(e) = self.send(&ToBridge::Quit) {
             tracing::debug!("the bridge has already stopped reading: {e}");
         }
@@ -556,13 +576,15 @@ fn write_input(mut stdin: impl Write, queued: &mpsc::Receiver<Vec<u8>>, closing:
     }
 }
 
-/// ブリッジの標準出力を閉じるまで読み、単位ごとに `sender` へ渡して `wake` を呼ぶ。`closing` が立って
-/// いれば（破棄したあとなら）、閉じたことは知らせない。
+/// ブリッジの標準出力を閉じるまで読み、単位ごとに `sender` へ渡して `wake` を呼ぶ。まだ受け取られていない分が
+/// `budget` の上限に達していれば、受け取られるまで待つ（[`send_all`]）。`closing` が立っていれば（破棄した
+/// あとなら）、閉じたことは知らせない。
 fn read_output(
     mut stdout: ChildStdout,
     process: &OwnedHandle,
     closing: &AtomicBool,
     sender: &mpsc::Sender<Event>,
+    budget: &OutputBudget,
     wake: &dyn Fn(),
 ) {
     let mut reader = OutputReader::default();
@@ -579,7 +601,7 @@ fn read_output(
         };
         let events = reader.push(&buf[..len]);
         let done = reader.done;
-        if send_all(sender, events) {
+        if send_all(sender, budget, events) {
             wake();
         }
         if done {
@@ -592,20 +614,29 @@ fn read_output(
     }
     // 終わりの単位もエラーもなく閉じた。ブリッジの終了コードを添えて知らせる。
     let code = wait_for(process, Some(QUIT_TIMEOUT)).then(|| exit_code(process));
-    if send_all(sender, reader.closed(code.flatten())) {
+    if send_all(sender, budget, reader.closed(code.flatten())) {
         wake();
     }
 }
 
-/// `events` を `sender` へ渡す。一つでも渡したら `true`。
-fn send_all(sender: &mpsc::Sender<Event>, events: Vec<Event>) -> bool {
-    let sent = !events.is_empty();
+/// `events` を `sender` へ渡す。一つでも渡し、ウィンドウのスレッドへ知らせるべきなら（[`OutputBudget::sent`]）
+/// `true`。端末に流すものは `budget` に数え、上限に達していれば受け取られるまで待つ。`budget` を閉じたら
+/// （破棄したら）、待たずに残りを捨てて `false` を返す。
+fn send_all(sender: &mpsc::Sender<Event>, budget: &OutputBudget, events: Vec<Event>) -> bool {
+    if events.is_empty() {
+        return false;
+    }
     for event in events {
+        if let Event::Output(data) = &event
+            && !budget.push(data.len())
+        {
+            return false;
+        }
         if sender.send(event).is_err() {
             return false;
         }
     }
-    sent
+    budget.sent()
 }
 
 /// ブリッジの標準出力を単位に分け、端末に流すものと子プロセスの終了にする。

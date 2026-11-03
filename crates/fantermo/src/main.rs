@@ -41,6 +41,7 @@ mod link_opener;
 mod logging;
 mod modal;
 mod notice;
+mod output_budget;
 mod paint;
 mod paste_editor;
 mod pipeline;

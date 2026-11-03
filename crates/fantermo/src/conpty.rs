@@ -2,8 +2,9 @@
 //!
 //! 疑似コンソールとは 2 本の匿名パイプで接続する。入力は書くためのスレッドに任せ、ウィンドウのスレッドは
 //! チャネルに積むだけにする（conhost が出力の書き込みで止まると、入力のパイプも読まれなくなるため）。出力は
-//! 読むためのスレッドで待ってチャネルで渡す。疑似コンソールは子プロセスが終了しても出力のパイプを閉じない
-//! ので、終了は子プロセスのハンドルを待つスレッドで知る。
+//! 読むためのスレッドで待ってチャネルで渡す。チャネルの中のバイト数は [`OutputBudget`] で上限を置く。
+//! 疑似コンソールは子プロセスが終了しても出力のパイプを閉じないので、終了は子プロセスのハンドルを待つ
+//! スレッドで知る。
 //!
 //! 疑似コンソールを閉じると、接続しているプロセスに閉じる知らせが一度届く。そのあとに接続したプロセス（起動の途中
 //! だったもの）には届かず、動き続ける。接続し終えないまま止まるプロセスもある。疑似コンソールのプロセス
@@ -67,6 +68,8 @@ use windows::{
     },
     core::{PCWSTR, PWSTR},
 };
+
+use crate::output_budget::{MAX_PENDING_OUTPUT, OutputBudget};
 
 /// 出力のパイプから一度に読む大きさ。
 const READ_BUFFER_SIZE: usize = 64 * 1024;
@@ -180,6 +183,8 @@ pub struct ConPty {
     /// 子プロセスとその子孫が入る Job。作れなければ `None` で、閉じたあとは接続したプロセスだけを探す。
     job: Option<OwnedHandle>,
     output: mpsc::Receiver<Vec<u8>>,
+    /// `output` に入っていて、まだ受け取っていないバイト数。
+    budget: Arc<OutputBudget>,
     reader: Option<thread::JoinHandle<()>>,
     exit: Option<ExitCode>,
 }
@@ -223,6 +228,7 @@ impl ConPty {
         let (sender, receiver) = mpsc::channel();
         let (input_sender, queued) = mpsc::channel();
         let closing = Arc::new(AtomicBool::new(false));
+        let budget = Arc::new(OutputBudget::new(MAX_PENDING_OUTPUT));
         let mut pty = Self {
             console,
             console_size,
@@ -231,6 +237,7 @@ impl ConPty {
             process,
             job,
             output: receiver,
+            budget: Arc::clone(&budget),
             reader: None,
             exit: None,
         };
@@ -240,7 +247,7 @@ impl ConPty {
         })?;
         pty.reader = Some(thread::Builder::new().name("conpty-reader".into()).spawn({
             let wake = Arc::clone(&wake);
-            move || read_output(File::from(output), &sender, &*wake)
+            move || read_output(File::from(output), &sender, &budget, &*wake)
         })?);
         thread::Builder::new()
             .name("conpty-exit-watcher".into())
@@ -274,8 +281,10 @@ impl Backend for ConPty {
     }
 
     fn drain_output(&mut self, sink: &mut dyn FnMut(&[u8])) {
+        self.budget.receiving();
         while let Ok(chunk) = self.output.try_recv() {
             sink(&chunk);
+            self.budget.drained(chunk.len());
         }
     }
 
@@ -307,6 +316,9 @@ impl Drop for ConPty {
         // 書き込みが返らなくても、閉じるスレッドが疑似コンソールを閉じて conhost が終われば、入力のパイプが
         // 壊れて返る。
         self.closing.store(true, Ordering::Relaxed);
+        // 上限で待っている読むためのスレッドを抜けさせる。抜けると出力のパイプの読む側が閉じるので、
+        // close_console が読むためのスレッドの終わりを待っても止まらない。
+        self.budget.close();
         let console = self.console.0;
         let process = Arc::clone(&self.process);
         let job = self.job.take();
@@ -975,17 +987,26 @@ fn write_input(mut input: impl Write, queued: &mpsc::Receiver<Vec<u8>>, closing:
     }
 }
 
-/// 出力のパイプが閉じるまで読み、読めた分をチャネルで渡す。
-fn read_output(mut output: File, sender: &mpsc::Sender<Vec<u8>>, wake: &dyn Fn()) {
+/// 出力のパイプが閉じるまで読み、読めた分をチャネルで渡す。まだ受け取られていない分が `budget` の上限に
+/// 達していれば、受け取られるまで待つ。`budget` を閉じたら（破棄したら）抜ける。`wake` は、前の知らせの
+/// あとにウィンドウのスレッドが受け取り始めていたときだけ呼ぶ（[`OutputBudget::sent`]）。
+fn read_output(
+    mut output: File,
+    sender: &mpsc::Sender<Vec<u8>>,
+    budget: &OutputBudget,
+    wake: &dyn Fn(),
+) {
     let mut buf = vec![0u8; READ_BUFFER_SIZE];
     loop {
         match output.read(&mut buf) {
             Ok(0) => return,
             Ok(len) => {
-                if sender.send(buf[..len].to_vec()).is_err() {
+                if !budget.push(len) || sender.send(buf[..len].to_vec()).is_err() {
                     return;
                 }
-                wake();
+                if budget.sent() {
+                    wake();
+                }
             }
             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return,
             Err(e) => {

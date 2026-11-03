@@ -75,6 +75,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `session` | 端末一つ分の状態（`Session`）．`Vt` とバックエンド，タブごとの状態．バックエンドを作るのは `spawn_backend` の一か所 |
 | `conpty` | ConPTY のバックエンド |
 | `bridge` | ブリッジのバックエンド |
+| `output_budget` | ConPTY とブリッジの読むためのスレッドが渡して，まだ受け取られていない出力のバイト数の上限（3 節の「バックエンドの出力から描画まで」） |
 | `keyboard` | Win32 のキーのメッセージを端末のキーの情報に直す |
 | `ime` | IME の変換中のウィンドウと候補のウィンドウをカーソルの位置に出させる |
 | `renderer` | Direct3D 11 でウィンドウに描く．スワップチェーン，背景画像と端末の中の画像のテクスチャ，タブのアイコン |
@@ -104,10 +105,10 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 - **配置の関数** … `Insets`，`terminal_area_in_client`，`scroll_bar_area_in_client`，`backdrop_area_in_client`，`grid_size`．クライアント領域を，タブバー，端末を描く領域，余白，スクロールバー，背景画像を敷く領域に分けます．
 - **`App`** … ウィンドウ一つ分の状態．端末の並び（`sessions` と `active`），フォント，`Renderer`，いま使っている設定の値，マウスとタブバーとスクロールバーの操作の途中の状態など．
 - **`App` のメソッド** … キー（`on_key`，`on_key_input`，`run_bound_action`），タブ（`run_tab_command`，`open_startup`，`close_session`，`activate`），起動中の起動（`accept_launch`，`open_pending_launches`），貼り付けとクリップボード，マウスとリンク，スクロールバー，タブバー，メニュー，出力（`on_wake`），大きさ（`on_resize`，`layout`，`resize_sessions`），DPI（`apply_dpi`），設定（`reload_config`，`apply_config`，`config_in_use`，`settings_request`），描画（`render_to`），点滅と画像のアニメーションのタイマー．
-- **借用の外ですること** … `Deferred` と `run_deferred`，`show_about`，`continue_update`，`run_menu_command`，`edit_settings`（`SettingsHost`），`destroy_window`，`save_window_state`．
+- **借用の外ですること** … `Deferred` と `run_deferred`，`show_about`，`continue_update`，`run_menu_command`，`edit_settings`（`SettingsHost`），`destroy_window`，`save_window_state`，`repost_skipped_wakes`．
 - **`window_proc`** … メッセージごとの振り分け．
 
-ウィンドウプロシージャの中では `App` を `RefCell` で借ります．処理の途中で同じウィンドウへのメッセージがこの場で届くと借用が重なるので，借りられなければそのメッセージを飛ばします（`window_proc` の `with_app`）．ダイアログ，メニュー，メッセージボックスのように自分でメッセージを回すものは，借用を手放してから開きます．借用を持ったまま開くと，その間に届いた出力や描き直しが飛ばされるためです．入力の処理は開くものを `Deferred` で返し，`window_proc` が借用を外して `run_deferred` で開きます．`DestroyWindow` も同じ理由で借用の外で呼びます．開いている間に最後の端末が終わるとウィンドウが閉じて `App` が解放されるので，`with_app` は呼ばれるたびに `App` を読み直し，もうなければ何もしません．
+ウィンドウプロシージャの中では `App` を `RefCell` で借ります．処理の途中で同じウィンドウへのメッセージがこの場で届くと借用が重なるので，借りられなければそのメッセージを飛ばします（`window_proc` の `with_app`）．飛ばした `WM_APP_WAKE` だけは，借用を手放したところで積み直します．ダイアログ，メニュー，メッセージボックスのように自分でメッセージを回すものは，借用を手放してから開きます．借用を持ったまま開くと，その間に届いた出力や描き直しが飛ばされるためです．入力の処理は開くものを `Deferred` で返し，`window_proc` が借用を外して `run_deferred` で開きます．`DestroyWindow` も同じ理由で借用の外で呼びます．開いている間に最後の端末が終わるとウィンドウが閉じて `App` が解放されるので，`with_app` は呼ばれるたびに `App` を読み直し，もうなければ何もしません．
 
 ## 3. 主な流れ
 
@@ -135,7 +136,7 @@ IME の確定した文字と，キーを伴わない `WM_CHAR` は `on_text_unit
 
 ### バックエンドの出力から描画まで
 
-1. バックエンドの読むためのスレッドが出力を読み，チャネルに入れて `Wake` を呼びます．`Wake` は `WM_APP_WAKE` をその端末の `SessionId` を添えて積みます．端末の状態は `!Send` なので，ウィンドウのスレッドだけが持ちます．
+1. バックエンドの読むためのスレッドが出力を読み，チャネルに入れて `Wake` を呼びます．`Wake` は `WM_APP_WAKE` をその端末の `SessionId` を添えて積みます．端末の状態は `!Send` なので，ウィンドウのスレッドだけが持ちます．チャネルに入っていて，ウィンドウのスレッドがまだ受け取っていないバイト数には 64 MiB の上限を置きます（`output_budget`）．次の塊を足すと上限を超えるなら，読むためのスレッドは `drain_output` で受け取られるまで待ち，その間は読まないので，pty の側でアプリの出力が止まります．ウィンドウのスレッドが遅れても，メモリに溜まり続けません．破棄すると待っているスレッドを起こし，読むためのスレッドはそれ以上渡しません．`Wake` も `output_budget` でまとめ，知らせたあとウィンドウのスレッドが `drain_output` で受け取り始めるまでは知らせ直しません．まだ処理されていない `WM_APP_WAKE` は端末ごとに高々一つで，大量の出力の間も知らせがキューを埋めません．借用が重なって `WM_APP_WAKE` を飛ばしたときは，借用を手放したところで積み直します（`repost_skipped_wakes`．読むためのスレッドは受け取り始めるまで次の知らせを積まないため）．`WM_APP_WAKE` を積めなかったときは `tracing::warn!` に残します（ウィンドウが壊れたあとは debug）．
 2. `App::on_wake` が `Session::on_output` を呼びます．`drain_output` で溜まった出力を `Vt::feed` に流し，端末の応答（`take_replies`）をバックエンドへ書き，タイトルの変化とベルと子プロセスの終了を返します．表示していない端末の出力も流し込みます．
 3. `Vt::feed` の中では `output_scan` が sixel と OSC 52 の読み取りの依頼を取り出し，残りのバイトを順番を変えずに libghostty-vt へ渡します．sixel は `sixel` でデコードし，kitty graphics protocol の画像として端末に置きます．
 4. 表示している端末なら `invalidate` し，`WM_PAINT` で `render_to` が `Vt::frame` で画面を取り出し，タブバーとスクロールバーの `Paint` を組み，`Renderer::render` で描きます．

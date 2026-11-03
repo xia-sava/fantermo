@@ -45,6 +45,9 @@ pub trait Backend {
     fn resize(&mut self, size: GridSize) -> io::Result<()>;
 
     /// 読み取り済みの出力を、溜まっている分だけ `sink` に渡す。
+    ///
+    /// バックエンドは、まだ受け取られていない出力に上限を置き、上限に達したら受け取られるまで読むのを
+    /// 待ってよい。そのあいだ子プロセスの出力は止まる。
     fn drain_output(&mut self, sink: &mut dyn FnMut(&[u8]));
 
     /// 子プロセスが終了していれば、その終了コードを返す。
