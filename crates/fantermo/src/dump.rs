@@ -9,7 +9,7 @@ use std::{
 
 use fantermo_core::vt::Vt;
 
-use crate::font::Font;
+use crate::{app_files::write_replacing, font::Font};
 
 /// 書き出し先のディレクトリを指定する環境変数。
 pub const DUMP_DIR_ENV: &str = "FANTERMO_DUMP";
@@ -82,12 +82,9 @@ impl ScreenDump {
             font.size_pt,
             active + 1
         );
-        write_file(&self.dir.join(SCREEN_FILE), contents.as_bytes());
-    }
-}
-
-fn write_file(path: &Path, contents: &[u8]) {
-    if let Err(e) = std::fs::write(path, contents) {
-        tracing::warn!("failed to write {}: {e}", path.display());
+        let path = self.dir.join(SCREEN_FILE);
+        if let Err(e) = write_replacing(&path, &contents) {
+            tracing::warn!("failed to write {}: {e}", path.display());
+        }
     }
 }
