@@ -2665,11 +2665,12 @@ impl State<'_> {
             choice,
         );
         self.enable_item_opacity(custom.is_some());
-        // 借用は持っていない（入力欄の EN_CHANGE はこの中で届く）。
-        set_text(
-            c.background_item_opacity,
-            &custom.map(format_opacity).unwrap_or_default(),
-        );
+        // 値が変わったときだけ書く（書くと EN_CHANGE が届いて、端末への反映の予約が掛かる）。借用は
+        // 持っていない。
+        let text = custom.map(format_opacity).unwrap_or_default();
+        if get_text(c.background_item_opacity) != text {
+            set_text(c.background_item_opacity, &text);
+        }
     }
 
     /// 項目の不透明度の入力欄と上下の矢印を、`enabled` なら触れるようにする。
