@@ -3810,8 +3810,24 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             with_app(&mut |app| app.on_resize(width, height));
             LRESULT(0)
         }
-        WM_TIMER if wparam.0 == DUMP_TIMER_ID => {
-            with_app(&mut |app| app.write_dump());
+        WM_TIMER => {
+            match wparam.0 {
+                DUMP_TIMER_ID => with_app(&mut |app| app.write_dump()),
+                BLINK_TIMER_ID => with_app(&mut |app| app.on_blink_timer()),
+                SCROLL_BAR_TIMER_ID => with_app(&mut |app| app.on_scroll_bar_timer()),
+                IMAGE_ANIMATION_TIMER_ID => with_app(&mut |app| app.on_image_animation_timer()),
+                RENDERER_RETRY_TIMER_ID => with_app(&mut |app| app.on_renderer_retry_timer()),
+                OUTPUT_TIMER_ID => with_app(&mut |app| app.on_output_timer()),
+                CONFIG_TIMER_ID => {
+                    // SAFETY: hwnd は有効なウィンドウ。
+                    if let Err(e) = unsafe { KillTimer(Some(hwnd), CONFIG_TIMER_ID) } {
+                        tracing::warn!("failed to stop the settings timer: {e}");
+                    }
+                    reload_settings(hwnd, &with_app);
+                }
+                // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
+                _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+            }
             LRESULT(0)
         }
         WM_APP_UPDATE => {
@@ -3896,28 +3912,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
             LRESULT(0)
         }
-        WM_TIMER if wparam.0 == BLINK_TIMER_ID => {
-            with_app(&mut |app| app.on_blink_timer());
-            LRESULT(0)
-        }
-        WM_TIMER if wparam.0 == SCROLL_BAR_TIMER_ID => {
-            with_app(&mut |app| app.on_scroll_bar_timer());
-            LRESULT(0)
-        }
-        WM_TIMER if wparam.0 == IMAGE_ANIMATION_TIMER_ID => {
-            with_app(&mut |app| app.on_image_animation_timer());
-            LRESULT(0)
-        }
         WM_APP_DEVICE_REMOVED => {
             with_app(&mut |app| app.on_device_removed_message());
-            LRESULT(0)
-        }
-        WM_TIMER if wparam.0 == RENDERER_RETRY_TIMER_ID => {
-            with_app(&mut |app| app.on_renderer_retry_timer());
-            LRESULT(0)
-        }
-        WM_TIMER if wparam.0 == OUTPUT_TIMER_ID => {
-            with_app(&mut |app| app.on_output_timer());
             LRESULT(0)
         }
         // ほかのウィンドウにマウスのキャプチャが移ったら（Alt+Tab など）、離したことが届かないので、
@@ -3936,14 +3932,6 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             with_app(&mut |app| app.on_activate(active));
             // SAFETY: 受け取った引数をそのまま既定の処理に渡す（フォーカスをウィンドウに移してもらう）。
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-        }
-        WM_TIMER if wparam.0 == CONFIG_TIMER_ID => {
-            // SAFETY: hwnd は有効なウィンドウ。
-            if let Err(e) = unsafe { KillTimer(Some(hwnd), CONFIG_TIMER_ID) } {
-                tracing::warn!("failed to stop the settings timer: {e}");
-            }
-            reload_settings(hwnd, &with_app);
-            LRESULT(0)
         }
         WM_KEYDOWN | WM_SYSKEYDOWN => {
             let virtual_key = wparam.0 as u16;
