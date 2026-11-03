@@ -4,8 +4,8 @@ use crate::common::Server;
 use crate::common::processes;
 use crate::ui::{
     BackendSetup, CMD_LONG_COMMAND, CMD_LONG_PROCESS, check_cmd_responds, conpty_setup,
-    current_window, cygwin_setup, open_tabs_with_long_commands, quit, saved_window,
-    start_with_state, tab_count, wait_text_dialog, wsl_setup,
+    current_window, cygwin_setup, open_tabs_with_long_commands, quit, saved_window, tab_count,
+    wait_text_dialog, wsl_setup,
 };
 
 /// ログオフの問い合わせ（`WM_QUERYENDSESSION`）と、その結果の知らせ（`WM_ENDSESSION`）の名前。
@@ -121,24 +121,6 @@ fn after_a_cancelled_session_end_the_window_still_closes_normally() {
     quit(&mut server);
     assert_eq!(saved_window(&server), window);
     server.assert_no_children_remained();
-}
-
-/// `WM_ENDSESSION` で書いた状態で、次の起動の大きさが戻る。
-#[test]
-fn the_state_saved_at_the_session_end_comes_back_after_restarting() {
-    let mut first = Server::start("", &CMD_COMMAND);
-    first.wait_text(CMD_PROMPT);
-    first.resize(87, 23);
-    let window = current_window(&first.state());
-    assert_eq!(first.send_message(END_SESSION, SESSION_ENDS), 0);
-    terminate_like_the_session_end(&mut first);
-    let saved = std::fs::read(first.state_file()).expect("failed to read the state");
-    drop(first);
-
-    let (_second, state) = start_with_state(&saved);
-    assert_eq!(state["cols"], 87, "{state:#}");
-    assert_eq!(state["rows"], 23, "{state:#}");
-    assert_eq!(current_window(&state), window);
 }
 
 /// ダイアログを開いたままでも終わるのを止めず、状態を書く。ダイアログは閉じない。

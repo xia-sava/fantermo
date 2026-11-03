@@ -7,11 +7,11 @@ use crate::ui::{
     ID_YES, MENU_POLL_INTERVAL, MENU_TIMEOUT, ONE_PROFILE, PAGE_APPEARANCE, SETTINGS_DIALOG_CLASS,
     SYSTEM_DIALOG_CLASS, TERMINAL_BACKGROUND, TEXT_DIALOG_CLASS, assert_cell_is_drawn,
     assert_controls_fit, assert_layout_fits_the_client, cell_pixel, check_terminal_still_works,
-    click, close_message_box, config_path, control, control_enabled, current_window, dialog_text,
-    empty_cell_below, find_cell, number, number_of, open_settings, over_terminal_background,
-    press_cancel, read_controls, solid_image, start_settings_test, start_uneven,
-    start_with_background, tab_count, wait_dialog_of_class, wait_message_box, wait_pixels,
-    wait_tabs, wait_top_dialog,
+    click, click_main_menu, close_menu, close_message_box, config_path, control, control_enabled,
+    current_window, dialog_text, empty_cell_below, find_cell, number, number_of, open_menu,
+    open_settings, over_terminal_background, press_cancel, read_controls, solid_image,
+    start_settings_test, start_uneven, start_with_background, tab_count, wait_dialog_of_class,
+    wait_menu, wait_message_box, wait_pixels, wait_tabs, wait_top_dialog,
 };
 use fantermo_core::config;
 use fantermo_core::config::BackendKind;
@@ -880,10 +880,36 @@ fn the_behavior_page_changes_how_pastes_are_confirmed() {
     server.wait_dialogs(0);
 }
 
-/// 開いているダイアログにないコントロールと、押せないコントロールの操作は断る。
+/// 制御の口は、利用者のできない操作を断る。メニューの要求は、閉じているときと項目でない位置を断る（断っても開いたまま）。
+/// ダイアログの要求は、開いているダイアログにないコントロールと、押せないコントロールの操作を断る。
 #[test]
-fn dialog_requests_are_refused_for_what_a_user_cannot_touch() {
+fn control_requests_are_refused_for_what_a_user_cannot_do() {
     let server = start_settings_test(ONE_PROFILE);
+    for (method, path) in [
+        ("GET", "/e2e/menu"),
+        ("POST", "/e2e/menu/highlight/0"),
+        ("POST", "/e2e/menu/select/0"),
+        ("POST", "/e2e/menu/key/escape"),
+        ("POST", "/e2e/menu/close"),
+    ] {
+        let (status, _) = server.request(method, path, b"");
+        assert_eq!(status, 400, "{path}");
+    }
+    let items = open_menu(&server, &click_main_menu(&server.state()));
+    let separator = items
+        .iter()
+        .position(|item| item["separator"] == true)
+        .expect("no separator");
+    for position in [separator, items.len()] {
+        for action in ["highlight", "select"] {
+            let path = format!("/e2e/menu/{action}/{position}");
+            let (status, _) = server.request("POST", &path, b"");
+            assert_eq!(status, 400, "{path}");
+        }
+    }
+    wait_menu(&server);
+    close_menu(&server);
+
     let refused = |path: &str, body: &[u8]| {
         let (status, answer) = server.request("POST", path, body);
         assert_eq!(status, 400, "{path}: {}", String::from_utf8_lossy(&answer));

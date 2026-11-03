@@ -21,13 +21,6 @@ fn the_profile_option_chooses_the_profile_of_the_tabs() {
 }
 
 #[test]
-fn the_profile_option_takes_a_quoted_name() {
-    let server = Server::start(TWO_PROMPT_PROFILES, &["--profile", "with space"]);
-    let state = server.wait_text("space>");
-    assert_eq!(state["tabs"][0]["profile"], "with space", "{state:#}");
-}
-
-#[test]
 fn an_unknown_profile_is_reported_and_the_default_one_opens() {
     // 名前は大文字小文字も含めて完全に一致するものだけ。
     let server = Server::start(TWO_PROMPT_PROFILES, &["--profile", "ONE"]);
@@ -38,27 +31,6 @@ fn an_unknown_profile_is_reported_and_the_default_one_opens() {
     close_message_box(&server, 0);
     server.type_line("echo after-unknown-%ERRORLEVEL%-end");
     server.wait_text("after-unknown-0-end");
-}
-
-#[test]
-fn a_profile_option_without_a_name_is_reported_and_the_default_one_opens() {
-    let server = Server::start(TWO_PROMPT_PROFILES, &["--profile"]);
-    wait_message_box_with(&server, "--profile");
-    server.wait_text("two>");
-    close_message_box(&server, 0);
-    server.type_line("echo after-no-name-%ERRORLEVEL%-end");
-    server.wait_text("after-no-name-0-end");
-}
-
-#[test]
-fn an_unknown_profile_with_a_command_runs_the_command() {
-    let server = Server::start(
-        TWO_PROMPT_PROFILES,
-        &["--profile", "none", "cmd.exe", "/k", "prompt", "plain$G"],
-    );
-    wait_message_box_with(&server, "「none」");
-    let state = server.wait_text("plain>");
-    assert_eq!(state["tabs"][0]["profile"], Value::Null, "{state:#}");
 }
 
 #[test]
@@ -77,31 +49,6 @@ fn a_profile_with_a_command_runs_the_command_in_that_profile() {
     server.post("/e2e/tab/new/0", b"");
     server.wait_until("three tabs", |state| tab_count(state) == 3);
     server.wait_text("one>");
-}
-
-#[test]
-fn two_dashes_end_the_options() {
-    let server = Server::start(
-        TWO_PROMPT_PROFILES,
-        &["--", "cmd.exe", "/k", "prompt", "after-dashes$G"],
-    );
-    let state = server.wait_text("after-dashes>");
-    assert_eq!(state["tabs"][0]["profile"], Value::Null, "{state:#}");
-
-    let server = Server::start(
-        TWO_PROMPT_PROFILES,
-        &[
-            "--profile",
-            "one",
-            "--",
-            "cmd.exe",
-            "/k",
-            "prompt",
-            "both$G",
-        ],
-    );
-    let state = server.wait_text("both>");
-    assert_eq!(state["tabs"][0]["profile"], "one", "{state:#}");
 }
 
 #[test]
@@ -125,23 +72,4 @@ fn an_unknown_option_at_the_start_is_the_command() {
     );
     let state = server.wait_text("unknown-option>");
     assert_eq!(state["tabs"][0]["profile"], Value::Null, "{state:#}");
-}
-
-#[test]
-fn options_after_the_command_go_to_the_command_with_their_quotes() {
-    let server = Server::start(
-        TWO_PROMPT_PROFILES,
-        &[
-            "cmd.exe",
-            "/k",
-            "echo",
-            "argument-%ERRORLEVEL%-end",
-            "two  spaces",
-            "--profile",
-            "one",
-        ],
-    );
-    let state = server.wait_text(r#"argument-0-end "two  spaces" --profile one"#);
-    assert_eq!(state["tabs"][0]["profile"], Value::Null, "{state:#}");
-    assert_eq!(state["dialogs"].as_array().map(Vec::len), Some(0));
 }

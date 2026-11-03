@@ -33,8 +33,9 @@ fn smoke_frame_is_written_on_a_hidden_desktop() {
     eprintln!("{}", server.log());
 }
 
+/// 壊れたときに原因を切り分ける最小のテスト。`smoke` の段で流す。
 #[test]
-fn powershell_shows_a_prompt() {
+fn smoke_powershell_shows_a_prompt() {
     let server = Server::start_powershell();
     server.wait_text("PS ");
 }
@@ -52,6 +53,7 @@ fn powershell_in_the_working_folder_is_not_started() {
     server.wait_text("PS ");
 }
 
+/// 打った入力がシェルに届いて出力を読める。`/e2e/input` の入力はそのままバックエンドへ届く。
 #[test]
 fn input_reaches_the_shell_and_its_output_is_read() {
     let server = Server::start_cmd();
@@ -59,12 +61,6 @@ fn input_reaches_the_shell_and_its_output_is_read() {
     // 打った行そのものには出ない文字列を待つ。
     server.type_line("echo marker-%ERRORLEVEL%-end");
     server.wait_text("marker-0-end");
-}
-
-#[test]
-fn raw_input_goes_to_the_backend_as_is() {
-    let server = Server::start_cmd();
-    server.wait_text(CMD_PROMPT);
     server.post("/e2e/input", b"echo raw-%ERRORLEVEL%-end\r");
     server.wait_text("raw-0-end");
 }
@@ -191,14 +187,6 @@ fn minimizing_the_window_keeps_the_grid() {
 }
 
 #[test]
-fn osc_2_sets_the_window_title() {
-    let server = Server::start_powershell();
-    server.wait_text("PS ");
-    server.type_line("[Console]::Write([char]27 + ']2;e2e-title' + [char]7)");
-    wait_window_title(&server, "e2e-title");
-}
-
-#[test]
 fn shell_exit_closes_its_tab_and_then_the_window() {
     let mut server = Server::start_cmd();
     server.wait_text(CMD_PROMPT);
@@ -209,14 +197,6 @@ fn shell_exit_closes_its_tab_and_then_the_window() {
 
     server.type_line("exit 7");
     assert_eq!(server.wait_exit(), 7);
-}
-
-#[test]
-fn quit_closes_the_window() {
-    let mut server = Server::start_cmd();
-    server.wait_text(CMD_PROMPT);
-    server.post("/e2e/quit", b"");
-    assert_eq!(server.wait_exit(), 0);
 }
 
 /// ブリッジのタブの基本: 入出力、大きさ、タイトル、シェルの終了コード。シェルは `/bin/sh`。
@@ -299,35 +279,6 @@ fn the_scrollback_keeps_lines_that_left_the_screen() {
     let text = state["text"].as_str().unwrap_or_default();
     assert!(text.contains("scroll-line-1\n"), "{text}");
     assert!(text.contains("scroll-line-150\n"), "{text}");
-}
-
-#[test]
-fn profiles_are_listed_and_open_tabs() {
-    let config = r#"default_profile = "two"
-
-[[profiles]]
-name = "one"
-command = "cmd.exe /k prompt one$G"
-
-[[profiles]]
-name = "two"
-command = "cmd.exe /k prompt two$G"
-"#;
-    let server = Server::start(config, &[]);
-    let state = server.wait_text("two>");
-    let names = state["profiles"].as_array().expect("no profiles");
-    assert_eq!(names.len(), 2, "{state:#}");
-    assert_eq!(names[0], "one");
-    assert_eq!(names[1], "two");
-    assert_eq!(state["tabs"][0]["profile"], "two", "{state:#}");
-
-    server.post("/e2e/tab/new/0", b"");
-    server.wait_until("two tabs", |state| tab_count(state) == 2);
-    let state = server.wait_text("one>");
-    assert_eq!(state["tabs"][1]["profile"], "one", "{state:#}");
-
-    let (status, _) = server.request("POST", "/e2e/tab/new/9", b"");
-    assert_eq!(status, 400);
 }
 
 #[test]

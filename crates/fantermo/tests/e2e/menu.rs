@@ -129,38 +129,6 @@ fn the_context_menu_has_the_same_items_wherever_it_opens_and_copy_follows_the_se
     );
 }
 
-/// メニューの要求は、閉じているときと項目でない位置を断る。断っても開いたまま。
-#[test]
-fn menu_requests_are_refused_without_a_menu_or_an_item() {
-    let server = Server::start_cmd();
-    let state = server.wait_text(CMD_PROMPT);
-    for (method, path) in [
-        ("GET", "/e2e/menu"),
-        ("POST", "/e2e/menu/highlight/0"),
-        ("POST", "/e2e/menu/select/0"),
-        ("POST", "/e2e/menu/key/escape"),
-        ("POST", "/e2e/menu/close"),
-    ] {
-        let (status, _) = server.request(method, path, b"");
-        assert_eq!(status, 400, "{path}");
-    }
-
-    let items = open_menu(&server, &click_main_menu(&state));
-    let separator = items
-        .iter()
-        .position(|item| item["separator"] == true)
-        .expect("no separator");
-    for position in [separator, items.len()] {
-        for action in ["highlight", "select"] {
-            let path = format!("/e2e/menu/{action}/{position}");
-            let (status, _) = server.request("POST", &path, b"");
-            assert_eq!(status, 400, "{path}");
-        }
-    }
-    wait_menu(&server);
-    close_menu(&server);
-}
-
 /// ≡ のメニューの並び。項目に添えるキーは割り当てから決まる。
 #[test]
 fn the_main_menu_has_its_items_in_order_and_copy_follows_the_selection() {
@@ -508,6 +476,9 @@ command = "cmd.exe /k prompt first$G"
 "#;
     let server = Server::start(two_profiles, &[]);
     let state = server.wait_text("first>");
+    // 状態にはプロファイルの名前が並び、最初のタブは既定のプロファイルで開く。
+    assert_eq!(state["profiles"], serde_json::json!(["first", "second"]));
+    assert_eq!(state["tabs"][0]["profile"], "first", "{state:#}");
     let list = left_click(area_center(&state["tab_bar"]["profiles"]));
     let path = server.dir().join("config.toml");
 
@@ -584,6 +555,14 @@ command = "cmd.exe /k prompt first$G"
     server.wait_until("four tabs", |state| tab_count(state) == 4);
     let state = server.wait_text("p11>");
     assert_eq!(state["tabs"][3]["profile"], "p11", "{state:#}");
+
+    // 制御の口の `/e2e/tab/new/<位置>` は、その位置のプロファイルで開く。並びの外は断る。
+    server.post("/e2e/tab/new/0", b"");
+    server.wait_until("five tabs", |state| tab_count(state) == 5);
+    let state = server.wait_text("p1>");
+    assert_eq!(state["tabs"][4]["profile"], "p1", "{state:#}");
+    let (status, _) = server.request("POST", &format!("/e2e/tab/new/{COUNT}"), b"");
+    assert_eq!(status, 400);
 }
 
 // 設定ダイアログ。コントロールの ID は `settings_dialog/` と同じ。

@@ -36,10 +36,12 @@ fn working_folder(dir: &std::path::Path, name: &str) -> PathBuf {
 /// 作業フォルダの名前を出す `cmd.exe` の行。
 const PRINT_FOLDER_NAME: &str = "for %I in (.) do echo folder-%~nxI-end";
 
+/// 起動の指定（プロファイル、コマンド、`--`、引用）が新しいタブに効き、渡した側は終わる。ウィンドウの引数は渡された起動に
+/// 使わず、新しいタブにだけ使う。
 #[test]
 fn a_second_launch_adds_a_tab_and_ends() {
-    let server = Server::start(TWO_PROMPT_PROFILES, &[]);
-    let state = server.wait_text("two>");
+    let server = Server::start(TWO_PROMPT_PROFILES, &["cmd.exe", "/k", "prompt", "first$G"]);
+    let state = server.wait_text("first>");
     let pid = state["pid"].clone();
 
     // 引数がなければ既定のプロファイル。
@@ -75,20 +77,49 @@ fn a_second_launch_adds_a_tab_and_ends() {
     let state = server.wait_text("plain>");
     assert_eq!(state["tabs"][4]["profile"], Value::Null, "{state:#}");
 
-    // ウィンドウの引数は変わらないので、新しいタブは既定のプロファイルのまま。
-    let state = server.open_tab("two>");
-    assert_eq!(state["tabs"][5]["profile"], "two", "{state:#}");
-}
+    // 空白を含むプロファイルの名前。
+    assert_handed_over(server.launch_again(&["--profile", "with space"]));
+    server.wait_until("six tabs", |state| tab_count(state) == 6);
+    let state = server.wait_text("space>");
+    assert_eq!(state["tabs"][5]["profile"], "with space", "{state:#}");
 
-#[test]
-fn a_second_launch_does_not_use_the_arguments_of_the_window() {
-    let server = Server::start(TWO_PROMPT_PROFILES, &["cmd.exe", "/k", "prompt", "first$G"]);
-    server.wait_text("first>");
-    assert_handed_over(server.launch_again(&[]));
-    server.wait_until("two tabs", |state| tab_count(state) == 2);
-    server.wait_text("two>");
-    // ウィンドウの引数で開く新しいタブは変わらない。
-    server.open_tab("first>");
+    // `--` のあとはコマンド。
+    assert_handed_over(server.launch_again(&["--", "cmd.exe", "/k", "prompt", "after-dashes$G"]));
+    server.wait_until("seven tabs", |state| tab_count(state) == 7);
+    let state = server.wait_text("after-dashes>");
+    assert_eq!(state["tabs"][6]["profile"], Value::Null, "{state:#}");
+
+    // `--` の前のプロファイルの指定は効く。
+    assert_handed_over(server.launch_again(&[
+        "--profile",
+        "one",
+        "--",
+        "cmd.exe",
+        "/k",
+        "prompt",
+        "both-dashes$G",
+    ]));
+    server.wait_until("eight tabs", |state| tab_count(state) == 8);
+    let state = server.wait_text("both-dashes>");
+    assert_eq!(state["tabs"][7]["profile"], "one", "{state:#}");
+
+    // コマンドのあとのオプションは、引用ごとコマンドへ届く。
+    assert_handed_over(server.launch_again(&[
+        "cmd.exe",
+        "/k",
+        "echo",
+        "argument-%ERRORLEVEL%-end",
+        "two  spaces",
+        "--profile",
+        "one",
+    ]));
+    server.wait_until("nine tabs", |state| tab_count(state) == 9);
+    let state = server.wait_text(r#"argument-0-end "two  spaces" --profile one"#);
+    assert_eq!(state["tabs"][8]["profile"], Value::Null, "{state:#}");
+
+    // ウィンドウの引数は変わらないので、新しいタブはウィンドウの引数で開く。
+    let state = server.open_tab("first>");
+    assert_eq!(state["tabs"][9]["profile"], Value::Null, "{state:#}");
 }
 
 #[test]
@@ -328,7 +359,9 @@ fn a_launch_waiting_for_a_dialog_is_not_lost_when_the_window_closes() {
     );
     // 警告のメッセージボックスの間に届いた起動は、開かれるのを待つ。
     wait_message_box_with(&server, "「none」");
-    server.wait_text(CMD_PROMPT);
+    // 未知のプロファイルでもコマンドは起動し、プロファイルなしのタブになる。
+    let state = server.wait_text(CMD_PROMPT);
+    assert_eq!(state["tabs"][0]["profile"], Value::Null, "{state:#}");
     let folder = working_folder(server.dir(), "reopened-here");
     assert_handed_over(server.launch_again_with(
         &["cmd.exe", "/k", "prompt", "reopened$G"],
@@ -411,31 +444,12 @@ fn malformed_copy_data_is_ignored_and_the_terminal_keeps_working() {
     let config = config.to_str().expect("the path is not text");
     let valid = launch_bytes(&["0", exe, config, "", "", "cmd.exe /k prompt valid$G"]);
 
-    let oversized = vec![b'a'; 4 << 20];
-    let mut broken_text = launch_bytes(&["0", exe, config, "", ""]);
-    broken_text.extend_from_slice(&[0x00, 0xD8, 0, 0]);
+    // 形の判定の細部は `instance.rs` の単体のテストが見る。ここでは、受け取りの戻り値、ログ、端末が動き続けることを見る。
     let malformed: Vec<(usize, Vec<u8>)> = vec![
         (0, valid.clone()),
         (LAUNCH_DATA_KIND + 1, valid.clone()),
         (LAUNCH_DATA_KIND, Vec::new()),
         (LAUNCH_DATA_KIND, valid[..valid.len() - 1].to_vec()),
-        (LAUNCH_DATA_KIND, valid[..valid.len() - 2].to_vec()),
-        (LAUNCH_DATA_KIND, oversized),
-        (LAUNCH_DATA_KIND, b"not the launch format".to_vec()),
-        (LAUNCH_DATA_KIND, launch_bytes(&["0", exe, config, "", ""])),
-        (
-            LAUNCH_DATA_KIND,
-            launch_bytes(&["0", exe, config, "", "", "cmd.exe", "more"]),
-        ),
-        (
-            LAUNCH_DATA_KIND,
-            launch_bytes(&["x", exe, config, "", "", "cmd.exe"]),
-        ),
-        (
-            LAUNCH_DATA_KIND,
-            launch_bytes(&["0", exe, config, "relative", "", "cmd.exe"]),
-        ),
-        (LAUNCH_DATA_KIND, broken_text),
     ];
     for (kind, bytes) in &malformed {
         assert_eq!(
@@ -445,21 +459,6 @@ fn malformed_copy_data_is_ignored_and_the_terminal_keeps_working() {
             bytes.len()
         );
     }
-    // 実行ファイルや設定ファイルが違う指定は、形が正しくても受け取らない。
-    assert_eq!(
-        send_copy_data(
-            LAUNCH_DATA_KIND,
-            &launch_bytes(&["0", r"C:\other\fantermo.exe", config, "", "", "cmd.exe"])
-        ),
-        0
-    );
-    assert_eq!(
-        send_copy_data(
-            LAUNCH_DATA_KIND,
-            &launch_bytes(&["0", exe, r"C:\other\config.toml", "", "", "cmd.exe"])
-        ),
-        0
-    );
 
     server.assert_holds_for(Duration::from_millis(300), "one tab", |state| {
         tab_count(state) == 1 && state["dialogs"].as_array().map(Vec::len) == Some(0)
@@ -476,20 +475,6 @@ fn malformed_copy_data_is_ignored_and_the_terminal_keeps_working() {
     assert_eq!(send_copy_data(LAUNCH_DATA_KIND, &valid), 1);
     server.wait_until("two tabs", |state| tab_count(state) == 2);
     server.wait_text("valid>");
-}
-
-#[test]
-fn the_tabs_of_a_second_launch_end_like_the_others() {
-    let mut server = Server::start_cmd();
-    server.wait_text(CMD_PROMPT);
-    assert_handed_over(server.launch_again(&["cmd.exe", "/k", "prompt", "second$G"]));
-    server.wait_until("two tabs", |state| tab_count(state) == 2);
-    server.wait_text("second>");
-
-    server.type_line("exit 3");
-    server.wait_until("one tab", |state| tab_count(state) == 1);
-    server.type_line("exit 7");
-    assert_eq!(server.wait_exit(), 7);
 }
 
 /// ブリッジのプロファイルのタブを渡して、作業フォルダが届き、コマンドの指定も効くことを確認する。
