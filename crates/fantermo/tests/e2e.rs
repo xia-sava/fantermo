@@ -643,12 +643,13 @@ fn cygwin_sleep_is_running(marker: &str) -> bool {
     String::from_utf8_lossy(&output.stdout).contains("found")
 }
 
-/// 実行ファイルの中で重ならない、`sleep` の引数にできる数。
+/// 実行ファイルの中で重ならない、`sleep` の引数にできる数。`/proc` のコマンドラインを部分一致で探すので、ある印が
+/// 別の印の前方部分にならないよう、桁数を固定する（プロセスの番号の下 5 桁と、連番の 3 桁）。
 fn unique_sleep_seconds() -> String {
     static NEXT: AtomicU32 = AtomicU32::new(0);
     format!(
-        "300.{}{}",
-        std::process::id(),
+        "300.{:05}{:03}",
+        std::process::id() % 100_000,
         NEXT.fetch_add(1, Ordering::Relaxed)
     )
 }
