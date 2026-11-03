@@ -10,7 +10,8 @@ description: fantermo の e2e テストと、制御の口（feature e2e）での
 要求にはヘッダー `X-Fantermo-Token` でトークンを付ける（付いていない、合わないものは 403）。一つの接続で要求を続けて送れ（keep-alive）、
 次の要求が 10 秒来ない接続は閉じる。`Server::request` は接続を使い回し、閉じられていたら繋ぎ直す。手で `curl` などで使うときもトークンを付ける。
 実装は `crates/fantermo/src/e2e_server.rs`（受ける側）と `crates/fantermo/src/window/e2e.rs`（ウィンドウのスレッド側）、
-テストの土台は `crates/fantermo/tests/common/mod.rs`、テストは `crates/fantermo/tests/e2e/`（話題ごとのファイル `basics.rs` `processes.rs` `mouse.rs` `menu.rs` `settings.rs` `update.rs` `dpi.rs` など。複数の話題が使う補助は `ui.rs`）。テストの名前にはファイル名（モジュール）が前に付く（`mouse::the_wheel_and_the_scroll_bar_track_scroll_the_scrollback`）。名前の一部での絞り込みと `--skip` は、モジュール名を付けなくても効く（名前の一部に一致するため）。
+テストの土台は `crates/fantermo/tests/common/mod.rs`、テストは `crates/fantermo/tests/e2e/`。
+その中は話題ごとのファイル（`basics.rs` `processes.rs` `mouse.rs` `menu.rs` `settings.rs` `update.rs` `dpi.rs` など）に分け、複数の話題が使う補助は `ui.rs` に置く。テストの名前にはファイル名（モジュール）が前に付く（`mouse::the_wheel_and_the_scroll_bar_track_scroll_the_scrollback`）。名前の一部での絞り込みと `--skip` は名前の一部に一致すればよいので、モジュール名を付けなくてよい。
 
 ## 実行
 
@@ -72,13 +73,13 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
 
 ## テストの書き方
 
-`Server::start(設定の TOML, fantermo の引数)` か `Server::start_cmd()`・`start_powershell()` で起動し、`type_line`・`press`・`resize`・`post` で操作して（`resize` は変えたあとの状態を返す）、`wait_text`・`wait_until` で待つ。状態以外を待つときは `common::wait_for(説明, || -> Option<T>)`（`Some` を返すまで 100 ms ごとに呼ぶ。時間切れで `None` を返す `try_wait_for` もある）。`sleep` で待たない。何かが起きないことを時間の窓で見るときは `assert_holds_for`（`wait_until` と同じ間隔で読む）。`Server` が一時フォルダ（`FANTERMO_CONFIG`・`FANTERMO_STATE`・ログ・ポート）、同時に起動する数の上限、Drop での停止と片づけを受け持つので、テストは並列で衝突しない。失敗すると fantermo のログを出す。打った行に出ない文字列を待つ（`echo marker-%ERRORLEVEL%-end` で `marker-0-end`）。
+`Server::start(設定の TOML, fantermo の引数)` か `Server::start_cmd()`・`start_powershell()` で起動し、`type_line`・`press`・`resize`・`post` で操作して（`resize` は変えたあとの状態を返す）、`wait_text`・`wait_until` で待つ。状態以外を待つときは `common::wait_for(説明, || -> Option<T>)` を使う。`Some` を返すまで 100 ms ごとに呼ぶ。時間切れで `None` を返す `try_wait_for` もある。`sleep` で待たない。何かが起きないことを時間の窓で見るときは `assert_holds_for`（`wait_until` と同じ間隔で読む）。`Server` が一時フォルダ（`FANTERMO_CONFIG`・`FANTERMO_STATE`・ログ・ポート）、同時に起動する数の上限、Drop での停止と片づけを受け持つので、テストは並列で衝突しない。失敗すると fantermo のログを出す。打った行に出ない文字列を待つ（`echo marker-%ERRORLEVEL%-end` で `marker-0-end`）。
 
-- 起動中の起動: `server.launch_again(引数)`・`launch_again_with(引数, &LaunchAgain { .. })` が、同じ別デスクトップで fantermo をもう一度起動する（`run-hidden --desktop`）。既存のウィンドウへ渡して終わるのは `wait_exit` が 0 で `opened_a_window` が偽（`assert_handed_over`）、ウィンドウを開くなら `wait_for_window` のあとで `Server` として操作する。ウィンドウが表示される前に起動すると見つからないので、先に `wait_text` で待つ。作業フォルダの既定は元の `Server` の一時フォルダ。環境変数は `LaunchAgain` の `environment` で付ける（`start_with_environment` と同じ扱い）。足されたタブがそこにとどまるので、起動したものの一時フォルダにしない（消せなくなる）。fantermo のウィンドウへメッセージを送るのは `server.on_its_desktop` の中で（ウィンドウのハンドルは別のデスクトップからは無効で、`ERROR_INVALID_WINDOW_HANDLE` になる）。`state` の `hwnd` だけを使い、ウィンドウを探さない。
+- 起動中の起動: `server.launch_again(引数)`・`launch_again_with(引数, &LaunchAgain { .. })` が、同じ別デスクトップで fantermo をもう一度起動する（`run-hidden --desktop`）。既存のウィンドウへ渡して終わるのは `wait_exit` が 0 で `opened_a_window` が偽（`assert_handed_over`）、ウィンドウを開くなら `wait_for_window` のあとで `Server` として操作する。ウィンドウが表示される前に起動すると見つからないので、先に `wait_text` で待つ。作業フォルダの既定は元の `Server` の一時フォルダ。足されたタブがそこにとどまるので、起動したものの一時フォルダにしない（消せなくなる）。環境変数は `LaunchAgain` の `environment` で付ける（`start_with_environment` と同じ扱い）。fantermo のウィンドウへメッセージを送るのは `server.on_its_desktop` の中で（ウィンドウのハンドルは別のデスクトップからは無効で、`ERROR_INVALID_WINDOW_HANDLE` になる）。`state` の `hwnd` だけを使い、ウィンドウを探さない。
 - 長い行: `type_line` は一文字ずつ送り、Cygwin の pty では一文字に 30 ms ほどかかる。長い行は `send_line`（`/e2e/input` でまとめて送る）で。
 - 起動直後に閉じる確認もできる（`closing_a_tab_ends_its_child_processes_only` はプロセスができたらすぐ閉じる）。ConPTY では閉じたあと 5 秒の猶予ののちに残りを終わらせるので、残らないことは 60 秒の `wait_ended` で待つ。起動直後に閉じるテストと、新しいコンソールを作るテストは、利用者の画面に窓が出うるので、手元では利用者に声を掛けてから流す。該当するのは次の 8 件（最後の 1 件は `conpty.rs` の単体のテスト）。ふだんは `--` の後ろに名前ごとの `--skip` で外し、流すときはこの 8 件だけを先に流して（10 秒ほど）、終わったことを利用者に伝えてから残りを流す。`--skip` は名前の一部に一致すれば外すので、`closing_a_tab_ends_its_child_processes_only` は `cygwin_closing_a_tab_ends_its_child_processes_only` も外し、`closing_a_tab_right_after_opening` は `closing_a_tab_right_after_opening_it_does_not_block_the_window` だけに一致する。`--exact` を付けると、完全な名前（`processes::closing_a_tab_ends_its_child_processes_only`、単体のテストは `conpty::tests::a_process_connecting_after_the_console_closed_is_ended`）でなければ一致しない。
   `closing_a_tab_ends_its_child_processes_only`、`closing_tabs_while_commands_start_ends_their_child_processes`、`closing_the_window_while_commands_start_leaves_no_child_processes`、`closing_a_tab_while_commands_start_leaves_processes_outside_its_console`、`cygwin_closing_tabs_right_after_typing_a_command_ends_it`、`cygwin_closing_the_window_right_after_typing_a_command_ends_it`、`closing_a_tab_right_after_opening`（前方一致）、`a_process_connecting_after_the_console_closed_is_ended`
-- 新しいコンソールを作るプロセス（コンソールのプログラムを cmd の `start ""` で起動する、`CREATE_NEW_CONSOLE`）をテストから起動しない（GUI のプログラムは `start ""` でもコンソールを作らないので、`start "" wscript.exe //B` は使える）。別デスクトップでも既定の端末（Windows Terminal）に渡って利用者の画面に出る。別のコンソールを持つプロセスが要るときは、PowerShell の `ProcessStartInfo` の `CreateNoWindow` で起動する。WMI など、別のプロセスに起動を頼む方法も別デスクトップの外に出るので使わない。
+- 新しいコンソールを作るプロセス（コンソールのプログラムを cmd の `start ""` で起動する、`CREATE_NEW_CONSOLE`）をテストから起動しない。別デスクトップでも既定の端末（Windows Terminal）に渡って利用者の画面に出る。GUI のプログラムは `start ""` でもコンソールを作らないので、`start "" wscript.exe //B` は使える。別のコンソールを持つプロセスが要るときは、PowerShell の `ProcessStartInfo` の `CreateNoWindow` で起動する。WMI など、別のプロセスに起動を頼む方法も別デスクトップの外に出るので使わない。
 - 画像: ConPTY は APC と DCS を落とすので、ブリッジのタブで `printf` する。`images` を待ってから `picture()` で画素を読む。位置は `terminal_x` などから計算する（`cell_pixel`）。
 - ダイアログ: 編集のダイアログや確認のダイアログの間も要求は処理される（ダイアログのループが届ける）。`wait_dialogs` で待ち、`press_dialog_button` で押す。
 - 設定ダイアログ: `open_settings` で開き、`show_page` でページを移し、`set_text`・`select`・`choose_radio`・`spin`・`click` で操作する。`read_controls` と `control` で値を読み、値は文言ではなくコントロールの ID と `saved_config`（`config.toml` を `fantermo_core::config::parse` で読んだもの）で見る。
@@ -90,7 +91,7 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
   - 未知のキーがある設定は起動時に警告のメッセージボックスが開く。閉じてから設定ダイアログを開く。
   - 読めないファイルは共有しないで開いて作る（`with_settings_file_open`）。読めるが置き換えられないのは読むことだけ共有する形と読み取り専用の属性。起動時に読めないファイルはフォルダで作る。
   - ダイアログは `FANTERMO_DPI` ではなくモニターの DPI で開く（手元は 192）。大きさはその DPI で測る（`assert_controls_fit`）。
-- 子プロセス: `Server::start_watching_children` で起動すると、fantermo が終わったあと run-hidden が子孫の終わりを待ち（`--wait-children`。20 秒）、待つ秒数を変えるときは `start_watching_children_for`（`LONG_WAIT_CHILDREN_SECONDS` はテストの寿命と同じ長さ。ウィンドウが閉じたあとも操作を続けるテスト向け）、`assert_no_children_remained` で残りが分かる。付けないと、run-hidden が Job を閉じて全部終わらせるので、残りがあっても見えない。タブを閉じる確認は `common::processes`（親子と作成時刻）で。Cygwin のプログラムは Windows の親子で辿れないので、`/proc` のコマンドラインと一意な `sleep` の引数で見る。
+- 子プロセス: `Server::start_watching_children` で起動すると、fantermo が終わったあと run-hidden が子孫の終わりを待ち（`--wait-children`。20 秒）、`assert_no_children_remained` で残りが分かる。付けないと、run-hidden が Job を閉じて全部終わらせるので、残りがあっても見えない。待つ秒数を変えるときは `start_watching_children_for` で起動する。`LONG_WAIT_CHILDREN_SECONDS` はテストの寿命と同じ長さで、ウィンドウが閉じたあとも操作を続けるテストに使う。タブを閉じる確認は `common::processes`（親子と作成時刻）で。Cygwin のプログラムは Windows の親子で辿れないので、`/proc` のコマンドラインと一意な `sleep` の引数で見る。
 - クリップボード: `Server` は既定で `FANTERMO_E2E_CLIPBOARD_FILE`（一時フォルダのファイル）を渡し、fantermo はそのファイルをクリップボードの代わりに使う。OS のものを使うのは `Server::start_with_os_clipboard` だけで、`OsClipboard` が直列にする。
   - 裏のタブから読み取りの依頼を出すときは、そのタブのシェルにきっかけのファイルができるのを待たせてから依頼させ、続けて OSC 2 でタイトルを変えさせる。表示するタブを替えたあとでファイルを作り、状態の `tabs` のタイトルで依頼が届いたことを知る（`cygwin_clipboard_read_dialog_waits_for_the_menu_to_close`）。
 - 起動の前に置くファイル: `Server::start_with_setup` の `prepare` が一時フォルダで呼ばれる。`state.toml` の初期値（`common::STATE_FILE`）はここで置く。閉じたあとの中身は `state_file()` で、`Server` を破棄する前に読む。
@@ -122,7 +123,7 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
   - 配布物は fantermo の `TMP`（一時フォルダの `tmp`）に置かれるので、`download_folders` で見える。
   - テストは並列に動き、実行ファイルが同じなので、ダウンロードのあとに「ほかに fantermo が…」が出ることがある。`wait_confirm_apply` が続けて、最後の確認まで進む。数を固定しない。
   - 「更新を確認」を押して結果を閉じたあと、押せるようになるのは閉じたあとなので、`dismiss_result`・`decline_offer` で待ってから次を押す。
-  - 署名や読み取りの文は、`CheckError::message` と同じ文を `update.rs` の定数に写して見る（`update` は統合テストから呼べない。本体の文を変えたら定数も直す）。読めない・ハッシュが合わない場合を確認するには、読めない更新の情報にもテストの鍵で署名する（`publish_manifest`）。署名しないと署名のエラーで止まる。
+  - 署名や読み取りの文は、`CheckError::message` と同じ文を `tests/e2e/update.rs` の定数に写して見る。統合テストからは `update` を呼べない。本体の文を変えたら定数も直す。読めない・ハッシュが合わない場合を確認するには、読めない更新の情報にもテストの鍵で署名する（`publish_manifest`）。署名しないと署名のエラーで止まる。
 - ブリッジの単体のテストで中身を比べるときは、子プロセスに `/tmp` のファイルへ書かせて読む（テストと子プロセスは同じ環境で動く）。
 - 読み取りの依頼のように答えがないことがあるものは、時間で待たず、依頼と同じ出力の後ろの印を待ってから、区切りの入力を送る（`start_clipboard_read`）。
 
