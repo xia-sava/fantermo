@@ -7,7 +7,6 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -15,7 +14,7 @@ use std::{
 };
 
 use fantermo_core::{
-    backend::{ExitCode, GridSize, Wake},
+    backend::{ExitCode, GridSize},
     background::{Candidate, Random},
     clipboard::{ReadDecision, ReadPrompts, ReadRequest, WriteRequest, read_decision},
     config::{
@@ -2339,14 +2338,18 @@ impl App {
     /// 待っている端末への知らせは流さずに戻る（続きはタイマーが流す）。子プロセスの終了は、出力を流しきって
     /// から扱う。ウィンドウを閉じるときは `true` を返す。
     fn on_wake(&mut self, id: SessionId) -> bool {
+        let Some(index) = self.sessions.iter().position(|session| session.id() == id) else {
+            // 閉じた端末の知らせ。番号は使い回さないので、ほかの端末のものと取り違えない。
+            tracing::debug!("ignoring a wake for an unknown terminal {id:?}");
+            return false;
+        };
+        // タイマーに任せて戻るときも下ろす。タイマーが積む続きの知らせも同じ印を通るので、この知らせを受け取った
+        // ことにしてから積ませる。
+        self.sessions[index].wake_received();
         if self.output_continuations.contains(&id) {
             tracing::debug!("leaving a wake for terminal {id:?} to the output continuation timer");
             return false;
         }
-        let Some(index) = self.sessions.iter().position(|session| session.id() == id) else {
-            tracing::debug!("ignoring a wake for an unknown terminal {id:?}");
-            return false;
-        };
         let events = self.sessions[index].on_output();
         self.on_clipboard_requests(index);
         let shown = index == self.active;
@@ -2368,24 +2371,24 @@ impl App {
             self.invalidate();
         }
         if events.more_output {
-            self.continue_output(id);
+            self.continue_output(index);
         }
         events
             .exited
             .is_some_and(|code| self.on_session_ended(index, code))
     }
 
-    /// 端末 `id` の流しきれなかった出力を、次のメッセージで続けて流す。積んだメッセージはキー入力と描き直しより
-    /// 先に取り出されるので、それらが待っていればタイマーで流す（`WM_TIMER` はそれらのあとに届く）。待って
-    /// いなければ、すぐに [`WM_APP_WAKE`] を積む。積めなければタイマーで流す。
-    fn continue_output(&mut self, id: SessionId) {
+    /// `sessions` の `index` の端末の流しきれなかった出力を、次のメッセージで続けて流す。積んだメッセージはキー入力と
+    /// 描き直しより先に取り出されるので、それらが待っていればタイマーで流す（`WM_TIMER` はそれらのあとに届く）。
+    /// 待っていなければ、すぐに [`WM_APP_WAKE`] を積む（読むためのスレッドがもう積んでいれば、それで流す）。
+    /// 積めなければタイマーで流す。
+    fn continue_output(&mut self, index: usize) {
+        let session = &self.sessions[index];
+        let id = session.id();
         // SAFETY: このスレッドのキューを調べるだけ。上位の 16 ビットが、いまキューにあるものの種類。
         let waiting = unsafe { GetQueueStatus(QS_INPUT | QS_PAINT) } >> 16;
-        if waiting == 0 {
-            match post(self.hwnd, WM_APP_WAKE, WPARAM(id.0)) {
-                Ok(()) => return,
-                Err(e) => warn_post_failed(WM_APP_WAKE, &e),
-            }
+        if waiting == 0 && session.wake() {
+            return;
         }
         if !self.output_continuations.contains(&id) {
             self.output_continuations.push(id);
@@ -2394,9 +2397,10 @@ impl App {
             return;
         }
         // タイマーも動かせなければ、キー入力と描き直しより先になっても積む。
+        let sessions = &self.sessions;
         for id in std::mem::take(&mut self.output_continuations) {
-            if let Err(e) = post(self.hwnd, WM_APP_WAKE, WPARAM(id.0)) {
-                warn_post_failed(WM_APP_WAKE, &e);
+            if let Some(session) = sessions.iter().find(|session| session.id() == id) {
+                session.wake();
             }
         }
     }
@@ -2408,15 +2412,14 @@ impl App {
         if let Err(e) = unsafe { KillTimer(Some(self.hwnd), OUTPUT_TIMER_ID) } {
             tracing::warn!("failed to stop the timer to continue the output: {e}");
         }
-        let hwnd = self.hwnd;
-        self.output_continuations
-            .retain(|id| match post(hwnd, WM_APP_WAKE, WPARAM(id.0)) {
-                Ok(()) => false,
-                Err(e) => {
-                    warn_post_failed(WM_APP_WAKE, &e);
-                    true
-                }
-            });
+        let sessions = &self.sessions;
+        // 閉じた端末は close_session が外すので、見つからなければ外すだけ。
+        self.output_continuations.retain(|id| {
+            sessions
+                .iter()
+                .find(|session| session.id() == *id)
+                .is_some_and(|session| !session.wake())
+        });
         if !self.output_continuations.is_empty() {
             start_output_timer(self.hwnd);
         }
@@ -3222,35 +3225,34 @@ fn device_removed_poster(hwnd: HWND) -> renderer::DeviceRemovedNotify {
     Box::new(poster(hwnd, WM_APP_DEVICE_REMOVED, WPARAM(0)))
 }
 
-/// 端末 `id` のバックエンドへ渡す [`Wake`]。ほかのスレッドから呼ばれ、`hwnd` に [`WM_APP_WAKE`] を積む。積めたら
-/// `true` を返す（積めなければ、バックエンドは次の出力でまた知らせる）。
+/// 端末 `id` の知らせを積むもの。`hwnd` に [`WM_APP_WAKE`] を積み、積めたら `true` を返す（積めなければ、
+/// バックエンドは次の出力でまた知らせ、続きの出力はタイマーで積み直す）。[`Session::spawn`] に渡し、端末ごとに
+/// 高々一つ積むよう [`crate::session::WakeMessage`] を通して、ほかのスレッドとウィンドウのスレッドから呼ばれる。
 ///
-/// バックエンドは、破棄したあとはこれを呼ばない（`OutputBudget::sent`）。端末を閉じたときと、`WM_NCDESTROY` で
-/// App を解放するときにバックエンドを破棄し、どちらもウィンドウのハンドルを解放する前なので、壊れたウィンドウの
-/// ハンドルの値（ほかのウィンドウに使い回されうる）へ積むことはない。閉じる前に積んだ知らせが閉じたあとに届いても、
+/// バックエンドは、破棄したあとはこれを呼ばない（`OutputBudget::sent`）。ウィンドウのスレッドは端末があるときだけ
+/// 呼ぶ。端末を閉じたときと、`WM_NCDESTROY` で App を解放するときにバックエンドを破棄し、どちらもウィンドウの
+/// ハンドルを解放する前なので、壊れたウィンドウのハンドルの値（ほかのウィンドウに使い回されうる）へ積むことはない。閉じる前に積んだ知らせが閉じたあとに届いても、
 /// [`App::on_wake`] は知らない番号として捨てる（番号は使い回さない）。
 ///
 /// 積めなかったことは端末ごとに一度だけ warn に残し、二度目からは debug にする。子プロセスが終わったあとの知らせは
 /// 積めるまで間隔をおいて積み直すので、キューが埋まっている間に warn が続かないようにする。
-fn wake_poster(hwnd: HWND, id: SessionId) -> Wake {
+fn wake_poster(hwnd: HWND, id: SessionId) -> impl Fn() -> bool + Send + Sync + 'static {
     // HWND はスレッドをまたいで渡せないので、値だけを持たせる。
     let hwnd_value = hwnd.0 as isize;
     let warned = AtomicBool::new(false);
-    Arc::new(
-        move || match post(HWND(hwnd_value as *mut _), WM_APP_WAKE, WPARAM(id.0)) {
-            Ok(()) => true,
-            Err(e) => {
-                if !window_is_gone(&e) && warned.swap(true, Ordering::Relaxed) {
-                    tracing::debug!(
-                        "failed to post message {WM_APP_WAKE:#06x} for terminal {id:?} again: {e}"
-                    );
-                } else {
-                    warn_post_failed(WM_APP_WAKE, &e);
-                }
-                false
+    move || match post(HWND(hwnd_value as *mut _), WM_APP_WAKE, WPARAM(id.0)) {
+        Ok(()) => true,
+        Err(e) => {
+            if !window_is_gone(&e) && warned.swap(true, Ordering::Relaxed) {
+                tracing::debug!(
+                    "failed to post message {WM_APP_WAKE:#06x} for terminal {id:?} again: {e}"
+                );
+            } else {
+                warn_post_failed(WM_APP_WAKE, &e);
             }
-        },
-    )
+            false
+        }
+    }
 }
 
 /// [`post`] が、宛先のウィンドウが壊れていて失敗した。
@@ -3719,8 +3721,10 @@ thread_local! {
 
 /// 借用が重なって飛ばしたら、借用を手放したところで積み直すメッセージ。
 ///
-/// - [`WM_APP_WAKE`]。読むためのスレッドは、ウィンドウのスレッドが受け取り始めるまで次の知らせを積まず、
-///   上限に達すれば読むのも待つので、飛ばしたままにするとそのタブの出力が止まる。
+/// - [`WM_APP_WAKE`]。飛ばした知らせは [`App::on_wake`] を通らないので、端末の印
+///   （[`crate::session::WakeMessage`]）は立ったままで、その端末の知らせはほかに積まれない。読むためのスレッドは
+///   上限に達すれば読むのも待つので、飛ばしたままにするとそのタブの出力が止まる。積み直すときは印を通さずに
+///   そのまま積む（印は立ったままなので、積んである知らせは一つのまま）。
 /// - [`WM_APP_DEVICE_REMOVED`]。一度しか届かないので、飛ばしたままにすると描くときまで作り直さない。
 /// - `WM_CLOSE`。ほかのスレッドから送られると、借用の中の同期の呼び出し（`GetClipboardData` が相手のスレッドへ
 ///   送る間など）で届く。そこで閉じると借りている App を解放するので [`destroy_window`] は閉じずに戻り、

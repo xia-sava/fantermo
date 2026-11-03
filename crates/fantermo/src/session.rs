@@ -2,7 +2,11 @@
 //! リンクの下線・タイトル・背景画像に選んだファイルなど、端末ごとに持つ状態を添える。ウィンドウ・描画・
 //! 設定は持たない（背景画像のテクスチャは描画が持つ）。
 
-use std::{io, path::PathBuf};
+use std::{
+    io,
+    path::PathBuf,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
+};
 
 use fantermo_core::{
     backend::{Backend, ExitCode, GridSize, SpawnOptions, Wake},
@@ -112,10 +116,60 @@ fn spawn_backend(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SessionId(pub usize);
 
+/// 端末一つ分の、出力と子プロセスの終了の知らせ（ウィンドウの `WM_APP_WAKE`）。積んでまだ受け取られていない
+/// 知らせを端末ごとに高々一つにする。バックエンドのスレッド（[`Wake`]）とウィンドウのスレッド（流しきれなかった
+/// 出力の続き）の両方がこれを通して積む。
+///
+/// 印が立っている間は、その端末の知らせが一つ、ウィンドウのキューにあるか、借用が重なって飛ばして積み直しを
+/// 待っている。受け取ったウィンドウのスレッドは、出力を受け取る前に [`received`](Self::received) で印を下ろす。
+/// 下ろすまでに入った出力は、そのあとに受け取る。下ろしたあとに入った出力は、新しく積む知らせで受け取る。
+///
+/// 積むことと印を立てることは同じロックの中でする。積めなかったら印は立てないので、印が立っているのに
+/// 積んでいない間はない（印を先に立てて失敗したら戻す形だと、その間に別のスレッドが印を見て積まずに戻り、
+/// 知らせが失われる）。
+pub struct WakeMessage {
+    /// 積んで、まだウィンドウのスレッドが受け取っていない。
+    posted: Mutex<bool>,
+    /// 知らせを積む。積めたら `true`。待たずに戻る。
+    post: Box<dyn Fn() -> bool + Send + Sync>,
+}
+
+impl WakeMessage {
+    /// 知らせを `post` で積むもの。
+    pub fn new(post: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self {
+            posted: Mutex::new(false),
+            post: Box::new(post),
+        }
+    }
+
+    /// 知らせを積んでいなければ積む。積んであるか、積めたら `true`。どのスレッドから呼んでもよい。
+    pub fn post(&self) -> bool {
+        let mut posted = self.lock();
+        if !*posted {
+            // 積むだけで待たないので、ロックを持ったまま呼んでよい。
+            *posted = (self.post)();
+        }
+        *posted
+    }
+
+    /// ウィンドウのスレッドが知らせを受け取った。出力を受け取る前に呼ぶ。
+    pub fn received(&self) {
+        *self.lock() = false;
+    }
+
+    fn lock(&self) -> MutexGuard<'_, bool> {
+        // 中身は bool の代入だけで、途中の状態はないので、ほかのスレッドが panic したあともそのまま使う。
+        self.posted.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 pub struct Session {
     id: SessionId,
     pub vt: Vt,
     backend: Box<dyn Backend>,
+    /// 出力と子プロセスの終了の知らせ。バックエンドにも渡している。
+    wake: Arc<WakeMessage>,
     /// アプリが付けたタイトル。消されたか、付けていなければ空。
     title: String,
     /// 高精度のホイールで、まだ 1 行に満たない回転量。
@@ -158,16 +212,17 @@ pub struct OutputEvents {
 
 impl Session {
     /// 既定の色が `colors` の `size` の端末を作り、`startup` のバックエンドでそのコマンドラインを
-    /// 子プロセスとして起動する。`wake` は出力が届いたときと子プロセスが終了したときに、別のスレッド
-    /// から呼ばれる。
+    /// 子プロセスとして起動する。`post` は出力と子プロセスの終了の知らせを積む。[`WakeMessage`] を通して、
+    /// 別のスレッドとウィンドウのスレッドから呼ばれる。
     pub fn spawn(
         id: SessionId,
         startup: &Startup,
         size: GridSize,
         colors: &TerminalColors,
-        wake: Wake,
+        post: impl Fn() -> bool + Send + Sync + 'static,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let vt = new_vt(size, colors)?;
+        let wake = Arc::new(WakeMessage::new(post));
         let backend = spawn_backend(
             startup,
             &SpawnOptions {
@@ -176,20 +231,26 @@ impl Session {
                 size,
                 working_folder: startup.working_folder.as_deref(),
             },
-            wake,
+            backend_wake(&wake),
         )?;
-        let mut session = Self::with_backend(id, vt, backend);
+        let mut session = Self::with_backend(id, vt, backend, wake);
         session.tab_icon = startup.tab_icon.clone();
         session.profile_name = startup.profile_name.clone();
         Ok(session)
     }
 
-    /// 起動済みの `backend` を `vt` の端末に接続する。
-    fn with_backend(id: SessionId, vt: Vt, backend: Box<dyn Backend>) -> Self {
+    /// 起動済みの `backend` を `vt` の端末に接続する。`wake` はバックエンドに渡したもの。
+    fn with_backend(
+        id: SessionId,
+        vt: Vt,
+        backend: Box<dyn Backend>,
+        wake: Arc<WakeMessage>,
+    ) -> Self {
         Self {
             id,
             vt,
             backend,
+            wake,
             title: String::new(),
             wheel_remainder: 0,
             wheel_report_remainder: 0,
@@ -207,6 +268,18 @@ impl Session {
 
     pub fn id(&self) -> SessionId {
         self.id
+    }
+
+    /// 出力の知らせを積む（[`WakeMessage::post`]）。積んであるか、積めたら `true`。流しきれなかった出力の
+    /// 続きを流すときに、ウィンドウのスレッドが呼ぶ。
+    pub fn wake(&self) -> bool {
+        self.wake.post()
+    }
+
+    /// 出力の知らせを受け取った（[`WakeMessage::received`]）。知らせを受け取ったら、出力を受け取るかどうかに
+    /// かかわらず、まず呼ぶ。
+    pub fn wake_received(&self) {
+        self.wake.received();
     }
 
     /// アプリが付けたタイトル。消されたか、付けていなければ空。
@@ -295,6 +368,12 @@ impl Session {
     }
 }
 
+/// バックエンドへ渡す [`Wake`]。`wake` を通して積む。
+fn backend_wake(wake: &Arc<WakeMessage>) -> Wake {
+    let wake = Arc::clone(wake);
+    Arc::new(move || wake.post())
+}
+
 /// 既定の色が `colors` の `size` の端末を作る。
 fn new_vt(size: GridSize, colors: &TerminalColors) -> Result<Vt, Box<dyn std::error::Error>> {
     let mut vt = Vt::new(size, TERM)?;
@@ -304,7 +383,12 @@ fn new_vt(size: GridSize, colors: &TerminalColors) -> Result<Vt, Box<dyn std::er
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+    use std::{
+        cell::RefCell,
+        collections::VecDeque,
+        rc::Rc,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use fantermo_core::config::ColorsConfig;
 
@@ -372,12 +456,56 @@ mod tests {
     }
 
     fn fake_session() -> (Session, Rc<RefCell<FakeState>>) {
+        let (session, state, _) = fake_session_posting(|_| true);
+        (session, state)
+    }
+
+    /// 知らせを積むたびに、それまでに積もうとした回数を `post` に渡し、その結果を積めたかとする端末。積もうとした
+    /// 回数も返す。
+    fn fake_session_posting(
+        post: impl Fn(usize) -> bool + Send + Sync + 'static,
+    ) -> (Session, Rc<RefCell<FakeState>>, Arc<AtomicUsize>) {
         let state = Rc::new(RefCell::new(FakeState::default()));
         let colors = ColorsConfig::default().terminal_colors();
         let vt = new_vt(SIZE, &colors).unwrap();
-        let session =
-            Session::with_backend(SessionId(0), vt, Box::new(FakeBackend(Rc::clone(&state))));
-        (session, state)
+        let posts = Arc::new(AtomicUsize::new(0));
+        let wake = Arc::new(WakeMessage::new({
+            let posts = Arc::clone(&posts);
+            move || post(posts.fetch_add(1, Ordering::SeqCst))
+        }));
+        let session = Session::with_backend(
+            SessionId(0),
+            vt,
+            Box::new(FakeBackend(Rc::clone(&state))),
+            wake,
+        );
+        (session, state, posts)
+    }
+
+    #[test]
+    fn a_wake_is_posted_once_until_it_is_received() {
+        let (session, _, posts) = fake_session_posting(|_| true);
+        let backend_wake = backend_wake(&session.wake);
+        assert!(backend_wake());
+        // 積んである間は、バックエンドからもウィンドウのスレッドからも積まない。
+        assert!(backend_wake());
+        assert!(session.wake());
+        assert_eq!(posts.load(Ordering::SeqCst), 1);
+
+        session.wake_received();
+        assert!(session.wake());
+        assert!(backend_wake());
+        assert_eq!(posts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_wake_that_could_not_be_posted_is_posted_again() {
+        let (session, _, posts) = fake_session_posting(|tried| tried > 0);
+        let backend_wake = backend_wake(&session.wake);
+        assert!(!backend_wake());
+        assert!(backend_wake());
+        assert!(session.wake());
+        assert_eq!(posts.load(Ordering::SeqCst), 2);
     }
 
     #[test]
