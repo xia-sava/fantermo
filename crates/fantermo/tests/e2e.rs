@@ -8315,11 +8315,24 @@ fn wait_red_in_tabs(server: &Server, expected: &[u64]) {
     }
 }
 
+/// fantermo のログの、[`RED_ICON`] を一辺 `side` で読んだ行の数。
+fn red_icon_loads(server: &Server, side: u64) -> usize {
+    let read = format!("{RED_ICON} at {side} px");
+    server
+        .log()
+        .lines()
+        .filter(|line| line.contains("loaded the tab icon") && line.contains(&read))
+        .count()
+}
+
 /// プロファイルのアイコンの画像はタブに出て、DPI を変えるとその DPI の一辺で出る。読めない画像のプロファイルの
 /// タブには、自動で作ったアイコンが出る。
+///
+/// 画像のファイルを読むのは、そのアイコンのタブを初めて開いたときと DPI が変わったときだけで、同じアイコンのタブを
+/// 開き足したときと、フォントの設定を変えて描き直したときは読まない。
 #[test]
 fn tab_icons_show_the_profile_image_and_follow_the_dpi() {
-    let config = format!(
+    let profiles = format!(
         r#"[[profiles]]
 name = "image"
 command = "cmd.exe /k prompt image$G"
@@ -8331,7 +8344,7 @@ command = "cmd.exe /k prompt missing$G"
 icon = 'missing.png'
 "#
     );
-    let server = Server::start_with_setup(&config, &[], |dir| {
+    let server = Server::start_with_setup(&profiles, &[], |dir| {
         let pixels = RED.repeat((RED_ICON_SIDE * RED_ICON_SIDE) as usize);
         std::fs::write(
             dir.join(RED_ICON),
@@ -8344,11 +8357,40 @@ icon = 'missing.png'
     server.wait_text("missing>");
     server.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
     wait_red_in_tabs(&server, &[TAB_ICON_AT_100_PERCENT, 0]);
+    assert_eq!(red_icon_loads(&server, TAB_ICON_AT_100_PERCENT), 1);
 
+    // 同じアイコンのタブを開き足しても読まない。
+    server.post("/e2e/tab/new/0", b"");
+    server.wait_until("three tabs", |state| tab_count(state) == 3);
+    wait_red_in_tabs(
+        &server,
+        &[TAB_ICON_AT_100_PERCENT, 0, TAB_ICON_AT_100_PERCENT],
+    );
+    assert_eq!(red_icon_loads(&server, TAB_ICON_AT_100_PERCENT), 1);
+
+    // フォントを変えて描き直しても読まない。描き直したことは、新しいセルの高さの状態のあとに絵を読んで見る。
+    let cell_height = server.state()["cell_height"].clone();
+    write_settings(&server, &format!("{profiles}\n[font]\nsize = 16\n"));
+    server.wait_until("the new font", |state| state["cell_height"] != cell_height);
+    wait_red_in_tabs(
+        &server,
+        &[TAB_ICON_AT_100_PERCENT, 0, TAB_ICON_AT_100_PERCENT],
+    );
+    assert_eq!(red_icon_loads(&server, TAB_ICON_AT_100_PERCENT), 1);
+
+    // DPI が変わったら、その一辺で読み直す。
     change_dpi(&server, DPI_200_PERCENT);
-    wait_red_in_tabs(&server, &[TAB_ICON_AT_200_PERCENT, 0]);
+    wait_red_in_tabs(
+        &server,
+        &[TAB_ICON_AT_200_PERCENT, 0, TAB_ICON_AT_200_PERCENT],
+    );
+    assert_eq!(red_icon_loads(&server, TAB_ICON_AT_200_PERCENT), 1);
     change_dpi(&server, DPI_100_PERCENT);
-    wait_red_in_tabs(&server, &[TAB_ICON_AT_100_PERCENT, 0]);
+    wait_red_in_tabs(
+        &server,
+        &[TAB_ICON_AT_100_PERCENT, 0, TAB_ICON_AT_100_PERCENT],
+    );
+    assert_eq!(red_icon_loads(&server, TAB_ICON_AT_100_PERCENT), 2);
 }
 
 /// DPI を変えたあとに書く `state.toml` は、そのときのウィンドウの大きさ（ピクセル）で、DPI は書かない。同じ DPI で起動
