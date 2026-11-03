@@ -8238,6 +8238,81 @@ fn a_centered_background_image_keeps_its_pixels_after_a_dpi_change() {
     );
 }
 
+/// タブのアイコンの画像のファイル。真っ赤な正方形。
+const RED_ICON: &str = "red-icon.png";
+const RED_ICON_SIDE: u32 = 64;
+const RED: [u8; 3] = [0xff, 0x00, 0x00];
+/// 96 DPI と 192 DPI のタブのアイコンの一辺。
+const TAB_ICON_AT_100_PERCENT: u64 = 18;
+const TAB_ICON_AT_200_PERCENT: u64 = 36;
+
+/// タブごとの、縦の真ん中の行の [`RED`] の画素の数が `expected` になるまで絵を読み直す。
+#[track_caller]
+fn wait_red_in_tabs(server: &Server, expected: &[u64]) {
+    let deadline = Instant::now() + PICTURE_TIMEOUT;
+    loop {
+        let state = server.state();
+        let picture = server.picture();
+        let counts: Vec<u64> = (0..expected.len())
+            .map(|index| {
+                let area = &state["tab_bar"]["tabs"][index]["area"];
+                let x = u32::try_from(number(&area["x"])).expect("the position fits");
+                let width = u32::try_from(number(&area["width"])).expect("the width fits");
+                let y = u32::try_from(number(&area["y"]) + number(&area["height"]) / 2)
+                    .expect("the position fits");
+                (x..x + width)
+                    .filter(|&x| color_is_close(picture.rgb(x, y), RED))
+                    .count() as u64
+            })
+            .collect();
+        if counts == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "red pixels in the tabs: {counts:?}, not {expected:?}\n{state:#}\n{}",
+            server.log()
+        );
+        std::thread::sleep(PICTURE_POLL_INTERVAL);
+    }
+}
+
+/// プロファイルのアイコンの画像はタブに出て、DPI を変えるとその DPI の一辺で出る。読めない画像のプロファイルの
+/// タブには、自動で作ったアイコンが出る。
+#[test]
+fn tab_icons_show_the_profile_image_and_follow_the_dpi() {
+    let config = format!(
+        r#"[[profiles]]
+name = "image"
+command = "cmd.exe /k prompt image$G"
+icon = '{RED_ICON}'
+
+[[profiles]]
+name = "missing"
+command = "cmd.exe /k prompt missing$G"
+icon = 'missing.png'
+"#
+    );
+    let server = Server::start_with_setup(&config, &[], |dir| {
+        let pixels = RED.repeat((RED_ICON_SIDE * RED_ICON_SIDE) as usize);
+        std::fs::write(
+            dir.join(RED_ICON),
+            common::encode_png(RED_ICON_SIDE, RED_ICON_SIDE, &pixels),
+        )
+        .expect("failed to write the icon");
+    });
+    server.wait_text("image>");
+    server.post("/e2e/tab/new/1", b"");
+    server.wait_text("missing>");
+    server.resize(DPI_TEST_GRID.0, DPI_TEST_GRID.1);
+    wait_red_in_tabs(&server, &[TAB_ICON_AT_100_PERCENT, 0]);
+
+    change_dpi(&server, DPI_200_PERCENT);
+    wait_red_in_tabs(&server, &[TAB_ICON_AT_200_PERCENT, 0]);
+    change_dpi(&server, DPI_100_PERCENT);
+    wait_red_in_tabs(&server, &[TAB_ICON_AT_100_PERCENT, 0]);
+}
+
 /// DPI を変えたあとに書く `state.toml` は、そのときのウィンドウの大きさ（ピクセル）で、DPI は書かない。同じ DPI で起動
 /// すると同じ寸法に戻り、違う DPI で起動してもピクセルのまま開いて、桁数と行数はその DPI のセルで入る数になる。
 #[test]
