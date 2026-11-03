@@ -392,6 +392,7 @@ fn background_row_text(image: &BackgroundImage) -> String {
 const ID_COLORS: i32 = 600;
 const COLOR_ID_STRIDE: i32 = 4;
 const COLOR_SWATCH: i32 = 0;
+const COLOR_TEXT: i32 = 1;
 const COLOR_CHOOSE: i32 = 2;
 const COLOR_RESET: i32 = 3;
 /// 色のページの一行の高さ。
@@ -679,7 +680,7 @@ pub fn run(owner: HWND, request: Request, host: &mut dyn Host) {
     // SAFETY: hwnd と一覧は有効なウィンドウ。
     unsafe {
         _ = ShowWindow(hwnd, SW_SHOW);
-        _ = SetFocus(Some(state.controls.pages));
+        _ = SetFocus(Some(state.controls.pages.hwnd()));
     }
 
     modal::run(owner, hwnd, &state.closed, |_| false);
@@ -736,13 +737,23 @@ type DipRect = [i32; 4];
 /// ダイアログの子コントロールを作る。矩形を渡したコントロールは [`Builder::placed`] に控え、
 /// あとで [`State::layout`] が DPI に合わせて置く。
 struct Builder {
-    /// 親のダイアログ。
+    /// 親のダイアログの HWND。ダイアログが閉じるまで有効で、作るコントロールはその子になる。
     hwnd: HWND,
+    /// コントロールを作るモジュール（この実行ファイル）。
     instance: HINSTANCE,
     placed: Vec<(HWND, DipRect)>,
 }
 
 impl Builder {
+    /// ダイアログ `hwnd` の子コントロールを、モジュール `instance` で作るもの。
+    fn new(hwnd: HWND, instance: HINSTANCE) -> Self {
+        Self {
+            hwnd,
+            instance,
+            placed: Vec::new(),
+        }
+    }
+
     /// `class` の子コントロールを作る。`rect` が `None` のものは置かない。
     fn child(
         &mut self,
@@ -849,6 +860,7 @@ impl Builder {
         self.push_button(id, text, rect, BS_DEFPUSHBUTTON)
     }
 
+    /// ボタンのスタイル `style`（`BS_PUSHBUTTON` か `BS_DEFPUSHBUTTON`）の押しボタン。
     fn push_button(
         &mut self,
         id: i32,
@@ -890,11 +902,11 @@ impl Builder {
     }
 
     /// ドロップダウンの選択肢のコンボボックス。選択肢は `labels` の順に入れる。
-    fn combo<'a>(
+    fn combo<S: AsRef<str>>(
         &mut self,
         id: i32,
         rect: DipRect,
-        labels: impl IntoIterator<Item = &'a str>,
+        labels: impl IntoIterator<Item = S>,
     ) -> windows::core::Result<HWND> {
         let combo = self.child(
             WC_COMBOBOXW,
@@ -911,7 +923,7 @@ impl Builder {
                     combo,
                     CB_ADDSTRING,
                     None,
-                    Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
+                    Some(LPARAM(HSTRING::from(text.as_ref()).as_ptr() as isize)),
                 )
             };
         }
@@ -919,31 +931,42 @@ impl Builder {
     }
 
     /// 一覧。`tab_stops`（ダイアログの単位）があれば、行の文字をタブで区切って桁を揃える。
-    fn list(&mut self, id: i32, rect: DipRect, tab_stops: &[i32]) -> windows::core::Result<HWND> {
+    fn list(
+        &mut self,
+        id: i32,
+        rect: DipRect,
+        tab_stops: &[i32],
+    ) -> windows::core::Result<ListBox> {
         let mut style = LBS_NOTIFY;
         if !tab_stops.is_empty() {
             style |= LBS_USETABSTOPS;
         }
-        let list = self.child(
+        let list = ListBox(self.child(
             WC_LISTBOXW,
             "",
             WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(style as u32),
             WS_EX_CLIENTEDGE,
             id,
             Some(rect),
-        )?;
+        )?);
         if !tab_stops.is_empty() {
-            ListBox(list).set_tab_stops(tab_stops);
+            list.set_tab_stops(tab_stops);
         }
         Ok(list)
     }
 }
 
-/// 一覧（リストボックス）の操作。
+/// 一覧（リストボックス）の操作。ダイアログの子の、有効なリストボックスの HWND を包む（ダイアログが
+/// 閉じるまで有効）。
 #[derive(Clone, Copy)]
 struct ListBox(HWND);
 
 impl ListBox {
+    /// 一覧の HWND。
+    fn hwnd(self) -> HWND {
+        self.0
+    }
+
     /// 行を末尾に足す。
     fn add(self, text: &str) {
         // SAFETY: 一覧は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
@@ -958,7 +981,7 @@ impl ListBox {
     }
 
     /// 行を `rows` に入れ替える。選択は外れる。
-    fn fill<S: AsRef<str>>(self, rows: impl IntoIterator<Item = S>) {
+    fn reset_with<S: AsRef<str>>(self, rows: impl IntoIterator<Item = S>) {
         // SAFETY: 一覧は有効なウィンドウ。
         unsafe { SendMessageW(self.0, LB_RESETCONTENT, None, None) };
         for row in rows {
@@ -1009,7 +1032,7 @@ impl ListBox {
 
 /// ダイアログのコントロール。
 struct Controls {
-    pages: HWND,
+    pages: ListBox,
     /// 各ページに置くコントロール。[`PAGES`] の順。
     page_controls: Vec<Vec<HWND>>,
     font: HWND,
@@ -1025,7 +1048,7 @@ struct Controls {
     paste_confirm_size_spin: HWND,
     clipboard_read: [HWND; ClipboardRead::ALL.len()],
     /// プロファイルの一覧。
-    profiles_list: HWND,
+    profiles_list: ListBox,
     /// 削除・既定にするのボタン。
     profile_remove: HWND,
     profile_default: HWND,
@@ -1044,7 +1067,7 @@ struct Controls {
     profile_icon: HWND,
     profile_icon_choose: HWND,
     /// 背景画像の一覧。
-    background_images: HWND,
+    background_images: ListBox,
     /// 背景画像の一覧の「削除」のボタン。
     background_remove: HWND,
     /// 既定の不透明度と表示方法。
@@ -1061,7 +1084,7 @@ struct Controls {
     /// 配色のラジオボタン。[`ColorScheme::ALL`] の順。
     color_scheme: [HWND; 2],
     /// キーの割り当ての一覧。
-    keys_list: HWND,
+    keys_list: ListBox,
     /// 追加・変更・外す・既定に戻すのボタン。
     key_buttons: [HWND; 4],
     /// 色のページの行。[`COLOR_ITEMS`] の順。
@@ -1143,11 +1166,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             None,
         )?
     };
-    let mut b = Builder {
-        hwnd,
-        instance: instance.into(),
-        placed: Vec::new(),
-    };
+    let mut b = Builder::new(hwnd, instance.into());
 
     let page_left = MARGIN + PAGES_WIDTH + MARGIN;
     let page_width = CLIENT_WIDTH - page_left - MARGIN;
@@ -1162,7 +1181,9 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         [MARGIN, MARGIN, PAGES_WIDTH, button_top - 2 * MARGIN],
         &[],
     )?;
-    ListBox(pages).fill(PAGES);
+    for page in PAGES {
+        pages.add(page);
+    }
 
     // 外観
     let mut appearance = Vec::new();
@@ -1170,7 +1191,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     let font = b.combo(
         ID_FONT,
         [control_left, row(0), control_width, ROW_HEIGHT],
-        [],
+        std::iter::empty::<&str>(),
     )?;
     appearance.push(font);
     // SAFETY: font は有効なコンボボックス。
@@ -1325,7 +1346,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         [inner_left, list_top, list_width, BACKGROUND_LIST_HEIGHT],
         &[],
     )?;
-    background_page.push(background_images);
+    background_page.push(background_images.hwnd());
     let image_button_rect = |index: i32| {
         [
             inner_left + list_width + BUTTON_GAP,
@@ -1493,7 +1514,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         [page_left, profiles_top, page_width, PROFILE_LIST_HEIGHT],
         &[PROFILE_COLUMN_TAB_STOP],
     )?;
-    profiles_page.push(profiles_list);
+    profiles_page.push(profiles_list.hwnd());
     let profile_buttons_top = profiles_top + PROFILE_LIST_HEIGHT + BUTTON_GAP;
     let profile_button_width = (page_width - 2 * BUTTON_GAP) / 3;
     let profile_button_rect = |index: i32| {
@@ -1621,7 +1642,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         ],
         &[KEY_COLUMN_TAB_STOP],
     )?;
-    keys_page.push(keys_list);
+    keys_page.push(keys_list.hwnd());
     let key_button_width = (page_width - 3 * BUTTON_GAP) / 4;
     let mut key_buttons = [HWND::default(); 4];
     for (index, (id, text)) in [
@@ -1701,7 +1722,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             )?;
             let mut left = control_left + SWATCH_WIDTH + BUTTON_GAP;
             let text = b.static_text(
-                id + 1,
+                id + COLOR_TEXT,
                 WINDOW_EX_STYLE(0),
                 [left, top + LABEL_OFFSET, COLOR_TEXT_WIDTH, COLOR_ROW_HEIGHT],
             )?;
@@ -2042,9 +2063,9 @@ impl State<'_> {
     /// プロファイルの一覧を作り直し、`selected` 番目（一覧より後ろなら最後）を選んで、名前と
     /// コマンドラインの入力欄にその値を入れる。
     fn refresh_profiles(&self, selected: usize) {
-        let list = ListBox(self.controls.profiles_list);
+        let list = self.controls.profiles_list;
         let profiles = self.profiles.borrow();
-        list.fill(profiles.iter().enumerate().map(|(index, profile)| {
+        list.reset_with(profiles.iter().enumerate().map(|(index, profile)| {
             profile_row_text(profile, index == self.default_profile.get())
         }));
         let index = selected.min(profiles.len().saturating_sub(1));
@@ -2055,7 +2076,8 @@ impl State<'_> {
 
     /// プロファイルの一覧で選んでいる位置。
     fn selected_profile(&self) -> Option<usize> {
-        ListBox(self.controls.profiles_list)
+        self.controls
+            .profiles_list
             .selected()
             .filter(|&index| index < self.profiles.borrow().len())
     }
@@ -2276,7 +2298,7 @@ impl State<'_> {
             profile.icon = (!icon.is_empty()).then_some(icon);
             profile_row_text(profile, index == self.default_profile.get())
         };
-        ListBox(self.controls.profiles_list).replace_row(index, &text);
+        self.controls.profiles_list.replace_row(index, &text);
         self.show_profile_command_warning();
         self.schedule_preview();
     }
@@ -2326,7 +2348,7 @@ impl State<'_> {
         let focus = if id == ID_PROFILE_ADD {
             self.controls.profile_name
         } else {
-            self.controls.profiles_list
+            self.controls.profiles_list.hwnd()
         };
         // SAFETY: focus はダイアログの子の有効なウィンドウ。押したボタンが押せなくなることがあるので移す。
         unsafe { _ = SetFocus(Some(focus)) };
@@ -2345,9 +2367,9 @@ impl State<'_> {
 
     /// 背景画像の一覧を作り直し、`selected` 番目（一覧より後ろなら最後）を選ぶ。`None` なら選ばない。
     fn refresh_background_images(&self, selected: Option<usize>) {
-        let list = ListBox(self.controls.background_images);
+        let list = self.controls.background_images;
         let images = self.background_images.borrow();
-        list.fill(images.iter().map(background_row_text));
+        list.reset_with(images.iter().map(background_row_text));
         if let Some(selected) = selected
             && !images.is_empty()
         {
@@ -2359,7 +2381,8 @@ impl State<'_> {
 
     /// 背景画像の一覧で選んでいる位置。
     fn selected_background_image(&self) -> Option<usize> {
-        ListBox(self.controls.background_images)
+        self.controls
+            .background_images
             .selected()
             .filter(|&index| index < self.background_images.borrow().len())
     }
@@ -2480,7 +2503,7 @@ impl State<'_> {
         else {
             return;
         };
-        ListBox(self.controls.background_images).replace_row(index, &text);
+        self.controls.background_images.replace_row(index, &text);
     }
 
     /// 一覧で選んでいる項目の表示方法のコンボボックスが変わった。
@@ -2590,7 +2613,7 @@ impl State<'_> {
         self.preview();
         // SAFETY: 一覧はダイアログの子の有効なウィンドウ。押したボタンが押せなくなることがあるので、
         // 一覧へ戻す。
-        unsafe { _ = SetFocus(Some(self.controls.background_images)) };
+        unsafe { _ = SetFocus(Some(self.controls.background_images.hwnd())) };
     }
 
     /// 背景画像の一覧の最後に `paths` を足す（同じものがあれば足さない）。足した最後の位置を返し、
@@ -2617,8 +2640,8 @@ impl State<'_> {
     fn refresh_keys(&self, selected: Option<KeyRow>) {
         let c = &self.controls;
         let rows = key_rows(&self.keys.borrow());
-        let list = ListBox(c.keys_list);
-        list.fill(rows.iter().map(|row| key_row_text(*row)));
+        let list = c.keys_list;
+        list.reset_with(rows.iter().copied().map(key_row_text));
         let index = selected
             .and_then(|selected| {
                 rows.iter()
@@ -2633,7 +2656,7 @@ impl State<'_> {
 
     /// キーの割り当ての一覧で選んでいる行。
     fn selected_key_row(&self) -> Option<KeyRow> {
-        let index = ListBox(self.controls.keys_list).selected()?;
+        let index = self.controls.keys_list.selected()?;
         self.key_rows.borrow().get(index).copied()
     }
 
@@ -2699,7 +2722,7 @@ impl State<'_> {
         self.preview();
         // SAFETY: 一覧はダイアログの子の有効なウィンドウ。押したボタンが押せなくなることがあるので、
         // 一覧へ戻す。
-        unsafe { _ = SetFocus(Some(self.controls.keys_list)) };
+        unsafe { _ = SetFocus(Some(self.controls.keys_list.hwnd())) };
     }
 
     /// 動作 `action` に割り当てるキーを、押したキーを読み取るダイアログで読む。
@@ -2840,7 +2863,7 @@ impl State<'_> {
     /// `page` 番目のページのコントロールだけを見せる。
     fn show_page(&self, page: usize) {
         let c = &self.controls;
-        ListBox(c.pages).select(page);
+        c.pages.select(page);
         for (index, controls) in c.page_controls.iter().enumerate() {
             let show = if index == page { SW_SHOW } else { SW_HIDE };
             for &control in controls {
@@ -2897,7 +2920,7 @@ impl State<'_> {
         if let Err((index, field, message)) = check_profiles(&profiles) {
             // エラーのあるプロファイルを選び、その入力欄へ移れるようにする。
             if self.selected_profile() != Some(index) {
-                ListBox(c.profiles_list).select(index);
+                c.profiles_list.select(index);
                 self.on_profile_selected();
             }
             let control = match field {
@@ -3273,7 +3296,7 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     state.apply();
                 }
                 (ID_PAGES, LBN_SELCHANGE) => {
-                    if let Some(page) = ListBox(state.controls.pages).selected()
+                    if let Some(page) = state.controls.pages.selected()
                         && page < PAGES.len()
                     {
                         state.show_page(page);
