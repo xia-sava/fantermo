@@ -7,7 +7,8 @@
 //! 端末ごとに高々一つになる。
 //! 知らせを積みすぎると、ウィンドウのスレッドがそれを処理し続けて、キー入力と描画が後回しになるため。
 //! 積めなかった知らせは次の出力で積み直す。子プロセスが終わったあとの最後の知らせは、次がないので積めるまで
-//! 積み直す（[`OutputBudget::sent_last`]）。
+//! 積み直す（[`OutputBudget::sent_last`]）。ウィンドウのスレッドが積む続きの知らせも含めて端末ごとに一つに
+//! するのは `session::WakeMessage`（この印との違いはそちらの doc）。
 
 use std::{
     sync::{Condvar, Mutex, MutexGuard, PoisonError},

@@ -170,7 +170,8 @@ impl Bridge {
         })
     }
 
-    /// 起動できなかったバックエンド。`message` を端末に出す。
+    /// 起動できなかったバックエンド。`message` を端末に出す。その知らせはウィンドウのスレッドから一度だけ積み、
+    /// 積めなければ積み直さない（ウィンドウのスレッドでは、積めるまで待てないため）。そのときは文が出ない。
     fn failed(
         message: &str,
         sender: mpsc::Sender<Event>,
@@ -513,8 +514,8 @@ fn write_input(mut stdin: impl Write, queued: &mpsc::Receiver<Vec<u8>>, closing:
 
 /// ブリッジの標準出力を閉じるまで読み、単位ごとに `sender` へ渡して `wake` を呼ぶ。まだ受け取られていない分が
 /// `budget` の上限に達していれば、受け取られるまで待つ（[`send_all`]）。`closing` が立っていれば（破棄した
-/// あとなら）、閉じたことは知らせない。終わりの単位か閉じたことを渡したら、その知らせは積めるまで積み直す
-/// （[`OutputBudget::sent_last`]）。
+/// あとなら）、閉じたことは知らせない。終わりの単位かエラーを受け取ったとき、閉じたことを渡したときは、その
+/// 知らせを積めるまで積み直す（[`OutputBudget::sent_last`]）。
 fn read_output(
     mut stdout: ChildStdout,
     process: &OwnedHandle,
@@ -537,7 +538,7 @@ fn read_output(
         },
     );
     if !closed {
-        // 終わりの単位を受け取って渡した。その知らせを積めていなければ、積めるまで積み直す。
+        // 終わりの単位かエラーを受け取って渡した。その知らせを積めていなければ、積めるまで積み直す。
         budget.sent_last(wake);
         return;
     }
