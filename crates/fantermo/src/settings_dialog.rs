@@ -1030,22 +1030,185 @@ impl ListBox {
     }
 }
 
+/// 数の入力欄の値の扱い。
+struct NumberKind<T> {
+    /// 入力欄の文字を値にする。読めなければ `None`。
+    parse: fn(&str) -> Option<T>,
+    /// 値を入力欄に見せる文字にする。
+    format: fn(T) -> String,
+    /// 値を矢印で一つ動かす（二つ目の引数の符号の向きへ）。範囲の端で止める。
+    step: fn(T, i32) -> T,
+    /// 入力欄が読めないときに矢印で動かし始める値を、設定から取る。
+    start: fn(&Config) -> T,
+    /// 入力欄が読めないときに見せる文。
+    message: &'static str,
+}
+
+/// 数の入力欄と、その右に付ける上下の矢印。
+struct NumberField<T> {
+    /// 入力欄の ID。
+    id: i32,
+    edit: HWND,
+    spin: HWND,
+    kind: NumberKind<T>,
+}
+
+impl<T: Copy> NumberField<T> {
+    /// 入力欄 `id` を `rect` に作り、続けて上下の矢印 `spin_id` を作る。
+    fn create(
+        b: &mut Builder,
+        id: i32,
+        spin_id: i32,
+        rect: DipRect,
+        kind: NumberKind<T>,
+    ) -> windows::core::Result<Self> {
+        let edit = b.edit(id, rect)?;
+        let spin = b.spin(spin_id)?;
+        Ok(Self {
+            id,
+            edit,
+            spin,
+            kind,
+        })
+    }
+
+    /// 入力欄と上下の矢印。
+    fn controls(&self) -> [HWND; 2] {
+        [self.edit, self.spin]
+    }
+
+    /// 入力欄に `value` を入れる。
+    fn fill(&self, value: T) {
+        set_text(self.edit, &(self.kind.format)(value));
+    }
+
+    /// 入力欄の値。読めなければ、見せる文と入力欄。
+    fn read(&self) -> Result<T, (&'static str, HWND)> {
+        (self.kind.parse)(&get_text(self.edit)).ok_or((self.kind.message, self.edit))
+    }
+}
+
+/// 値の型の違う数の入力欄を、まとめて並べ、知らせを振り分けるための操作。
+trait NumberInput {
+    /// ID が `id` のコントロールがこの入力欄か。
+    fn owns(&self, id: i32) -> bool;
+    /// 上下の矢印。
+    fn spin(&self) -> HWND;
+    /// 上下の矢印を入力欄の右端に付け直す（付けるときに入力欄の幅を詰める）。
+    fn attach_spin(&self);
+    /// 入力欄の値を `delta` の向きに一つ動かす。読めなければ `start` の値から動かす。
+    fn step(&self, delta: i32, start: &Config);
+}
+
+impl<T: Copy> NumberInput for NumberField<T> {
+    fn owns(&self, id: i32) -> bool {
+        id == self.id
+    }
+
+    fn spin(&self) -> HWND {
+        self.spin
+    }
+
+    fn attach_spin(&self) {
+        // 範囲は、上の矢印で数が増える向き（既定は逆）にするためだけに決める。数は step で決める。
+        // SAFETY: 矢印と入力欄はダイアログの子の有効なウィンドウ。
+        unsafe {
+            SendMessageW(
+                self.spin,
+                UDM_SETBUDDY,
+                Some(WPARAM(self.edit.0 as usize)),
+                None,
+            );
+            SendMessageW(
+                self.spin,
+                UDM_SETRANGE32,
+                Some(WPARAM(SPIN_RANGE.0 as usize)),
+                Some(LPARAM(SPIN_RANGE.1 as isize)),
+            );
+            // 端にいると矢印を押しても知らせないので、真ん中に置く（step で動かさない）。
+            SendMessageW(
+                self.spin,
+                UDM_SETPOS32,
+                None,
+                Some(LPARAM(((SPIN_RANGE.0 + SPIN_RANGE.1) / 2) as isize)),
+            );
+            // 付け直すと矢印が触れるようになるので、相手の入力欄に合わせる。
+            _ = EnableWindow(self.spin, IsWindowEnabled(self.edit).as_bool());
+        }
+    }
+
+    fn step(&self, delta: i32, start: &Config) {
+        let current = self.read().unwrap_or_else(|_| (self.kind.start)(start));
+        self.fill((self.kind.step)(current, delta));
+    }
+}
+
+/// `font.size_pt` の入力欄。
+const FONT_SIZE_FIELD: NumberKind<f32> = NumberKind {
+    parse: config::parse_font_size,
+    format: format_size,
+    step: step_size,
+    start: |config| config.font.size_pt,
+    message: "フォントサイズは、1 から 128 までの数値を入力してください。",
+};
+
+/// `scroll_bar.width` の入力欄。
+const SCROLL_BAR_WIDTH_FIELD: NumberKind<u32> = NumberKind {
+    parse: config::parse_scroll_bar_width,
+    format: format_integer,
+    step: |current, delta| step_integer(current, delta, &config::SCROLL_BAR_WIDTH_RANGE),
+    start: |config| config.scroll_bar.width,
+    message: "スクロールバーの幅は、4 から 64 までの整数を入力してください。",
+};
+
+/// `window.padding` の入力欄。
+const PADDING_FIELD: NumberKind<u32> = NumberKind {
+    parse: config::parse_padding,
+    format: format_integer,
+    step: |current, delta| step_integer(current, delta, &config::PADDING_RANGE),
+    start: |config| config.window.padding,
+    message: "余白は、0 から 64 までの整数を入力してください。",
+};
+
+/// `paste.confirm_size` の入力欄。
+const PASTE_CONFIRM_SIZE_FIELD: NumberKind<u32> = NumberKind {
+    parse: config::parse_paste_confirm_size,
+    format: format_integer,
+    step: |current, delta| step_integer(current, delta, &config::PASTE_CONFIRM_SIZE_RANGE),
+    start: |config| config.paste.confirm_size,
+    message: "大きなテキストの確認の大きさは、0 から 1048576 までの整数を入力してください。",
+};
+
+/// `background.image_opacity` の入力欄。
+const BACKGROUND_OPACITY_FIELD: NumberKind<f32> = NumberKind {
+    parse: config::parse_image_opacity,
+    format: format_opacity,
+    step: step_opacity,
+    start: |config| config.background.image_opacity,
+    message: "不透明度は、0 から 1 までの数値を入力してください。",
+};
+
+/// 背景画像の一覧で選んでいる項目の不透明度の入力欄。読めなければ、既定の不透明度から動かす。
+const BACKGROUND_ITEM_OPACITY_FIELD: NumberKind<f32> = NumberKind {
+    parse: config::parse_image_opacity,
+    format: format_opacity,
+    step: step_opacity,
+    start: |config| config.background.image_opacity,
+    message: "選択した項目の不透明度は、0 から 1 までの数値を入力してください。",
+};
+
 /// ダイアログのコントロール。
 struct Controls {
     pages: ListBox,
     /// 各ページに置くコントロール。[`PAGES`] の順。
     page_controls: Vec<Vec<HWND>>,
     font: HWND,
-    size: HWND,
-    size_spin: HWND,
+    size: NumberField<f32>,
     wide_glyph: [HWND; WideGlyph::ALL.len()],
-    scroll_bar_width: HWND,
-    scroll_bar_width_spin: HWND,
-    padding: HWND,
-    padding_spin: HWND,
+    scroll_bar_width: NumberField<u32>,
+    padding: NumberField<u32>,
     paste_confirm: [HWND; PasteConfirm::ALL.len()],
-    paste_confirm_size: HWND,
-    paste_confirm_size_spin: HWND,
+    paste_confirm_size: NumberField<u32>,
     clipboard_read: [HWND; ClipboardRead::ALL.len()],
     /// プロファイルの一覧。
     profiles_list: ListBox,
@@ -1071,16 +1234,14 @@ struct Controls {
     /// 背景画像の一覧の「削除」のボタン。
     background_remove: HWND,
     /// 既定の不透明度と表示方法。
-    background_opacity: HWND,
-    background_opacity_spin: HWND,
+    background_opacity: NumberField<f32>,
     background_fit: HWND,
     /// 一覧で選んでいる項目の表示方法。
     background_item_fit: HWND,
     /// 一覧で選んでいる項目の不透明度の「既定」と「指定」のラジオボタンと、「指定」の値。
     background_item_opacity_default: HWND,
     background_item_opacity_custom: HWND,
-    background_item_opacity: HWND,
-    background_item_opacity_spin: HWND,
+    background_item_opacity: NumberField<f32>,
     /// 配色のラジオボタン。[`ColorScheme::ALL`] の順。
     color_scheme: [HWND; 2],
     /// キーの割り当ての一覧。
@@ -1093,6 +1254,21 @@ struct Controls {
     /// すべてのコントロールと、96 DPI のときの矩形。上下の矢印のボタンは入れない（相手の入力欄に
     /// 付けて置く）。
     placed: Vec<(HWND, DipRect)>,
+}
+
+impl Controls {
+    /// 数の入力欄。上下の矢印の配置と、矢印と入力の知らせの振り分けは、これを順に回す。
+    fn number_fields(&self) -> impl Iterator<Item = &dyn NumberInput> {
+        [
+            &self.size as &dyn NumberInput,
+            &self.scroll_bar_width,
+            &self.padding,
+            &self.paste_confirm_size,
+            &self.background_opacity,
+            &self.background_item_opacity,
+        ]
+        .into_iter()
+    }
 }
 
 /// ダイアログの状態。ウィンドウプロシージャからも触るので、共有の参照だけで読み書きする。
@@ -1197,10 +1373,14 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     // SAFETY: font は有効なコンボボックス。
     unsafe { SendMessageW(font, CB_SETMINVISIBLE, Some(WPARAM(VISIBLE_FONTS)), None) };
     appearance.push(b.label("サイズ(&S):", label_rect(row(1)))?);
-    let size = b.edit(ID_SIZE, [control_left, row(1), NUMBER_WIDTH, ROW_HEIGHT])?;
-    appearance.push(size);
-    let size_spin = b.spin(ID_SIZE_SPIN)?;
-    appearance.push(size_spin);
+    let size = NumberField::create(
+        &mut b,
+        ID_SIZE,
+        ID_SIZE_SPIN,
+        [control_left, row(1), NUMBER_WIDTH, ROW_HEIGHT],
+        FONT_SIZE_FIELD,
+    )?;
+    appearance.extend(size.controls());
     appearance.push(b.label(
         "ポイント（1〜128）",
         [
@@ -1224,13 +1404,14 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     }
     let width_row = row(2) + WideGlyph::ALL.len() as i32 * ROW_HEIGHT + MARGIN;
     appearance.push(b.label("スクロールバーの幅(&B):", label_rect(width_row))?);
-    let scroll_bar_width = b.edit(
+    let scroll_bar_width = NumberField::create(
+        &mut b,
         ID_SCROLL_BAR_WIDTH,
+        ID_SCROLL_BAR_WIDTH_SPIN,
         [control_left, width_row, NUMBER_WIDTH, ROW_HEIGHT],
+        SCROLL_BAR_WIDTH_FIELD,
     )?;
-    appearance.push(scroll_bar_width);
-    let scroll_bar_width_spin = b.spin(ID_SCROLL_BAR_WIDTH_SPIN)?;
-    appearance.push(scroll_bar_width_spin);
+    appearance.extend(scroll_bar_width.controls());
     appearance.push(b.label(
         "ピクセル（4〜64。画面の拡大率に合わせて広げる）",
         [
@@ -1242,13 +1423,14 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     )?);
     let padding_row = width_row + ROW_HEIGHT + MARGIN;
     appearance.push(b.label("余白(&G):", label_rect(padding_row))?);
-    let padding = b.edit(
+    let padding = NumberField::create(
+        &mut b,
         ID_PADDING,
+        ID_PADDING_SPIN,
         [control_left, padding_row, NUMBER_WIDTH, ROW_HEIGHT],
+        PADDING_FIELD,
     )?;
-    appearance.push(padding);
-    let padding_spin = b.spin(ID_PADDING_SPIN)?;
-    appearance.push(padding_spin);
+    appearance.extend(padding.controls());
     appearance.push(b.label(
         "ピクセル（0〜64。画面の拡大率に合わせて広げる）",
         [
@@ -1308,18 +1490,19 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     )?;
     background_page.push(background_fit);
     background_page.push(b.label("不透明度(&Y):", background_label_rect(opacity_row))?);
-    let background_opacity = b.edit(
+    let background_opacity = NumberField::create(
+        &mut b,
         ID_BACKGROUND_OPACITY,
+        ID_BACKGROUND_OPACITY_SPIN,
         [
             background_control_left,
             opacity_row,
             NUMBER_WIDTH,
             ROW_HEIGHT,
         ],
+        BACKGROUND_OPACITY_FIELD,
     )?;
-    background_page.push(background_opacity);
-    let background_opacity_spin = b.spin(ID_BACKGROUND_OPACITY_SPIN)?;
-    background_page.push(background_opacity_spin);
+    background_page.extend(background_opacity.controls());
     background_page.push(b.label(
         "0（透明）〜1（不透明）",
         opacity_note_rect(opacity_row, background_control_left),
@@ -1412,18 +1595,19 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     )?;
     background_page.push(background_item_opacity_custom);
     let custom_opacity_left = background_control_left + CUSTOM_OPACITY_WIDTH;
-    let background_item_opacity = b.edit(
+    let background_item_opacity = NumberField::create(
+        &mut b,
         ID_BACKGROUND_ITEM_OPACITY,
+        ID_BACKGROUND_ITEM_OPACITY_SPIN,
         [
             custom_opacity_left,
             custom_opacity_row,
             NUMBER_WIDTH,
             ROW_HEIGHT,
         ],
+        BACKGROUND_ITEM_OPACITY_FIELD,
     )?;
-    background_page.push(background_item_opacity);
-    let background_item_opacity_spin = b.spin(ID_BACKGROUND_ITEM_OPACITY_SPIN)?;
-    background_page.push(background_item_opacity_spin);
+    background_page.extend(background_item_opacity.controls());
     background_page.push(b.label(
         "0〜1",
         opacity_note_rect(custom_opacity_row, custom_opacity_left),
@@ -1463,13 +1647,14 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     )?);
     let paste_size_row = row(0) + 6 * ROW_HEIGHT + 2 * MARGIN;
     behavior.push(b.label("大きなテキストの確認(&Z):", label_rect(paste_size_row))?);
-    let paste_confirm_size = b.edit(
+    let paste_confirm_size = NumberField::create(
+        &mut b,
         ID_PASTE_CONFIRM_SIZE,
+        ID_PASTE_CONFIRM_SIZE_SPIN,
         [control_left, paste_size_row, NUMBER_WIDTH, ROW_HEIGHT],
+        PASTE_CONFIRM_SIZE_FIELD,
     )?;
-    behavior.push(paste_confirm_size);
-    let paste_confirm_size_spin = b.spin(ID_PASTE_CONFIRM_SIZE_SPIN)?;
-    behavior.push(paste_confirm_size_spin);
+    behavior.extend(paste_confirm_size.controls());
     behavior.push(b.label(
         "KiB 以上は常に確認する（0 で無効）",
         [
@@ -1792,15 +1977,11 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             ],
             font,
             size,
-            size_spin,
             wide_glyph,
             scroll_bar_width,
-            scroll_bar_width_spin,
             padding,
-            padding_spin,
             paste_confirm,
             paste_confirm_size,
-            paste_confirm_size_spin,
             clipboard_read,
             profiles_list,
             profile_remove,
@@ -1822,13 +2003,11 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             background_images,
             background_remove,
             background_opacity,
-            background_opacity_spin,
             background_fit,
             background_item_fit,
             background_item_opacity_default,
             background_item_opacity_custom,
             background_item_opacity,
-            background_item_opacity_spin,
             color_scheme,
             keys_list,
             key_buttons,
@@ -1916,18 +2095,18 @@ impl State<'_> {
         }
         // SAFETY: コンボボックスは有効なウィンドウ。
         unsafe { SendMessageW(c.font, CB_SETCURSEL, Some(WPARAM(selected_font)), None) };
-        set_text(c.size, &format_size(config.font.size_pt));
+        c.size.fill(config.font.size_pt);
         let wide_glyph = WideGlyph::ALL
             .iter()
             .position(|&value| value == config.font.wide_glyph);
         check_one(&c.wide_glyph, wide_glyph);
-        set_text(c.scroll_bar_width, &config.scroll_bar.width.to_string());
-        set_text(c.padding, &config.window.padding.to_string());
+        c.scroll_bar_width.fill(config.scroll_bar.width);
+        c.padding.fill(config.window.padding);
         let paste_confirm = PasteConfirm::ALL
             .iter()
             .position(|&value| value == config.paste.confirm);
         check_one(&c.paste_confirm, paste_confirm);
-        set_text(c.paste_confirm_size, &config.paste.confirm_size.to_string());
+        c.paste_confirm_size.fill(config.paste.confirm_size);
         let clipboard_read = ClipboardRead::ALL
             .iter()
             .position(|&value| value == config.clipboard.read);
@@ -1935,10 +2114,7 @@ impl State<'_> {
         *self.profiles.borrow_mut() = config.profiles.clone();
         self.default_profile.set(config.default_profile_index());
         self.refresh_profiles(config.default_profile_index());
-        set_text(
-            c.background_opacity,
-            &format_opacity(config.background.image_opacity),
-        );
+        c.background_opacity.fill(config.background.image_opacity);
         let fit = BackgroundFit::ALL
             .iter()
             .position(|&value| value == config.background.fit);
@@ -2423,15 +2599,14 @@ impl State<'_> {
         // 値が変わったときだけ書く（書くと EN_CHANGE が届いて、端末への反映の予約が掛かる）。借用は
         // 持っていない。
         let text = custom.map(format_opacity).unwrap_or_default();
-        if get_text(c.background_item_opacity) != text {
-            set_text(c.background_item_opacity, &text);
+        if get_text(c.background_item_opacity.edit) != text {
+            set_text(c.background_item_opacity.edit, &text);
         }
     }
 
     /// 項目の不透明度の入力欄と上下の矢印を、`enabled` なら触れるようにする。
     fn enable_item_opacity(&self, enabled: bool) {
-        let c = &self.controls;
-        for control in [c.background_item_opacity, c.background_item_opacity_spin] {
+        for control in self.controls.background_item_opacity.controls() {
             // SAFETY: control はダイアログの子の有効なウィンドウ。
             unsafe { _ = EnableWindow(control, enabled) };
         }
@@ -2455,7 +2630,7 @@ impl State<'_> {
 
     /// 編集中の既定の不透明度。読めなければ `None`。
     fn default_opacity(&self) -> Option<f32> {
-        config::parse_image_opacity(&get_text(self.controls.background_opacity))
+        self.controls.background_opacity.read().ok()
     }
 
     /// 項目の表示方法の先頭の選択肢と、不透明度の「既定」のラジオボタンに、編集中の既定の値を添える。
@@ -2527,8 +2702,7 @@ impl State<'_> {
     fn on_background_item_opacity(&self) {
         if let Some(index) = self.selected_background_image()
             && self.custom_item_opacity()
-            && let Some(opacity) =
-                config::parse_image_opacity(&get_text(self.controls.background_item_opacity))
+            && let Ok(opacity) = self.controls.background_item_opacity.read()
         {
             self.set_item_opacity(index, Some(opacity));
         }
@@ -2545,14 +2719,17 @@ impl State<'_> {
         let custom = self.custom_item_opacity();
         self.enable_item_opacity(custom);
         if custom {
-            let opacity = config::parse_image_opacity(&get_text(c.background_item_opacity))
+            let opacity = c
+                .background_item_opacity
+                .read()
+                .ok()
                 .or_else(|| self.default_opacity())
                 .unwrap_or(self.base.borrow().background.image_opacity);
             // 借用は持っていない（入力欄の EN_CHANGE はこの中で届く）。
-            set_text(c.background_item_opacity, &format_opacity(opacity));
+            c.background_item_opacity.fill(opacity);
             self.set_item_opacity(index, Some(opacity));
         } else {
-            set_text(c.background_item_opacity, "");
+            set_text(c.background_item_opacity.edit, "");
             self.set_item_opacity(index, None);
         }
         self.preview();
@@ -2795,14 +2972,11 @@ impl State<'_> {
         let dpi = self.dpi.get();
         let c = &self.controls;
         let font = self.font.get();
-        let all = c.placed.iter().map(|(control, _)| *control).chain([
-            c.size_spin,
-            c.scroll_bar_width_spin,
-            c.padding_spin,
-            c.paste_confirm_size_spin,
-            c.background_opacity_spin,
-            c.background_item_opacity_spin,
-        ]);
+        let all = c
+            .placed
+            .iter()
+            .map(|(control, _)| *control)
+            .chain(c.number_fields().map(|field| field.spin()));
         for control in all {
             // SAFETY: control はダイアログの子で、フォントはダイアログが閉じるまで消さない。
             unsafe {
@@ -2827,35 +3001,9 @@ impl State<'_> {
                 );
             }
         }
-        // 上下の矢印のボタンは、相手の入力欄の右端に付け直す（付けるときに入力欄の幅を詰める）。
-        for (spin, buddy) in [
-            (c.size_spin, c.size),
-            (c.scroll_bar_width_spin, c.scroll_bar_width),
-            (c.padding_spin, c.padding),
-            (c.paste_confirm_size_spin, c.paste_confirm_size),
-            (c.background_opacity_spin, c.background_opacity),
-            (c.background_item_opacity_spin, c.background_item_opacity),
-        ] {
-            // 範囲は、上の矢印で数が増える向き（既定は逆）にするためだけに決める。数は step で決める。
-            // SAFETY: spin と buddy はダイアログの子の有効なウィンドウ。
-            unsafe {
-                SendMessageW(spin, UDM_SETBUDDY, Some(WPARAM(buddy.0 as usize)), None);
-                SendMessageW(
-                    spin,
-                    UDM_SETRANGE32,
-                    Some(WPARAM(SPIN_RANGE.0 as usize)),
-                    Some(LPARAM(SPIN_RANGE.1 as isize)),
-                );
-                // 端にいると矢印を押しても知らせないので、真ん中に置く（step で動かさない）。
-                SendMessageW(
-                    spin,
-                    UDM_SETPOS32,
-                    None,
-                    Some(LPARAM(((SPIN_RANGE.0 + SPIN_RANGE.1) / 2) as isize)),
-                );
-                // 付け直すと矢印が触れるようになるので、相手の入力欄に合わせる。
-                _ = EnableWindow(spin, IsWindowEnabled(buddy).as_bool());
-            }
+        // 上下の矢印は、入力欄を置いたあとで付ける（付けるときに入力欄の幅を詰める）。
+        for field in c.number_fields() {
+            field.attach_spin();
         }
         self.show_profile_command_warning();
     }
@@ -2889,30 +3037,16 @@ impl State<'_> {
                     .map(|(name, _)| name)
                     .collect();
         }
-        config.font.size_pt = config::parse_font_size(&get_text(c.size)).ok_or((
-            "フォントサイズは、1 から 128 までの数値を入力してください。",
-            c.size,
-        ))?;
+        config.font.size_pt = c.size.read()?;
         if let Some(index) = checked(&c.wide_glyph) {
             config.font.wide_glyph = WideGlyph::ALL[index];
         }
-        config.scroll_bar.width = config::parse_scroll_bar_width(&get_text(c.scroll_bar_width))
-            .ok_or((
-                "スクロールバーの幅は、4 から 64 までの整数を入力してください。",
-                c.scroll_bar_width,
-            ))?;
-        config.window.padding = config::parse_padding(&get_text(c.padding)).ok_or((
-            "余白は、0 から 64 までの整数を入力してください。",
-            c.padding,
-        ))?;
+        config.scroll_bar.width = c.scroll_bar_width.read()?;
+        config.window.padding = c.padding.read()?;
         if let Some(index) = checked(&c.paste_confirm) {
             config.paste.confirm = PasteConfirm::ALL[index];
         }
-        config.paste.confirm_size =
-            config::parse_paste_confirm_size(&get_text(c.paste_confirm_size)).ok_or((
-                "大きなテキストの確認の大きさは、0 から 1048576 までの整数を入力してください。",
-                c.paste_confirm_size,
-            ))?;
+        config.paste.confirm_size = c.paste_confirm_size.read()?;
         if let Some(index) = checked(&c.clipboard_read) {
             config.clipboard.read = ClipboardRead::ALL[index];
         }
@@ -2935,20 +3069,12 @@ impl State<'_> {
             self.base.borrow().default_profile.as_deref(),
         );
         config.profiles = profiles;
-        if self.selected_background_image().is_some()
-            && self.custom_item_opacity()
-            && config::parse_image_opacity(&get_text(c.background_item_opacity)).is_none()
-        {
-            return Err((
-                "選択した項目の不透明度は、0 から 1 までの数値を入力してください。",
-                c.background_item_opacity,
-            ));
+        // 選んでいる項目の値は、読めたときに項目へ入れている。ここでは読めるかだけを見る。
+        if self.selected_background_image().is_some() && self.custom_item_opacity() {
+            c.background_item_opacity.read()?;
         }
         config.background.images = self.background_images.borrow().clone();
-        config.background.image_opacity = self.default_opacity().ok_or((
-            "不透明度は、0 から 1 までの数値を入力してください。",
-            c.background_opacity,
-        ))?;
+        config.background.image_opacity = c.background_opacity.read()?;
         // SAFETY: コンボボックスは有効なウィンドウ。
         let fit = unsafe { SendMessageW(c.background_fit, CB_GETCURSEL, None, None) }.0;
         if let Some(&fit) = usize::try_from(fit)
@@ -3085,52 +3211,21 @@ impl State<'_> {
         }
     }
 
-    /// 上下の矢印のボタン `spin` が押された。相手の入力欄の数を `delta` の向きに一つ動かす。
+    /// 上下の矢印のボタン `spin` が押された。相手の入力欄の数を `delta` の向きに一つ動かす。入力欄が
+    /// 読めなければ、最後に書いたときの設定の値から動かす。ただし既定の不透明度は、入力欄が読めれば
+    /// その値にする（項目の不透明度が読めないときは、既定の不透明度から動かす）。
     fn step(&self, spin: HWND, delta: i32) {
-        let c = &self.controls;
-        if spin == c.size_spin {
-            let text = get_text(c.size);
-            let current = config::parse_font_size(&text).unwrap_or(self.base.borrow().font.size_pt);
-            set_text(c.size, &format_size(step_size(current, delta)));
-        } else if spin == c.scroll_bar_width_spin {
-            let text = get_text(c.scroll_bar_width);
-            let current = config::parse_scroll_bar_width(&text)
-                .unwrap_or(self.base.borrow().scroll_bar.width);
-            set_text(
-                c.scroll_bar_width,
-                &step_integer(current, delta, &config::SCROLL_BAR_WIDTH_RANGE).to_string(),
-            );
-        } else if spin == c.padding_spin {
-            let current = config::parse_padding(&get_text(c.padding))
-                .unwrap_or(self.base.borrow().window.padding);
-            set_text(
-                c.padding,
-                &step_integer(current, delta, &config::PADDING_RANGE).to_string(),
-            );
-        } else if spin == c.paste_confirm_size_spin {
-            let current = config::parse_paste_confirm_size(&get_text(c.paste_confirm_size))
-                .unwrap_or(self.base.borrow().paste.confirm_size);
-            set_text(
-                c.paste_confirm_size,
-                &step_integer(current, delta, &config::PASTE_CONFIRM_SIZE_RANGE).to_string(),
-            );
-        } else if spin == c.background_opacity_spin {
-            let text = get_text(c.background_opacity);
-            let current = config::parse_image_opacity(&text)
-                .unwrap_or(self.base.borrow().background.image_opacity);
-            set_text(
-                c.background_opacity,
-                &format_opacity(step_opacity(current, delta)),
-            );
-        } else if spin == c.background_item_opacity_spin {
-            // 読めなければ、既定の不透明度から動かす。
-            let current = config::parse_image_opacity(&get_text(c.background_item_opacity))
-                .or_else(|| self.default_opacity())
-                .unwrap_or(self.base.borrow().background.image_opacity);
-            set_text(
-                c.background_item_opacity,
-                &format_opacity(step_opacity(current, delta)),
-            );
+        let mut start = self.base.borrow().clone();
+        if let Some(opacity) = self.default_opacity() {
+            start.background.image_opacity = opacity;
+        }
+        // 借用は持っていない（入力欄の EN_CHANGE はこの中で届く）。
+        if let Some(field) = self
+            .controls
+            .number_fields()
+            .find(|field| field.spin() == spin)
+        {
+            field.step(delta, &start);
         }
         // 矢印は打ち間違えないので、待たずに反映する。
         self.preview();
@@ -3179,6 +3274,11 @@ fn step_integer(current: u32, delta: i32, range: &RangeInclusive<u32>) -> u32 {
         current.saturating_sub(1)
     };
     next.clamp(*range.start(), *range.end())
+}
+
+/// 入力欄に見せる、整数の値。
+fn format_integer(value: u32) -> String {
+    value.to_string()
 }
 
 /// 入力欄に見せる、フォントの大きさ。整数なら小数点を付けない。
@@ -3348,9 +3448,6 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 {
                     state.on_color_scheme();
                 }
-                (ID_SIZE | ID_SCROLL_BAR_WIDTH | ID_PADDING | ID_PASTE_CONFIRM_SIZE, EN_CHANGE) => {
-                    state.schedule_preview()
-                }
                 (id, BN_CLICKED)
                     if (ID_WIDE_GLYPH..ID_WIDE_GLYPH + WideGlyph::ALL.len() as i32)
                         .contains(&id)
@@ -3362,6 +3459,10 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             .contains(&id) =>
                 {
                     state.preview();
+                }
+                // ほかの処理の要らない数の入力欄は、打ち終わるのを待って反映する。
+                (id, EN_CHANGE) if state.controls.number_fields().any(|field| field.owns(id)) => {
+                    state.schedule_preview();
                 }
                 _ => {}
             }
