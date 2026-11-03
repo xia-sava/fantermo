@@ -109,6 +109,7 @@ impl App {
             Ok(font) => self.apply_font(font),
             Err(e) => tracing::warn!("failed to measure the font for {dpi} DPI: {e}"),
         }
+        // フォントを測れなかったときと、アトラスを作り直せなかったときも、アイコンの一辺は新しい DPI に合わせる。
         self.update_tab_icons();
     }
 

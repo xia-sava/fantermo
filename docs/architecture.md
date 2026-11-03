@@ -96,7 +96,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `decoration` | 下線・取り消し線・上線をセルの中の形として組み立てる |
 | `paint` | セルの格子によらずピクセルの位置で描くもの（`Paint`）．タブバーとスクロールバーが使う |
 | `tab_bar`・`scroll_bar` | 並べ方，当たり判定，色（`Palette`），描くものの組み立て．ウィンドウと描画に依存しない関数にしてある．`tab_bar` は寸法とタイトルの省略を `tab_bar.rs`，並べ方と当たり判定を `tab_bar/layout.rs`，色と描くものの組み立てを `tab_bar/paints.rs` に置く |
-| `tab_icon` | タブのタイトルの左のアイコン．プロファイルからアイコンを決め，`Generator` がピクセルを作る（Direct3D のデバイスを使わない）．開いているタブのピクセルは `Pixels` に持ち，`App::update_tab_icons` がタブを開いたときと DPI が変わったときに揃える |
+| `tab_icon` | タブのタイトルの左のアイコン．プロファイルからアイコンを決め，`Generator` がピクセルを作る（Direct3D のデバイスを使わない）．開いているタブのピクセルは `Pixels` に持ち，`App::update_tab_icons` がタブを開いたとき・閉じたとき，DPI か UI のフォントの書体が変わったときに揃える |
 | `image_decoder` | 画像のファイルと実行ファイルのアイコンを WIC で読む（背景画像，タブのアイコン）．読んだ画像 `Decoded` と，Direct3D 11 のテクスチャの一辺の上限 |
 | `background`・`image_cache` | 背景画像の候補を実際のファイルシステムから探す（`DiskFiles`）．端末の中の画像のテクスチャの入れ物 |
 | `context_menu` | コンテキストメニュー，≡ のメニュー，プロファイルの一覧（`MenuCommand`，`Menu`） |

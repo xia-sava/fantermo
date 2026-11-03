@@ -152,8 +152,9 @@ impl App {
         )
     }
 
-    /// 開いているタブのアイコンのピクセルを、いまの DPI の一辺と UI のフォントの書体で揃える。アイコンの
-    /// ファイルを読むのはここで、タブを開いたときと DPI が変わったときに呼ぶ。描くときには呼ばない。
+    /// 開いているタブのアイコンのピクセルを、いまの DPI の一辺と UI のフォントの書体で揃える。タブを開いたとき・
+    /// 閉じたとき、DPI か UI のフォントが変わったときに呼び、描くときには呼ばない。アイコンのファイルを読むのは、
+    /// 持っていないアイコンと、一辺か書体が変わったときだけ。
     pub(super) fn update_tab_icons(&mut self) {
         let side = tab_bar::tab_icon_size(self.dpi);
         let generator = self.tab_icon_generator.as_ref();

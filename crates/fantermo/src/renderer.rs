@@ -490,7 +490,8 @@ impl Renderer {
     /// 不透明度に見える不透明度（[`background::overlay_opacity`]）で重ねる。
     /// 画面の領域は塗らず、背景色を持つセルだけを塗る。
     ///
-    /// 画面の中の画像は [`Renderer::prepare_terminal_images`] で揃えたものを描く。
+    /// 画面の中の画像は [`Renderer::prepare_terminal_images`] で、タブのアイコンは [`Renderer::prepare_tab_icons`]
+    /// で揃えたものを描く。
     ///
     /// 1 フレームの文字がアトラスに入りきらないときは、アトラスを空にして組み直し、それでも入らない
     /// ものだけを飛ばして、入ったものを描く。
