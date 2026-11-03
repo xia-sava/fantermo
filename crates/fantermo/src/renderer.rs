@@ -37,7 +37,7 @@ use windows::Win32::{
 
 use crate::{
     atlas::{AtlasFull, GlyphAtlas, Slot},
-    background::{Decoded, Decoder},
+    background::{Decoded, Decoder, MAX_TEXTURE_SIDE},
     decoration::Decoration,
     font::Font,
     image_cache::ImageCache,
@@ -259,7 +259,31 @@ impl Renderer {
     }
 
     fn add_terminal_image(&mut self, owner: usize, key: ImageKey, decoded: &Decoded) {
-        let texture = match self.create_image(decoded) {
+        // 端末エミュレーション側の上限に頼らず、Direct3D のテクスチャに収まらない画像は作らない。
+        let texture = if decoded.width > MAX_TEXTURE_SIDE || decoded.height > MAX_TEXTURE_SIDE {
+            tracing::warn!(
+                "the terminal image {} ({}x{}) is larger than the texture limit {MAX_TEXTURE_SIDE}",
+                key.id,
+                decoded.width,
+                decoded.height
+            );
+            None
+        } else {
+            self.create_terminal_image_texture(&key, decoded)
+        };
+        let pixels = u64::from(decoded.width) * u64::from(decoded.height);
+        let bytes = texture.as_ref().map_or(0, |_| {
+            pixels * TEXTURE_BYTES_PER_PIXEL_NUMERATOR / TEXTURE_BYTES_PER_PIXEL_DENOMINATOR
+        });
+        self.terminal_images.insert(owner, key, texture, bytes);
+    }
+
+    fn create_terminal_image_texture(
+        &self,
+        key: &ImageKey,
+        decoded: &Decoded,
+    ) -> Option<ImageTexture> {
+        match self.create_image(decoded) {
             Ok(texture) => {
                 tracing::debug!(
                     "created the terminal image texture {} ({}x{})",
@@ -278,12 +302,7 @@ impl Renderer {
                 );
                 None
             }
-        };
-        let pixels = u64::from(decoded.width) * u64::from(decoded.height);
-        let bytes = texture.as_ref().map_or(0, |_| {
-            pixels * TEXTURE_BYTES_PER_PIXEL_NUMERATOR / TEXTURE_BYTES_PER_PIXEL_DENOMINATOR
-        });
-        self.terminal_images.insert(owner, key, texture, bytes);
+        }
     }
 
     fn create_image(&self, decoded: &Decoded) -> windows::core::Result<ImageTexture> {
