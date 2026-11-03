@@ -4336,7 +4336,7 @@ command = "cmd.exe /k prompt first$G"
     assert_eq!(after["tabs"][2]["profile"], "first", "{after:#}");
 }
 
-// 設定ダイアログ。コントロールの ID は `settings_dialog.rs` と同じ。
+// 設定ダイアログ。コントロールの ID は `settings_dialog/` と同じ。
 
 const ID_OK: i32 = 1;
 const ID_CANCEL: i32 = 2;

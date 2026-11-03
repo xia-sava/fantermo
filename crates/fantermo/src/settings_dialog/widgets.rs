@@ -1,6 +1,8 @@
 //! 設定ダイアログのコントロールを作る部品（[`Builder`]）と、種類ごとのコントロールの値を出し入れする
 //! 部品（一覧、数の入力欄、ラジオボタンの組、固定の選択肢のコンボボックス）。
 
+use std::ops::RangeInclusive;
+
 use fantermo_core::config::Config;
 use windows::{
     Win32::{
@@ -349,6 +351,21 @@ pub(super) struct NumberKind<T> {
     pub(super) start: fn(&Config) -> T,
     /// 入力欄が読めないときに見せる文。
     pub(super) message: &'static str,
+}
+
+/// スクロールバーの幅、余白、貼り付けの確認の大きさを、矢印で一つ動かした値。範囲 `range` の端で止める。
+pub(super) fn step_integer(current: u32, delta: i32, range: &RangeInclusive<u32>) -> u32 {
+    let next = if delta > 0 {
+        current.saturating_add(1)
+    } else {
+        current.saturating_sub(1)
+    };
+    next.clamp(*range.start(), *range.end())
+}
+
+/// 入力欄に見せる、整数の値。
+pub(super) fn format_integer(value: u32) -> String {
+    value.to_string()
 }
 
 /// 数の入力欄と、その右に付ける上下の矢印。
