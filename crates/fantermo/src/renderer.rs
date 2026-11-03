@@ -323,7 +323,8 @@ impl Renderer {
     /// ウィンドウのクライアント領域の大きさに合わせてバッファを作り直す。
     pub fn resize(&mut self, width: u32, height: u32) -> windows::core::Result<()> {
         let (width, height) = (width.max(1), height.max(1));
-        if (width, height) == (self.width, self.height) {
+        // 前に `ResizeBuffers` か描画先の作成に失敗したときは描画先がないので、大きさが同じでも作り直す。
+        if (width, height) == (self.width, self.height) && self.target.is_some() {
             return Ok(());
         }
         // バッファを参照するビューを残したままでは作り直せない。
