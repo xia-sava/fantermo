@@ -3,7 +3,10 @@
 //!
 //! ファイルを読むことと画像を読むことは呼び出し元に任せる（[`Files`] と [`pick`] の `load`）。
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use crate::config::{BackgroundFit, BackgroundImage};
 
@@ -58,6 +61,8 @@ pub struct Expanded {
 /// - ほかはファイルとして、そのまま候補にする（在るかどうかは読むときに分かる）。
 pub fn expand(entries: &[BackgroundImage], base: Option<&Path>, files: &impl Files) -> Expanded {
     let mut expanded = Expanded::default();
+    // 候補にしたファイルのパス（小文字）。
+    let mut seen = HashSet::new();
     for (index, entry) in entries.iter().enumerate() {
         let entry = entry.path.trim();
         if entry.is_empty() {
@@ -124,12 +129,7 @@ pub fn expand(entries: &[BackgroundImage], base: Option<&Path>, files: &impl Fil
                 .push(format!("no background images found for {entry:?}"));
         }
         for file in found {
-            let key = file.to_string_lossy().to_lowercase();
-            if !expanded
-                .candidates
-                .iter()
-                .any(|seen| seen.path.to_string_lossy().to_lowercase() == key)
-            {
+            if seen.insert(file.to_string_lossy().to_lowercase()) {
                 expanded.candidates.push(Candidate {
                     path: file,
                     entry: index,
