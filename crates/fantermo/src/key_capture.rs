@@ -3,7 +3,8 @@
 //! 開いている間のキーのメッセージは、ウィンドウに届ける前にループで読み取る（Tab や Enter や Alt の
 //! 組み合わせも、ダイアログの操作やメニューにせずに組み合わせとして読む）。修飾キーだけを押している間は
 //! 待ち、ほかのキーを押したらその組み合わせで閉じる。修飾キーなしの Esc はやめる。名前を持たないキー
-//! （設定ファイルに書けないキー）は読まずに待つ。
+//! （設定ファイルに書けないキー）は読まずに待つ。Alt+F4 と Alt+Space は断って待つ。読むのはこの
+//! ダイアログ宛てのメッセージだけ。
 
 use std::{cell::Cell, sync::OnceLock};
 
@@ -20,12 +21,13 @@ use windows::{
             HiDpi::AdjustWindowRectExForDpi,
             Input::KeyboardAndMouse::SetFocus,
             WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW,
-                GetWindowRect, HMENU, IDC_ARROW, LoadCursorW, MSG, RegisterClassW, SW_SHOW,
-                SendMessageW, SetWindowLongPtrW, ShowWindow, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE,
-                WM_DEADCHAR, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_SETFONT, WM_SYSCHAR,
-                WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW, WS_CAPTION, WS_CHILD,
-                WS_EX_DLGMODALFRAME, WS_POPUP, WS_SYSMENU, WS_VISIBLE,
+                CreateWindowExW, DefWindowProcW, DestroyWindow, GW_CHILD, GWLP_USERDATA, GetWindow,
+                GetWindowLongPtrW, GetWindowRect, HMENU, IDC_ARROW, LoadCursorW, MSG,
+                RegisterClassW, SW_SHOW, SendMessageW, SetWindowLongPtrW, SetWindowTextW,
+                ShowWindow, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_DEADCHAR, WM_DESTROY,
+                WM_KEYDOWN, WM_KEYUP, WM_SETFONT, WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN,
+                WM_SYSKEYUP, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_DLGMODALFRAME, WS_POPUP,
+                WS_SYSMENU, WS_VISIBLE,
             },
         },
     },
@@ -70,29 +72,61 @@ pub fn capture(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> Option<KeyCo
     }
     let captured = Cell::new(None);
     modal::run(owner, hwnd, &closed, |msg| {
-        let Some(read) = read_key(msg) else {
+        let Some(read) = read_key(msg, hwnd) else {
             return false;
         };
-        if let Read::Done(combo) = read {
-            captured.set(combo);
-            // SAFETY: hwnd はこのダイアログ。閉じると WM_DESTROY で closed が立つ。
-            unsafe { _ = DestroyWindow(hwnd) };
+        match read {
+            Read::Done(combo) => {
+                captured.set(combo);
+                // SAFETY: hwnd はこのダイアログ。閉じると WM_DESTROY で closed が立つ。
+                unsafe { _ = DestroyWindow(hwnd) };
+            }
+            Read::Refused(combo) => show_refusal(hwnd, prompt, combo),
+            Read::Wait => {}
         }
         true
     });
     captured.get()
 }
 
+/// 押された組み合わせ `combo` を断る文を、ダイアログの文 `prompt` の下に見せる。
+fn show_refusal(hwnd: HWND, prompt: &str, combo: KeyCombo) {
+    // SAFETY: hwnd はこのダイアログ。
+    let label = match unsafe { GetWindow(hwnd, GW_CHILD) } {
+        Ok(label) => label,
+        Err(e) => {
+            tracing::warn!("cannot find the key capture label: {e}");
+            return;
+        }
+    };
+    let text = format!("{prompt}\n{}", refusal_text(combo));
+    // SAFETY: label はこのダイアログの子のウィンドウで、文字列はこの呼び出しの間は生きている。
+    if let Err(e) = unsafe { SetWindowTextW(label, &HSTRING::from(text)) } {
+        tracing::warn!("cannot show the refusal: {e}");
+    }
+}
+
+/// 割り当てを断る組み合わせ `combo` を知らせる文。
+fn refusal_text(combo: KeyCombo) -> String {
+    format!("{} は割り当てられません。", combo.label())
+}
+
 /// キーのメッセージを読んだ結果。
 enum Read {
     /// 読み取りを終える。組み合わせか、やめたなら `None`。
     Done(Option<KeyCombo>),
+    /// 割り当てられない組み合わせ。断る文を見せて、待ち続ける。
+    Refused(KeyCombo),
     /// ウィンドウには渡さず、待ち続ける。
     Wait,
 }
 
-/// キーのメッセージ `msg` を読む。キーのメッセージでなければ `None`（ほかの処理に渡す）。
-fn read_key(msg: &MSG) -> Option<Read> {
+/// このダイアログ `hwnd` 宛てのキーのメッセージ `msg` を読む。ほかのウィンドウ宛てのメッセージと、
+/// キーのメッセージでないものは `None`（ほかの処理に渡す）。
+fn read_key(msg: &MSG, hwnd: HWND) -> Option<Read> {
+    if msg.hwnd != hwnd {
+        return None;
+    }
     match msg.message {
         WM_KEYDOWN | WM_SYSKEYDOWN => {
             let position = KeyPosition::from_lparam(msg.lParam.0);
@@ -110,10 +144,13 @@ fn read_key(msg: &MSG) -> Option<Read> {
 }
 
 /// 押した組み合わせ `combo` をどう扱うか。修飾キーなしの Esc はやめ、名前を持たないキー（修飾キー
-/// そのものなど）は待つ。
+/// そのものなど）は待つ。Alt+F4 と Alt+Space は Windows が処理して割り当てても効かないので断る。
 fn combo_read(combo: KeyCombo) -> Read {
     if combo.key == Key::Escape && combo.mods == Mods::empty() {
         return Read::Done(None);
+    }
+    if combo.mods == Mods::ALT && matches!(combo.key, Key::F4 | Key::Space) {
+        return Read::Refused(combo);
     }
     if combo.is_nameable() {
         Read::Done(Some(combo))
@@ -247,8 +284,27 @@ mod tests {
     fn read(text: &str) -> Option<Option<KeyCombo>> {
         match combo_read(KeyCombo::parse(text).unwrap()) {
             Read::Done(combo) => Some(combo),
-            Read::Wait => None,
+            Read::Refused(_) | Read::Wait => None,
         }
+    }
+
+    #[test]
+    fn alt_f4_and_alt_space_are_refused() {
+        for text in ["alt+f4", "alt+space"] {
+            let combo = KeyCombo::parse(text).unwrap();
+            assert!(matches!(combo_read(combo), Read::Refused(refused) if refused == combo));
+        }
+        // 断るのは修飾キーが Alt だけの組み合わせ。
+        for text in ["ctrl+f4", "alt+shift+f4", "f4", "alt+tab"] {
+            assert!(matches!(
+                combo_read(KeyCombo::parse(text).unwrap()),
+                Read::Done(Some(_))
+            ));
+        }
+        assert_eq!(
+            refusal_text(KeyCombo::parse("alt+f4").unwrap()),
+            "Alt+F4 は割り当てられません。"
+        );
     }
 
     #[test]
