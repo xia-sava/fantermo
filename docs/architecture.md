@@ -244,7 +244,7 @@ fantermo は `std::process::Command` でブリッジを起動し（`CREATE_NO_WI
 
 - [libghostty-rs](https://github.com/uzaaft/libghostty-rs) のバインディングを git の依存としてコミットで固定します．crates.io の版は固定している Zig のバージョンで通らず，submodule や vendor は上げる手間が重いためです．
 - 上げるときは，`Cargo.toml` の `rev` を書き換え，`tools/dev.bat` の `ZIG_REQUIRED` を揃え，ビルドとテストを通します．libghostty-vt に静的にリンクされるものが変わっていないかを `tools/licenses.sh` の先頭のコメントの手順で見直し，`THIRD-PARTY-NOTICES.txt` を作り直します．
-- 直接使うのは `fantermo-core` の `vt` だけです．振る舞いを当てにするところは，`crates/fantermo-core/tests/key_encoding.rs` と `vt.rs` のテストで固定し，上げたときに壊れたところが分かるようにします．
+- 直接使うのは `fantermo-core` の `vt` だけです．振る舞いを当てにするところは，`crates/fantermo-core/tests/key_encoding.rs` と `vt/tests/` のテストで固定し，上げたときに壊れたところが分かるようにします．
 - East Asian Ambiguous は 1 セルで固定します．libghostty-vt に幅を指定する API がなく，多くの TUI も 1 で数えるためです．全角の幅でデザインされたグリフは，既定では 1 セルに収まるように縮めて描きます（`font.wide_glyph` で変えられます）．
 
 ### ウィンドウまわり
