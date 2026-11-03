@@ -348,4 +348,12 @@ mod tests {
         let exe = std::env::current_exe().unwrap();
         assert!(!other_instances(&exe, std::process::id()).contains(&std::process::id()));
     }
+
+    /// 実行ファイルのパスの照合が通るなら、起動中のこのテストのプロセスは、自分とは別の ID を
+    /// 渡したときに同じ実行ファイルのプロセスとして見つかる。
+    #[test]
+    fn a_process_of_the_same_executable_is_found() {
+        let exe = std::env::current_exe().unwrap();
+        assert!(other_instances(&exe, 0).contains(&std::process::id()));
+    }
 }
