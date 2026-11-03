@@ -27,7 +27,7 @@ use fantermo_core::{
 };
 use windows::{
     Win32::{
-        Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
             COLOR_BTNFACE, CreateFontIndirectW, CreateSolidBrush, DT_CALCRECT, DT_WORDBREAK,
             DeleteObject, DrawTextW, GetDC, GetMonitorInfoW, HBRUSH, HFONT, HGDIOBJ,
@@ -733,6 +733,280 @@ fn register_class() -> windows::core::Result<()> {
 /// 96 DPI のときの矩形（左、上、幅、高さ）。
 type DipRect = [i32; 4];
 
+/// ダイアログの子コントロールを作る。矩形を渡したコントロールは [`Builder::placed`] に控え、
+/// あとで [`State::layout`] が DPI に合わせて置く。
+struct Builder {
+    /// 親のダイアログ。
+    hwnd: HWND,
+    instance: HINSTANCE,
+    placed: Vec<(HWND, DipRect)>,
+}
+
+impl Builder {
+    /// `class` の子コントロールを作る。`rect` が `None` のものは置かない。
+    fn child(
+        &mut self,
+        class: PCWSTR,
+        text: &str,
+        style: WINDOW_STYLE,
+        ex_style: WINDOW_EX_STYLE,
+        id: i32,
+        rect: Option<DipRect>,
+    ) -> windows::core::Result<HWND> {
+        // SAFETY: hwnd は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
+        let control = unsafe {
+            CreateWindowExW(
+                ex_style,
+                class,
+                &HSTRING::from(text),
+                WS_CHILD | WS_VISIBLE | style,
+                0,
+                0,
+                0,
+                0,
+                Some(self.hwnd),
+                Some(HMENU(id as isize as *mut _)),
+                Some(self.instance),
+                None,
+            )?
+        };
+        if let Some(rect) = rect {
+            self.placed.push((control, rect));
+        }
+        Ok(control)
+    }
+
+    /// 見出しや説明の文字。
+    fn label(&mut self, text: &str, rect: DipRect) -> windows::core::Result<HWND> {
+        self.child(
+            w!("STATIC"),
+            text,
+            WINDOW_STYLE(0),
+            WINDOW_EX_STYLE(0),
+            ID_LABEL,
+            Some(rect),
+        )
+    }
+
+    /// 文字をあとから入れる、ID つきの文字（値の表示、警告、エラー、色の見本）。
+    fn static_text(
+        &mut self,
+        id: i32,
+        ex_style: WINDOW_EX_STYLE,
+        rect: DipRect,
+    ) -> windows::core::Result<HWND> {
+        self.child(w!("STATIC"), "", WINDOW_STYLE(0), ex_style, id, Some(rect))
+    }
+
+    /// 枠線つきのグループ。
+    fn group(&mut self, text: &str, rect: DipRect) -> windows::core::Result<HWND> {
+        self.child(
+            w!("BUTTON"),
+            text,
+            WINDOW_STYLE(BS_GROUPBOX as u32),
+            WINDOW_EX_STYLE(0),
+            ID_LABEL,
+            Some(rect),
+        )
+    }
+
+    /// 1 行の入力欄。
+    fn edit(&mut self, id: i32, rect: DipRect) -> windows::core::Result<HWND> {
+        self.child(
+            w!("EDIT"),
+            "",
+            WS_GROUP | WS_TABSTOP | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+            WS_EX_CLIENTEDGE,
+            id,
+            Some(rect),
+        )
+    }
+
+    /// 入力欄の上下の矢印。置く位置は入力欄に付けて決める。
+    fn spin(&mut self, id: i32) -> windows::core::Result<HWND> {
+        self.child(
+            UPDOWN_CLASSW,
+            "",
+            WINDOW_STYLE(UDS_ALIGNRIGHT | UDS_ARROWKEYS | UDS_NOTHOUSANDS | UDS_HOTTRACK),
+            WINDOW_EX_STYLE(0),
+            id,
+            None,
+        )
+    }
+
+    /// 押しボタン。
+    fn button(&mut self, id: i32, text: &str, rect: DipRect) -> windows::core::Result<HWND> {
+        self.push_button(id, text, rect, BS_PUSHBUTTON)
+    }
+
+    /// Enter で押される既定の押しボタン。
+    fn default_button(
+        &mut self,
+        id: i32,
+        text: &str,
+        rect: DipRect,
+    ) -> windows::core::Result<HWND> {
+        self.push_button(id, text, rect, BS_DEFPUSHBUTTON)
+    }
+
+    fn push_button(
+        &mut self,
+        id: i32,
+        text: &str,
+        rect: DipRect,
+        style: i32,
+    ) -> windows::core::Result<HWND> {
+        self.child(
+            w!("BUTTON"),
+            text,
+            WS_GROUP | WS_TABSTOP | WINDOW_STYLE(style as u32),
+            WINDOW_EX_STYLE(0),
+            id,
+            Some(rect),
+        )
+    }
+
+    /// ラジオボタン。組の先頭（`first`）だけが Tab で止まり、グループを始める。
+    fn radio(
+        &mut self,
+        id: i32,
+        text: &str,
+        rect: DipRect,
+        first: bool,
+    ) -> windows::core::Result<HWND> {
+        let group = if first {
+            WS_GROUP | WS_TABSTOP
+        } else {
+            WINDOW_STYLE(0)
+        };
+        self.child(
+            w!("BUTTON"),
+            text,
+            group | WINDOW_STYLE(BS_AUTORADIOBUTTON as u32),
+            WINDOW_EX_STYLE(0),
+            id,
+            Some(rect),
+        )
+    }
+
+    /// ドロップダウンの選択肢のコンボボックス。選択肢は `labels` の順に入れる。
+    fn combo<'a>(
+        &mut self,
+        id: i32,
+        rect: DipRect,
+        labels: impl IntoIterator<Item = &'a str>,
+    ) -> windows::core::Result<HWND> {
+        let combo = self.child(
+            WC_COMBOBOXW,
+            "",
+            WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
+            WINDOW_EX_STYLE(0),
+            id,
+            Some(rect),
+        )?;
+        for text in labels {
+            // SAFETY: combo は有効なコンボボックスで、文字列はこの呼び出しの間は生きている。
+            unsafe {
+                SendMessageW(
+                    combo,
+                    CB_ADDSTRING,
+                    None,
+                    Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
+                )
+            };
+        }
+        Ok(combo)
+    }
+
+    /// 一覧。`tab_stops`（ダイアログの単位）があれば、行の文字をタブで区切って桁を揃える。
+    fn list(&mut self, id: i32, rect: DipRect, tab_stops: &[i32]) -> windows::core::Result<HWND> {
+        let mut style = LBS_NOTIFY;
+        if !tab_stops.is_empty() {
+            style |= LBS_USETABSTOPS;
+        }
+        let list = self.child(
+            WC_LISTBOXW,
+            "",
+            WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(style as u32),
+            WS_EX_CLIENTEDGE,
+            id,
+            Some(rect),
+        )?;
+        if !tab_stops.is_empty() {
+            ListBox(list).set_tab_stops(tab_stops);
+        }
+        Ok(list)
+    }
+}
+
+/// 一覧（リストボックス）の操作。
+#[derive(Clone, Copy)]
+struct ListBox(HWND);
+
+impl ListBox {
+    /// 行を末尾に足す。
+    fn add(self, text: &str) {
+        // SAFETY: 一覧は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
+        unsafe {
+            SendMessageW(
+                self.0,
+                LB_ADDSTRING,
+                None,
+                Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
+            )
+        };
+    }
+
+    /// 行を `rows` に入れ替える。選択は外れる。
+    fn fill<S: AsRef<str>>(self, rows: impl IntoIterator<Item = S>) {
+        // SAFETY: 一覧は有効なウィンドウ。
+        unsafe { SendMessageW(self.0, LB_RESETCONTENT, None, None) };
+        for row in rows {
+            self.add(row.as_ref());
+        }
+    }
+
+    /// `index` 番目の行を選ぶ。
+    fn select(self, index: usize) {
+        // SAFETY: 一覧は有効なウィンドウ。
+        unsafe { SendMessageW(self.0, LB_SETCURSEL, Some(WPARAM(index)), None) };
+    }
+
+    /// 選んでいる行の位置。選んでいなければ `None`。
+    fn selected(self) -> Option<usize> {
+        // SAFETY: 一覧は有効なウィンドウ。
+        let index = unsafe { SendMessageW(self.0, LB_GETCURSEL, None, None) }.0;
+        usize::try_from(index).ok()
+    }
+
+    /// `index` 番目の行の文字を書き直して、その行を選ぶ。
+    fn replace_row(self, index: usize, text: &str) {
+        // SAFETY: 一覧は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
+        unsafe {
+            SendMessageW(self.0, LB_DELETESTRING, Some(WPARAM(index)), None);
+            SendMessageW(
+                self.0,
+                LB_INSERTSTRING,
+                Some(WPARAM(index)),
+                Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
+            );
+        }
+        self.select(index);
+    }
+
+    fn set_tab_stops(self, tab_stops: &[i32]) {
+        // SAFETY: 一覧は有効なウィンドウで、tab_stops はこの呼び出しの間は生きている。
+        unsafe {
+            SendMessageW(
+                self.0,
+                LB_SETTABSTOPS,
+                Some(WPARAM(tab_stops.len())),
+                Some(LPARAM(tab_stops.as_ptr() as isize)),
+            )
+        };
+    }
+}
+
 /// ダイアログのコントロール。
 struct Controls {
     pages: HWND,
@@ -869,48 +1143,11 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             None,
         )?
     };
-    let mut placed = Vec::new();
-    let mut child = |class: PCWSTR,
-                     text: &str,
-                     style: WINDOW_STYLE,
-                     ex_style: WINDOW_EX_STYLE,
-                     id: i32,
-                     rect: Option<DipRect>|
-     -> windows::core::Result<HWND> {
-        // SAFETY: hwnd は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
-        let control = unsafe {
-            CreateWindowExW(
-                ex_style,
-                class,
-                &HSTRING::from(text),
-                WS_CHILD | WS_VISIBLE | style,
-                0,
-                0,
-                0,
-                0,
-                Some(hwnd),
-                Some(HMENU(id as isize as *mut _)),
-                Some(instance.into()),
-                None,
-            )?
-        };
-        if let Some(rect) = rect {
-            placed.push((control, rect));
-        }
-        Ok(control)
+    let mut b = Builder {
+        hwnd,
+        instance: instance.into(),
+        placed: Vec::new(),
     };
-    let none = WINDOW_EX_STYLE(0);
-    let label = |text: &str, rect: DipRect| (w!("STATIC"), text.to_owned(), rect);
-    let radio = |first: bool| {
-        let group = if first {
-            WS_GROUP | WS_TABSTOP
-        } else {
-            WINDOW_STYLE(0)
-        };
-        group | WINDOW_STYLE(BS_AUTORADIOBUTTON as u32)
-    };
-    let edit_style = WS_GROUP | WS_TABSTOP | WINDOW_STYLE(ES_AUTOHSCROLL as u32);
-    let spin_style = WINDOW_STYLE(UDS_ALIGNRIGHT | UDS_ARROWKEYS | UDS_NOTHOUSANDS | UDS_HOTTRACK);
 
     let page_left = MARGIN + PAGES_WIDTH + MARGIN;
     let page_width = CLIENT_WIDTH - page_left - MARGIN;
@@ -920,69 +1157,30 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     let row = |index: i32| MARGIN + index * (ROW_HEIGHT + MARGIN);
     let label_rect = |top: i32| [page_left, top + LABEL_OFFSET, LABEL_WIDTH, ROW_HEIGHT];
 
-    let pages = child(
-        WC_LISTBOXW,
-        "",
-        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(LBS_NOTIFY as u32),
-        WS_EX_CLIENTEDGE,
+    let pages = b.list(
         ID_PAGES,
-        Some([MARGIN, MARGIN, PAGES_WIDTH, button_top - 2 * MARGIN]),
+        [MARGIN, MARGIN, PAGES_WIDTH, button_top - 2 * MARGIN],
+        &[],
     )?;
-    for page in PAGES {
-        // SAFETY: pages は有効な一覧で、文字列はこの呼び出しの間は生きている。
-        unsafe {
-            SendMessageW(
-                pages,
-                LB_ADDSTRING,
-                None,
-                Some(LPARAM(HSTRING::from(page).as_ptr() as isize)),
-            )
-        };
-    }
+    ListBox(pages).fill(PAGES);
 
     // 外観
     let mut appearance = Vec::new();
-    let (class, text, rect) = label("フォント(&F):", label_rect(row(0)));
-    appearance.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let font = child(
-        WC_COMBOBOXW,
-        "",
-        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
-        none,
+    appearance.push(b.label("フォント(&F):", label_rect(row(0)))?);
+    let font = b.combo(
         ID_FONT,
-        Some([control_left, row(0), control_width, ROW_HEIGHT]),
+        [control_left, row(0), control_width, ROW_HEIGHT],
+        [],
     )?;
     appearance.push(font);
     // SAFETY: font は有効なコンボボックス。
     unsafe { SendMessageW(font, CB_SETMINVISIBLE, Some(WPARAM(VISIBLE_FONTS)), None) };
-    let (class, text, rect) = label("サイズ(&S):", label_rect(row(1)));
-    appearance.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let size = child(
-        w!("EDIT"),
-        "",
-        edit_style,
-        WS_EX_CLIENTEDGE,
-        ID_SIZE,
-        Some([control_left, row(1), NUMBER_WIDTH, ROW_HEIGHT]),
-    )?;
+    appearance.push(b.label("サイズ(&S):", label_rect(row(1)))?);
+    let size = b.edit(ID_SIZE, [control_left, row(1), NUMBER_WIDTH, ROW_HEIGHT])?;
     appearance.push(size);
-    let size_spin = child(UPDOWN_CLASSW, "", spin_style, none, ID_SIZE_SPIN, None)?;
+    let size_spin = b.spin(ID_SIZE_SPIN)?;
     appearance.push(size_spin);
-    let (class, text, rect) = label(
+    appearance.push(b.label(
         "ポイント（1〜128）",
         [
             control_left + NUMBER_WIDTH + BUTTON_GAP,
@@ -990,66 +1188,29 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             control_width - NUMBER_WIDTH - BUTTON_GAP,
             ROW_HEIGHT,
         ],
-    );
-    appearance.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
     )?);
-    let (class, text, rect) = label("セルより広い文字(&W):", label_rect(row(2)));
-    appearance.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
+    appearance.push(b.label("セルより広い文字(&W):", label_rect(row(2)))?);
     let mut wide_glyph = [HWND::default(); WideGlyph::ALL.len()];
     for (index, text) in WIDE_GLYPH_LABELS.iter().enumerate() {
         let top = row(2) + index as i32 * ROW_HEIGHT;
-        wide_glyph[index] = child(
-            w!("BUTTON"),
-            text,
-            radio(index == 0),
-            none,
+        wide_glyph[index] = b.radio(
             ID_WIDE_GLYPH + index as i32,
-            Some([control_left, top, control_width, ROW_HEIGHT]),
+            text,
+            [control_left, top, control_width, ROW_HEIGHT],
+            index == 0,
         )?;
         appearance.push(wide_glyph[index]);
     }
     let width_row = row(2) + WideGlyph::ALL.len() as i32 * ROW_HEIGHT + MARGIN;
-    let (class, text, rect) = label("スクロールバーの幅(&B):", label_rect(width_row));
-    appearance.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let scroll_bar_width = child(
-        w!("EDIT"),
-        "",
-        edit_style,
-        WS_EX_CLIENTEDGE,
+    appearance.push(b.label("スクロールバーの幅(&B):", label_rect(width_row))?);
+    let scroll_bar_width = b.edit(
         ID_SCROLL_BAR_WIDTH,
-        Some([control_left, width_row, NUMBER_WIDTH, ROW_HEIGHT]),
+        [control_left, width_row, NUMBER_WIDTH, ROW_HEIGHT],
     )?;
     appearance.push(scroll_bar_width);
-    let scroll_bar_width_spin = child(
-        UPDOWN_CLASSW,
-        "",
-        spin_style,
-        none,
-        ID_SCROLL_BAR_WIDTH_SPIN,
-        None,
-    )?;
+    let scroll_bar_width_spin = b.spin(ID_SCROLL_BAR_WIDTH_SPIN)?;
     appearance.push(scroll_bar_width_spin);
-    let (class, text, rect) = label(
+    appearance.push(b.label(
         "ピクセル（4〜64。画面の拡大率に合わせて広げる）",
         [
             control_left + NUMBER_WIDTH + BUTTON_GAP,
@@ -1057,37 +1218,17 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             control_width - NUMBER_WIDTH - BUTTON_GAP,
             ROW_HEIGHT,
         ],
-    );
-    appearance.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
     )?);
     let padding_row = width_row + ROW_HEIGHT + MARGIN;
-    let (class, text, rect) = label("余白(&G):", label_rect(padding_row));
-    appearance.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let padding = child(
-        w!("EDIT"),
-        "",
-        edit_style,
-        WS_EX_CLIENTEDGE,
+    appearance.push(b.label("余白(&G):", label_rect(padding_row))?);
+    let padding = b.edit(
         ID_PADDING,
-        Some([control_left, padding_row, NUMBER_WIDTH, ROW_HEIGHT]),
+        [control_left, padding_row, NUMBER_WIDTH, ROW_HEIGHT],
     )?;
     appearance.push(padding);
-    let padding_spin = child(UPDOWN_CLASSW, "", spin_style, none, ID_PADDING_SPIN, None)?;
+    let padding_spin = b.spin(ID_PADDING_SPIN)?;
     appearance.push(padding_spin);
-    let (class, text, rect) = label(
+    appearance.push(b.label(
         "ピクセル（0〜64。画面の拡大率に合わせて広げる）",
         [
             control_left + NUMBER_WIDTH + BUTTON_GAP,
@@ -1095,19 +1236,10 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             control_width - NUMBER_WIDTH - BUTTON_GAP,
             ROW_HEIGHT,
         ],
-    );
-    appearance.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
     )?);
 
     // 背景。上に既定の値の枠、下に背景画像の一覧と選択した項目の値の枠。
     let mut background_page = Vec::new();
-    let group_style = WINDOW_STYLE(BS_GROUPBOX as u32);
     let inner_left = page_left + GROUP_PADDING;
     let inner_width = page_width - 2 * GROUP_PADDING;
     let background_control_left = inner_left + BACKGROUND_LABEL_WIDTH;
@@ -1133,96 +1265,43 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     let fit_row = defaults_top + GROUP_CAPTION_HEIGHT;
     let opacity_row = fit_row + ROW_HEIGHT + BUTTON_GAP;
     let defaults_bottom = opacity_row + ROW_HEIGHT + GROUP_PADDING;
-    background_page.push(child(
-        w!("BUTTON"),
+    background_page.push(b.group(
         "既定",
-        group_style,
-        none,
-        ID_LABEL,
-        Some([
+        [
             page_left,
             defaults_top,
             page_width,
             defaults_bottom - defaults_top,
-        ]),
+        ],
     )?);
-    let (class, text, rect) = label("表示方法(&T):", background_label_rect(fit_row));
-    background_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let background_fit = child(
-        WC_COMBOBOXW,
-        "",
-        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
-        none,
+    background_page.push(b.label("表示方法(&T):", background_label_rect(fit_row))?);
+    let background_fit = b.combo(
         ID_BACKGROUND_FIT,
-        Some([
+        [
             background_control_left,
             fit_row,
             background_control_width,
             ROW_HEIGHT,
-        ]),
+        ],
+        BACKGROUND_FIT_LABELS,
     )?;
     background_page.push(background_fit);
-    for text in BACKGROUND_FIT_LABELS {
-        // SAFETY: background_fit は有効なコンボボックスで、文字列はこの呼び出しの間は生きている。
-        unsafe {
-            SendMessageW(
-                background_fit,
-                CB_ADDSTRING,
-                None,
-                Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
-            )
-        };
-    }
-    let (class, text, rect) = label("不透明度(&Y):", background_label_rect(opacity_row));
-    background_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let background_opacity = child(
-        w!("EDIT"),
-        "",
-        edit_style,
-        WS_EX_CLIENTEDGE,
+    background_page.push(b.label("不透明度(&Y):", background_label_rect(opacity_row))?);
+    let background_opacity = b.edit(
         ID_BACKGROUND_OPACITY,
-        Some([
+        [
             background_control_left,
             opacity_row,
             NUMBER_WIDTH,
             ROW_HEIGHT,
-        ]),
+        ],
     )?;
     background_page.push(background_opacity);
-    let background_opacity_spin = child(
-        UPDOWN_CLASSW,
-        "",
-        spin_style,
-        none,
-        ID_BACKGROUND_OPACITY_SPIN,
-        None,
-    )?;
+    let background_opacity_spin = b.spin(ID_BACKGROUND_OPACITY_SPIN)?;
     background_page.push(background_opacity_spin);
-    let (class, text, rect) = label(
+    background_page.push(b.label(
         "0（透明）〜1（不透明）",
         opacity_note_rect(opacity_row, background_control_left),
-    );
-    background_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
     )?);
 
     let images_top = defaults_bottom + BUTTON_GAP;
@@ -1231,168 +1310,104 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     let item_opacity_row = item_fit_row + ROW_HEIGHT + BUTTON_GAP;
     let custom_opacity_row = item_opacity_row + ROW_HEIGHT;
     let images_bottom = custom_opacity_row + ROW_HEIGHT + GROUP_PADDING;
-    background_page.push(child(
-        w!("BUTTON"),
+    background_page.push(b.group(
         "背景画像の一覧(&I)",
-        group_style,
-        none,
-        ID_LABEL,
-        Some([
+        [
             page_left,
             images_top,
             page_width,
             images_bottom - images_top,
-        ]),
+        ],
     )?);
     let list_width = inner_width - BUTTON_GAP - BACKGROUND_BUTTON_WIDTH;
-    let background_images = child(
-        WC_LISTBOXW,
-        "",
-        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(LBS_NOTIFY as u32),
-        WS_EX_CLIENTEDGE,
+    let background_images = b.list(
         ID_BACKGROUND_IMAGES,
-        Some([inner_left, list_top, list_width, BACKGROUND_LIST_HEIGHT]),
+        [inner_left, list_top, list_width, BACKGROUND_LIST_HEIGHT],
+        &[],
     )?;
     background_page.push(background_images);
-    let mut image_buttons = [HWND::default(); 3];
-    for (index, (id, text)) in [
-        (ID_BACKGROUND_ADD_FILES, "ファイルを追加(&L)…"),
-        (ID_BACKGROUND_ADD_FOLDER, "フォルダを追加(&O)…"),
-        (ID_BACKGROUND_REMOVE, "削除(&D)"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        image_buttons[index] = child(
-            w!("BUTTON"),
-            text,
-            WS_GROUP | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-            none,
-            id,
-            Some([
-                inner_left + list_width + BUTTON_GAP,
-                list_top + index as i32 * (BUTTON_HEIGHT + BUTTON_GAP),
-                BACKGROUND_BUTTON_WIDTH,
-                BUTTON_HEIGHT,
-            ]),
-        )?;
-        background_page.push(image_buttons[index]);
-    }
-    let (class, text, rect) = label(
+    let image_button_rect = |index: i32| {
+        [
+            inner_left + list_width + BUTTON_GAP,
+            list_top + index * (BUTTON_HEIGHT + BUTTON_GAP),
+            BACKGROUND_BUTTON_WIDTH,
+            BUTTON_HEIGHT,
+        ]
+    };
+    background_page.push(b.button(
+        ID_BACKGROUND_ADD_FILES,
+        "ファイルを追加(&L)…",
+        image_button_rect(0),
+    )?);
+    background_page.push(b.button(
+        ID_BACKGROUND_ADD_FOLDER,
+        "フォルダを追加(&O)…",
+        image_button_rect(1),
+    )?);
+    let background_remove = b.button(ID_BACKGROUND_REMOVE, "削除(&D)", image_button_rect(2))?;
+    background_page.push(background_remove);
+    background_page.push(b.label(
         "選択した項目の表示方法(&N):",
         background_label_rect(item_fit_row),
-    );
-    background_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
     )?);
-    let background_item_fit = child(
-        WC_COMBOBOXW,
-        "",
-        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
-        none,
+    // 先頭の「既定（…）」は、既定の表示方法を入れるときに書き直す。
+    let background_item_fit = b.combo(
         ID_BACKGROUND_ITEM_FIT,
-        Some([
+        [
             background_control_left,
             item_fit_row,
             background_control_width,
             ROW_HEIGHT,
-        ]),
+        ],
+        std::iter::once("").chain(BACKGROUND_FIT_LABELS),
     )?;
     background_page.push(background_item_fit);
-    // 先頭の「既定（…）」は、既定の表示方法を入れるときに書き直す。
-    for text in std::iter::once("").chain(BACKGROUND_FIT_LABELS) {
-        // SAFETY: background_item_fit は有効なコンボボックスで、文字列はこの呼び出しの間は生きている。
-        unsafe {
-            SendMessageW(
-                background_item_fit,
-                CB_ADDSTRING,
-                None,
-                Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
-            )
-        };
-    }
-    let (class, text, rect) = label(
+    background_page.push(b.label(
         "選択した項目の不透明度(&H):",
         background_label_rect(item_opacity_row),
-    );
-    background_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
     )?);
-    let background_item_opacity_default = child(
-        w!("BUTTON"),
-        "",
-        radio(true),
-        none,
+    let background_item_opacity_default = b.radio(
         ID_BACKGROUND_ITEM_OPACITY_DEFAULT,
-        Some([
+        "",
+        [
             background_control_left,
             item_opacity_row,
             background_control_width,
             ROW_HEIGHT,
-        ]),
+        ],
+        true,
     )?;
     background_page.push(background_item_opacity_default);
-    let background_item_opacity_custom = child(
-        w!("BUTTON"),
-        "指定",
-        radio(false),
-        none,
+    let background_item_opacity_custom = b.radio(
         ID_BACKGROUND_ITEM_OPACITY_CUSTOM,
-        Some([
+        "指定",
+        [
             background_control_left,
             custom_opacity_row,
             CUSTOM_OPACITY_WIDTH,
             ROW_HEIGHT,
-        ]),
+        ],
+        false,
     )?;
     background_page.push(background_item_opacity_custom);
     let custom_opacity_left = background_control_left + CUSTOM_OPACITY_WIDTH;
-    let background_item_opacity = child(
-        w!("EDIT"),
-        "",
-        edit_style,
-        WS_EX_CLIENTEDGE,
+    let background_item_opacity = b.edit(
         ID_BACKGROUND_ITEM_OPACITY,
-        Some([
+        [
             custom_opacity_left,
             custom_opacity_row,
             NUMBER_WIDTH,
             ROW_HEIGHT,
-        ]),
+        ],
     )?;
     background_page.push(background_item_opacity);
-    let background_item_opacity_spin = child(
-        UPDOWN_CLASSW,
-        "",
-        spin_style,
-        none,
-        ID_BACKGROUND_ITEM_OPACITY_SPIN,
-        None,
-    )?;
+    let background_item_opacity_spin = b.spin(ID_BACKGROUND_ITEM_OPACITY_SPIN)?;
     background_page.push(background_item_opacity_spin);
-    let (class, text, rect) = label(
+    background_page.push(b.label(
         "0〜1",
         opacity_note_rect(custom_opacity_row, custom_opacity_left),
-    );
-    background_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
     )?);
-    let (class, text, rect) = label(
+    background_page.push(b.label(
         "新しいタブを開くたびに、一覧からランダムに 1 枚選ぶ（フォルダはその中の画像から選ぶ）。画像は、不透明度に応じて端末の背景色を重ねて薄くする。",
         [
             page_left,
@@ -1400,41 +1415,23 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             page_width,
             2 * ROW_HEIGHT,
         ],
-    );
-    background_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
     )?);
 
     // 動作
     let mut behavior = Vec::new();
-    let (class, text, rect) = label("貼り付け前の確認(&P):", label_rect(row(0)));
-    behavior.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
+    behavior.push(b.label("貼り付け前の確認(&P):", label_rect(row(0)))?);
     let mut paste_confirm = [HWND::default(); PasteConfirm::ALL.len()];
     for (index, text) in PASTE_CONFIRM_LABELS.iter().enumerate() {
         let top = row(0) + index as i32 * ROW_HEIGHT;
-        paste_confirm[index] = child(
-            w!("BUTTON"),
-            text,
-            radio(index == 0),
-            none,
+        paste_confirm[index] = b.radio(
             ID_PASTE_CONFIRM + index as i32,
-            Some([control_left, top, control_width, ROW_HEIGHT]),
+            text,
+            [control_left, top, control_width, ROW_HEIGHT],
+            index == 0,
         )?;
         behavior.push(paste_confirm[index]);
     }
-    let (class, text, rect) = label(
+    behavior.push(b.label(
         "改行を含む文字列を貼り付ける前に、内容を編集できるダイアログで確認する。「コマンドとして実行される可能性があるとき」は、アプリが bracketed paste を有効にしていないときなど。",
         [
             page_left,
@@ -1442,44 +1439,17 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             page_width,
             3 * ROW_HEIGHT,
         ],
-    );
-    behavior.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
     )?);
     let paste_size_row = row(0) + 6 * ROW_HEIGHT + 2 * MARGIN;
-    let (class, text, rect) = label("大きなテキストの確認(&Z):", label_rect(paste_size_row));
-    behavior.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let paste_confirm_size = child(
-        w!("EDIT"),
-        "",
-        edit_style,
-        WS_EX_CLIENTEDGE,
+    behavior.push(b.label("大きなテキストの確認(&Z):", label_rect(paste_size_row))?);
+    let paste_confirm_size = b.edit(
         ID_PASTE_CONFIRM_SIZE,
-        Some([control_left, paste_size_row, NUMBER_WIDTH, ROW_HEIGHT]),
+        [control_left, paste_size_row, NUMBER_WIDTH, ROW_HEIGHT],
     )?;
     behavior.push(paste_confirm_size);
-    let paste_confirm_size_spin = child(
-        UPDOWN_CLASSW,
-        "",
-        spin_style,
-        none,
-        ID_PASTE_CONFIRM_SIZE_SPIN,
-        None,
-    )?;
+    let paste_confirm_size_spin = b.spin(ID_PASTE_CONFIRM_SIZE_SPIN)?;
     behavior.push(paste_confirm_size_spin);
-    let (class, text, rect) = label(
+    behavior.push(b.label(
         "KiB 以上は常に確認する（0 で無効）",
         [
             control_left + NUMBER_WIDTH + BUTTON_GAP,
@@ -1487,39 +1457,21 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             control_width - NUMBER_WIDTH - BUTTON_GAP,
             ROW_HEIGHT,
         ],
-    );
-    behavior.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
     )?);
     let clipboard_row = paste_size_row + ROW_HEIGHT + MARGIN;
-    let (class, text, rect) = label("クリップボードの読み取り(&L):", label_rect(clipboard_row));
-    behavior.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
+    behavior.push(b.label("クリップボードの読み取り(&L):", label_rect(clipboard_row))?);
     let mut clipboard_read = [HWND::default(); ClipboardRead::ALL.len()];
     for (index, text) in CLIPBOARD_READ_LABELS.iter().enumerate() {
         let top = clipboard_row + index as i32 * ROW_HEIGHT;
-        clipboard_read[index] = child(
-            w!("BUTTON"),
-            text,
-            radio(index == 0),
-            none,
+        clipboard_read[index] = b.radio(
             ID_CLIPBOARD_READ + index as i32,
-            Some([control_left, top, control_width, ROW_HEIGHT]),
+            text,
+            [control_left, top, control_width, ROW_HEIGHT],
+            index == 0,
         )?;
         behavior.push(clipboard_read[index]);
     }
-    let (class, text, rect) = label(
+    behavior.push(b.label(
         "アプリがクリップボードの内容を読み取ろうとしたとき（OSC 52）。アプリからの書き込みは、この設定に関係なく受け付ける。",
         [
             page_left,
@@ -1527,196 +1479,97 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             page_width,
             2 * ROW_HEIGHT,
         ],
-    );
-    behavior.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
     )?);
 
     // プロファイル
     let mut profiles_page = Vec::new();
-    let (class, text, rect) = label(
+    profiles_page.push(b.label(
         "新しいタブで起動するプロファイル(&R):",
         [page_left, row(0) + LABEL_OFFSET, page_width, ROW_HEIGHT],
-    );
-    profiles_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
     )?);
     let profiles_top = row(0) + ROW_HEIGHT;
-    let profiles_list = child(
-        WC_LISTBOXW,
-        "",
-        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE((LBS_NOTIFY | LBS_USETABSTOPS) as u32),
-        WS_EX_CLIENTEDGE,
+    let profiles_list = b.list(
         ID_PROFILES,
-        Some([page_left, profiles_top, page_width, PROFILE_LIST_HEIGHT]),
+        [page_left, profiles_top, page_width, PROFILE_LIST_HEIGHT],
+        &[PROFILE_COLUMN_TAB_STOP],
     )?;
     profiles_page.push(profiles_list);
-    let profile_tab_stops = [PROFILE_COLUMN_TAB_STOP];
-    // SAFETY: profiles_list は有効な一覧で、profile_tab_stops はこの呼び出しの間は生きている。
-    unsafe {
-        SendMessageW(
-            profiles_list,
-            LB_SETTABSTOPS,
-            Some(WPARAM(profile_tab_stops.len())),
-            Some(LPARAM(profile_tab_stops.as_ptr() as isize)),
-        )
-    };
     let profile_buttons_top = profiles_top + PROFILE_LIST_HEIGHT + BUTTON_GAP;
     let profile_button_width = (page_width - 2 * BUTTON_GAP) / 3;
-    let mut profile_buttons = [HWND::default(); 3];
-    for (index, (id, text)) in [
-        (ID_PROFILE_ADD, "追加(&D)"),
-        (ID_PROFILE_REMOVE, "削除(&L)"),
-        (ID_PROFILE_DEFAULT, "既定にする(&J)"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        profile_buttons[index] = child(
-            w!("BUTTON"),
-            text,
-            WS_GROUP | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-            none,
-            id,
-            Some([
-                page_left + index as i32 * (profile_button_width + BUTTON_GAP),
-                profile_buttons_top,
-                profile_button_width,
-                BUTTON_HEIGHT,
-            ]),
-        )?;
-        profiles_page.push(profile_buttons[index]);
-    }
+    let profile_button_rect = |index: i32| {
+        [
+            page_left + index * (profile_button_width + BUTTON_GAP),
+            profile_buttons_top,
+            profile_button_width,
+            BUTTON_HEIGHT,
+        ]
+    };
+    profiles_page.push(b.button(ID_PROFILE_ADD, "追加(&D)", profile_button_rect(0))?);
+    let profile_remove = b.button(ID_PROFILE_REMOVE, "削除(&L)", profile_button_rect(1))?;
+    profiles_page.push(profile_remove);
+    let profile_default = b.button(ID_PROFILE_DEFAULT, "既定にする(&J)", profile_button_rect(2))?;
+    profiles_page.push(profile_default);
     let profile_name_row = profile_buttons_top + BUTTON_HEIGHT + MARGIN;
-    let (class, text, rect) = label("名前(&N):", label_rect(profile_name_row));
-    profiles_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let profile_name = child(
-        w!("EDIT"),
-        "",
-        edit_style,
-        WS_EX_CLIENTEDGE,
+    profiles_page.push(b.label("名前(&N):", label_rect(profile_name_row))?);
+    let profile_name = b.edit(
         ID_PROFILE_NAME,
-        Some([control_left, profile_name_row, control_width, ROW_HEIGHT]),
+        [control_left, profile_name_row, control_width, ROW_HEIGHT],
     )?;
     profiles_page.push(profile_name);
     let profile_backend_row = profile_name_row + ROW_HEIGHT + MARGIN;
-    let (class, text, rect) = label("接続方式(&B):", label_rect(profile_backend_row));
-    profiles_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let profile_backend = child(
-        WC_COMBOBOXW,
-        "",
-        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
-        none,
+    profiles_page.push(b.label("接続方式(&B):", label_rect(profile_backend_row))?);
+    let profile_backend = b.combo(
         ID_PROFILE_BACKEND,
-        Some([control_left, profile_backend_row, control_width, ROW_HEIGHT]),
+        [control_left, profile_backend_row, control_width, ROW_HEIGHT],
+        PROFILE_BACKEND_LABELS,
     )?;
     profiles_page.push(profile_backend);
-    for text in PROFILE_BACKEND_LABELS {
-        // SAFETY: profile_backend は有効なコンボボックスで、文字列はこの呼び出しの間は生きている。
-        unsafe {
-            SendMessageW(
-                profile_backend,
-                CB_ADDSTRING,
-                None,
-                Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
-            )
-        };
-    }
     let profile_location_row = profile_backend_row + ROW_HEIGHT + MARGIN;
-    let (class, text, rect) = label(
+    let profile_location_label = b.label(
         profile_location_texts(BackendKind::Conpty).0,
         label_rect(profile_location_row),
-    );
-    let profile_location_label = child(class, &text, WINDOW_STYLE(0), none, ID_LABEL, Some(rect))?;
+    )?;
     profiles_page.push(profile_location_label);
-    let profile_location = child(
-        w!("EDIT"),
-        "",
-        edit_style,
-        WS_EX_CLIENTEDGE,
+    let profile_location = b.edit(
         ID_PROFILE_LOCATION,
-        Some([
+        [
             control_left,
             profile_location_row,
             control_width,
             ROW_HEIGHT,
-        ]),
+        ],
     )?;
     profiles_page.push(profile_location);
     let profile_command_row = profile_location_row + ROW_HEIGHT + MARGIN;
-    let (class, text, rect) = label("コマンドライン(&C):", label_rect(profile_command_row));
-    profiles_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
-    )?);
-    let profile_command = child(
-        w!("EDIT"),
-        "",
-        edit_style,
-        WS_EX_CLIENTEDGE,
+    profiles_page.push(b.label("コマンドライン(&C):", label_rect(profile_command_row))?);
+    let profile_command = b.edit(
         ID_PROFILE_COMMAND,
-        Some([control_left, profile_command_row, control_width, ROW_HEIGHT]),
+        [control_left, profile_command_row, control_width, ROW_HEIGHT],
     )?;
     profiles_page.push(profile_command);
     // 高さは文に合わせて決める（文がなければ 0）。
-    let profile_command_warning = child(
-        w!("STATIC"),
-        "",
-        WINDOW_STYLE(0),
-        none,
+    let profile_command_warning = b.static_text(
         ID_PROFILE_COMMAND_WARNING,
-        Some([
+        WINDOW_EX_STYLE(0),
+        [
             control_left,
             profile_command_row + ROW_HEIGHT + LABEL_OFFSET,
             control_width,
             0,
-        ]),
+        ],
     )?;
     profiles_page.push(profile_command_warning);
     let profile_icon_row = profile_command_row + ROW_HEIGHT + MARGIN;
-    let (class, text, rect) = label("アイコン(&I):", label_rect(profile_icon_row));
-    let profile_icon_label = child(class, &text, WINDOW_STYLE(0), none, ID_LABEL, Some(rect))?;
+    let profile_icon_label = b.label("アイコン(&I):", label_rect(profile_icon_row))?;
     profiles_page.push(profile_icon_label);
-    let profile_icon = child(
-        w!("EDIT"),
-        "",
-        edit_style,
-        WS_EX_CLIENTEDGE,
+    let profile_icon = b.edit(
         ID_PROFILE_ICON,
-        Some([
+        [
             control_left,
             profile_icon_row,
             control_width - BUTTON_GAP - BUTTON_WIDTH,
             ROW_HEIGHT,
-        ]),
+        ],
     )?;
     profiles_page.push(profile_icon);
     let profile_icon_cue = HSTRING::from("空欄なら自動で作成する");
@@ -1729,21 +1582,18 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             Some(LPARAM(profile_icon_cue.as_ptr() as isize)),
         )
     };
-    let profile_icon_choose = child(
-        w!("BUTTON"),
-        "参照(&E)…",
-        WS_GROUP | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-        none,
+    let profile_icon_choose = b.button(
         ID_PROFILE_ICON_CHOOSE,
-        Some([
+        "参照(&E)…",
+        [
             control_left + control_width - BUTTON_WIDTH,
             profile_icon_row,
             BUTTON_WIDTH,
             ROW_HEIGHT,
-        ]),
+        ],
     )?;
     profiles_page.push(profile_icon_choose);
-    let (class, text, rect) = label(
+    let profile_note = b.label(
         "タブバーの「+」は既定のプロファイルを開き、「▾」か「+」の右クリックで一覧から選んで開く。fantermo を引数つきで起動したときは、「+」とキーとメニューの「新しいタブ」も引数のコマンドラインを使う。Cygwin と WSL のコマンドラインは Cygwin・WSL の中で実行するもの（空欄ならログインシェル）。変更は次に開くタブから反映される。",
         [
             page_left,
@@ -1751,49 +1601,27 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             page_width,
             PROFILE_NOTE_HEIGHT,
         ],
-    );
-    let profile_note = child(class, &text, WINDOW_STYLE(0), none, ID_LABEL, Some(rect))?;
+    )?;
     profiles_page.push(profile_note);
 
     // キー
     let mut keys_page = Vec::new();
-    let (class, text, rect) = label(
+    keys_page.push(b.label(
         "キーの割り当て(&K):",
         [page_left, row(0), page_width, ROW_HEIGHT],
-    );
-    keys_page.push(child(
-        class,
-        &text,
-        WINDOW_STYLE(0),
-        none,
-        ID_LABEL,
-        Some(rect),
     )?);
     let key_buttons_top = button_top - MARGIN - BUTTON_HEIGHT;
-    let keys_list = child(
-        WC_LISTBOXW,
-        "",
-        WS_GROUP | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE((LBS_NOTIFY | LBS_USETABSTOPS) as u32),
-        WS_EX_CLIENTEDGE,
+    let keys_list = b.list(
         ID_KEYS,
-        Some([
+        [
             page_left,
             row(0) + ROW_HEIGHT,
             page_width,
             key_buttons_top - BUTTON_GAP - row(0) - ROW_HEIGHT,
-        ]),
+        ],
+        &[KEY_COLUMN_TAB_STOP],
     )?;
     keys_page.push(keys_list);
-    let tab_stops = [KEY_COLUMN_TAB_STOP];
-    // SAFETY: keys_list は有効な一覧で、tab_stops はこの呼び出しの間は生きている。
-    unsafe {
-        SendMessageW(
-            keys_list,
-            LB_SETTABSTOPS,
-            Some(WPARAM(tab_stops.len())),
-            Some(LPARAM(tab_stops.as_ptr() as isize)),
-        )
-    };
     let key_button_width = (page_width - 3 * BUTTON_GAP) / 4;
     let mut key_buttons = [HWND::default(); 4];
     for (index, (id, text)) in [
@@ -1805,18 +1633,15 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     .into_iter()
     .enumerate()
     {
-        key_buttons[index] = child(
-            w!("BUTTON"),
-            text,
-            WS_GROUP | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-            none,
+        key_buttons[index] = b.button(
             id,
-            Some([
+            text,
+            [
                 page_left + index as i32 * (key_button_width + BUTTON_GAP),
                 key_buttons_top,
                 key_button_width,
                 BUTTON_HEIGHT,
-            ]),
+            ],
         )?;
         keys_page.push(key_buttons[index]);
     }
@@ -1827,21 +1652,13 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     let mut color_scheme = [HWND::default(); 2];
     let mut top = MARGIN;
     for (table_index, table) in ColorTable::ALL.into_iter().enumerate() {
-        let (class, text, rect) = label(
+        colors_page.push(b.label(
             COLOR_TABLE_LABELS[table_index],
             [page_left, top + LABEL_OFFSET, page_width, COLOR_ROW_HEIGHT],
-        );
-        colors_page.push(child(
-            class,
-            &text,
-            WINDOW_STYLE(0),
-            none,
-            ID_LABEL,
-            Some(rect),
         )?);
         top += COLOR_ROW_HEIGHT;
         if table == ColorTable::Terminal {
-            let (class, text, rect) = label(
+            colors_page.push(b.label(
                 "配色(&M):",
                 [
                     page_left + COLOR_LABEL_INDENT,
@@ -1849,28 +1666,18 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
                     LABEL_WIDTH - COLOR_LABEL_INDENT,
                     COLOR_ROW_HEIGHT,
                 ],
-            );
-            colors_page.push(child(
-                class,
-                &text,
-                WINDOW_STYLE(0),
-                none,
-                ID_LABEL,
-                Some(rect),
             )?);
             for (index, text) in COLOR_SCHEME_LABELS.iter().enumerate() {
-                color_scheme[index] = child(
-                    w!("BUTTON"),
-                    text,
-                    radio(index == 0),
-                    none,
+                color_scheme[index] = b.radio(
                     ID_COLOR_SCHEME + index as i32,
-                    Some([
+                    text,
+                    [
                         control_left + index as i32 * COLOR_SCHEME_WIDTH,
                         top,
                         COLOR_SCHEME_WIDTH,
                         COLOR_ROW_HEIGHT,
-                    ]),
+                    ],
+                    index == 0,
                 )?;
                 colors_page.push(color_scheme[index]);
             }
@@ -1878,7 +1685,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         }
         for label_text in color_labels(table) {
             let id = ID_COLORS + color_rows.len() as i32 * COLOR_ID_STRIDE;
-            let (class, text, rect) = label(
+            colors_page.push(b.label(
                 label_text,
                 [
                     page_left + COLOR_LABEL_INDENT,
@@ -1886,49 +1693,29 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
                     LABEL_WIDTH - COLOR_LABEL_INDENT,
                     COLOR_ROW_HEIGHT,
                 ],
-            );
-            colors_page.push(child(
-                class,
-                &text,
-                WINDOW_STYLE(0),
-                none,
-                ID_LABEL,
-                Some(rect),
             )?);
-            let swatch = child(
-                w!("STATIC"),
-                "",
-                WINDOW_STYLE(0),
-                WS_EX_CLIENTEDGE,
+            let swatch = b.static_text(
                 id + COLOR_SWATCH,
-                Some([control_left, top + 2, SWATCH_WIDTH, COLOR_ROW_HEIGHT - 4]),
+                WS_EX_CLIENTEDGE,
+                [control_left, top + 2, SWATCH_WIDTH, COLOR_ROW_HEIGHT - 4],
             )?;
             let mut left = control_left + SWATCH_WIDTH + BUTTON_GAP;
-            let text = child(
-                w!("STATIC"),
-                "",
-                WINDOW_STYLE(0),
-                none,
+            let text = b.static_text(
                 id + 1,
-                Some([left, top + LABEL_OFFSET, COLOR_TEXT_WIDTH, COLOR_ROW_HEIGHT]),
+                WINDOW_EX_STYLE(0),
+                [left, top + LABEL_OFFSET, COLOR_TEXT_WIDTH, COLOR_ROW_HEIGHT],
             )?;
             left += COLOR_TEXT_WIDTH + BUTTON_GAP;
-            let choose = child(
-                w!("BUTTON"),
-                "選択…",
-                WS_GROUP | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-                none,
+            let choose = b.button(
                 id + COLOR_CHOOSE,
-                Some([left, top, CHOOSE_WIDTH, COLOR_ROW_HEIGHT - 2]),
+                "選択…",
+                [left, top, CHOOSE_WIDTH, COLOR_ROW_HEIGHT - 2],
             )?;
             left += CHOOSE_WIDTH + BUTTON_GAP;
-            let reset = child(
-                w!("BUTTON"),
-                "既定に戻す",
-                WS_GROUP | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-                none,
+            let reset = b.button(
                 id + COLOR_RESET,
-                Some([left, top, COLOR_RESET_WIDTH, COLOR_ROW_HEIGHT - 2]),
+                "既定に戻す",
+                [left, top, COLOR_RESET_WIDTH, COLOR_ROW_HEIGHT - 2],
             )?;
             colors_page.extend([swatch, text, choose, reset]);
             color_rows.push(ColorRow {
@@ -1941,18 +1728,15 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     }
 
     // 下のボタンと、入力のエラー
-    let error = child(
-        w!("STATIC"),
-        "",
-        WINDOW_STYLE(0),
-        none,
+    let error = b.static_text(
         ID_ERROR,
-        Some([
+        WINDOW_EX_STYLE(0),
+        [
             MARGIN,
             button_top + LABEL_OFFSET,
             CLIENT_WIDTH - 2 * MARGIN - 3 * (BUTTON_WIDTH + BUTTON_GAP),
             ROW_HEIGHT,
-        ]),
+        ],
     )?;
     let buttons = [
         (IDOK.0, "OK", true),
@@ -1964,19 +1748,12 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         - buttons.len() as i32 * BUTTON_WIDTH
         - (buttons.len() as i32 - 1) * BUTTON_GAP;
     for (id, text, default) in buttons {
-        let style = if default {
-            BS_DEFPUSHBUTTON
+        let rect = [button_left, button_top, BUTTON_WIDTH, BUTTON_HEIGHT];
+        if default {
+            b.default_button(id, text, rect)?;
         } else {
-            BS_PUSHBUTTON
-        };
-        child(
-            w!("BUTTON"),
-            text,
-            WS_GROUP | WS_TABSTOP | WINDOW_STYLE(style as u32),
-            none,
-            id,
-            Some([button_left, button_top, BUTTON_WIDTH, BUTTON_HEIGHT]),
-        )?;
+            b.button(id, text, rect)?;
+        }
         button_left += BUTTON_WIDTH + BUTTON_GAP;
     }
 
@@ -2005,8 +1782,8 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             paste_confirm_size_spin,
             clipboard_read,
             profiles_list,
-            profile_remove: profile_buttons[1],
-            profile_default: profile_buttons[2],
+            profile_remove,
+            profile_default,
             profile_name,
             profile_command,
             profile_command_warning,
@@ -2022,7 +1799,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             profile_icon,
             profile_icon_choose,
             background_images,
-            background_remove: image_buttons[2],
+            background_remove,
             background_opacity,
             background_opacity_spin,
             background_fit,
@@ -2036,7 +1813,7 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             key_buttons,
             color_rows,
             error,
-            placed,
+            placed: b.placed,
         },
     ))
 }
@@ -2265,36 +2042,21 @@ impl State<'_> {
     /// プロファイルの一覧を作り直し、`selected` 番目（一覧より後ろなら最後）を選んで、名前と
     /// コマンドラインの入力欄にその値を入れる。
     fn refresh_profiles(&self, selected: usize) {
-        let list = self.controls.profiles_list;
+        let list = ListBox(self.controls.profiles_list);
         let profiles = self.profiles.borrow();
-        // SAFETY: 一覧は有効なウィンドウ。
-        unsafe { SendMessageW(list, LB_RESETCONTENT, None, None) };
-        for (index, profile) in profiles.iter().enumerate() {
-            let text = profile_row_text(profile, index == self.default_profile.get());
-            // SAFETY: 一覧は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
-            unsafe {
-                SendMessageW(
-                    list,
-                    LB_ADDSTRING,
-                    None,
-                    Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
-                )
-            };
-        }
+        list.fill(profiles.iter().enumerate().map(|(index, profile)| {
+            profile_row_text(profile, index == self.default_profile.get())
+        }));
         let index = selected.min(profiles.len().saturating_sub(1));
         drop(profiles);
-        // SAFETY: 一覧は有効なウィンドウ。
-        unsafe { SendMessageW(list, LB_SETCURSEL, Some(WPARAM(index)), None) };
+        list.select(index);
         self.on_profile_selected();
     }
 
     /// プロファイルの一覧で選んでいる位置。
     fn selected_profile(&self) -> Option<usize> {
-        // SAFETY: 一覧は有効なウィンドウ。
-        let index =
-            unsafe { SendMessageW(self.controls.profiles_list, LB_GETCURSEL, None, None) }.0;
-        usize::try_from(index)
-            .ok()
+        ListBox(self.controls.profiles_list)
+            .selected()
             .filter(|&index| index < self.profiles.borrow().len())
     }
 
@@ -2514,18 +2276,7 @@ impl State<'_> {
             profile.icon = (!icon.is_empty()).then_some(icon);
             profile_row_text(profile, index == self.default_profile.get())
         };
-        let list = self.controls.profiles_list;
-        // SAFETY: 一覧は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
-        unsafe {
-            SendMessageW(list, LB_DELETESTRING, Some(WPARAM(index)), None);
-            SendMessageW(
-                list,
-                LB_INSERTSTRING,
-                Some(WPARAM(index)),
-                Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
-            );
-            SendMessageW(list, LB_SETCURSEL, Some(WPARAM(index)), None);
-        }
+        ListBox(self.controls.profiles_list).replace_row(index, &text);
         self.show_profile_command_warning();
         self.schedule_preview();
     }
@@ -2594,29 +2345,13 @@ impl State<'_> {
 
     /// 背景画像の一覧を作り直し、`selected` 番目（一覧より後ろなら最後）を選ぶ。`None` なら選ばない。
     fn refresh_background_images(&self, selected: Option<usize>) {
-        let list = self.controls.background_images;
+        let list = ListBox(self.controls.background_images);
         let images = self.background_images.borrow();
-        // SAFETY: 一覧は有効なウィンドウ。
-        unsafe { SendMessageW(list, LB_RESETCONTENT, None, None) };
-        for image in images.iter() {
-            // SAFETY: 一覧は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
-            unsafe {
-                SendMessageW(
-                    list,
-                    LB_ADDSTRING,
-                    None,
-                    Some(LPARAM(
-                        HSTRING::from(background_row_text(image)).as_ptr() as isize
-                    )),
-                )
-            };
-        }
+        list.fill(images.iter().map(background_row_text));
         if let Some(selected) = selected
             && !images.is_empty()
         {
-            let index = selected.min(images.len() - 1);
-            // SAFETY: 一覧は有効なウィンドウ。
-            unsafe { SendMessageW(list, LB_SETCURSEL, Some(WPARAM(index)), None) };
+            list.select(selected.min(images.len() - 1));
         }
         drop(images);
         self.update_background_buttons();
@@ -2624,11 +2359,8 @@ impl State<'_> {
 
     /// 背景画像の一覧で選んでいる位置。
     fn selected_background_image(&self) -> Option<usize> {
-        // SAFETY: 一覧は有効なウィンドウ。
-        let index =
-            unsafe { SendMessageW(self.controls.background_images, LB_GETCURSEL, None, None) }.0;
-        usize::try_from(index)
-            .ok()
+        ListBox(self.controls.background_images)
+            .selected()
             .filter(|&index| index < self.background_images.borrow().len())
     }
 
@@ -2740,7 +2472,6 @@ impl State<'_> {
 
     /// 背景画像の一覧の `index` 番目の行を、編集中の項目に合わせて書き直す（選んだままにする）。
     fn refresh_background_row(&self, index: usize) {
-        let list = self.controls.background_images;
         let Some(text) = self
             .background_images
             .borrow()
@@ -2749,17 +2480,7 @@ impl State<'_> {
         else {
             return;
         };
-        // SAFETY: 一覧は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
-        unsafe {
-            SendMessageW(list, LB_DELETESTRING, Some(WPARAM(index)), None);
-            SendMessageW(
-                list,
-                LB_INSERTSTRING,
-                Some(WPARAM(index)),
-                Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
-            );
-            SendMessageW(list, LB_SETCURSEL, Some(WPARAM(index)), None);
-        }
+        ListBox(self.controls.background_images).replace_row(index, &text);
     }
 
     /// 一覧で選んでいる項目の表示方法のコンボボックスが変わった。
@@ -2896,19 +2617,8 @@ impl State<'_> {
     fn refresh_keys(&self, selected: Option<KeyRow>) {
         let c = &self.controls;
         let rows = key_rows(&self.keys.borrow());
-        // SAFETY: 一覧は有効なウィンドウ。
-        unsafe { SendMessageW(c.keys_list, LB_RESETCONTENT, None, None) };
-        for row in &rows {
-            // SAFETY: 一覧は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
-            unsafe {
-                SendMessageW(
-                    c.keys_list,
-                    LB_ADDSTRING,
-                    None,
-                    Some(LPARAM(HSTRING::from(key_row_text(*row)).as_ptr() as isize)),
-                )
-            };
-        }
+        let list = ListBox(c.keys_list);
+        list.fill(rows.iter().map(|row| key_row_text(*row)));
         let index = selected
             .and_then(|selected| {
                 rows.iter()
@@ -2916,17 +2626,14 @@ impl State<'_> {
                     .or_else(|| rows.iter().position(|(action, _)| *action == selected.0))
             })
             .unwrap_or(0);
-        // SAFETY: 一覧は有効なウィンドウ。
-        unsafe { SendMessageW(c.keys_list, LB_SETCURSEL, Some(WPARAM(index)), None) };
+        list.select(index);
         *self.key_rows.borrow_mut() = rows;
         self.update_key_buttons();
     }
 
     /// キーの割り当ての一覧で選んでいる行。
     fn selected_key_row(&self) -> Option<KeyRow> {
-        // SAFETY: 一覧は有効なウィンドウ。
-        let index = unsafe { SendMessageW(self.controls.keys_list, LB_GETCURSEL, None, None) }.0;
-        let index = usize::try_from(index).ok()?;
+        let index = ListBox(self.controls.keys_list).selected()?;
         self.key_rows.borrow().get(index).copied()
     }
 
@@ -3133,8 +2840,7 @@ impl State<'_> {
     /// `page` 番目のページのコントロールだけを見せる。
     fn show_page(&self, page: usize) {
         let c = &self.controls;
-        // SAFETY: 一覧は有効なウィンドウ。
-        unsafe { SendMessageW(c.pages, LB_SETCURSEL, Some(WPARAM(page)), None) };
+        ListBox(c.pages).select(page);
         for (index, controls) in c.page_controls.iter().enumerate() {
             let show = if index == page { SW_SHOW } else { SW_HIDE };
             for &control in controls {
@@ -3191,8 +2897,7 @@ impl State<'_> {
         if let Err((index, field, message)) = check_profiles(&profiles) {
             // エラーのあるプロファイルを選び、その入力欄へ移れるようにする。
             if self.selected_profile() != Some(index) {
-                // SAFETY: 一覧は有効なウィンドウ。
-                unsafe { SendMessageW(c.profiles_list, LB_SETCURSEL, Some(WPARAM(index)), None) };
+                ListBox(c.profiles_list).select(index);
                 self.on_profile_selected();
             }
             let control = match field {
@@ -3568,10 +3273,7 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     state.apply();
                 }
                 (ID_PAGES, LBN_SELCHANGE) => {
-                    // SAFETY: 一覧は有効なウィンドウ。
-                    let page =
-                        unsafe { SendMessageW(state.controls.pages, LB_GETCURSEL, None, None) }.0;
-                    if let Ok(page) = usize::try_from(page)
+                    if let Some(page) = ListBox(state.controls.pages).selected()
                         && page < PAGES.len()
                     {
                         state.show_page(page);
