@@ -40,6 +40,6 @@ mod tests {
     fn the_system_folder_is_an_existing_absolute_path() {
         let system = system().unwrap();
         assert!(system.is_absolute());
-        assert!(system.join("notepad.exe").is_file());
+        assert!(system.join("kernel32.dll").is_file());
     }
 }
