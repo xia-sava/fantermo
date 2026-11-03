@@ -115,15 +115,10 @@ impl App {
 
     /// テキストカーソルのセルの左下にコンテキストメニューを出すよう返す。キーボードから開くときに使う。
     pub(super) fn context_menu_at_cursor(&self) -> Deferred {
-        let (col, row) = self.session().vt.cursor_cell().unwrap_or_else(|e| {
-            tracing::warn!("failed to read the cursor position: {e}");
-            (0, 0)
-        });
-        let (x, y) = self.terminal_to_client(
-            (u32::from(col) * self.font.cell_width_px) as i32,
-            ((u32::from(row) + 1) * self.font.cell_height_px) as i32,
-        );
-        self.context_menu(x, y)
+        let cursor = self
+            .cursor_cell_rect()
+            .unwrap_or_else(|| self.cell_rect(0, 0));
+        self.context_menu(cursor.x, cursor.y + cursor.height)
     }
 }
 

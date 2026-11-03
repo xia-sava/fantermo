@@ -13,7 +13,7 @@ use windows::Win32::{
 
 use super::{App, mouse::is_link_modifier, proc::Deferred, tabs::TabCommand};
 use crate::{
-    ime::{self, CursorRect},
+    ime,
     keyboard::{self, KeyPosition, Utf16Assembler},
 };
 
@@ -127,22 +127,8 @@ impl App {
 
     /// IME の変換中のウィンドウと候補のウィンドウを、いまのカーソルの位置に出させる。
     pub(super) fn place_ime_windows(&self) {
-        let (col, row) = match self.session().vt.cursor_cell() {
-            Ok(cell) => cell,
-            Err(e) => {
-                tracing::warn!("failed to read the cursor position: {e}");
-                return;
-            }
-        };
-        let (x, y) = self.terminal_to_client(
-            (u32::from(col) * self.font.cell_width_px) as i32,
-            (u32::from(row) * self.font.cell_height_px) as i32,
-        );
-        let cursor = CursorRect {
-            x,
-            y,
-            width: self.font.cell_width_px as i32,
-            height: self.font.cell_height_px as i32,
+        let Some(cursor) = self.cursor_cell_rect() else {
+            return;
         };
         ime::place_windows(self.hwnd, cursor, &self.font);
     }

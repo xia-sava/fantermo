@@ -14,6 +14,7 @@ use windows::Win32::{
 use super::{App, MAIN_WINDOW_STYLE, mouse::client_position};
 use crate::{
     font::Font,
+    ime::CursorRect,
     paint::{Area, scale},
     renderer, scroll_bar, tab_bar,
 };
@@ -193,6 +194,32 @@ impl App {
     /// 端末を描く領域の左上からの位置を、ウィンドウのクライアント領域の中の位置にする。
     pub(super) fn terminal_to_client(&self, x: i32, y: i32) -> (i32, i32) {
         area_to_client(self.terminal_area, x, y)
+    }
+
+    /// 列 `col`、行 `row`（表示している範囲の左上が 0）のセルの、ウィンドウのクライアント領域の中の矩形。
+    pub(super) fn cell_rect(&self, col: u16, row: u16) -> CursorRect {
+        let (x, y) = self.terminal_to_client(
+            (u32::from(col) * self.font.cell_width_px) as i32,
+            (u32::from(row) * self.font.cell_height_px) as i32,
+        );
+        CursorRect {
+            x,
+            y,
+            width: self.font.cell_width_px as i32,
+            height: self.font.cell_height_px as i32,
+        }
+    }
+
+    /// テキストカーソルのセルの、ウィンドウのクライアント領域の中の矩形。位置を読めなければ警告を残して
+    /// `None`。
+    pub(super) fn cursor_cell_rect(&self) -> Option<CursorRect> {
+        match self.session().vt.cursor_cell() {
+            Ok((col, row)) => Some(self.cell_rect(col, row)),
+            Err(e) => {
+                tracing::warn!("failed to read the cursor position: {e}");
+                None
+            }
+        }
     }
 
     /// ウィンドウのクライアント領域の中の位置を、端末を描く領域の左上からの位置にする。クライアント領域の
