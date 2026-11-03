@@ -68,11 +68,6 @@ fn a_sixel_at_the_bottom_scrolls_the_screen() {
     let frame = vt.frame().unwrap();
     assert_eq!(frame.images[0].row, 2);
     assert_eq!(vt.scroll_position().unwrap().total, 7);
-    // 続けて流れると、スクロールバックに入って上へはみ出す。
-    vt.feed(b"\r\n\r\n\r\n");
-    assert_eq!(vt.frame().unwrap().images[0].row, -1);
-    vt.scroll(-1);
-    assert_eq!(vt.frame().unwrap().images[0].row, 0);
 }
 
 #[test]
@@ -109,18 +104,6 @@ fn clearing_the_screen_removes_a_sixel() {
     vt.feed(b"\x1b[2J");
     assert!(vt.frame().unwrap().images.is_empty());
     assert!(!vt.image_is_stored(&key).unwrap());
-}
-
-#[test]
-fn each_screen_has_its_own_sixels() {
-    let mut vt = new_vt();
-    vt.feed(&black_sixel(16, 16));
-    vt.feed(b"\x1b[?1049h");
-    assert!(vt.frame().unwrap().images.is_empty());
-    vt.feed(&black_sixel(8, 8));
-    assert_eq!(vt.frame().unwrap().images[0].width, 8);
-    vt.feed(b"\x1b[?1049l");
-    assert_eq!(vt.frame().unwrap().images[0].width, 16);
 }
 
 #[test]

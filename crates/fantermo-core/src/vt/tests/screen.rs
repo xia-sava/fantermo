@@ -23,16 +23,10 @@ fn cursor_position_report_is_queued_as_reply() {
 }
 
 #[test]
-fn cursor_cell_follows_text() {
+fn the_cursor_follows_text() {
     let mut vt = new_vt();
     vt.feed("ab\r\nあ".as_bytes());
     assert_eq!(vt.cursor_cell().unwrap(), (2, 1));
-}
-
-#[test]
-fn frame_cursor_follows_text() {
-    let mut vt = new_vt();
-    vt.feed("ab\r\nあ".as_bytes());
     let cursor = vt.frame().unwrap().cursor.unwrap();
     assert_eq!((cursor.col, cursor.row, cursor.width), (2, 1, 1));
 }

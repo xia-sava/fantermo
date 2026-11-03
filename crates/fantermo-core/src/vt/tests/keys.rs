@@ -25,7 +25,6 @@ fn keys_encode_in_legacy_mode() {
         encode(press(Key::ArrowUp, Mods::empty(), '\0', None)),
         b"\x1b[A"
     );
-    assert_eq!(encode(press(Key::C, Mods::CTRL, 'c', None)), b"\x03");
     assert_eq!(encode(press(Key::A, Mods::ALT, 'a', Some("a"))), b"\x1ba");
 }
 

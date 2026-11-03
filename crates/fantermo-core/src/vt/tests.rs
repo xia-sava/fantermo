@@ -31,28 +31,11 @@ fn new_vt() -> Vt {
 const RED_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA\
                        DUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 
-/// 3 バイトごとに 4 文字にする base64。テストの入力に使う。
+/// テストの入力に使う base64。
 fn base64(data: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut encoded = String::new();
-    for chunk in data.chunks(3) {
-        let mut bytes = [0u8; 3];
-        bytes[..chunk.len()].copy_from_slice(chunk);
-        let digits = [
-            bytes[0] >> 2,
-            (bytes[0] & 0x03) << 4 | bytes[1] >> 4,
-            (bytes[1] & 0x0f) << 2 | bytes[2] >> 6,
-            bytes[2] & 0x3f,
-        ];
-        for (index, digit) in digits.into_iter().enumerate() {
-            encoded.push(if index <= chunk.len() {
-                char::from(ALPHABET[usize::from(digit)])
-            } else {
-                '='
-            });
-        }
-    }
-    encoded
+    let mut encoded = Vec::new();
+    crate::base64::push(&mut encoded, data);
+    String::from_utf8(encoded).unwrap()
 }
 
 fn graphics(vt: &mut Vt, control: &str, payload: &str) {
