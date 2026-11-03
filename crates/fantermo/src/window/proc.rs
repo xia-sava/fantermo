@@ -32,7 +32,7 @@ use super::{
     App, BLINK_TIMER_ID, CONFIG_RELOAD_DELAY, CONFIG_TIMER_ID, DUMP_TIMER_ID,
     IMAGE_ANIMATION_TIMER_ID, LAUNCH_ARRIVED, OUTPUT_TIMER_ID, RENDERER_RETRY_TIMER_ID,
     SCROLL_BAR_TIMER_ID, WM_APP_CLIPBOARD_PROMPT, WM_APP_CONFIG_CHANGED, WM_APP_DEVICE_REMOVED,
-    WM_APP_LAUNCH, WM_APP_UPDATE, WM_APP_WAKE,
+    WM_APP_LAUNCH, WM_APP_UPDATE, WM_APP_WAKE, Window,
     keys::take_translated_chars,
     menu::run_menu_command,
     mouse::{
@@ -128,16 +128,19 @@ pub(super) fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &Wi
 
 /// ウィンドウの位置・大きさ・最大化を状態ファイルに書いてから、ウィンドウを閉じる。
 ///
-/// `with_app` が App を借りられたときだけ閉じる。借りられないのは、ウィンドウがもうないときと、外側の
-/// `window_proc` が App を借りている間に、その中の同期の呼び出し（ほかのスレッドへの送信で止まる間など）で
-/// このメッセージが処理されたとき。後者で閉じると、外側が借りている App を `WM_NCDESTROY` で解放するので、
-/// 閉じずに戻る。そのメッセージが `WM_CLOSE` なら、`with_app` が覚えて、借用を手放したところで積み直す
-/// （[`is_repostable`]）。
+/// `with_app` が App を借りられたときだけ閉じる（状態ファイルを書くのも閉じるときだけ）。借りられないのは、
+/// ウィンドウがもうないときと、外側の `window_proc` が App を借りている間に、その中の同期の呼び出し（ほかの
+/// スレッドへの送信で止まる間など）でこのメッセージが処理されたとき。後者で閉じると、外側が借りている App を
+/// `WM_NCDESTROY` で解放するので、閉じずに戻る。そのメッセージが `WM_CLOSE` なら、`with_app` が覚えて、借用を
+/// 手放したところで積み直す（[`is_repostable`]）。
 pub(super) fn destroy_window(hwnd: HWND, with_app: &WithApp) {
-    if !save_window_state(with_app) {
+    let mut borrowed = false;
+    with_app(&mut |_| borrowed = true);
+    if !borrowed {
         tracing::debug!("not destroying the window while the App is unavailable");
         return;
     }
+    save_window_state(hwnd);
     // SAFETY: hwnd は有効なウィンドウ。with_app が App を借りられたので、外側に借用はなく、自分の借用も
     // 手放している。WM_NCDESTROY がこの場で App を解放しても、借りているものはない。
     if let Err(e) = unsafe { DestroyWindow(hwnd) } {
@@ -145,23 +148,16 @@ pub(super) fn destroy_window(hwnd: HWND, with_app: &WithApp) {
     }
 }
 
-/// App を借りて、ウィンドウのいまの位置・大きさ・最大化を状態ファイルに書く。App を借りられなければ
-/// 書かずに `false` を返す（状態ファイルの場所がなくて書かないときは `true`）。
-fn save_window_state(with_app: &WithApp) -> bool {
-    let mut borrowed = false;
-    with_app(&mut |app| {
-        borrowed = true;
-        write_window_state(app);
-    });
-    borrowed
-}
-
-/// ウィンドウのいまの位置・大きさ・最大化を、`app` の状態ファイルに書く。
-fn write_window_state(app: &App) {
-    let Some(path) = &app.state_path else {
+/// ウィンドウのいまの位置・大きさ・最大化を状態ファイルに書く。状態ファイルの場所がなければ書かない。
+///
+/// App を借りないので、App を借りている間の同期の呼び出しの中で届いたメッセージ（ログオフの
+/// `WM_QUERYENDSESSION`・`WM_ENDSESSION` など）からも書ける。場所は [`Window`] の `RefCell` の外から読み、書く
+/// 中身は Win32 から読む。`hwnd` は [`Window`] を結び付けたウィンドウか、0 を返すハンドルに限る（[`window_of`]）。
+fn save_window_state(hwnd: HWND) {
+    let Some(path) = window_of(hwnd).and_then(|window| window.state_path.as_deref()) else {
         return;
     };
-    let Some(window) = window_state::current(app.hwnd) else {
+    let Some(window) = window_state::current(hwnd) else {
         return;
     };
     window_state::save(
@@ -282,21 +278,27 @@ fn forget_repost_warning(message: (HWND, u32, WPARAM)) {
     WARNED_REPOSTS.with_borrow_mut(|warned| warned.retain(|other| *other != message));
 }
 
-/// `hwnd` の `GWLP_USERDATA` に入っている値を、App のポインタとして読む。参照は作らないので、App を結び付けて
-/// いないウィンドウや、破棄したウィンドウ（0 が返る）のハンドルでもよい。
-fn app_pointer(hwnd: HWND) -> *const RefCell<App> {
+/// `hwnd` の `GWLP_USERDATA` に入っている値を、[`Window`] のポインタとして読む。参照は作らないので、
+/// [`Window`] を結び付けていないウィンドウや、破棄したウィンドウ（0 が返る）のハンドルでもよい。
+fn window_pointer(hwnd: HWND) -> *const Window {
     // SAFETY: 値を読むだけ。無効なハンドルには 0 が返る。
-    unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const RefCell<App> }
+    unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Window }
 }
 
-/// ウィンドウに結び付けた App。`'static` は形だけで、参照を使ってよいのは、この場でメッセージを回すもの
+/// ウィンドウに結び付けた [`Window`]。`'static` は形だけで、参照を使ってよいのは、この場でメッセージを回すもの
 /// （ダイアログ、メニュー、メッセージボックス、`DestroyWindow`）を呼ぶまで。その間に WM_NCDESTROY で
-/// 解放されうるので、呼んだあとは読み直す。`hwnd` は App を結び付けたウィンドウか、0 を返すハンドルに限る。
-pub(super) fn app_of(hwnd: HWND) -> Option<&'static RefCell<App>> {
-    let pointer = app_pointer(hwnd);
-    // SAFETY: GWLP_USERDATA には run が入れた App のポインタか 0 が入っている。0 でなければ、WM_NCDESTROY が
+/// 解放されうるので、呼んだあとは読み直す。`hwnd` は [`Window`] を結び付けたウィンドウか、0 を返すハンドルに
+/// 限る。
+fn window_of(hwnd: HWND) -> Option<&'static Window> {
+    let pointer = window_pointer(hwnd);
+    // SAFETY: GWLP_USERDATA には run が入れた Window のポインタか 0 が入っている。0 でなければ、WM_NCDESTROY が
     // 0 に戻してから解放するので、まだ解放されていない。
     unsafe { pointer.as_ref() }
+}
+
+/// ウィンドウに結び付けた App。使ってよい間と `hwnd` の決まりは [`window_of`] と同じ。
+pub(super) fn app_of(hwnd: HWND) -> Option<&'static RefCell<App>> {
+    window_of(hwnd).map(|window| &window.app)
 }
 
 pub(super) extern "system" fn window_proc(
@@ -305,9 +307,9 @@ pub(super) extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    // 入口で読んだ App は、この場でメッセージを回すものを呼ぶと解放されうるので、ポインタとしてだけ持つ。
-    let app = app_pointer(hwnd);
-    if app.is_null() {
+    // 入口で読んだ Window は、この場でメッセージを回すものを呼ぶと解放されうるので、ポインタとしてだけ持つ。
+    let window = window_pointer(hwnd);
+    if window.is_null() {
         // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
     }
@@ -318,7 +320,7 @@ pub(super) extern "system" fn window_proc(
     // ポインタを App の参照にしないため。
     // 処理の途中で別のメッセージがこの場で届くと、借用が重なる。そのときも処理を飛ばす。
     let with_app = |action: &mut dyn FnMut(&mut App)| {
-        if !std::ptr::eq(app_pointer(hwnd), app) {
+        if !std::ptr::eq(window_pointer(hwnd), window) {
             tracing::debug!("the window is gone; skipped message {msg:#06x}");
             return;
         }
@@ -326,8 +328,8 @@ pub(super) extern "system" fn window_proc(
         // DestroyWindow を呼ぶのは destroy_window だけで、そこは with_app が App を借りられたとき（外側に借用が
         // ないとき）に、借用を手放してから呼ぶ。WM_CLOSE も destroy_window を通る。ほかのスレッドは
         // このウィンドウを DestroyWindow できない。なので action の間も解放されない。
-        let app = unsafe { &*app };
-        match app.try_borrow_mut() {
+        let window = unsafe { &*window };
+        match window.app.try_borrow_mut() {
             Ok(mut borrowed) => {
                 action(&mut borrowed);
                 let release_capture = std::mem::take(&mut borrowed.release_capture_pending);
@@ -656,19 +658,16 @@ pub(super) extern "system" fn window_proc(
         // （ENDSESSION_CRITICAL では WM_ENDSESSION のあとに時間がほとんどないため）。書くのは一時
         // ファイルからの置き換えなので、二度書いても、取りやめになっても害はない。終わるのを止めない。
         // ウィンドウは壊さず、端末と子プロセスはほかのプロセスと一緒に終わらされるのに任せる。
+        // App を借りずに書くので、App を借りている間の同期の呼び出しの中で届いても書く（save_window_state）。
         WM_QUERYENDSESSION => {
             tracing::info!("the session may end (flags {:#x})", lparam.0);
-            if !save_window_state(&with_app) {
-                tracing::warn!("not saving the window state while the App is unavailable");
-            }
+            save_window_state(hwnd);
             LRESULT(1)
         }
         WM_ENDSESSION => {
             if wparam.0 != 0 {
                 tracing::info!("the session is ending (flags {:#x})", lparam.0);
-                if !save_window_state(&with_app) {
-                    tracing::warn!("not saving the window state while the App is unavailable");
-                }
+                save_window_state(hwnd);
             }
             LRESULT(0)
         }
@@ -696,11 +695,11 @@ pub(super) extern "system" fn window_proc(
         }
         WM_NCDESTROY => {
             // SAFETY: hwnd は有効なウィンドウで、ポインタを外すのはここだけ。
-            let pointer = unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) } as *mut RefCell<App>;
+            let pointer = unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) } as *mut Window;
             // SAFETY: pointer は run が Box::into_raw で作ったもの。入れ子のループの外側の window_proc が
             // ポインタを持っていることはあるが、with_app は GWLP_USERDATA（いま 0 にした）と比べてから参照にする
-            // ので、これより後には使わない。DestroyWindow は destroy_window が借用のないことを確認してから
-            // 呼ぶので、借用も残っていない。
+            // ので、これより後には使わない。window_of の参照は、メッセージを回すものを呼ぶまでしか使わない。
+            // DestroyWindow は destroy_window が借用のないことを確認してから呼ぶので、借用も残っていない。
             drop(unsafe { Box::from_raw(pointer) });
             // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }

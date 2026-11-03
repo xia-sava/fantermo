@@ -195,12 +195,14 @@ pub fn run(
         config_path,
         config,
         notice_key,
-        state_path,
         options.tab,
     )?;
-    let app = Box::into_raw(Box::new(RefCell::new(app)));
+    let window = Box::into_raw(Box::new(Window {
+        state_path,
+        app: RefCell::new(app),
+    }));
     // SAFETY: hwnd はこのスレッドが作ったウィンドウ。ポインタは WM_NCDESTROY で取り戻して解放する。
-    unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, app as isize) };
+    unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, window as isize) };
 
     // ウィンドウを置いたモニタの DPI がシステムの DPI と違えば、DPI が変わったときと同じように作り直す。
     // 覚えていた大きさがあればそのままにして、桁数と行数をその DPI のセルで決め直す。なければ、既定の
@@ -305,6 +307,20 @@ fn message_loop() -> u32 {
     msg.wParam.0 as u32
 }
 
+/// ウィンドウに結び付けるもの。`GWLP_USERDATA` がこれを指し、`WM_NCDESTROY` で解放する。
+///
+/// `app` は `window_proc` が `with_app` で借りてから使う。借用の中の同期の呼び出し（ほかのスレッドへの送信で
+/// 止まる間など）では、ほかのスレッドから送られたメッセージがこの場で処理され、そのときは借用が重なるので
+/// `app` を読むことも書くこともできない。`RefCell` の外に置いた値は作ったあと変えないので、借用が重なっていても
+/// 読める。借用の外でも中でもすることに要る値は、ここに置く。
+struct Window {
+    /// ウィンドウの状態ファイルの場所。`None` なら書かない。ウィンドウを閉じるときと、ログオフ・シャットダウンの
+    /// ときに書く。ログオフの `WM_QUERYENDSESSION`・`WM_ENDSESSION` は借用の中で届くこともあるので、`App` の外に
+    /// 置く。書く中身（ウィンドウの位置・大きさ・最大化）も `App` ではなく Win32 から読む。
+    state_path: Option<PathBuf>,
+    app: RefCell<App>,
+}
+
 struct App {
     hwnd: HWND,
     dwrite: IDWriteFactory,
@@ -315,9 +331,6 @@ struct App {
     dpi: u32,
     /// 設定ファイルの場所。
     config_path: Option<PathBuf>,
-    /// ウィンドウの状態ファイルの場所。ウィンドウを閉じるときと、ログオフ・シャットダウンのときに書く。
-    /// `None` なら書かない。
-    state_path: Option<PathBuf>,
     /// `font` を探したときの設定。
     font_config: FontConfig,
     /// 貼り付ける前に、編集のダイアログで確認するとき。
@@ -422,7 +435,7 @@ struct App {
 
 impl App {
     /// `config_path` から読んだ設定が `config` で、その警告の中身を比べる文が `notice_key`
-    /// （[`Loaded::notice_key`]）。`state_path` はウィンドウの状態ファイルの場所。
+    /// （[`Loaded::notice_key`]）。
     #[allow(clippy::too_many_arguments)]
     fn new(
         hwnd: HWND,
@@ -432,7 +445,6 @@ impl App {
         config_path: Option<PathBuf>,
         config: Config,
         notice_key: Option<String>,
-        state_path: Option<PathBuf>,
         arguments: TabRequest,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let font_config = config.font;
@@ -495,7 +507,6 @@ impl App {
             ui_font,
             dpi,
             config_path,
-            state_path,
             font_config,
             paste_config: config.paste,
             clipboard_read: config.clipboard.read,

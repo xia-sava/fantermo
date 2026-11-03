@@ -128,7 +128,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `window/update.rs` | 「fantermo について」（`show_about`）と更新の続き（`continue_update`） |
 | `window/e2e.rs` | e2e テストの制御の口のうち，ウィンドウのスレッドで動く側（feature `e2e`） |
 
-ウィンドウプロシージャの中では `App` を `RefCell` で借ります．処理の途中で同じウィンドウへのメッセージがこの場で届くと借用が重なるので，借りられなければそのメッセージを飛ばします（`window_proc` の `with_app`）．飛ばした `WM_APP_WAKE`，`WM_APP_DEVICE_REMOVED`，`WM_CLOSE` は，借用を手放したところで積み直します（`is_repostable`，`repost_skipped_messages`）．ダイアログ，メニュー，メッセージボックスのように自分でメッセージを回すものは，借用を手放してから開きます．借用を持ったまま開くと，その間に届いた出力や描き直しが飛ばされるためです．入力の処理は開くものを `Deferred` で返し，`window_proc` が借用を外して `run_deferred` で開きます．借用の外で呼ぶものは，`run_deferred` とそこから呼ぶ `show_about`・`continue_update`（`window/update.rs`），`run_menu_command`（`window/menu.rs`），`edit_settings`・`reload_settings`（`window/settings.rs`），`destroy_window`・`save_window_state`，ウィンドウを前面に出す `bring_to_front` です．`DestroyWindow` も同じ理由で借用の外で呼びます．`destroy_window` は `with_app` で `App` を借りられたとき（ほかに借用がないとき）だけ状態を書いて `DestroyWindow` を呼びます．ほかのスレッドから送られた `WM_CLOSE` が，借用の中の同期の呼び出し（貼り付けの `GetClipboardData` など）の間に届いたときは，閉じずに飛ばして積み直します．積み直したメッセージは借用の中では取り出されないので，借用を手放したあとで処理されます．開いている間に最後の端末が終わるとウィンドウが閉じて `App` が解放されるので，`with_app` は呼ばれるたびに `App` を読み直し，もうなければ何もしません．
+ウィンドウプロシージャの中では `App` を `RefCell` で借ります．処理の途中で同じウィンドウへのメッセージがこの場で届くと借用が重なるので，借りられなければそのメッセージを飛ばします（`window_proc` の `with_app`）．飛ばした `WM_APP_WAKE`，`WM_APP_DEVICE_REMOVED`，`WM_CLOSE` は，借用を手放したところで積み直します（`is_repostable`，`repost_skipped_messages`）．ダイアログ，メニュー，メッセージボックスのように自分でメッセージを回すものは，借用を手放してから開きます．借用を持ったまま開くと，その間に届いた出力や描き直しが飛ばされるためです．入力の処理は開くものを `Deferred` で返し，`window_proc` が借用を外して `run_deferred` で開きます．借用の外で呼ぶものは，`run_deferred` とそこから呼ぶ `show_about`・`continue_update`（`window/update.rs`），`run_menu_command`（`window/menu.rs`），`edit_settings`・`reload_settings`（`window/settings.rs`），`destroy_window`・`save_window_state`，ウィンドウを前面に出す `bring_to_front` です．`DestroyWindow` も同じ理由で借用の外で呼びます．`destroy_window` は `with_app` で `App` を借りられたとき（ほかに借用がないとき）だけ状態を書いて `DestroyWindow` を呼びます．`GWLP_USERDATA` が指すのは `Window`（`window/mod.rs`）で，`App` の `RefCell` と，借用が重なっていても読む値（状態ファイルの場所）を持ちます．ほかのスレッドから送られた `WM_CLOSE` が，借用の中の同期の呼び出し（貼り付けの `GetClipboardData` など）の間に届いたときは，閉じずに飛ばして積み直します．積み直したメッセージは借用の中では取り出されないので，借用を手放したあとで処理されます．開いている間に最後の端末が終わるとウィンドウが閉じて `App` が解放されるので，`with_app` は呼ばれるたびに `App` を読み直し，もうなければ何もしません．
 
 ## 3. 主な流れ
 
@@ -189,7 +189,7 @@ IME の確定した文字と，キーを伴わない `WM_CHAR` は `on_text_unit
 
 ### ログオフ
 
-`WM_QUERYENDSESSION` と `WM_ENDSESSION` で `state.toml` を書きます．ウィンドウは壊さず，端末と子プロセスはほかのプロセスと一緒に終わらされるのに任せます．問われた時点でも書くのは，`ENDSESSION_CRITICAL` では `WM_ENDSESSION` のあとに時間がほとんどないためです（`window_proc` のコメント）．
+`WM_QUERYENDSESSION` と `WM_ENDSESSION` で `state.toml` を書きます．ウィンドウは壊さず，端末と子プロセスはほかのプロセスと一緒に終わらされるのに任せます．問われた時点でも書くのは，`ENDSESSION_CRITICAL` では `WM_ENDSESSION` のあとに時間がほとんどないためです（`window_proc` のコメント）．この二つは，`App` を借りている間の同期の呼び出し（貼り付けの `GetClipboardData` など）の中でも届きます．そのときも書けるよう，状態ファイルの場所は `App` の `RefCell` の外（ウィンドウに結び付ける `Window`）に置き，書く中身（位置・大きさ・最大化）は Win32 から読みます．`App` の中の値は，借用の中で届いたときは読めません（`window/proc.rs` の `save_window_state`）．
 
 ### 更新の確認と適用
 
