@@ -92,30 +92,44 @@ impl RealIcon {
 
 /// プロファイル `profile` の本物のアイコン。なければ `None`。
 fn real_icon(profile: &Profile) -> Option<RealIcon> {
-    real_icon_with(
+    real_icon_candidate(profile).filter(|real| has_icon(real.path()))
+}
+
+/// プロファイル `profile` の本物のアイコンの読み先。ファイルにアイコンがあるかは見ていない。
+fn real_icon_candidate(profile: &Profile) -> Option<RealIcon> {
+    real_icon_candidate_with(
         profile,
         |configured| bridge::cygwin_root(configured).ok(),
         search_path,
-        has_icon,
     )
 }
 
 /// プロファイル `profile` の本物のアイコン。`cygwin_root` は `cygwin_root` の設定から Cygwin のフォルダを、
 /// `search` はプログラムの名前から実行ファイルを探し、`has_icon` はファイルにアイコンがあるかを答える。
+#[cfg(test)]
 fn real_icon_with(
     profile: &Profile,
     cygwin_root: impl Fn(Option<&str>) -> Option<PathBuf>,
     search: impl Fn(&str) -> Option<PathBuf>,
     has_icon: impl Fn(&Path) -> bool,
 ) -> Option<RealIcon> {
-    let real = match profile.backend {
+    real_icon_candidate_with(profile, cygwin_root, search).filter(|real| has_icon(real.path()))
+}
+
+/// プロファイル `profile` の本物のアイコンの読み先。`cygwin_root` は `cygwin_root` の設定から Cygwin のフォルダを、
+/// `search` はプログラムの名前から実行ファイルを探す。
+fn real_icon_candidate_with(
+    profile: &Profile,
+    cygwin_root: impl Fn(Option<&str>) -> Option<PathBuf>,
+    search: impl Fn(&str) -> Option<PathBuf>,
+) -> Option<RealIcon> {
+    Some(match profile.backend {
         BackendKind::Cygwin => {
             RealIcon::File(cygwin_root(profile.cygwin_root.as_deref())?.join(CYGWIN_ICON_FILE))
         }
         BackendKind::Wsl => RealIcon::Executable(search(WSL_EXECUTABLE)?),
         BackendKind::Conpty => RealIcon::Executable(search(profile.command_program())?),
-    };
-    has_icon(real.path()).then_some(real)
+    })
 }
 
 /// プログラム `program` の実行ファイル。名前だけなら、ConPTY で起動するときと同じく
@@ -219,6 +233,53 @@ impl TabIcon {
             }
         }
         icons
+    }
+
+    /// 設定の `profiles` の `index` 番目（並びの中にあること）のアイコン。[`Self::for_profiles`] の同じ位置の
+    /// ものと同じになる。ほかのプロファイルの本物のアイコンは、同じ絵になりうるものだけを探す。
+    pub fn for_profile(profiles: &[Profile], index: usize, config_dir: Option<&Path>) -> Self {
+        Self::for_profile_with(profiles, index, config_dir, real_icon_candidate, has_icon)
+    }
+
+    /// [`Self::for_profile`] の本体。`candidate_of` はプロファイルの本物のアイコンの読み先を探し、`has_icon` は
+    /// ファイルにアイコンがあるかを答える。
+    fn for_profile_with(
+        profiles: &[Profile],
+        index: usize,
+        config_dir: Option<&Path>,
+        candidate_of: impl Fn(&Profile) -> Option<RealIcon>,
+        has_icon: impl Fn(&Path) -> bool,
+    ) -> Self {
+        let profile = &profiles[index];
+        let mut icon = Self {
+            real: candidate_of(profile).filter(|real| has_icon(real.path())),
+            ..Self::without_initial(profile, config_dir)
+        };
+        let picture = Picture::of(&icon);
+        let shared = profiles
+            .iter()
+            .enumerate()
+            .filter(|(other_index, _)| *other_index != index)
+            .any(|(_, other)| {
+                let other_icon = Self::without_initial(other, config_dir);
+                if other_icon.image.is_some() {
+                    return Picture::of(&other_icon) == picture;
+                }
+                // 画像のないプロファイルの絵は、本物のアイコンがあればそのファイル、なければ接続方式で決まる。
+                match &picture {
+                    Picture::Image(_) => false,
+                    Picture::Real(key) => candidate_of(other)
+                        .is_some_and(|real| path_key(real.path()) == *key && has_icon(real.path())),
+                    Picture::Drawn(backend) => {
+                        other.backend == *backend
+                            && candidate_of(other).is_none_or(|real| !has_icon(real.path()))
+                    }
+                }
+            });
+        if shared {
+            icon.initial = initial(&profile.name);
+        }
+        icon
     }
 
     /// プロファイル `profile` の、本物のアイコンと頭文字を決める前のアイコン。
@@ -619,6 +680,81 @@ mod tests {
             initials(&[conpty("a", "foo"), conpty("b", "bar"), conpty("c", "cmd")]),
             [Some("A".to_owned()), Some("B".to_owned()), None]
         );
+    }
+
+    #[test]
+    fn one_profile_gets_the_same_icon_as_in_the_whole_list() {
+        use std::cell::Cell;
+
+        // `C:\w\cmd.exe` と `C:\w\pwsh.exe` と Cygwin.ico にはアイコンがあり、`C:\w\bash.exe` にはない。
+        let icons = [r"C:\w\cmd.exe", r"C:\w\pwsh.exe", r"C:\found\Cygwin.ico"];
+        let checks = Cell::new(0);
+        let has_icon = |path: &Path| {
+            checks.set(checks.get() + 1);
+            icons
+                .iter()
+                .any(|icon| path_key(path) == path_key(Path::new(icon)))
+        };
+        let candidate_of = |profile: &Profile| {
+            real_icon_candidate_with(
+                profile,
+                |configured| Some(PathBuf::from(configured.unwrap_or(r"C:\found"))),
+                |program| match program {
+                    "cmd" | "cmd.exe" => Some(PathBuf::from(r"C:\w\cmd.exe")),
+                    r"C:\W\CMD.EXE" => Some(PathBuf::from(r"C:\W\CMD.EXE")),
+                    "pwsh" => Some(PathBuf::from(r"C:\w\pwsh.exe")),
+                    "bash" | "sh" => Some(PathBuf::from(r"C:\w\bash.exe")),
+                    _ => None,
+                },
+            )
+        };
+        let conpty = |name, command| Profile::new(name, command, BackendKind::Conpty);
+        let with_image = |name, image: &str| Profile {
+            icon: Some(image.to_owned()),
+            ..conpty(name, "cmd")
+        };
+        let lists = [
+            vec![conpty("a", "cmd")],
+            vec![conpty("a", "cmd"), conpty("b", r"C:\W\CMD.EXE")],
+            vec![conpty("a", "cmd"), conpty("b", "pwsh")],
+            // アイコンのない実行ファイルと、見つからない実行ファイルは、どちらも ConPTY の絵。
+            vec![
+                conpty("a", "bash"),
+                conpty("b", "missing"),
+                conpty("c", "cmd"),
+            ],
+            vec![conpty("a", "bash"), conpty("b", "sh")],
+            vec![
+                with_image("a", r"C:\p\a.png"),
+                with_image("b", r"c:/P/A.PNG"),
+                conpty("c", "cmd"),
+            ],
+            vec![with_image("a", r"C:\p\a.png"), conpty("b", "cmd")],
+            vec![
+                Profile::new("zsh", "zsh -l", BackendKind::Cygwin),
+                Profile::new("bash", "bash -l", BackendKind::Cygwin),
+                Profile::new("Ubuntu", "", BackendKind::Wsl),
+                Profile::new("Debian", "", BackendKind::Wsl),
+            ],
+        ];
+        for profiles in &lists {
+            let real_of =
+                |profile: &Profile| candidate_of(profile).filter(|real| has_icon(real.path()));
+            let whole = TabIcon::for_profiles_with(profiles, None, real_of);
+            for (index, expected) in whole.iter().enumerate() {
+                let one = TabIcon::for_profile_with(profiles, index, None, candidate_of, has_icon);
+                assert_eq!(one, *expected, "{index} of {profiles:?}");
+            }
+        }
+        // 画像のプロファイルのアイコンを決めるのに、ほかのプロファイルの実行ファイルは見ない。
+        let profiles = [
+            with_image("a", r"C:\p\a.png"),
+            conpty("b", "cmd"),
+            conpty("c", "pwsh"),
+        ];
+        checks.set(0);
+        TabIcon::for_profile_with(&profiles, 0, None, candidate_of, has_icon);
+        assert_eq!(checks.get(), 1);
     }
 
     #[test]

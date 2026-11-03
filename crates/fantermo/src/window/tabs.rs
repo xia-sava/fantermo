@@ -84,10 +84,8 @@ pub(super) fn startup_for(
     let Some(profile) = profiles.get(index) else {
         return Startup::conpty(config::DEFAULT_COMMAND_LINE);
     };
-    let mut startup = Startup::from_profile(
-        profile,
-        TabIcon::for_profiles(profiles, config_dir).swap_remove(index),
-    );
+    let mut startup =
+        Startup::from_profile(profile, TabIcon::for_profile(profiles, index, config_dir));
     if let Some(command) = command {
         command.clone_into(&mut startup.command_line);
     }
