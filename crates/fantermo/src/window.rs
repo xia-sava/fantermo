@@ -61,8 +61,8 @@ use windows::{
                 GetMessageW, GetQueueStatus, GetWindowLongPtrW, GetWindowRect, HTCLIENT, IDC_ARROW,
                 IDC_HAND, IsIconic, KillTimer, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
                 PostMessageW, PostQuitMessage, QS_INPUT, QS_PAINT, RegisterClassExW,
-                SIZE_MINIMIZED, SPI_GETWHEELSCROLLLINES, SW_RESTORE, SW_SHOWDEFAULT,
-                SW_SHOWMAXIMIZED, SWP_NOACTIVATE, SWP_NOZORDER,
+                SIZE_MINIMIZED, SPI_GETWHEELSCROLLLINES, SPI_SETWHEELSCROLLLINES, SW_RESTORE,
+                SW_SHOWDEFAULT, SW_SHOWMAXIMIZED, SWP_NOACTIVATE, SWP_NOZORDER,
                 SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetCursor, SetForegroundWindow,
                 SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
                 SystemParametersInfoW, TranslateMessage, USER_TIMER_MINIMUM, WA_INACTIVE,
@@ -72,8 +72,9 @@ use windows::{
                 WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN,
                 WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
                 WM_NCDESTROY, WM_PAINT, WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP,
-                WM_SETCURSOR, WM_SIZE, WM_SYSCHAR, WM_SYSCOLORCHANGE, WM_SYSDEADCHAR,
-                WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+                WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR, WM_SYSCOLORCHANGE,
+                WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSEXW,
+                WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -784,7 +785,7 @@ struct App {
     exit: Option<ExitCode>,
     /// キーを伴わずに届く文字（IME の確定など）を組み立てる。
     text_input: Utf16Assembler,
-    /// ホイール 1 ノッチで動かす行数（Windows の設定）。
+    /// ホイール 1 ノッチで動かす行数（Windows の設定。起動時と、設定が変わったときに読む）。
     wheel_lines_per_notch: u32,
     /// ダブルクリックの判定と画像のアニメーションに使う時計。
     clock: Instant,
@@ -4079,6 +4080,14 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             // クライアント領域の大きさが変わらず WM_SIZE が届かなかったときも、セルの寸法を合わせる。
             with_app(&mut |app| app.fit_to_client());
             LRESULT(0)
+        }
+        // 設定アプリでホイールの行数を変えたときは、次のホイールから新しい行数で動かす。
+        WM_SETTINGCHANGE => {
+            if wparam.0 == SPI_SETWHEELSCROLLLINES.0 as usize {
+                with_app(&mut |app| app.wheel_lines_per_notch = wheel_lines_per_notch());
+            }
+            // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         // × と Alt+F4。メニューの終了と、最後の端末が終わったときと同じく、状態を書いてから閉じる。
         WM_CLOSE => {
