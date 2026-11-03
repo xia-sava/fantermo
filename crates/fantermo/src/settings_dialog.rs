@@ -352,21 +352,6 @@ fn default_choice_label(value: &str) -> String {
     format!("既定（{value}）")
 }
 
-/// 一覧の項目の表示方法のコンボボックスで、`fit` の位置。先頭は既定に任せること、続いて
-/// [`BackgroundFit::ALL`] の順。
-fn item_fit_choice(fit: Option<BackgroundFit>) -> usize {
-    fit.and_then(|fit| BackgroundFit::ALL.iter().position(|&value| value == fit))
-        .map_or(0, |index| index + 1)
-}
-
-/// 一覧の項目の表示方法のコンボボックスの `choice` 番目の値。範囲の外なら `None`。
-fn item_fit_from_choice(choice: usize) -> Option<Option<BackgroundFit>> {
-    match choice {
-        0 => Some(None),
-        _ => BackgroundFit::ALL.get(choice - 1).copied().map(Some),
-    }
-}
-
 /// 背景画像の一覧の行。パスと、項目に書いた表示方法と不透明度（「C:\a.png（並べて表示、不透明度
 /// 0.3）」）。
 fn background_row_text(image: &BackgroundImage) -> String {
@@ -1224,6 +1209,91 @@ impl<T> RadioInput for RadioGroup<T> {
     }
 }
 
+/// 固定の選択肢のコンボボックス。選択肢の順に表示が並ぶ。
+struct ChoiceBox<T: 'static> {
+    combo: HWND,
+    choices: &'static [T],
+}
+
+impl<T: Copy + PartialEq> ChoiceBox<T> {
+    /// 選択肢 `choices` のコンボボックス `id` を、それぞれの表示 `labels` で `rect` に作る。
+    fn create<S: AsRef<str>>(
+        b: &mut Builder,
+        id: i32,
+        rect: DipRect,
+        choices: &'static [T],
+        labels: impl IntoIterator<Item = S>,
+    ) -> windows::core::Result<Self> {
+        let combo = b.combo(id, rect, labels)?;
+        Ok(Self { combo, choices })
+    }
+
+    /// コンボボックスの HWND。
+    fn hwnd(&self) -> HWND {
+        self.combo
+    }
+
+    /// `value` を選ぶ。選択肢になければ何もしない。
+    fn fill(&self, value: T) {
+        let Some(index) = self.choices.iter().position(|&choice| choice == value) else {
+            return;
+        };
+        // SAFETY: コンボボックスはダイアログの子の有効なウィンドウ。
+        unsafe { SendMessageW(self.combo, CB_SETCURSEL, Some(WPARAM(index)), None) };
+    }
+
+    /// どれも選ばない。
+    fn clear(&self) {
+        // SAFETY: コンボボックスはダイアログの子の有効なウィンドウ。位置に -1 を渡すと選択を外す。
+        unsafe { SendMessageW(self.combo, CB_SETCURSEL, Some(WPARAM(usize::MAX)), None) };
+    }
+
+    /// 選んでいる選択肢。選んでいなければ `None`。
+    fn read(&self) -> Option<T> {
+        // SAFETY: コンボボックスはダイアログの子の有効なウィンドウ。
+        let index = unsafe { SendMessageW(self.combo, CB_GETCURSEL, None, None) }.0;
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.choices.get(index).copied())
+    }
+
+    /// 選択肢 `value` の表示を `text` に書き直す。選んでいるものは変えない。
+    fn relabel(&self, value: T, text: &str) {
+        let Some(index) = self.choices.iter().position(|&choice| choice == value) else {
+            return;
+        };
+        // SAFETY: コンボボックスはダイアログの子の有効なウィンドウで、文字列はこの呼び出しの間は生きている。
+        unsafe {
+            let selected = SendMessageW(self.combo, CB_GETCURSEL, None, None).0;
+            SendMessageW(self.combo, CB_DELETESTRING, Some(WPARAM(index)), None);
+            SendMessageW(
+                self.combo,
+                CB_INSERTSTRING,
+                Some(WPARAM(index)),
+                Some(LPARAM(HSTRING::from(text).as_ptr() as isize)),
+            );
+            SendMessageW(
+                self.combo,
+                CB_SETCURSEL,
+                Some(WPARAM(selected as usize)),
+                None,
+            );
+        }
+    }
+}
+
+/// 一覧の項目の表示方法の選択肢。先頭は `[background]` の値に任せること、続いて [`BackgroundFit::ALL`]
+/// の順。
+const ITEM_FIT_CHOICES: [Option<BackgroundFit>; BackgroundFit::ALL.len() + 1] = {
+    let mut choices = [None; BackgroundFit::ALL.len() + 1];
+    let mut index = 0;
+    while index < BackgroundFit::ALL.len() {
+        choices[index + 1] = Some(BackgroundFit::ALL[index]);
+        index += 1;
+    }
+    choices
+};
+
 /// 項目の不透明度の「既定」と「指定」。「指定」なら `true`。
 const ITEM_OPACITY_CHOICES: [bool; 2] = [false, true];
 
@@ -1307,7 +1377,7 @@ struct Controls {
     profile_below_command_warning: [HWND; 4],
     /// 一覧で選んでいるプロファイルの接続方式（[`BackendKind::ALL`] の順）と、Cygwin のフォルダか
     /// ディストリビューションの入力欄とその見出し。
-    profile_backend: HWND,
+    profile_backend: ChoiceBox<BackendKind>,
     profile_location_label: HWND,
     profile_location: HWND,
     /// プロファイルのアイコンの画像のファイルの入力欄と、選ぶボタン。
@@ -1319,9 +1389,9 @@ struct Controls {
     background_remove: HWND,
     /// 既定の不透明度と表示方法。
     background_opacity: NumberField<f32>,
-    background_fit: HWND,
+    background_fit: ChoiceBox<BackgroundFit>,
     /// 一覧で選んでいる項目の表示方法。
-    background_item_fit: HWND,
+    background_item_fit: ChoiceBox<Option<BackgroundFit>>,
     /// 一覧で選んでいる項目の不透明度の「既定」と「指定」のラジオボタンと、「指定」の値。
     background_item_opacity_choice: RadioGroup<bool>,
     background_item_opacity: NumberField<f32>,
@@ -1577,7 +1647,8 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         ],
     )?);
     background_page.push(b.label("表示方法(&T):", background_label_rect(fit_row))?);
-    let background_fit = b.combo(
+    let background_fit = ChoiceBox::create(
+        &mut b,
         ID_BACKGROUND_FIT,
         [
             background_control_left,
@@ -1585,9 +1656,10 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             background_control_width,
             ROW_HEIGHT,
         ],
+        &BackgroundFit::ALL,
         BACKGROUND_FIT_LABELS,
     )?;
-    background_page.push(background_fit);
+    background_page.push(background_fit.hwnd());
     background_page.push(b.label("不透明度(&Y):", background_label_rect(opacity_row))?);
     let background_opacity = NumberField::create(
         &mut b,
@@ -1654,7 +1726,8 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
         background_label_rect(item_fit_row),
     )?);
     // 先頭の「既定（…）」は、既定の表示方法を入れるときに書き直す。
-    let background_item_fit = b.combo(
+    let background_item_fit = ChoiceBox::create(
+        &mut b,
         ID_BACKGROUND_ITEM_FIT,
         [
             background_control_left,
@@ -1662,9 +1735,10 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
             background_control_width,
             ROW_HEIGHT,
         ],
+        &ITEM_FIT_CHOICES,
         std::iter::once("").chain(BACKGROUND_FIT_LABELS),
     )?;
-    background_page.push(background_item_fit);
+    background_page.push(background_item_fit.hwnd());
     background_page.push(b.label(
         "選択した項目の不透明度(&H):",
         background_label_rect(item_opacity_row),
@@ -1832,12 +1906,14 @@ fn create(owner: HWND) -> windows::core::Result<(HWND, Controls)> {
     profiles_page.push(profile_name);
     let profile_backend_row = profile_name_row + ROW_HEIGHT + MARGIN;
     profiles_page.push(b.label("接続方式(&B):", label_rect(profile_backend_row))?);
-    let profile_backend = b.combo(
+    let profile_backend = ChoiceBox::create(
+        &mut b,
         ID_PROFILE_BACKEND,
         [control_left, profile_backend_row, control_width, ROW_HEIGHT],
+        &BackendKind::ALL,
         PROFILE_BACKEND_LABELS,
     )?;
-    profiles_page.push(profile_backend);
+    profiles_page.push(profile_backend.hwnd());
     let profile_location_row = profile_backend_row + ROW_HEIGHT + MARGIN;
     let profile_location_label = b.label(
         profile_location_texts(BackendKind::Conpty).0,
@@ -2216,13 +2292,7 @@ impl State<'_> {
         self.default_profile.set(config.default_profile_index());
         self.refresh_profiles(config.default_profile_index());
         c.background_opacity.fill(config.background.image_opacity);
-        let fit = BackgroundFit::ALL
-            .iter()
-            .position(|&value| value == config.background.fit);
-        if let Some(fit) = fit {
-            // SAFETY: コンボボックスは有効なウィンドウ。
-            unsafe { SendMessageW(c.background_fit, CB_SETCURSEL, Some(WPARAM(fit)), None) };
-        }
+        c.background_fit.fill(config.background.fit);
         self.refresh_background_defaults();
         *self.background_images.borrow_mut() = config.background.images.clone();
         self.refresh_background_images(None);
@@ -2374,19 +2444,7 @@ impl State<'_> {
         let backend = profile
             .as_ref()
             .map_or_else(BackendKind::default, |p| p.backend);
-        let backend_index = BackendKind::ALL
-            .iter()
-            .position(|&kind| kind == backend)
-            .unwrap_or(0);
-        // SAFETY: コンボボックスは有効なウィンドウ。
-        unsafe {
-            SendMessageW(
-                c.profile_backend,
-                CB_SETCURSEL,
-                Some(WPARAM(backend_index)),
-                None,
-            )
-        };
+        c.profile_backend.fill(backend);
         let location = profile.as_ref().and_then(|profile| {
             profile
                 .cygwin_root
@@ -2413,7 +2471,7 @@ impl State<'_> {
             ),
             (c.profile_name, selected.is_some()),
             (c.profile_command, selected.is_some()),
-            (c.profile_backend, selected.is_some()),
+            (c.profile_backend.hwnd(), selected.is_some()),
             (
                 c.profile_location,
                 selected.is_some() && backend.is_bridge(),
@@ -2516,12 +2574,7 @@ impl State<'_> {
         let Some(index) = self.selected_profile() else {
             return;
         };
-        // SAFETY: コンボボックスは有効なウィンドウ。
-        let selected = unsafe { SendMessageW(c.profile_backend, CB_GETCURSEL, None, None) }.0;
-        let Some(&backend) = usize::try_from(selected)
-            .ok()
-            .and_then(|selected| BackendKind::ALL.get(selected))
-        else {
+        let Some(backend) = c.profile_backend.read() else {
             return;
         };
         self.profiles.borrow_mut()[index].backend = backend;
@@ -2669,20 +2722,18 @@ impl State<'_> {
             .selected_background_image()
             .and_then(|index| self.background_images.borrow().get(index).cloned());
         let buttons = c.background_item_opacity_choice.buttons();
-        for &control in [c.background_remove, c.background_item_fit]
+        for &control in [c.background_remove, c.background_item_fit.hwnd()]
             .iter()
             .chain(buttons)
         {
             // SAFETY: control はダイアログの子の有効なウィンドウ。
             unsafe { _ = EnableWindow(control, selected.is_some()) };
         }
-        let (fit, opacity) = match &selected {
-            Some(image) => (item_fit_choice(image.fit), Some(image.image_opacity)),
-            // 何も選ばない。
-            None => (usize::MAX, None),
-        };
-        // SAFETY: コンボボックスは有効なウィンドウ。
-        unsafe { SendMessageW(c.background_item_fit, CB_SETCURSEL, Some(WPARAM(fit)), None) };
+        match &selected {
+            Some(image) => c.background_item_fit.fill(image.fit),
+            None => c.background_item_fit.clear(),
+        }
+        let opacity = selected.as_ref().map(|image| image.image_opacity);
         let custom = opacity.flatten();
         match opacity {
             Some(opacity) => c.background_item_opacity_choice.fill(opacity.is_some()),
@@ -2712,12 +2763,9 @@ impl State<'_> {
 
     /// 編集中の既定の表示方法。
     fn default_fit(&self) -> BackgroundFit {
-        // SAFETY: コンボボックスは有効なウィンドウ。
-        let choice =
-            unsafe { SendMessageW(self.controls.background_fit, CB_GETCURSEL, None, None) }.0;
-        usize::try_from(choice)
-            .ok()
-            .and_then(|choice| BackgroundFit::ALL.get(choice).copied())
+        self.controls
+            .background_fit
+            .read()
             .unwrap_or(self.base.borrow().background.fit)
     }
 
@@ -2731,28 +2779,7 @@ impl State<'_> {
     fn refresh_background_defaults(&self) {
         let c = &self.controls;
         let fit = default_choice_label(fit_label(self.default_fit()));
-        // SAFETY: コンボボックスは有効なウィンドウで、文字列はこの呼び出しの間は生きている。
-        unsafe {
-            let selected = SendMessageW(c.background_item_fit, CB_GETCURSEL, None, None).0;
-            SendMessageW(
-                c.background_item_fit,
-                CB_DELETESTRING,
-                Some(WPARAM(0)),
-                None,
-            );
-            SendMessageW(
-                c.background_item_fit,
-                CB_INSERTSTRING,
-                Some(WPARAM(0)),
-                Some(LPARAM(HSTRING::from(fit).as_ptr() as isize)),
-            );
-            SendMessageW(
-                c.background_item_fit,
-                CB_SETCURSEL,
-                Some(WPARAM(selected as usize)),
-                None,
-            );
-        }
+        c.background_item_fit.relabel(None, &fit);
         if let Some(opacity) = self.default_opacity()
             && let Some(button) = c.background_item_opacity_choice.button(false)
         {
@@ -2778,10 +2805,7 @@ impl State<'_> {
         let Some(index) = self.selected_background_image() else {
             return;
         };
-        // SAFETY: コンボボックスは有効なウィンドウ。
-        let choice =
-            unsafe { SendMessageW(self.controls.background_item_fit, CB_GETCURSEL, None, None) }.0;
-        let Some(fit) = usize::try_from(choice).ok().and_then(item_fit_from_choice) else {
+        let Some(fit) = self.controls.background_item_fit.read() else {
             return;
         };
         self.background_images.borrow_mut()[index].fit = fit;
@@ -3167,12 +3191,7 @@ impl State<'_> {
         }
         config.background.images = self.background_images.borrow().clone();
         config.background.image_opacity = c.background_opacity.read()?;
-        // SAFETY: コンボボックスは有効なウィンドウ。
-        let fit = unsafe { SendMessageW(c.background_fit, CB_GETCURSEL, None, None) }.0;
-        if let Some(&fit) = usize::try_from(fit)
-            .ok()
-            .and_then(|fit| BackgroundFit::ALL.get(fit))
-        {
+        if let Some(fit) = c.background_fit.read() {
             config.background.fit = fit;
         }
         config.keys = self.keys.borrow().clone();
@@ -3814,13 +3833,11 @@ mod tests {
 
     #[test]
     fn item_fits_follow_the_background_first() {
-        assert_eq!(item_fit_choice(None), 0);
-        assert_eq!(item_fit_from_choice(0), Some(None));
+        assert_eq!(ITEM_FIT_CHOICES[0], None);
         for (index, fit) in BackgroundFit::ALL.into_iter().enumerate() {
-            assert_eq!(item_fit_choice(Some(fit)), index + 1);
-            assert_eq!(item_fit_from_choice(index + 1), Some(Some(fit)));
+            assert_eq!(ITEM_FIT_CHOICES[index + 1], Some(fit));
         }
-        assert_eq!(item_fit_from_choice(BackgroundFit::ALL.len() + 1), None);
+        assert_eq!(ITEM_FIT_CHOICES.len(), BackgroundFit::ALL.len() + 1);
         assert_eq!(
             default_choice_label(fit_label(BackgroundFit::Tile)),
             "既定（並べて表示）"
