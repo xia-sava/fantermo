@@ -283,8 +283,8 @@ fn percent_encode_non_ascii(text: &str) -> String {
 }
 
 /// `file:` の scheme のあと（`//接続先/パス` か `/パス`）を、Windows のパスにする。
-/// 接続先が空か `localhost` ならドライブ名で始まるパスだけを通す。ほかの接続先は、開くと相手の
-/// ホストへ接続と認証が起きる（`\\.\` や `\\?\` になる形も含む）ので断る。
+/// 接続先が空か `localhost` ならドライブ名で始まるパスだけを通す。ほかの接続先（`\\.\` や `\\?\`
+/// になる形も含む）は、開くと相手のホストへ接続と認証が起きるので断る。
 fn file_path(rest: &str) -> Result<String, RefusedLink> {
     let (host, path) = match rest.strip_prefix("//") {
         Some(authority_and_path) => match authority_and_path.find('/') {
@@ -298,6 +298,9 @@ fn file_path(rest: &str) -> Result<String, RefusedLink> {
         return Err(RefusedLink::InvalidCharacter);
     }
     let host = percent_decode(host).ok_or(RefusedLink::InvalidCharacter)?;
+    if host.chars().any(|c| c.is_control() || c == '"') {
+        return Err(RefusedLink::InvalidCharacter);
+    }
     // `file://C:/x` のように、ドライブ名を接続先の位置に書くものもある。
     if starts_with_drive(&host) {
         return Ok(format!("{host}{path}").replace('/', "\\"));
@@ -645,6 +648,7 @@ mod tests {
             ("file://C:/a", r"C:\a"),
             ("file:///C:", "C:"),
             ("file://LOCALHOST/C:/a", r"C:\a"),
+            ("file://C:%5C%5Cserver/x", r"C:\\server\x"),
         ] {
             assert_eq!(open_target(uri), Ok(OpenTarget::Path(path.into())), "{uri}");
         }
@@ -660,6 +664,11 @@ mod tests {
             "file://?/C:/a",
             "file://127.0.0.1/C:/a",
             "file://%2E/pipe/a",
+            "file://localhost:445/C:/a",
+            "file://user@localhost/C:/a",
+            "file://[::1]/C:/a",
+            "file://localhost./C:/a",
+            "file://localhost%2F../C:/a",
         ] {
             assert_eq!(open_target(uri), Err(RefusedLink::RemoteHost), "{uri}");
         }
@@ -670,6 +679,18 @@ mod tests {
         assert_eq!(
             open_target("file:///home/xia/a.txt"),
             Err(RefusedLink::NotWindowsPath)
+        );
+        for uri in [
+            "file:////server/share",
+            "file://///server/share",
+            "file:///%5C%5Cserver/share",
+            "file://localhost//server/share",
+        ] {
+            assert_eq!(open_target(uri), Err(RefusedLink::NotWindowsPath), "{uri}");
+        }
+        assert_eq!(
+            open_target("file://C:%5C%22x/y"),
+            Err(RefusedLink::InvalidCharacter)
         );
         assert_eq!(
             open_target("file:///C:/a%22b"),
