@@ -10,7 +10,7 @@
 
 use fantermo_core::{config::SCROLL_BAR_COLOR_KEYS, frame::Rgb, vt::ScrollPosition};
 
-use crate::paint::{Area, Icon, Paint, collect_colors, mix, override_colors, scale};
+use crate::paint::{Area, Icon, Paint, collect_colors, override_colors, scale};
 
 /// トラックの上下の端とつまみの間の空き（96 DPI でのピクセル）。
 const TRACK_MARGIN: u32 = 2;
@@ -200,7 +200,7 @@ impl Palette {
     /// 文字の色を混ぜた色、つまみは背景色と文字の色の間の色で、マウスを載せる・ドラッグするほど文字の
     /// 色に寄せる。
     pub fn from_terminal(background: Rgb, foreground: Rgb) -> Self {
-        let toward_text = |ratio| mix(background, foreground, ratio);
+        let toward_text = |ratio| background.mix(foreground, ratio);
         Self {
             track: toward_text(TRACK_TINT),
             thumb: toward_text(THUMB_TINT),

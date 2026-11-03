@@ -12,6 +12,20 @@ pub struct Rgb {
     pub b: u8,
 }
 
+impl Rgb {
+    /// この色を `to` へ `ratio`（0.0〜1.0）だけ寄せた色。
+    pub fn mix(self, to: Rgb, ratio: f32) -> Rgb {
+        let channel = |a: u8, b: u8| -> u8 {
+            (f32::from(a) + (f32::from(b) - f32::from(a)) * ratio).round() as u8
+        };
+        Rgb {
+            r: channel(self.r, to.r),
+            g: channel(self.g, to.g),
+            b: channel(self.b, to.b),
+        }
+    }
+}
+
 /// 下線の種類（SGR 4 と 4:0〜4:5）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Underline {

@@ -825,7 +825,9 @@ impl Vt {
                     bg = Some(swapped_bg);
                 }
                 if style.faint {
-                    fg = blend(fg, bg.unwrap_or(colors.background), FAINT_OPACITY);
+                    // 前景色を FAINT_OPACITY の割合で背景色に重ねる。
+                    let background = rgb(bg.unwrap_or(colors.background));
+                    fg = rgb_color(background.mix(rgb(fg), FAINT_OPACITY));
                 }
                 let mut view = CellView {
                     col,
@@ -1115,18 +1117,6 @@ fn rgb_color(color: Rgb) -> RgbColor {
         r: color.r,
         g: color.g,
         b: color.b,
-    }
-}
-
-/// `color` を `opacity` の割合で `background` に重ねた色。
-fn blend(color: RgbColor, background: RgbColor, opacity: f32) -> RgbColor {
-    let mix = |front: u8, back: u8| {
-        (f32::from(front) * opacity + f32::from(back) * (1.0 - opacity)).round() as u8
-    };
-    RgbColor {
-        r: mix(color.r, background.r),
-        g: mix(color.g, background.g),
-        b: mix(color.b, background.b),
     }
 }
 

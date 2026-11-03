@@ -9,7 +9,7 @@
 use fantermo_core::{config::TAB_BAR_COLOR_KEYS, frame::Rgb, vt};
 
 use crate::{
-    paint::{Area, Corner, Icon, Paint, collect_colors, mix, override_colors, scale},
+    paint::{Area, Corner, Icon, Paint, collect_colors, override_colors, scale},
     tab_icon::TabIcon,
 };
 
@@ -556,7 +556,7 @@ impl Palette {
     /// 色へ少し寄せた色、表示しているタブはウィンドウの背景と文字の色で、縁の線はコントロールの暗い縁の色。
     /// マウスを載せているタブは、背景とウィンドウの背景の間の色。
     pub fn from_system(system: SystemColors) -> Self {
-        let bar = mix(system.face, system.text, BAR_TINT);
+        let bar = system.face.mix(system.text, BAR_TINT);
         Self {
             bar,
             active_tab: system.window,
@@ -564,7 +564,7 @@ impl Palette {
             active_title: system.window_text,
             inactive_title: system.text,
             separator: system.shadow,
-            hovered_tab: mix(bar, system.window, HOVERED_TAB_TINT),
+            hovered_tab: bar.mix(system.window, HOVERED_TAB_TINT),
             idle_mark: system.gray_text,
             bell: BELL_COLOR,
         }
@@ -605,7 +605,7 @@ impl Palette {
         } else {
             HOVERED_BUTTON_TINT
         };
-        mix(base, ink, tint)
+        base.mix(ink, tint)
     }
 }
 
@@ -1357,7 +1357,7 @@ mod tests {
     fn default_colours_come_from_the_system() {
         let colors = palette();
         // 背景はコントロールの背景の色を、文字の色へ 15% 寄せる。
-        assert_eq!(colors.bar, mix(SYSTEM.face, SYSTEM.text, BAR_TINT));
+        assert_eq!(colors.bar, SYSTEM.face.mix(SYSTEM.text, BAR_TINT));
         assert!(colors.bar.r < SYSTEM.face.r && colors.bar.r > SYSTEM.text.r);
         assert_eq!(
             (colors.active_tab, colors.active_title),

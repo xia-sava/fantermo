@@ -19,18 +19,6 @@ pub fn scale(px: u32, dpi: u32) -> u32 {
     ((px * dpi + BASE_DPI / 2) / BASE_DPI).max(1)
 }
 
-/// `from` を `to` へ `ratio`（0.0〜1.0）だけ寄せた色。
-pub fn mix(from: Rgb, to: Rgb, ratio: f32) -> Rgb {
-    let channel = |a: u8, b: u8| -> u8 {
-        (f32::from(a) + (f32::from(b) - f32::from(a)) * ratio).round() as u8
-    };
-    Rgb {
-        r: channel(from.r, to.r),
-        g: channel(from.g, to.g),
-        b: channel(from.b, to.b),
-    }
-}
-
 /// 色の欄 `fields` のうち、`colors` の同じ位置に色を書いてあるものだけをその色にする。
 pub fn override_colors<const N: usize>(fields: [&mut Rgb; N], colors: &[Option<Rgb>]) {
     for (field, color) in fields.into_iter().zip(colors) {
