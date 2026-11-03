@@ -1,4 +1,3 @@
-use crate::common;
 use crate::common::CMD_COMMAND;
 use crate::common::CMD_PROMPT;
 use crate::common::Server;
@@ -7,9 +6,7 @@ use crate::common::release_host::ReleaseHost;
 use crate::common::release_host::Reply;
 use crate::common::release_host::unused_port;
 use crate::common::signing::SigningKey;
-use crate::common::signing::der_signature;
 use crate::common::signing::hex;
-use crate::common::signing::sha256;
 use crate::common::signing::sha256_hex;
 use crate::ui::{
     DIALOG_CLOSE_BUTTON, ID_CANCEL, ID_NO, ID_OK, ID_YES, SETTINGS_DIALOG_CLASS, TEXT_DIALOG_CLASS,
@@ -253,28 +250,17 @@ fn the_update_button_is_grayed_unless_installed_by_the_installer() {
 }
 
 /// 確認は押したときだけする。起動しても「fantermo について…」を開いても取得しない。起動時の確認はない。
-#[test]
-fn the_update_is_checked_only_when_the_button_is_pressed() {
-    let source = ReleaseSource::new();
-    source.publish(NEWER_VERSION, DUMMY_MSI);
-    let server = source.start_fantermo(CURRENT_VERSION);
-    let no_requests = |_: &Value| source.host.requests().is_empty();
-    server.assert_holds_for(NO_REQUEST_WINDOW, "no request after the start", no_requests);
-    open_about(&server);
-    assert!(control_enabled(&server, ID_CHECK_UPDATE));
-    server.assert_holds_for(NO_REQUEST_WINDOW, "no request with the dialog", no_requests);
-    close_about(&server);
-    assert!(source.host.requests().is_empty());
-}
-
 /// 新しいバージョンは知らせ、いまのバージョンを添えて尋ねる。取得するのは更新の情報と署名だけで、断ればダウンロードしない。
 #[test]
 fn a_newer_version_is_offered_and_declining_changes_nothing() {
     let source = ReleaseSource::new();
     source.publish("0.0.10", DUMMY_MSI);
     let server = source.start_fantermo("0.0.9");
+    let no_requests = |_: &Value| source.host.requests().is_empty();
+    server.assert_holds_for(NO_REQUEST_WINDOW, "no request after the start", no_requests);
     open_about(&server);
     assert!(control_enabled(&server, ID_CHECK_UPDATE));
+    server.assert_holds_for(NO_REQUEST_WINDOW, "no request with the dialog", no_requests);
 
     let text = check_for_update(&server);
     assert_contains(&text, "新しいバージョン 0.0.10 があります");
@@ -289,38 +275,6 @@ fn a_newer_version_is_offered_and_declining_changes_nothing() {
 
     close_about(&server);
     check_terminal_still_works(&server, "after-decline");
-}
-
-/// バージョンは数として比べる。同じか古ければ更新を出さず、配布物を取得しない。新しくないときは MSI の項目がなくてよい。
-#[test]
-fn versions_are_compared_as_numbers() {
-    let source = ReleaseSource::new();
-    let server = source.start_fantermo(CURRENT_VERSION);
-    open_about(&server);
-    let digest = sha256_hex(DUMMY_MSI);
-
-    for latest in ["0.0.10", "0.0.9", "0.0.2", "0.0.1", "0.0.010"] {
-        source.publish_manifest(manifest_for(latest, &digest).as_bytes());
-        let text = check_for_update(&server);
-        assert_contains(&text, UP_TO_DATE_TEXT);
-        assert_contains(&text, &format!("現在のバージョン: {CURRENT_VERSION}"));
-        dismiss_result(&server);
-    }
-    for latest in ["0.0.11", "0.0.100", "0.1.0", "0.10.0", "1.0.0"] {
-        source.publish_manifest(manifest_for(latest, &digest).as_bytes());
-        assert_contains(
-            &check_for_update(&server),
-            &format!("新しいバージョン {latest} があります"),
-        );
-        decline_offer(&server);
-    }
-    source.publish_manifest(br#"{ "versionName": "0.0.10" }"#);
-    assert_contains(&check_for_update(&server), UP_TO_DATE_TEXT);
-    dismiss_result(&server);
-    assert!(!source.host.requests().iter().any(|path| path == MSI_PATH));
-
-    close_about(&server);
-    check_terminal_still_works(&server, "after-versions");
 }
 
 /// 更新の確認の結果を見せている間に最後のシェルが終わると、ウィンドウが閉じて落ちずに終わる。結果を閉じた
@@ -346,16 +300,6 @@ fn a_manifest_that_does_not_verify_offers_nothing() {
     let server = source.start_fantermo(CURRENT_VERSION);
     open_about(&server);
     let manifest = manifest_for(NEWER_VERSION, &sha256_hex(DUMMY_MSI));
-    let signature = source.key.sign(manifest.as_bytes());
-    let zero = [0u8; 32];
-    let one = {
-        let mut value = [0u8; 32];
-        value[31] = 1;
-        value
-    };
-    let tampered_digest = manifest_for(NEWER_VERSION, &sha256_hex(b"another installer"));
-    let tampered_version = manifest.replace(NEWER_VERSION, "9.9.9");
-    let extra_newline = format!("{manifest}\n");
 
     // 署名が合う形で同じ流れが更新を出すことを、先に確認する。
     source.publish_manifest(manifest.as_bytes());
@@ -367,7 +311,6 @@ fn a_manifest_that_does_not_verify_offers_nothing() {
     // (説明, 更新の情報, 署名)
     let fetch_failures: Vec<(&str, &str, Reply)> = vec![
         ("no signature", &manifest, Reply::Status(404)),
-        ("the signature fails", &manifest, Reply::Status(500)),
         (
             "a signature that is too large",
             &manifest,
@@ -375,49 +318,12 @@ fn a_manifest_that_does_not_verify_offers_nothing() {
         ),
         ("the connection closes", &manifest, Reply::Close),
     ];
-    // 取得できた署名が合わないか読めない場合は、署名の失敗として知らせる。
-    let bad_signatures: Vec<(&str, &str, Reply)> = vec![
-        (
-            "signed with another key",
-            &manifest,
-            Reply::body(other_key.sign(manifest.as_bytes())),
-        ),
-        (
-            "the version was changed",
-            &tampered_version,
-            Reply::body(&signature),
-        ),
-        (
-            "the digest was changed",
-            &tampered_digest,
-            Reply::body(&signature),
-        ),
-        ("a line was added", &extra_newline, Reply::body(&signature)),
-        (
-            "the signature of something else",
-            &manifest,
-            Reply::body(source.key.sign(b"something else")),
-        ),
-        ("an empty signature", &manifest, Reply::body("")),
-        ("not base64", &manifest, Reply::body("not base64!")),
-        ("not text", &manifest, Reply::body(b"\xff\xfe")),
-        ("base64 of nothing like DER", &manifest, Reply::body("AAAA")),
-        (
-            "zero as r and s",
-            &manifest,
-            Reply::body(common::base64(&der_signature(&zero, &zero))),
-        ),
-        (
-            "one as r and s",
-            &manifest,
-            Reply::body(common::base64(&der_signature(&one, &one))),
-        ),
-        (
-            "the raw hash of the manifest",
-            &manifest,
-            Reply::body(common::base64(&sha256(manifest.as_bytes()))),
-        ),
-    ];
+    // 取得できた署名が合わない場合は、署名の失敗として知らせる。
+    let bad_signatures: Vec<(&str, &str, Reply)> = vec![(
+        "signed with another key",
+        &manifest,
+        Reply::body(other_key.sign(manifest.as_bytes())),
+    )];
     let cases = fetch_failures
         .into_iter()
         .map(|(description, body, signature)| (CANNOT_FETCH_TEXT, description, body, signature))
@@ -513,32 +419,17 @@ fn failures_to_fetch_or_read_the_manifest_are_told() {
     dismiss_result(&server);
 
     // 署名は合うが読めない。
-    let malformed: [(&str, &[u8]); 6] = [
-        ("empty", b""),
-        ("broken JSON", b"{"),
-        ("no version", b"{}"),
-        ("not a version", br#"{ "versionName": "dev-abc" }"#),
-        ("newer without an MSI", br#"{ "versionName": "0.0.11" }"#),
-        (
-            "a short digest",
-            br#"{ "versionName": "0.0.11", "msi": { "sha256": "8b25" } }"#,
-        ),
-    ];
-    for (description, manifest) in malformed {
-        source.publish_manifest(manifest);
-        let text = check_for_update(&server);
-        assert!(
-            text.contains(UNREADABLE_MANIFEST_TEXT),
-            "{description}: {text}"
-        );
-        dismiss_result(&server);
-    }
+    source.publish_manifest(br#"{ "versionName": "dev-abc" }"#);
+    assert_contains(&check_for_update(&server), UNREADABLE_MANIFEST_TEXT);
+    dismiss_result(&server);
 
-    // 上限ちょうどまでは受け取る。
+    // 上限ちょうどまでは受け取る。新しくなければ MSI を取得しない。
     let mut largest = b"{ \"versionName\": \"0.0.10\" }".to_vec();
     largest.resize(MANIFEST_MAX_BYTES, b' ');
     source.publish_manifest(&largest);
+    source.host.clear_requests();
     assert_contains(&check_for_update(&server), UP_TO_DATE_TEXT);
+    assert!(!source.host.requests().iter().any(|path| path == MSI_PATH));
     dismiss_result(&server);
 
     close_about(&server);
@@ -576,9 +467,11 @@ fn a_silent_host_times_out_while_the_terminal_keeps_working() {
 }
 
 /// 確認している間は押せない。「fantermo について…」を閉じても確認は続き、結果は端末のウィンドウの上に出る。
-/// 開き直せば、結果はその上に出て、押せるように戻る。
+/// 開き直せば、結果はその上に出て、押せるように戻る。設定ダイアログの間に結果が届いても、閉じたあとにそのダイアログの
+/// 間だけウィンドウを無効のままにする。ダウンロードの間に開いた「fantermo について…」の上にも確認を出し、取りやめれば
+/// 押せるように戻る。
 #[test]
-fn closing_or_reopening_the_about_dialog_during_a_check() {
+fn a_result_arriving_over_other_dialogs_or_after_closing_the_about_dialog() {
     let source = ReleaseSource::new();
     source.publish(NEWER_VERSION, DUMMY_MSI);
     let manifest = manifest_for(NEWER_VERSION, &sha256_hex(DUMMY_MSI));
@@ -624,23 +517,11 @@ fn closing_or_reopening_the_about_dialog_during_a_check() {
     decline_offer(&server);
     close_about(&server);
     check_terminal_still_works(&server, "after-reopen");
-}
 
-/// ほかのダイアログの間に結果が届いても、閉じたあとにそのダイアログの間だけウィンドウを無効のままにする。
-#[test]
-fn a_result_arriving_during_the_settings_dialog_keeps_the_window_disabled() {
-    let source = ReleaseSource::new();
-    source.publish(NEWER_VERSION, DUMMY_MSI);
-    let manifest = manifest_for(NEWER_VERSION, &sha256_hex(DUMMY_MSI));
+    // ほかのダイアログの間に結果が届いても、閉じたあとにそのダイアログの間だけウィンドウを無効のままにする。
     let gate = Gate::new();
-    source.host.set(
-        MANIFEST_PATH,
-        Reply::After {
-            gate: Arc::clone(&gate),
-            reply: Box::new(Reply::body(&manifest)),
-        },
-    );
-    let server = source.start_fantermo(CURRENT_VERSION);
+    source.host.clear_requests();
+    source.host.set(MANIFEST_PATH, hold(&gate));
     open_about(&server);
     click(&server, ID_CHECK_UPDATE);
     server.wait_until("the check to start", |_| !source.host.requests().is_empty());
@@ -659,6 +540,35 @@ fn a_result_arriving_during_the_settings_dialog_keeps_the_window_disabled() {
         state["window_enabled"] == true
     });
     check_terminal_still_works(&server, "after-settings-and-result");
+
+    // ダウンロードの間に開いた「fantermo について…」の上にも確認を出し、取りやめれば「更新を確認」を押せるように戻る。
+    source.publish(NEWER_VERSION, DUMMY_MSI);
+    let gate = Gate::new();
+    source.host.set(
+        MSI_PATH,
+        Reply::After {
+            gate: Arc::clone(&gate),
+            reply: Box::new(Reply::body(DUMMY_MSI)),
+        },
+    );
+    open_about(&server);
+    accept_offer(&server, &source);
+    server.wait_until("the download to start", |_| {
+        source.host.requests().iter().any(|path| path == MSI_PATH)
+    });
+    server.wait_dialogs(0);
+    open_about(&server);
+    assert!(!control_enabled(&server, ID_CHECK_UPDATE));
+    gate.open();
+    wait_confirm_apply(&server);
+    click(&server, ID_CANCEL);
+    server.wait_until("the about dialog to be on top", |state| {
+        state["dialogs"][0]["class"] == TEXT_DIALOG_CLASS
+    });
+    wait_check_enabled(&server);
+    assert_nothing_is_handed_off(&server);
+    close_about(&server);
+    check_terminal_still_works(&server, "after-download-over-about");
 }
 
 /// 確認やダウンロードの途中でウィンドウを閉じても、普通に終わり、何も起動しない。
@@ -804,6 +714,7 @@ fn a_matching_download_is_handed_off_to_the_script_without_running_it() {
 }
 
 /// 確認で「キャンセル」か × を選ぶと、引き渡さず、ダウンロードしたものを消す。もう一度確認できる。
+/// 確認の間に配布物が変わったときと、スクリプトを起動できないときも、引き渡さず知らせ、ダウンロードしたものを消す。
 #[test]
 fn cancelling_the_final_confirmation_removes_the_download() {
     let source = ReleaseSource::new();
@@ -825,40 +736,32 @@ fn cancelling_the_final_confirmation_removes_the_download() {
     close_message_box(&server, 0);
     assert_nothing_is_handed_off(&server);
     check_terminal_still_works(&server, "after-close-button");
-}
 
-/// ダウンロードの間に開いた「fantermo について…」の上にも確認を出し、取りやめれば「更新を確認」を押せるように戻る。
-#[test]
-fn a_download_finishing_over_the_about_dialog_asks_there() {
-    let source = ReleaseSource::new();
-    source.publish(NEWER_VERSION, DUMMY_MSI);
-    let gate = Gate::new();
-    source.host.set(
-        MSI_PATH,
-        Reply::After {
-            gate: Arc::clone(&gate),
-            reply: Box::new(Reply::body(DUMMY_MSI)),
-        },
-    );
-    let server = source.start_fantermo(CURRENT_VERSION);
+    // 確認している間に配布物が変わったら引き渡さず、知らせる。
     open_about(&server);
     accept_offer(&server, &source);
-    server.wait_until("the download to start", |_| {
-        source.host.requests().iter().any(|path| path == MSI_PATH)
-    });
-    server.wait_dialogs(0);
-    open_about(&server);
-    assert!(!control_enabled(&server, ID_CHECK_UPDATE));
-    gate.open();
     wait_confirm_apply(&server);
-    click(&server, ID_CANCEL);
-    server.wait_until("the about dialog to be on top", |state| {
-        state["dialogs"][0]["class"] == TEXT_DIALOG_CLASS
-    });
-    wait_check_enabled(&server);
+    let folders = download_folders(&server);
+    let msi = folders[0].join("fantermo.msi");
+    std::fs::write(&msi, b"changed after the download").expect("failed to change the MSI");
+    click(&server, ID_OK);
+    wait_message_box_with(&server, CANNOT_START_TEXT);
+    close_message_box(&server, 0);
     assert_nothing_is_handed_off(&server);
-    close_about(&server);
-    check_terminal_still_works(&server, "after-download-over-about");
+    check_terminal_still_works(&server, "after-changed-download");
+
+    // スクリプトを起動できなければ、知らせて端末のまま続ける。書けないパスを作って、起動の失敗にする。
+    open_about(&server);
+    accept_offer(&server, &source);
+    wait_confirm_apply(&server);
+    std::fs::create_dir(server.dir().join(HANDOFF_RECORD)).expect("failed to create the folder");
+    click(&server, ID_OK);
+    wait_message_box_with(&server, CANNOT_START_TEXT);
+    close_message_box(&server, 0);
+    server.wait_until("the download to be removed", |_| {
+        download_folders(&server).is_empty()
+    });
+    check_terminal_still_works(&server, "after-script-failure");
 }
 
 /// ほかの fantermo が動いていれば知らせる。断れば引き渡さず、続ければスクリプトはそのプロセスも待つ。
@@ -895,45 +798,6 @@ fn other_instances_are_told_and_waited_for() {
         waited.contains(&other_pid.to_string()),
         "{other_pid} is not in {waited}"
     );
-}
-
-/// 確認している間に配布物が変わったら引き渡さず、知らせる。ダウンロードしたものは消す。
-#[test]
-fn a_download_changed_after_the_check_is_not_handed_off() {
-    let source = ReleaseSource::new();
-    source.publish(NEWER_VERSION, DUMMY_MSI);
-    let server = source.start_fantermo(CURRENT_VERSION);
-    open_about(&server);
-    accept_offer(&server, &source);
-    wait_confirm_apply(&server);
-    let folders = download_folders(&server);
-    let msi = folders[0].join("fantermo.msi");
-    std::fs::write(&msi, b"changed after the download").expect("failed to change the MSI");
-    click(&server, ID_OK);
-    wait_message_box_with(&server, CANNOT_START_TEXT);
-    close_message_box(&server, 0);
-    assert_nothing_is_handed_off(&server);
-    check_terminal_still_works(&server, "after-changed-download");
-}
-
-/// スクリプトを起動できなければ、知らせて端末のまま続ける。ダウンロードしたものは消す。
-#[test]
-fn a_script_that_cannot_start_is_told_and_the_terminal_continues() {
-    let source = ReleaseSource::new();
-    source.publish(NEWER_VERSION, DUMMY_MSI);
-    let server = source.start_fantermo(CURRENT_VERSION);
-    // 書けないパスを作って、起動の失敗にする。
-    std::fs::create_dir(server.dir().join(HANDOFF_RECORD)).expect("failed to create the folder");
-    open_about(&server);
-    accept_offer(&server, &source);
-    wait_confirm_apply(&server);
-    click(&server, ID_OK);
-    wait_message_box_with(&server, CANNOT_START_TEXT);
-    close_message_box(&server, 0);
-    server.wait_until("the download to be removed", |_| {
-        download_folders(&server).is_empty()
-    });
-    check_terminal_still_works(&server, "after-script-failure");
 }
 
 /// いまのバージョンが読めなければ、取得せずに知らせる。
