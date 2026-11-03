@@ -32,7 +32,7 @@ libghostty-vt は [libghostty-rs](https://github.com/uzaaft/libghostty-rs) の�
 
 設定ファイルとウィンドウの状態は `%APPDATA%\fantermo\` に，ログは `%LOCALAPPDATA%\fantermo\logs\` に置きます．どちらもアンインストールしても消さないので，要らなければ手で消してください．
 
-タブバーのメニューのボタン（≡）の「fantermo について…」で，バージョンとビルドしたコミットを見られます．インストーラでインストールした fantermo は，ここの「更新を確認」で新しいバージョンを確認して更新できます（zip から展開したものでは，このボタンは押せません）．
+タブバーのメニューのボタン（≡）の「fantermo について…」で，バージョンとビルドしたコミットを見られます．インストーラでインストールした fantermo は，ここの「更新を確認」で新しいバージョンを確認して更新できます（インストーラがインストールする場所 `%LOCALAPPDATA%\Programs\fantermo\` のほかに置いた fantermo では，このボタンは押せません）．
 
 ## コマンドライン
 
