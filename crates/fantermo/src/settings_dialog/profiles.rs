@@ -31,6 +31,10 @@ use super::{
 };
 use crate::file_dialog;
 
+/// このページのコントロールの ID の範囲。範囲がページの間で重ならないことと、このページの ID が範囲に
+/// 入ることを単体のテストで見る。
+#[cfg(test)]
+pub(super) const ID_RANGE: std::ops::RangeInclusive<i32> = 400..=449;
 const ID_PROFILES: i32 = 400;
 const ID_PROFILE_ADD: i32 = 401;
 const ID_PROFILE_REMOVE: i32 = 402;
@@ -834,6 +838,25 @@ mod tests {
         assert_eq!(warning(BackendKind::Conpty, "wsl.exe"), None);
         assert_eq!(warning(BackendKind::Cygwin, "zsh.exe -l"), None);
         assert_eq!(warning(BackendKind::Wsl, ""), None);
+    }
+
+    #[test]
+    fn the_ids_are_within_the_range_of_the_page() {
+        for id in [
+            ID_PROFILES,
+            ID_PROFILE_ADD,
+            ID_PROFILE_REMOVE,
+            ID_PROFILE_DEFAULT,
+            ID_PROFILE_NAME,
+            ID_PROFILE_COMMAND,
+            ID_PROFILE_BACKEND,
+            ID_PROFILE_LOCATION,
+            ID_PROFILE_COMMAND_WARNING,
+            ID_PROFILE_ICON,
+            ID_PROFILE_ICON_CHOOSE,
+        ] {
+            assert!(ID_RANGE.contains(&id), "{id}");
+        }
     }
 
     #[test]

@@ -25,6 +25,10 @@ use super::{
     },
 };
 
+/// このページのコントロールの ID の範囲。範囲がページの間で重ならないことと、このページの ID が範囲に
+/// 入ることを単体のテストで見る。
+#[cfg(test)]
+pub(super) const ID_RANGE: std::ops::RangeInclusive<i32> = 200..=239;
 const ID_FONT: i32 = 200;
 const ID_SIZE: i32 = 201;
 const ID_SIZE_SPIN: i32 = 202;
@@ -389,6 +393,24 @@ mod tests {
         assert_eq!(step_integer(4, -1, &padding), 3);
         assert_eq!(step_integer(0, -1, &padding), 0);
         assert_eq!(step_integer(64, 1, &padding), 64);
+    }
+
+    #[test]
+    fn the_ids_are_within_the_range_of_the_page() {
+        let last_wide_glyph = ID_WIDE_GLYPH + WideGlyph::ALL.len() as i32 - 1;
+        for id in [
+            ID_FONT,
+            ID_SIZE,
+            ID_SIZE_SPIN,
+            ID_WIDE_GLYPH,
+            last_wide_glyph,
+            ID_SCROLL_BAR_WIDTH,
+            ID_SCROLL_BAR_WIDTH_SPIN,
+            ID_PADDING,
+            ID_PADDING_SPIN,
+        ] {
+            assert!(ID_RANGE.contains(&id), "{id}");
+        }
     }
 
     #[test]

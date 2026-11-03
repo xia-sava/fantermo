@@ -801,8 +801,8 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         state.show_page(page);
                     }
                 }
-                // ページのコントロールの ID はページの間で重ならないので、受け持つページが処理したら
-                // 止める。
+                // ページのコントロールの ID は、ページごとの範囲（各ページの `ID_RANGE`）に収まり、ページの
+                // 間で重ならないので、受け持つページが処理したら止める。
                 _ => {
                     _ = state
                         .pages()
@@ -911,6 +911,30 @@ mod tests {
         reads_back(&PASTE_CONFIRM_SIZE_KIND);
         reads_back(&BACKGROUND_OPACITY_KIND);
         reads_back(&BACKGROUND_ITEM_OPACITY_KIND);
+    }
+
+    #[test]
+    fn the_pages_use_separate_ranges_of_ids() {
+        // 各ページの ID がその範囲に収まることは、それぞれのページのテストが見る。
+        let ranges = [
+            appearance::ID_RANGE,
+            background::ID_RANGE,
+            behavior::ID_RANGE,
+            profiles::ID_RANGE,
+            keys::ID_RANGE,
+            colors::ID_RANGE,
+        ];
+        for (index, range) in ranges.iter().enumerate() {
+            for other in &ranges[index + 1..] {
+                assert!(
+                    range.end() < other.start() || other.end() < range.start(),
+                    "{range:?} and {other:?}"
+                );
+            }
+            for id in [IDOK.0, IDCANCEL.0, ID_PAGES, ID_APPLY, ID_ERROR] {
+                assert!(!range.contains(&id), "{id} in {range:?}");
+            }
+        }
     }
 
     #[test]

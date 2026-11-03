@@ -27,6 +27,10 @@ use super::{
 };
 use crate::key_capture;
 
+/// このページのコントロールの ID の範囲。範囲がページの間で重ならないことと、このページの ID が範囲に
+/// 入ることを単体のテストで見る。
+#[cfg(test)]
+pub(super) const ID_RANGE: std::ops::RangeInclusive<i32> = 500..=589;
 const ID_KEYS: i32 = 500;
 const ID_KEY_ADD: i32 = 501;
 const ID_KEY_CHANGE: i32 = 502;
@@ -328,6 +332,19 @@ impl Page for KeysPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ids_are_within_the_range_of_the_page() {
+        for id in [
+            ID_KEYS,
+            ID_KEY_ADD,
+            ID_KEY_CHANGE,
+            ID_KEY_REMOVE,
+            ID_KEY_RESET,
+        ] {
+            assert!(ID_RANGE.contains(&id), "{id}");
+        }
+    }
 
     #[test]
     fn key_rows_list_every_action_in_order() {

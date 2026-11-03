@@ -23,6 +23,10 @@ use super::{
 };
 use crate::file_dialog;
 
+/// このページのコントロールの ID の範囲。範囲がページの間で重ならないことと、このページの ID が範囲に
+/// 入ることを単体のテストで見る。
+#[cfg(test)]
+pub(super) const ID_RANGE: std::ops::RangeInclusive<i32> = 450..=499;
 const ID_BACKGROUND_IMAGES: i32 = 450;
 const ID_BACKGROUND_ADD_FILES: i32 = 451;
 const ID_BACKGROUND_ADD_FOLDER: i32 = 452;
@@ -714,6 +718,28 @@ mod tests {
             "既定（並べて表示）"
         );
         assert_eq!(default_choice_label(&format_opacity(0.5)), "既定（0.5）");
+    }
+
+    #[test]
+    fn the_ids_are_within_the_range_of_the_page() {
+        let last_item_opacity_choice =
+            ID_BACKGROUND_ITEM_OPACITY_CHOICE + ITEM_OPACITY_CHOICES.len() as i32 - 1;
+        for id in [
+            ID_BACKGROUND_IMAGES,
+            ID_BACKGROUND_ADD_FILES,
+            ID_BACKGROUND_ADD_FOLDER,
+            ID_BACKGROUND_REMOVE,
+            ID_BACKGROUND_OPACITY,
+            ID_BACKGROUND_OPACITY_SPIN,
+            ID_BACKGROUND_FIT,
+            ID_BACKGROUND_ITEM_FIT,
+            ID_BACKGROUND_ITEM_OPACITY,
+            ID_BACKGROUND_ITEM_OPACITY_SPIN,
+            ID_BACKGROUND_ITEM_OPACITY_CHOICE,
+            last_item_opacity_choice,
+        ] {
+            assert!(ID_RANGE.contains(&id), "{id}");
+        }
     }
 
     #[test]

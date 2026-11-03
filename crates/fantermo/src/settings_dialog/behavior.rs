@@ -14,6 +14,10 @@ use super::{
     },
 };
 
+/// このページのコントロールの ID の範囲。範囲がページの間で重ならないことと、このページの ID が範囲に
+/// 入ることを単体のテストで見る。
+#[cfg(test)]
+pub(super) const ID_RANGE: std::ops::RangeInclusive<i32> = 300..=329;
 /// `paste.confirm` のラジオボタン。[`PasteConfirm::ALL`] の順に ID が続く。
 const ID_PASTE_CONFIRM: i32 = 300;
 /// `clipboard.read` のラジオボタン。[`ClipboardRead::ALL`] の順に ID が続く。
@@ -175,5 +179,26 @@ impl Page for BehaviorPage {
             _ => return false,
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_ids_are_within_the_range_of_the_page() {
+        let last_paste_confirm = ID_PASTE_CONFIRM + PasteConfirm::ALL.len() as i32 - 1;
+        let last_clipboard_read = ID_CLIPBOARD_READ + ClipboardRead::ALL.len() as i32 - 1;
+        for id in [
+            ID_PASTE_CONFIRM,
+            last_paste_confirm,
+            ID_CLIPBOARD_READ,
+            last_clipboard_read,
+            ID_PASTE_CONFIRM_SIZE,
+            ID_PASTE_CONFIRM_SIZE_SPIN,
+        ] {
+            assert!(ID_RANGE.contains(&id), "{id}");
+        }
     }
 }

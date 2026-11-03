@@ -23,10 +23,16 @@ use super::{
 };
 use crate::scroll_bar;
 
+/// このページのコントロールの ID の範囲。範囲がページの間で重ならないことと、このページの ID が範囲に
+/// 入ることを単体のテストで見る。
+#[cfg(test)]
+pub(super) const ID_RANGE: std::ops::RangeInclusive<i32> = 590..=699;
 /// 色のページのコントロールの ID の始まり。色ごとに [`COLOR_ID_STRIDE`] ずつ、見本・値・選ぶ・既定に
 /// 戻すの順に続く。
 const ID_COLORS: i32 = 600;
 const COLOR_ID_STRIDE: i32 = 4;
+/// 色の行のコントロールの ID の終わり（この値は含まない）。
+const ID_COLORS_END: i32 = ID_COLORS + COLOR_ITEM_COUNT as i32 * COLOR_ID_STRIDE;
 const COLOR_SWATCH: i32 = 0;
 const COLOR_TEXT: i32 = 1;
 const COLOR_CHOOSE: i32 = 2;
@@ -403,7 +409,9 @@ impl Page for ColorsPage {
 
     fn on_command(&self, ctx: &dyn DialogContext, id: i32, code: u32) -> bool {
         match (id, code) {
-            (id, BN_CLICKED) if id >= ID_COLORS => self.on_color_button(ctx, id),
+            (id, BN_CLICKED) if (ID_COLORS..ID_COLORS_END).contains(&id) => {
+                self.on_color_button(ctx, id);
+            }
             (id, BN_CLICKED) if self.color_scheme.owns(id) => self.on_color_scheme(ctx),
             _ => return false,
         }
@@ -415,6 +423,16 @@ impl Page for ColorsPage {
 mod tests {
     use super::super::{BUTTON_HEIGHT, CLIENT_HEIGHT, CLIENT_WIDTH, PAGES_WIDTH};
     use super::*;
+
+    #[test]
+    fn the_ids_are_within_the_range_of_the_page() {
+        let last_scheme = ID_COLOR_SCHEME + ColorScheme::ALL.len() as i32 - 1;
+        for id in [ID_COLOR_SCHEME, last_scheme, ID_COLORS, ID_COLORS_END - 1] {
+            assert!(ID_RANGE.contains(&id), "{id}");
+        }
+        // 配色のラジオボタンは、色の行の手前で終わる。
+        assert!(last_scheme < ID_COLORS);
+    }
 
     #[test]
     fn colorrefs_put_red_in_the_low_byte() {
