@@ -20,7 +20,10 @@ use windows::{
     core::{PCSTR, s},
 };
 
-use crate::shader::{self, CompileError};
+use crate::{
+    atlas::GlyphAtlas,
+    shader::{self, CompileError},
+};
 
 /// 四角形一つの頂点の数（三角形ストリップ）。
 const QUAD_VERTICES: u32 = 4;
@@ -33,9 +36,9 @@ pub enum InstanceKind {
     Solid = 0,
     /// アトラスのグリフ。
     Glyph = 1,
-    /// 背景画像。`uv` は画像の幅と高さを 1 とし、範囲の外は端の色。
+    /// 画像（背景画像、端末の中の画像、タブのアイコン）。`uv` は画像の幅と高さを 1 とし、範囲の外は端の色。
     Image = 2,
-    /// 背景画像を繰り返す。`uv` は画像の幅と高さを 1 とする。
+    /// 画像を繰り返す。`uv` は画像の幅と高さを 1 とする。
     ImageRepeat = 3,
 }
 
@@ -243,17 +246,16 @@ impl CellPipeline {
     }
 
     /// `list` を `target` に並べた順に描く。
-    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         device: &ID3D11Device,
         context: &ID3D11DeviceContext,
         target: &ID3D11RenderTargetView,
         viewport_size: (u32, u32),
-        atlas: &ID3D11ShaderResourceView,
-        atlas_size: (u32, u32),
+        atlas: &GlyphAtlas,
         list: &DrawList,
     ) -> windows::core::Result<()> {
+        let atlas_size = atlas.size();
         let instances = list.instances.as_slice();
         if instances.is_empty() {
             return Ok(());
@@ -299,7 +301,7 @@ impl CellPipeline {
             context.VSSetShader(&self.vertex_shader, None);
             context.VSSetConstantBuffers(0, Some(&[Some(self.constants.clone())]));
             context.PSSetShader(&self.pixel_shader, None);
-            context.PSSetShaderResources(0, Some(&[Some(atlas.clone())]));
+            context.PSSetShaderResources(0, Some(&[Some(atlas.view().clone())]));
             let [image_clamp, image_wrap] = &self.image_samplers;
             context.PSSetSamplers(
                 0,

@@ -83,7 +83,7 @@ const FEATURE_LEVELS: [D3D_FEATURE_LEVEL; 4] = [
 ];
 
 /// 0.0〜1.0 の RGBA。
-pub type Rgba = [f32; 4];
+type Rgba = [f32; 4];
 
 pub struct Renderer {
     /// デバイスを失ったことを知らせる登録。構造体のフィールドは書いた順に捨てるので、先頭に置いて
@@ -551,8 +551,7 @@ impl Renderer {
                 &self.context,
                 target,
                 (self.width, self.height),
-                self.atlas.view(),
-                self.atlas.size(),
+                &self.atlas,
                 &list,
             )?;
         }
