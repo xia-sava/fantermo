@@ -68,7 +68,7 @@ fn atlas_side() -> u32 {
 /// 作るアトラスの一辺（ピクセル）。テストが指定していれば、その値。1 以上でテクスチャの上限以下の整数でなければ警告して既定の値。
 #[cfg(feature = "e2e")]
 fn atlas_side() -> u32 {
-    use crate::background::MAX_TEXTURE_SIDE;
+    use crate::image_decoder::MAX_TEXTURE_SIDE;
 
     let Ok(text) = std::env::var(SIDE_ENV) else {
         return ATLAS_SIZE;

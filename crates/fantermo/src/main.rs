@@ -34,6 +34,7 @@ mod e2e_server;
 mod file_dialog;
 mod font;
 mod image_cache;
+mod image_decoder;
 mod ime;
 mod instance;
 mod key_capture;

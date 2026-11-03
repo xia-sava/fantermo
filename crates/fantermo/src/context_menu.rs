@@ -20,7 +20,7 @@ use windows::{
 
 use fantermo_core::keymap::{Action, KeyCombo, Keymap};
 
-use crate::background::Decoded;
+use crate::image_decoder::Decoded;
 
 /// メニューで選ばれた操作。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

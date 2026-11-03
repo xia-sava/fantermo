@@ -51,10 +51,10 @@ use windows::{
 
 use crate::{
     atlas::{AtlasFull, GlyphAtlas, Slot},
-    background::{Decoded, Decoder, MAX_TEXTURE_SIDE},
     decoration::Decoration,
     font::Font,
     image_cache::ImageCache,
+    image_decoder::{Decoded, Decoder, MAX_TEXTURE_SIDE},
     paint::{Area, Paint},
     pipeline::{CellPipeline, DrawList, Instance, InstanceKind},
     tab_icon::{self, TabIcon},

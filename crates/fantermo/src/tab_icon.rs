@@ -48,9 +48,9 @@ use windows_numerics::{Matrix3x2, Vector2};
 use crate::{
     app_files::path_key,
     atlas,
-    background::Decoded,
     boxdraw::{Shape, arc},
     bridge, font,
+    image_decoder::Decoded,
 };
 
 /// プロファイル名から選ぶ背景の色。青・水色・青緑・緑・藍・紫の淡い色で、警告に使う赤・橙・黄は入れない。
