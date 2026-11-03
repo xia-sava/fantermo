@@ -103,8 +103,9 @@ pub struct Server {
     dir: PathBuf,
     /// 動いている別デスクトップの名前。
     desktop: String,
-    /// 同時に起動する数の枠を持っている。
-    holds_slot: bool,
+    /// 同時に起動する数の枠。[`Server::launch_again_with`] の起動は、元の fantermo の枠を持ったまま呼ばれるので
+    /// 枠を取らない（待つと止まることがある）。
+    _slot: Option<Slot>,
 }
 
 /// [`Server::launch_again_with`] の、同じデスクトップで fantermo をもう一度起動する指定。
@@ -186,7 +187,8 @@ impl Server {
             "{} がない。`./tools/dev.sh test --features e2e` か `./tools/dev.sh build --features e2e` で作る",
             run_hidden.display()
         );
-        acquire_slot();
+        // 準備や起動で panic しても、枠は破棄で戻る。
+        let slot = Slot::acquire();
         let dir = std::env::temp_dir().join(format!(
             "fantermo-e2e-{}-{}",
             std::process::id(),
@@ -231,7 +233,7 @@ impl Server {
             port: 0,
             dir,
             desktop,
-            holds_slot: true,
+            _slot: Some(slot),
         };
         server.port = server.wait_for_port();
         server
@@ -300,8 +302,7 @@ impl Server {
             port: 0,
             dir,
             desktop: self.desktop.clone(),
-            // テストは元の fantermo の枠を持ったまま呼ぶので、枠を待つと止まることがある。
-            holds_slot: false,
+            _slot: None,
         }
     }
 
@@ -674,9 +675,6 @@ impl Drop for Server {
             Err(e) => eprintln!("failed to check run-hidden: {e}"),
         }
         remove_folder(&self.dir);
-        if self.holds_slot {
-            release_slot();
-        }
     }
 }
 
@@ -818,20 +816,28 @@ pub fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// 起動している数が上限を超えないよう、空くまで待つ。
-fn acquire_slot() {
-    let (count, freed) = &RUNNING;
-    let mut count = count.lock().unwrap_or_else(|e| e.into_inner());
-    while *count >= MAX_RUNNING {
-        count = freed.wait(count).unwrap_or_else(|e| e.into_inner());
+/// 同時に起動する数の枠。破棄すると戻す。
+struct Slot;
+
+impl Slot {
+    /// 起動している数が上限を超えないよう、空くまで待って枠を取る。
+    fn acquire() -> Self {
+        let (count, freed) = &RUNNING;
+        let mut count = count.lock().unwrap_or_else(|e| e.into_inner());
+        while *count >= MAX_RUNNING {
+            count = freed.wait(count).unwrap_or_else(|e| e.into_inner());
+        }
+        *count += 1;
+        Self
     }
-    *count += 1;
 }
 
-fn release_slot() {
-    let (count, freed) = &RUNNING;
-    *count.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
-    freed.notify_one();
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let (count, freed) = &RUNNING;
+        *count.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+        freed.notify_one();
+    }
 }
 
 fn remove_folder(dir: &Path) {
