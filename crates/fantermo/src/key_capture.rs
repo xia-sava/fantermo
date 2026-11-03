@@ -21,13 +21,12 @@ use windows::{
             HiDpi::AdjustWindowRectExForDpi,
             Input::KeyboardAndMouse::SetFocus,
             WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, DestroyWindow, GW_CHILD, GWLP_USERDATA, GetWindow,
-                GetWindowLongPtrW, GetWindowRect, HMENU, IDC_ARROW, LoadCursorW, MSG,
-                RegisterClassW, SW_SHOW, SendMessageW, SetWindowLongPtrW, SetWindowTextW,
-                ShowWindow, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_DEADCHAR, WM_DESTROY,
-                WM_KEYDOWN, WM_KEYUP, WM_SETFONT, WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN,
-                WM_SYSKEYUP, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_DLGMODALFRAME, WS_POPUP,
-                WS_SYSMENU, WS_VISIBLE,
+                CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW,
+                GetWindowRect, HMENU, IDC_ARROW, LoadCursorW, MSG, RegisterClassW, SW_SHOW,
+                SendMessageW, SetWindowLongPtrW, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE,
+                WM_CHAR, WM_CLOSE, WM_DEADCHAR, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_SETFONT,
+                WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW, WS_CAPTION,
+                WS_CHILD, WS_EX_DLGMODALFRAME, WS_POPUP, WS_SYSMENU, WS_VISIBLE,
             },
         },
     },
@@ -45,8 +44,12 @@ const TITLE: &str = "キーの割り当て";
 /// 96 DPI のときの寸法（ピクセル）。
 const BASE_DPI: u32 = 96;
 const CLIENT_WIDTH: i32 = 360;
-const CLIENT_HEIGHT: i32 = 72;
+/// 読み取りの文、断る文、Esc の案内の 3 行が入る高さ。
+const CLIENT_HEIGHT: i32 = 96;
 const MARGIN: i32 = 12;
+
+/// やめかたの案内の行。
+const CANCEL_GUIDE: &str = "Esc キーでキャンセルします。";
 
 /// `owner` の真ん中に、`prompt` を見せるダイアログを開き、押したキーの組み合わせを返す。やめたら
 /// `None`。`font` はダイアログの文字のフォント、`dpi` は寸法を決める DPI。
@@ -55,8 +58,8 @@ pub fn capture(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> Option<KeyCo
         tracing::warn!("failed to register the key capture dialog: {e}");
         return None;
     }
-    let hwnd = match create(owner, prompt, font, dpi) {
-        Ok(hwnd) => hwnd,
+    let (hwnd, label) = match create(owner, prompt, font, dpi) {
+        Ok(windows) => windows,
         Err(e) => {
             tracing::warn!("failed to open the key capture dialog: {e}");
             return None;
@@ -81,7 +84,7 @@ pub fn capture(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> Option<KeyCo
                 // SAFETY: hwnd はこのダイアログ。閉じると WM_DESTROY で closed が立つ。
                 unsafe { _ = DestroyWindow(hwnd) };
             }
-            Read::Refused(combo) => show_refusal(hwnd, prompt, combo),
+            Read::Refused(combo) => show_refusal(label, prompt, combo),
             Read::Wait => {}
         }
         true
@@ -89,26 +92,25 @@ pub fn capture(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> Option<KeyCo
     captured.get()
 }
 
-/// 押された組み合わせ `combo` を断る文を、ダイアログの文 `prompt` の下に見せる。
-fn show_refusal(hwnd: HWND, prompt: &str, combo: KeyCombo) {
-    // SAFETY: hwnd はこのダイアログ。
-    let label = match unsafe { GetWindow(hwnd, GW_CHILD) } {
-        Ok(label) => label,
-        Err(e) => {
-            tracing::warn!("cannot find the key capture label: {e}");
-            return;
-        }
-    };
-    let text = format!("{prompt}\n{}", refusal_text(combo));
+/// 押された組み合わせ `combo` を断る文を、ダイアログの文 `label` に足して見せる。
+fn show_refusal(label: HWND, prompt: &str, combo: KeyCombo) {
+    let text = label_text(prompt, Some(combo));
     // SAFETY: label はこのダイアログの子のウィンドウで、文字列はこの呼び出しの間は生きている。
     if let Err(e) = unsafe { SetWindowTextW(label, &HSTRING::from(text)) } {
         tracing::warn!("cannot show the refusal: {e}");
     }
 }
 
-/// 割り当てを断る組み合わせ `combo` を知らせる文。
-fn refusal_text(combo: KeyCombo) -> String {
-    format!("{} は割り当てられません。", combo.label())
+/// ダイアログの文。読み取りの文 `prompt`、断った組み合わせ `refused` があればその断る文、
+/// [`CANCEL_GUIDE`] の順に行を並べる。
+fn label_text(prompt: &str, refused: Option<KeyCombo>) -> String {
+    match refused {
+        Some(combo) => format!(
+            "{prompt}\n{} は割り当てられません。\n{CANCEL_GUIDE}",
+            combo.label()
+        ),
+        None => format!("{prompt}\n{CANCEL_GUIDE}"),
+    }
 }
 
 /// キーのメッセージを読んだ結果。
@@ -189,8 +191,8 @@ fn scale(value: i32, dpi: u32) -> i32 {
     (value as f32 * dpi as f32 / BASE_DPI as f32).round() as i32
 }
 
-/// ダイアログを作り、`owner` の真ん中に置く。
-fn create(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> windows::core::Result<HWND> {
+/// ダイアログを作り、`owner` の真ん中に置く。ダイアログと、その中の文のウィンドウを返す。
+fn create(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> windows::core::Result<(HWND, HWND)> {
     let style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
     let mut rect = RECT {
         left: 0,
@@ -225,7 +227,7 @@ fn create(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> windows::core::Re
             None,
         )?
     };
-    let text = format!("{prompt}\nEsc キーでキャンセルします。");
+    let text = label_text(prompt, None);
     // SAFETY: hwnd は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
     let label = unsafe {
         CreateWindowExW(
@@ -252,7 +254,7 @@ fn create(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> windows::core::Re
             Some(LPARAM(0)),
         )
     };
-    Ok(hwnd)
+    Ok((hwnd, label))
 }
 
 extern "system" fn capture_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -309,8 +311,12 @@ mod tests {
             ));
         }
         assert_eq!(
-            refusal_text(KeyCombo::parse("alt+f4").unwrap()),
-            "Alt+F4 は割り当てられません。"
+            label_text("押してください。", Some(KeyCombo::parse("alt+f4").unwrap())),
+            "押してください。\nAlt+F4 は割り当てられません。\nEsc キーでキャンセルします。"
+        );
+        assert_eq!(
+            label_text("押してください。", None),
+            "押してください。\nEsc キーでキャンセルします。"
         );
     }
 
