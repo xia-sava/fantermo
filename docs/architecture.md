@@ -104,7 +104,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 - **メッセージの定数と `run`** … `WM_APP_WAKE`（出力と子プロセスの終了），`WM_APP_CONFIG_CHANGED`，`WM_APP_UPDATE`，`WM_APP_CLIPBOARD_PROMPT`，`WM_APP_E2E`，`WM_APP_LAUNCH`，`WM_APP_DEVICE_REMOVED` とタイマーの番号．`run` がウィンドウと `App` を作り，メッセージループを回します．
 - **配置の関数** … `Insets`，`terminal_area_in_client`，`scroll_bar_area_in_client`，`backdrop_area_in_client`，`grid_size`．クライアント領域を，タブバー，端末を描く領域，余白，スクロールバー，背景画像を敷く領域に分けます．
 - **`App`** … ウィンドウ一つ分の状態．端末の並び（`sessions` と `active`），フォント，`Renderer`，いま使っている設定の値，マウスとタブバーとスクロールバーの操作の途中の状態など．
-- **`App` のメソッド** … キー（`on_key`，`on_key_input`，`run_bound_action`），タブ（`run_tab_command`，`open_startup`，`close_session`，`activate`），起動中の起動（`accept_launch`，`open_pending_launches`），貼り付けとクリップボード，マウスとリンク，スクロールバー，タブバー，メニュー，出力（`on_wake`），大きさ（`on_resize`，`layout`，`resize_sessions`），DPI（`apply_dpi`），設定（`reload_config`，`apply_config`，`config_in_use`，`settings_request`），描画（`render_to`），点滅と画像のアニメーションのタイマー．
+- **`App` のメソッド** … キー（`on_key`，`on_key_input`，`run_bound_action`），タブ（`run_tab_command`，`open_startup`，`close_session`，`activate`），起動中の起動（`accept_launch`，`open_pending_launches`），貼り付けとクリップボード，マウスとリンク，スクロールバー，タブバー，メニュー，出力（`on_wake`），大きさ（`on_resize`，`layout`，`resize_sessions`），DPI（`apply_dpi`），設定（`reload_config`，`apply_config`，`config_in_use`，`settings_request`），描画（`render_to`，`on_device_lost`，`on_device_removed_message`，`recreate_renderer`），点滅と画像のアニメーションのタイマー．
 - **借用の外ですること** … `Deferred` と `run_deferred`，`show_about`，`continue_update`，`run_menu_command`，`edit_settings`（`SettingsHost`），`destroy_window`，`save_window_state`，`repost_skipped_messages`．
 - **`window_proc`** … メッセージごとの振り分け．
 
@@ -254,7 +254,7 @@ Direct3D 11 にグリフアトラスを載せて描きます．Direct2D + Direct
 - 反転表示と選択範囲は `Vt::frame` の中で前景色と背景色を入れ替えておきます．薄い文字（SGR 2）は前景色を背景色に半分寄せ，不可視の文字（SGR 8）は背景だけを残します．
 - スクロールバーも Direct3D で自分で描きます．Windows 11 の標準の描き方は太い場所に細いつまみで不自然なためです．幅は常に取っておき，スクロールバックの有無で桁数が変わらないようにします．
 - ドライバの更新や再起動，GPU のリセットで Direct3D のデバイスを失っても描き続けます．描画，表示（`Present`），スワップチェーンの大きさの変更，グリフアトラスの作り直しが `DXGI_ERROR_DEVICE_REMOVED`，`DXGI_ERROR_DEVICE_RESET`，`DXGI_ERROR_DRIVER_INTERNAL_ERROR`，`D2DERR_RECREATE_TARGET` のどれかを返したら，`GetDeviceRemovedReason` をログに残し，`App` が `Renderer` を作り直します．
-- 描くことのない静かなウィンドウでも，デバイスを失ったらすぐに作り直します．`Renderer` は作るたびに `ID3D11Device4::RegisterDeviceRemovedEvent` でイベントを登録し，スレッドプールでそのイベントを待ちます．シグナルされたら，ウィンドウに `WM_APP_DEVICE_REMOVED` を積みます．ウィンドウは，今の `Renderer` のデバイスを失っているときだけ，描くときに気づいたときと同じ経路で作り直します．描くときにすでに気づいて作り直していれば，何もしません．`Renderer` を捨てるときは，待ちを解除してコールバックの終わりを待ち，登録を解除してからデバイスを手放します．`ID3D11Device4` を使えない環境では，描くときにだけ気づきます．
+- 描くことのないウィンドウでも，デバイスを失ったらすぐに作り直します．`Renderer` は作るたびに `ID3D11Device4::RegisterDeviceRemovedEvent` でイベントを登録し，スレッドプールでそのイベントを待ちます．シグナルされたら，ウィンドウに `WM_APP_DEVICE_REMOVED` を積みます．ウィンドウは，今の `Renderer` のデバイスを失っているときだけ，描くときに気づいたときと同じ経路で作り直します．描くときにすでに気づいて作り直していれば，何もしません．`Renderer` を捨てるときは，待ちを解除してコールバックの終わりを待ち，登録を解除してからデバイスを手放します．`ID3D11Device4` を使えない環境では，描くときにだけ気づきます．
 - 古いデバイスに属するもの（スワップチェーン，描画先，グリフアトラス，パイプライン，画像のテクスチャ）は `Renderer` ごと捨てます．一つのウィンドウに flip model のスワップチェーンは一つしか持てないので，古い `Renderer` を手放し，`ClearState` と `Flush` で解放を済ませてから新しいものを作ります．背景画像は各端末が選んだファイルから読み直します．読み直せなかった端末と，`Renderer` がない間に開いた端末には選び直します．端末の中の画像とタブのアイコンは描くときに作り直します．
 - 最初の作り直しはその場で行います．作れないか，作り直しても描けなければ，`RENDERER_RETRY_DELAY` のあとにもう一度試し，作り直しても描けないことが `MAX_RENDERER_RECREATIONS` 回続いたら，警告を残して描画をやめます．作り直しでハードウェアのデバイスを作れず WARP になったら，fantermo を起動し直すまでハードウェアに戻りません．
 

@@ -3206,7 +3206,8 @@ fn lost_device_to_recreate(
 }
 
 /// `Renderer` がデバイスを失ったときに呼ぶもの。`hwnd` に [`WM_APP_DEVICE_REMOVED`] を積む。ウィンドウの
-/// ハンドルの値だけを持つので、ウィンドウが壊れたあとに呼ばれても積むのに失敗するだけ。
+/// ハンドルの値だけを持つ。`Renderer` を捨てるときに呼ばれなくなるので、ウィンドウを壊している途中に
+/// 積むのに失敗することがあるだけ。
 fn device_removed_poster(hwnd: HWND) -> renderer::DeviceRemovedNotify {
     Box::new(poster(hwnd, WM_APP_DEVICE_REMOVED, WPARAM(0)))
 }
