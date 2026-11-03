@@ -15,7 +15,11 @@ use fantermo_core::{
 use windows::Win32::{
     Foundation::{D2DERR_RECREATE_TARGET, HMODULE, HWND},
     Graphics::{
-        Direct3D::{D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP},
+        Direct3D::{
+            D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL,
+            D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0,
+            D3D_FEATURE_LEVEL_11_1,
+        },
         Direct3D11::{
             D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ,
             D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
@@ -59,6 +63,14 @@ const TERMINAL_IMAGE_TEXTURE_LIMIT: u64 = 512 * 1024 * 1024;
 /// 1 ピクセルのバイト数に、ミップマップの分（全体で約 4/3 倍）を足した見積もり。
 const TEXTURE_BYTES_PER_PIXEL_NUMERATOR: u64 = 16;
 const TEXTURE_BYTES_PER_PIXEL_DENOMINATOR: u64 = 3;
+
+/// 使う機能レベル（上から順に試す）。シェーダモデル 4.0 を使うので 10.0 を下限にする。
+const FEATURE_LEVELS: [D3D_FEATURE_LEVEL; 4] = [
+    D3D_FEATURE_LEVEL_11_1,
+    D3D_FEATURE_LEVEL_11_0,
+    D3D_FEATURE_LEVEL_10_1,
+    D3D_FEATURE_LEVEL_10_0,
+];
 
 /// 0.0〜1.0 の RGBA。
 pub type Rgba = [f32; 4];
@@ -900,13 +912,15 @@ fn create_device_with(
     let mut device = None;
     let mut context = None;
     // SAFETY: device と context は書き込める。BGRA に対応させるのは、グリフを Direct2D で描くため。
+    // 機能レベルの並びは作れるデバイスの下限を決める。満たさないハードウェアは失敗させて WARP に
+    // 切り替えさせる。
     unsafe {
         D3D11CreateDevice(
             None,
             driver_type,
             HMODULE::default(),
             D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            None,
+            Some(&FEATURE_LEVELS),
             D3D11_SDK_VERSION,
             Some(&mut device),
             None,
