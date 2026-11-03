@@ -153,12 +153,12 @@ impl Metrics {
     }
 
     /// ベルの印の円の直径。
-    fn mark_size(self) -> u32 {
+    fn bell_mark(self) -> u32 {
         self.scale(BELL_MARK)
     }
 
     /// ベルの印とタイトルの間のすき間。
-    fn mark_gap(self) -> u32 {
+    fn bell_gap(self) -> u32 {
         self.scale(BELL_GAP)
     }
 
@@ -198,7 +198,7 @@ impl Metrics {
     }
 
     /// 新しいタブのボタンの「+」、プロファイルの一覧のボタンの「▾」、メニューのボタンの「≡」の一辺。
-    fn plus_mark(self) -> u32 {
+    fn button_mark(self) -> u32 {
         self.scale(BUTTON_MARK)
     }
 
@@ -457,7 +457,7 @@ fn tab_content(metrics: Metrics, slot: &TabSlot, bell: bool, text_height: u32) -
     let icon_size = metrics.tab_icon();
     let icon_x = tab.x + metrics.tab_icon_margin();
     let needed_after_icon = if bell {
-        metrics.tab_icon_gap() + metrics.mark_size()
+        metrics.tab_icon_gap() + metrics.bell_mark()
     } else {
         0
     };
@@ -477,7 +477,7 @@ fn tab_content(metrics: Metrics, slot: &TabSlot, bell: bool, text_height: u32) -
     let mut title_x = left;
     let mut mark = None;
     if bell {
-        let size = metrics.mark_size().min(tab.width).min(tab.height);
+        let size = metrics.bell_mark().min(tab.width).min(tab.height);
         let x = if left + size <= right {
             left
         } else {
@@ -489,7 +489,7 @@ fn tab_content(metrics: Metrics, slot: &TabSlot, bell: bool, text_height: u32) -
             width: size,
             height: size,
         });
-        title_x = x + size + metrics.mark_gap();
+        title_x = x + size + metrics.bell_gap();
     }
     TabContent {
         icon,
@@ -749,7 +749,7 @@ pub fn paints(
             colors,
             Button {
                 area,
-                mark: (icon, metrics.plus_mark(), mark_color),
+                mark: (icon, metrics.button_mark(), mark_color),
                 state: highlight.state(hit),
                 base: colors.bar,
                 ink: colors.inactive_title,
