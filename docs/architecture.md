@@ -126,7 +126,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 
 ### キーと IME の入力からバックエンドまで
 
-1. `WM_KEYDOWN`・`WM_SYSKEYDOWN` で，`VK_PROCESSKEY`（IME が処理中）と Alt+F4・Alt+Space は Windows に任せます．
+1. `WM_KEYDOWN`・`WM_SYSKEYDOWN` で，`VK_PROCESSKEY`（IME が処理中）と，Alt を含む F4・Space は Windows に任せます．
 2. `take_translated_chars` が，そのキーから `TranslateMessage` が積んだ `WM_CHAR` を取り出します．デッドキーなら何も送りません．
 3. `App::on_key` が `keyboard` でキーの種類（スキャンコードから，物理的な位置），修飾キー，修飾なしの文字を決め，`on_key_input` に渡します．
 4. `keymap.lookup` で fantermo の動作に割り当てたキーなら `run_bound_action` が行います．成り立たなければ（選んでいないときのコピーなど）シェルへ送ります．動作に使ったキーは離したときも送りません（`suppressed_release`）．
@@ -263,7 +263,7 @@ Direct3D 11 にグリフアトラスを載せて描きます．Direct2D + Direct
 - キーの種類はスキャンコードから決めます（libghostty-vt のキーの名前は物理的な位置）．修飾キーなしの文字は `MapVirtualKeyW` でキーボード配列から取ります．
 - `WM_KEYDOWN` の中で，そのキーから `TranslateMessage` が積んだ `WM_CHAR` を取り出して同じキーの情報に入れます．
 - Ctrl の組み合わせの制御文字を付けない理由，サロゲートの組み立て方は `keyboard.rs` のコメントにあります．
-- Alt の組み合わせは `WM_SYSKEYDOWN` です．Alt+F4，Alt+Space，`VK_PROCESSKEY` は Windows に任せます．
+- Alt の組み合わせは `WM_SYSKEYDOWN` です．Alt を含む F4 と Space，`VK_PROCESSKEY` は Windows に任せます．
 - kitty keyboard protocol で，アプリが「すべてのキーをエスケープコードで報告する」を求めていないときは，ロックの状態（Caps Lock，Num Lock）を修飾キーの数に入れません（`Vt::mods_to_report` のコメント）．
 
 ### ConPTY の実装上の注意

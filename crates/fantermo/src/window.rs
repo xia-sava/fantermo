@@ -3944,7 +3944,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         WM_KEYDOWN | WM_SYSKEYDOWN => {
             let virtual_key = wparam.0 as u16;
-            // IME が処理中のキーと、Alt+F4・Alt+Space（閉じる・システムメニュー）は Windows に任せる。
+            // IME が処理中のキーと、Alt を含む F4・Space（閉じる・システムメニュー）は Windows に任せる。
             let left_to_windows = virtual_key == VK_PROCESSKEY.0
                 || (msg == WM_SYSKEYDOWN && (virtual_key == VK_F4.0 || virtual_key == VK_SPACE.0));
             if left_to_windows {

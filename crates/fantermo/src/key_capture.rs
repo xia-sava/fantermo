@@ -3,7 +3,7 @@
 //! 開いている間のキーのメッセージは、ウィンドウに届ける前にループで読み取る（Tab や Enter や Alt の
 //! 組み合わせも、ダイアログの操作やメニューにせずに組み合わせとして読む）。修飾キーだけを押している間は
 //! 待ち、ほかのキーを押したらその組み合わせで閉じる。修飾キーなしの Esc はやめる。名前を持たないキー
-//! （設定ファイルに書けないキー）は読まずに待つ。Alt+F4 と Alt+Space は断って待つ。読むのはこの
+//! （設定ファイルに書けないキー）は読まずに待つ。Alt を含む F4 と Space は断って待つ。読むのはこの
 //! ダイアログ宛てのメッセージだけ。
 
 use std::{cell::Cell, sync::OnceLock};
@@ -144,12 +144,13 @@ fn read_key(msg: &MSG, hwnd: HWND) -> Option<Read> {
 }
 
 /// 押した組み合わせ `combo` をどう扱うか。修飾キーなしの Esc はやめ、名前を持たないキー（修飾キー
-/// そのものなど）は待つ。Alt+F4 と Alt+Space は Windows が処理して割り当てても効かないので断る。
+/// そのものなど）は待つ。Alt を含む F4 と Space（Alt+F4、Ctrl+Alt+Space など）は、メインウィンドウが
+/// 修飾キーを見ずに Windows へ任せて割り当てても効かないので断る。
 fn combo_read(combo: KeyCombo) -> Read {
     if combo.key == Key::Escape && combo.mods == Mods::empty() {
         return Read::Done(None);
     }
-    if combo.mods == Mods::ALT && matches!(combo.key, Key::F4 | Key::Space) {
+    if combo.mods.contains(Mods::ALT) && matches!(combo.key, Key::F4 | Key::Space) {
         return Read::Refused(combo);
     }
     if combo.is_nameable() {
@@ -290,12 +291,18 @@ mod tests {
 
     #[test]
     fn alt_f4_and_alt_space_are_refused() {
-        for text in ["alt+f4", "alt+space"] {
+        for text in [
+            "alt+f4",
+            "alt+space",
+            "alt+shift+f4",
+            "ctrl+alt+f4",
+            "ctrl+alt+space",
+        ] {
             let combo = KeyCombo::parse(text).unwrap();
             assert!(matches!(combo_read(combo), Read::Refused(refused) if refused == combo));
         }
-        // 断るのは修飾キーが Alt だけの組み合わせ。
-        for text in ["ctrl+f4", "alt+shift+f4", "f4", "alt+tab"] {
+        // Alt を含まない F4 と Space、Alt を含む F4 と Space 以外のキーは割り当てられる。
+        for text in ["ctrl+f4", "f4", "ctrl+space", "alt+tab"] {
             assert!(matches!(
                 combo_read(KeyCombo::parse(text).unwrap()),
                 Read::Done(Some(_))
