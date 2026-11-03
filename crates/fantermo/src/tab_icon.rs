@@ -46,7 +46,11 @@ use windows::{
 use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::{
-    app_files::path_key, atlas, background::Decoded, boxdraw::Shape, bridge, font, paint::arc,
+    app_files::path_key,
+    atlas,
+    background::Decoded,
+    boxdraw::{Shape, arc},
+    bridge, font,
 };
 
 /// プロファイル名から選ぶ背景の色。青・水色・青緑・緑・藍・紫の淡い色で、警告に使う赤・橙・黄は入れない。
@@ -419,13 +423,7 @@ fn prompt_shapes(side: f32) -> Vec<(Ink, Shape)> {
         ),
         (
             Ink::Dark,
-            Shape::Rect {
-                left: side * 0.3,
-                top: bottom - inset,
-                right: side * 0.7,
-                bottom: bottom + inset,
-                alpha: 1.0,
-            },
+            Shape::rect(side * 0.3, bottom - inset, side * 0.7, bottom + inset),
         ),
     ]
 }
@@ -454,7 +452,7 @@ fn penguin_shapes(side: f32) -> Vec<(Ink, Shape)> {
             .map(|(x, y)| (center.0 + x * radius.0, center.1 + y * radius.1))
             .collect()
     };
-    let polygon = |ink: Ink, points: Vec<(f32, f32)>| (ink, Shape::Polygon { points, alpha: 1.0 });
+    let polygon = |ink: Ink, points: Vec<(f32, f32)>| (ink, Shape::polygon(points));
     let at = |x: f32, y: f32| (side * x, side * y);
     vec![
         polygon(

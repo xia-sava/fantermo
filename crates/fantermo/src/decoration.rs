@@ -67,13 +67,13 @@ pub fn shapes(
     let top = placement.underline_top;
     match decoration {
         Decoration::Underline(Underline::None) => Vec::new(),
-        Decoration::Underline(Underline::Single) => vec![rect(0.0, top, width, top + t)],
+        Decoration::Underline(Underline::Single) => vec![Shape::rect(0.0, top, width, top + t)],
         Decoration::Underline(Underline::Double) => {
             // 2 本の間に 1 本分のすき間を空ける。セルに収まらなければ上へずらす。
             let top = top.min(height - 3.0 * t).max(0.0);
             vec![
-                rect(0.0, top, width, top + t),
-                rect(0.0, top + 2.0 * t, width, top + 3.0 * t),
+                Shape::rect(0.0, top, width, top + t),
+                Shape::rect(0.0, top + 2.0 * t, width, top + 3.0 * t),
             ]
         }
         Decoration::Underline(Underline::Curly) => {
@@ -98,7 +98,7 @@ pub fn shapes(
                 (0..per_cell as u32)
                     .map(|i| {
                         let left = (x + i as f32 * spacing + (spacing - t) / 2.0).round();
-                        rect(left, top, left + t, top + t)
+                        Shape::rect(left, top, left + t, top + t)
                     })
                     .collect()
             })
@@ -107,19 +107,19 @@ pub fn shapes(
             // セルの真ん中の半分を線にし、両側の 1/4 ずつを隣のセルとの間のすき間にする。
             let (start, end) = ((cell_width / 4.0).round(), (cell_width * 3.0 / 4.0).round());
             each_cell(cells, cell_width, |x| {
-                vec![rect(x + start, top, x + end, top + t)]
+                vec![Shape::rect(x + start, top, x + end, top + t)]
             })
         }
         Decoration::Strikethrough => {
             let top = placement.strikethrough_top;
-            vec![rect(
+            vec![Shape::rect(
                 0.0,
                 top,
                 width,
                 top + placement.strikethrough_thickness,
             )]
         }
-        Decoration::Overline => vec![rect(0.0, 0.0, width, t)],
+        Decoration::Overline => vec![Shape::rect(0.0, 0.0, width, t)],
     }
 }
 
@@ -128,16 +128,6 @@ fn each_cell(cells: u8, cell_width: f32, cell: impl Fn(f32) -> Vec<Shape>) -> Ve
     (0..cells)
         .flat_map(|index| cell(f32::from(index) * cell_width))
         .collect()
-}
-
-fn rect(left: f32, top: f32, right: f32, bottom: f32) -> Shape {
-    Shape::Rect {
-        left,
-        top,
-        right,
-        bottom,
-        alpha: 1.0,
-    }
 }
 
 #[cfg(test)]

@@ -5,6 +5,8 @@
 //! フォントのグリフは文字の幅や太さがセルと合わず、隣のセルとつながらないことがある。セルの寸法から
 //! 線や矩形を作れば、どのフォントでも端から端までつながる。座標はセルの左上を原点とするピクセル。
 
+use std::f32::consts::PI;
+
 mod braille;
 mod legacy;
 mod powerline;
@@ -48,6 +50,29 @@ pub enum Shape {
     Polygon { points: Vec<(f32, f32)>, alpha: f32 },
     /// `points` を順に結んだ、太さ `width` の折れ線。閉じない。
     Polyline { points: Vec<(f32, f32)>, width: f32 },
+}
+
+impl Shape {
+    /// 色を全面に塗る矩形。
+    pub fn rect(left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        Self::shaded_rect(left, top, right, bottom, 1.0)
+    }
+
+    /// `alpha` の割合で塗る矩形。
+    pub fn shaded_rect(left: f32, top: f32, right: f32, bottom: f32, alpha: f32) -> Self {
+        Self::Rect {
+            left,
+            top,
+            right,
+            bottom,
+            alpha,
+        }
+    }
+
+    /// 色を全面に塗る多角形。
+    pub fn polygon(points: Vec<(f32, f32)>) -> Self {
+        Self::Polygon { points, alpha: 1.0 }
+    }
 }
 
 /// 罫線の腕一本の種類。
@@ -107,24 +132,6 @@ impl Cell {
     /// 太さ `t` の線を中心に置いたときの左端（または上端）。ピクセルの境目に揃える。
     fn centered(&self, length: f32, t: f32) -> f32 {
         ((length - t) / 2.0).floor()
-    }
-
-    fn rect(left: f32, top: f32, right: f32, bottom: f32) -> Shape {
-        Self::shaded_rect(left, top, right, bottom, 1.0)
-    }
-
-    fn shaded_rect(left: f32, top: f32, right: f32, bottom: f32, alpha: f32) -> Shape {
-        Shape::Rect {
-            left,
-            top,
-            right,
-            bottom,
-            alpha,
-        }
-    }
-
-    fn polygon(points: Vec<(f32, f32)>) -> Shape {
-        Shape::Polygon { points, alpha: 1.0 }
     }
 
     /// 細線の太さの折れ線。両端は線の向きに太さの分だけ延ばし、セルの縁で切れたときに欠けを作らない。
@@ -211,10 +218,10 @@ impl Cell {
         let y = self.centered(h, t);
         let reach = reach.max(t / 2.0);
         match index {
-            UP => Self::rect(x, 0.0, x + t, (cy + reach).ceil()),
-            DOWN => Self::rect(x, (cy - reach).floor(), x + t, h),
-            LEFT => Self::rect(0.0, y, (cx + reach).ceil(), y + t),
-            _ => Self::rect((cx - reach).floor(), y, w, y + t),
+            UP => Shape::rect(x, 0.0, x + t, (cy + reach).ceil()),
+            DOWN => Shape::rect(x, (cy - reach).floor(), x + t, h),
+            LEFT => Shape::rect(0.0, y, (cx + reach).ceil(), y + t),
+            _ => Shape::rect((cx - reach).floor(), y, w, y + t),
         }
     }
 
@@ -249,13 +256,13 @@ impl Cell {
                 let bottom_end = end(arms[DOWN], arms[UP], cx, index == RIGHT);
                 if index == RIGHT {
                     [
-                        Self::rect(start(top_end), top, w, top + t),
-                        Self::rect(start(bottom_end), bottom, w, bottom + t),
+                        Shape::rect(start(top_end), top, w, top + t),
+                        Shape::rect(start(bottom_end), bottom, w, bottom + t),
                     ]
                 } else {
                     [
-                        Self::rect(0.0, top, stop(top_end), top + t),
-                        Self::rect(0.0, bottom, stop(bottom_end), bottom + t),
+                        Shape::rect(0.0, top, stop(top_end), top + t),
+                        Shape::rect(0.0, bottom, stop(bottom_end), bottom + t),
                     ]
                 }
             }
@@ -266,13 +273,13 @@ impl Cell {
                 let right_end = end(arms[RIGHT], arms[LEFT], cy, index == DOWN);
                 if index == DOWN {
                     [
-                        Self::rect(left, start(left_end), left + t, h),
-                        Self::rect(right, start(right_end), right + t, h),
+                        Shape::rect(left, start(left_end), left + t, h),
+                        Shape::rect(right, start(right_end), right + t, h),
                     ]
                 } else {
                     [
-                        Self::rect(left, 0.0, left + t, stop(left_end)),
-                        Self::rect(right, 0.0, right + t, stop(right_end)),
+                        Shape::rect(left, 0.0, left + t, stop(left_end)),
+                        Shape::rect(right, 0.0, right + t, stop(right_end)),
                     ]
                 }
             }
@@ -328,9 +335,9 @@ impl Cell {
                 let start = (i as f32 * segment + segment * (1.0 - DASH_RATIO) / 2.0).round();
                 let end = (start + segment * DASH_RATIO).round().max(start + 1.0);
                 if horizontal {
-                    Self::rect(start, offset, end, offset + t)
+                    Shape::rect(start, offset, end, offset + t)
                 } else {
-                    Self::rect(offset, start, offset + t, end)
+                    Shape::rect(offset, start, offset + t, end)
                 }
             })
             .collect()
@@ -369,27 +376,27 @@ impl Cell {
         let quadrant = |left: bool, top: bool| {
             let (x0, x1) = if left { (0.0, half_w) } else { (half_w, w) };
             let (y0, y1) = if top { (0.0, half_h) } else { (half_h, h) };
-            Self::rect(x0, y0, x1, y1)
+            Shape::rect(x0, y0, x1, y1)
         };
-        let shade = |alpha: f32| Self::shaded_rect(0.0, 0.0, w, h, alpha);
+        let shade = |alpha: f32| Shape::shaded_rect(0.0, 0.0, w, h, alpha);
         let shapes = match c {
-            '▀' => vec![Self::rect(0.0, 0.0, w, half_h)],
+            '▀' => vec![Shape::rect(0.0, 0.0, w, half_h)],
             '▁'..='▇' => {
                 let eighths = f32::from(c as u8 - 0x80);
-                vec![Self::rect(0.0, h - eighth_h(eighths), w, h)]
+                vec![Shape::rect(0.0, h - eighth_h(eighths), w, h)]
             }
-            '█' => vec![Self::rect(0.0, 0.0, w, h)],
+            '█' => vec![Shape::rect(0.0, 0.0, w, h)],
             '▉'..='▏' => {
                 // U+2589 が 7/8、U+258F が 1/8。
                 let eighths = f32::from(0x90 - (c as u32 & 0xff) as u8);
-                vec![Self::rect(0.0, 0.0, eighth_w(eighths), h)]
+                vec![Shape::rect(0.0, 0.0, eighth_w(eighths), h)]
             }
-            '▐' => vec![Self::rect(half_w, 0.0, w, h)],
+            '▐' => vec![Shape::rect(half_w, 0.0, w, h)],
             '░' => vec![shade(0.25)],
             '▒' => vec![shade(0.5)],
             '▓' => vec![shade(0.75)],
-            '▔' => vec![Self::rect(0.0, 0.0, w, eighth_h(1.0))],
-            '▕' => vec![Self::rect(w - eighth_w(1.0), 0.0, w, h)],
+            '▔' => vec![Shape::rect(0.0, 0.0, w, eighth_h(1.0))],
+            '▕' => vec![Shape::rect(w - eighth_w(1.0), 0.0, w, h)],
             '▖' => vec![quadrant(true, false)],
             '▗' => vec![quadrant(false, false)],
             '▘' => vec![quadrant(true, true)],
@@ -430,6 +437,25 @@ fn extend(from: (f32, f32), to: (f32, f32), by: f32) -> (f32, f32) {
         return to;
     }
     (to.0 + dx / length * by, to.1 + dy / length * by)
+}
+
+/// 円や円弧を多角形にするときの、一周の頂点の数。
+const CIRCLE_SEGMENTS: usize = 48;
+
+/// 中心 `center`、半径 `radius` の円周の、角度 `from` から `to` まで（ラジアン。y が下向きなので、
+/// 増えると右回り）の点。両端を含む。
+pub fn arc(center: (f32, f32), radius: f32, from: f32, to: f32) -> Vec<(f32, f32)> {
+    let steps = (((to - from).abs() / (2.0 * PI)) * CIRCLE_SEGMENTS as f32).ceil() as usize;
+    let steps = steps.max(1);
+    (0..=steps)
+        .map(|step| {
+            let angle = from + (to - from) * step as f32 / steps as f32;
+            (
+                center.0 + radius * angle.cos(),
+                center.1 + radius * angle.sin(),
+            )
+        })
+        .collect()
 }
 
 /// 腕の表で表せる罫線の文字の、上・右・下・左の腕。

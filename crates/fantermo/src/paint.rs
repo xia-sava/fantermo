@@ -5,10 +5,10 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use fantermo_core::frame::Rgb;
 
-use crate::{boxdraw::Shape, tab_icon::TabIcon};
-
-/// 円や円弧を多角形にするときの、一周の頂点の数。
-const CIRCLE_SEGMENTS: usize = 48;
+use crate::{
+    boxdraw::{Shape, arc},
+    tab_icon::TabIcon,
+};
 
 /// タブバーとスクロールバーの寸法の定数を決めた DPI。定数はこの DPI でのピクセルで、ウィンドウの DPI に
 /// 比例させて使う（[`scale`]）。
@@ -134,8 +134,8 @@ impl Icon {
                 let x = ((width - thickness) / 2.0).round();
                 let y = ((height - thickness) / 2.0).round();
                 vec![
-                    rect(0.0, y, width, y + thickness),
-                    rect(x, 0.0, x + thickness, height),
+                    Shape::rect(0.0, y, width, y + thickness),
+                    Shape::rect(x, 0.0, x + thickness, height),
                 ]
             }
             Icon::Menu => {
@@ -144,25 +144,23 @@ impl Icon {
                 let bottom = height - thickness;
                 [0.0, middle, bottom]
                     .into_iter()
-                    .map(|top| rect(0.0, top, width, top + thickness))
+                    .map(|top| Shape::rect(0.0, top, width, top + thickness))
                     .collect()
             }
             Icon::Chevron => {
                 // 幅いっぱいで、高さの真ん中の半分に収める。
                 let top = (height / 4.0).round();
                 let bottom = height - top;
-                vec![Shape::Polygon {
-                    points: vec![(0.0, top), (width, top), (width / 2.0, bottom)],
-                    alpha: 1.0,
-                }]
+                vec![Shape::polygon(vec![
+                    (0.0, top),
+                    (width, top),
+                    (width / 2.0, bottom),
+                ])]
             }
             Icon::Dot => {
                 let radius = width.min(height) / 2.0;
                 let center = (width / 2.0, height / 2.0);
-                vec![Shape::Polygon {
-                    points: arc(center, radius, 0.0, 2.0 * PI),
-                    alpha: 1.0,
-                }]
+                vec![Shape::polygon(arc(center, radius, 0.0, 2.0 * PI))]
             }
         }
     }
@@ -171,32 +169,6 @@ impl Icon {
 /// 一辺 `size` の「×」と「+」の線の太さ。
 fn stroke(size: f32) -> f32 {
     (size / 8.0).max(1.0)
-}
-
-fn rect(left: f32, top: f32, right: f32, bottom: f32) -> Shape {
-    Shape::Rect {
-        left,
-        top,
-        right,
-        bottom,
-        alpha: 1.0,
-    }
-}
-
-/// 中心 `center`、半径 `radius` の円周の、角度 `from` から `to` まで（ラジアン。y が下向きなので、
-/// 増えると右回り）の点。両端を含む。
-pub fn arc(center: (f32, f32), radius: f32, from: f32, to: f32) -> Vec<(f32, f32)> {
-    let steps = (((to - from).abs() / (2.0 * PI)) * CIRCLE_SEGMENTS as f32).ceil() as usize;
-    let steps = steps.max(1);
-    (0..=steps)
-        .map(|step| {
-            let angle = from + (to - from) * step as f32 / steps as f32;
-            (
-                center.0 + radius * angle.cos(),
-                center.1 + radius * angle.sin(),
-            )
-        })
-        .collect()
 }
 
 /// 幅 `width`・高さ `height` の矩形を、`corner` の角が丸い矩形の角として塗る形。
@@ -209,7 +181,7 @@ fn corner_shape(corner: Corner, width: f32, height: f32) -> Shape {
     };
     let mut points = arc(center, radius, start, start + FRAC_PI_2);
     points.push(center);
-    Shape::Polygon { points, alpha: 1.0 }
+    Shape::polygon(points)
 }
 
 #[cfg(test)]
@@ -296,7 +268,10 @@ mod tests {
     fn the_plus_mark_lies_on_whole_pixels() {
         assert_eq!(
             Icon::Plus.shapes(13.0, 13.0),
-            vec![rect(0.0, 6.0, 13.0, 8.0), rect(6.0, 0.0, 8.0, 13.0)]
+            vec![
+                Shape::rect(0.0, 6.0, 13.0, 8.0),
+                Shape::rect(6.0, 0.0, 8.0, 13.0),
+            ]
         );
     }
 
@@ -305,9 +280,9 @@ mod tests {
         assert_eq!(
             Icon::Menu.shapes(12.0, 12.0),
             vec![
-                rect(0.0, 0.0, 12.0, 2.0),
-                rect(0.0, 5.0, 12.0, 7.0),
-                rect(0.0, 10.0, 12.0, 12.0),
+                Shape::rect(0.0, 0.0, 12.0, 2.0),
+                Shape::rect(0.0, 5.0, 12.0, 7.0),
+                Shape::rect(0.0, 10.0, 12.0, 12.0),
             ]
         );
     }
@@ -316,10 +291,7 @@ mod tests {
     fn the_chevron_points_down_in_the_middle() {
         assert_eq!(
             Icon::Chevron.shapes(8.0, 8.0),
-            vec![Shape::Polygon {
-                points: vec![(0.0, 2.0), (8.0, 2.0), (4.0, 6.0)],
-                alpha: 1.0,
-            }]
+            vec![Shape::polygon(vec![(0.0, 2.0), (8.0, 2.0), (4.0, 6.0)])]
         );
     }
 

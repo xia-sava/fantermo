@@ -33,7 +33,7 @@ impl Cell {
             .map(|(_, &(column, row))| {
                 let left = start(column, column_width);
                 let top = start(row, row_height);
-                Self::rect(left, top, left + dot, top + dot)
+                Shape::rect(left, top, left + dot, top + dot)
             })
             .collect()
     }

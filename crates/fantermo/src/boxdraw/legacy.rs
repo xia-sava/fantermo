@@ -96,9 +96,9 @@ impl Cell {
         let (half_w, half_h) = ((w / 2.0).round(), (h / 2.0).round());
         let eighths = |from: f32, to: f32, vertical: bool| {
             if vertical {
-                Self::rect(self.eighth_w(from), 0.0, self.eighth_w(to), h)
+                Shape::rect(self.eighth_w(from), 0.0, self.eighth_w(to), h)
             } else {
-                Self::rect(0.0, self.eighth_h(from), w, self.eighth_h(to))
+                Shape::rect(0.0, self.eighth_h(from), w, self.eighth_h(to))
             }
         };
         let code = c as u32;
@@ -147,22 +147,22 @@ impl Cell {
                 let n = RIGHT_EIGHTHS[(code - 0x1fb87) as usize];
                 vec![eighths(8.0 - n, 8.0, true)]
             }
-            '\u{1fb8c}' => vec![Self::shaded_rect(0.0, 0.0, half_w, h, MEDIUM_SHADE)],
-            '\u{1fb8d}' => vec![Self::shaded_rect(half_w, 0.0, w, h, MEDIUM_SHADE)],
-            '\u{1fb8e}' => vec![Self::shaded_rect(0.0, 0.0, w, half_h, MEDIUM_SHADE)],
-            '\u{1fb8f}' => vec![Self::shaded_rect(0.0, half_h, w, h, MEDIUM_SHADE)],
-            '\u{1fb90}' => vec![Self::shaded_rect(0.0, 0.0, w, h, MEDIUM_SHADE)],
+            '\u{1fb8c}' => vec![Shape::shaded_rect(0.0, 0.0, half_w, h, MEDIUM_SHADE)],
+            '\u{1fb8d}' => vec![Shape::shaded_rect(half_w, 0.0, w, h, MEDIUM_SHADE)],
+            '\u{1fb8e}' => vec![Shape::shaded_rect(0.0, 0.0, w, half_h, MEDIUM_SHADE)],
+            '\u{1fb8f}' => vec![Shape::shaded_rect(0.0, half_h, w, h, MEDIUM_SHADE)],
+            '\u{1fb90}' => vec![Shape::shaded_rect(0.0, 0.0, w, h, MEDIUM_SHADE)],
             '\u{1fb91}' => vec![
-                Self::rect(0.0, 0.0, w, half_h),
-                Self::shaded_rect(0.0, half_h, w, h, MEDIUM_SHADE),
+                Shape::rect(0.0, 0.0, w, half_h),
+                Shape::shaded_rect(0.0, half_h, w, h, MEDIUM_SHADE),
             ],
             '\u{1fb92}' => vec![
-                Self::shaded_rect(0.0, 0.0, w, half_h, MEDIUM_SHADE),
-                Self::rect(0.0, half_h, w, h),
+                Shape::shaded_rect(0.0, 0.0, w, half_h, MEDIUM_SHADE),
+                Shape::rect(0.0, half_h, w, h),
             ],
             '\u{1fb94}' => vec![
-                Self::shaded_rect(0.0, 0.0, half_w, h, MEDIUM_SHADE),
-                Self::rect(half_w, 0.0, w, h),
+                Shape::shaded_rect(0.0, 0.0, half_w, h, MEDIUM_SHADE),
+                Shape::rect(half_w, 0.0, w, h),
             ],
             '\u{1fb9a}' => vec![self.quarter(UPPER), self.quarter(LOWER)],
             '\u{1fb9b}' => vec![self.quarter(LEFT), self.quarter(RIGHT)],
@@ -204,7 +204,7 @@ impl Cell {
             .filter(|bit| bits & (1 << bit) != 0)
             .map(|bit| {
                 let (column, row) = (bit % 2, bit / 2);
-                Self::rect(xs[column], ys[row], xs[column + 1], ys[row + 1])
+                Shape::rect(xs[column], ys[row], xs[column + 1], ys[row + 1])
             })
             .collect()
     }
@@ -228,7 +228,7 @@ impl Cell {
                 points.push((p.0 + (q.0 - p.0) * t, p.1 + (q.1 - p.1) * t));
             }
         }
-        Self::polygon(points)
+        Shape::polygon(points)
     }
 
     /// 左上から右回りの、セルの 4 つの角。
@@ -244,7 +244,7 @@ impl Cell {
     /// 辺 `side` を底辺にし、セルの中心を頂点にした三角形。
     fn quarter(&self, side: usize) -> Shape {
         let corners = self.corners();
-        Self::polygon(vec![corners[side], corners[(side + 1) % 4], self.center()])
+        Shape::polygon(vec![corners[side], corners[(side + 1) % 4], self.center()])
     }
 
     /// セルから [`Cell::quarter`] の `side` の三角形を除いた形。
@@ -252,7 +252,7 @@ impl Cell {
         let corners = self.corners();
         let mut points: Vec<_> = (1..=4).map(|i| corners[(side + i) % 4]).collect();
         points.push(self.center());
-        Self::polygon(points)
+        Shape::polygon(points)
     }
 
     /// 細線の斜線（U+1FBA0〜U+1FBAE）。`index` は U+1FBA0 からの番号。
