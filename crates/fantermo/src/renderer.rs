@@ -911,7 +911,8 @@ fn create_device_with(
 ) -> windows::core::Result<(ID3D11Device, ID3D11DeviceContext)> {
     let mut device = None;
     let mut context = None;
-    // SAFETY: device と context は書き込める。BGRA に対応させるのは、グリフを Direct2D で描くため。
+    let mut level = D3D_FEATURE_LEVEL::default();
+    // SAFETY: device・level・context は書き込める。BGRA に対応させるのは、グリフを Direct2D で描くため。
     // 機能レベルの並びは作れるデバイスの下限を決める。満たさないハードウェアは失敗させて WARP に
     // 切り替えさせる。
     unsafe {
@@ -923,12 +924,16 @@ fn create_device_with(
             Some(&FEATURE_LEVELS),
             D3D11_SDK_VERSION,
             Some(&mut device),
-            None,
+            Some(&mut level),
             Some(&mut context),
         )?
     };
     let device = device.ok_or_else(windows::core::Error::empty)?;
     let context = context.ok_or_else(windows::core::Error::empty)?;
+    tracing::info!(
+        "created a Direct3D 11 device ({driver_type:?}) with the feature level {:#x}",
+        level.0
+    );
     Ok((device, context))
 }
 
