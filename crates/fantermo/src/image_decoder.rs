@@ -24,7 +24,7 @@ use windows::{
     core::{HSTRING, Interface},
 };
 
-use crate::tab_icon::{self, RealIcon};
+use crate::tab_icon::RealIcon;
 
 /// Direct3D 11 のテクスチャの一辺の上限（`D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION`）。
 pub const MAX_TEXTURE_SIDE: u32 = D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION;
@@ -133,7 +133,7 @@ impl Decoder {
     }
 
     /// `path` の画像を、一辺 `side` のタブのアイコンとして読む。コマが複数あれば（ICO）大きさの合うものを
-    /// 使い（[`tab_icon::best_frame`]）、縦横比を保って縮め、正方形の真ん中に置く。余りは透明。
+    /// 使い（[`best_frame`]）、縦横比を保って縮め、正方形の真ん中に置く。余りは透明。
     /// 選んだコマの元の大きさが [`MAX_SOURCE_PIXELS`] を超えればエラー。
     pub fn decode_icon(&self, path: &Path, side: u32) -> windows::core::Result<Decoded> {
         let factory = &self.factory;
@@ -153,7 +153,7 @@ impl Decoder {
                 decoder.GetFrame(index)?.GetSize(&mut width, &mut height)?;
                 sizes.push((width, height));
             }
-            let chosen = tab_icon::best_frame(&sizes, side);
+            let chosen = best_frame(&sizes, side);
             let (chosen_width, chosen_height) = sizes[chosen];
             if exceeds_source_pixel_limit(chosen_width, chosen_height) {
                 return Err(source_too_large(chosen_width, chosen_height));
@@ -229,7 +229,7 @@ impl Decoder {
                 0.0,
                 WICBitmapPaletteTypeMedianCut,
             )?;
-            let (fitted_width, fitted_height, x, y) = tab_icon::fit_in_square(size, side);
+            let (fitted_width, fitted_height, x, y) = fit_in_square(size, side);
             let scaler = factory.CreateBitmapScaler()?;
             scaler.Initialize(
                 &converter,
@@ -309,6 +309,49 @@ fn screen_size() -> (u32, u32) {
         )
     };
     (width.max(0) as u32, height.max(0) as u32)
+}
+
+/// `sizes` の大きさのコマのうち、一辺 `side` のアイコンに使うものの位置。`side` を覆える最も小さいコマ、
+/// なければ最も大きいコマ。同じ大きさなら前のもの。
+fn best_frame(sizes: &[(u32, u32)], side: u32) -> usize {
+    let shorter = |size: &(u32, u32)| size.0.min(size.1);
+    let covering = sizes
+        .iter()
+        .enumerate()
+        .filter(|(_, size)| shorter(size) >= side)
+        .min_by_key(|(_, size)| shorter(size));
+    // `max_by_key` は同じ値なら後ろを返すので、位置の逆順で前のものにする。
+    let largest = sizes
+        .iter()
+        .enumerate()
+        .rev()
+        .max_by_key(|(_, size)| shorter(size));
+    covering.or(largest).map_or(0, |(index, _)| index)
+}
+
+/// 大きさ `image` の画像を、縦横比を保って一辺 `side` の正方形に収めたときの幅と高さ（少なくとも 1）と、
+/// 真ん中に置くときの左上。
+fn fit_in_square(image: (u32, u32), side: u32) -> (u32, u32, u32, u32) {
+    let (width, height) = image;
+    let (fitted_width, fitted_height) = if width >= height {
+        (side, scaled(height, side, width))
+    } else {
+        (scaled(width, side, height), side)
+    };
+    (
+        fitted_width,
+        fitted_height,
+        (side - fitted_width) / 2,
+        (side - fitted_height) / 2,
+    )
+}
+
+/// `value * numerator / denominator` を四捨五入して、少なくとも 1。
+fn scaled(value: u32, numerator: u32, denominator: u32) -> u32 {
+    let numerator = u64::from(numerator);
+    let denominator = u64::from(denominator).max(1);
+    let result = (u64::from(value) * numerator + denominator / 2) / denominator;
+    result.clamp(1, numerator) as u32
 }
 
 #[cfg(test)]
@@ -478,5 +521,31 @@ mod tests {
         ] {
             assert!(decoder.decode_real_icon(&real, 16).is_err(), "{real:?}");
         }
+    }
+
+    #[test]
+    fn the_frame_nearest_above_the_size_is_chosen() {
+        let ico = [(16, 16), (32, 32), (48, 48), (256, 256)];
+        assert_eq!(best_frame(&ico, 18), 1);
+        assert_eq!(best_frame(&ico, 16), 0);
+        assert_eq!(best_frame(&ico, 27), 1);
+        assert_eq!(best_frame(&ico, 33), 2);
+        // 覆えるものがなければ最も大きいもの。
+        assert_eq!(best_frame(&[(16, 16), (24, 24), (8, 8)], 36), 1);
+        // 同じ大きさのコマ（アニメーションの GIF など）は最初のもの。
+        assert_eq!(best_frame(&[(64, 64), (64, 64)], 18), 0);
+        assert_eq!(best_frame(&[(8, 8), (8, 8)], 18), 0);
+        assert_eq!(best_frame(&[], 18), 0);
+    }
+
+    #[test]
+    fn images_keep_their_aspect_in_the_square() {
+        assert_eq!(fit_in_square((64, 64), 18), (18, 18, 0, 0));
+        assert_eq!(fit_in_square((64, 32), 18), (18, 9, 0, 4));
+        assert_eq!(fit_in_square((32, 64), 18), (9, 18, 4, 0));
+        // 小さい画像も広げる。
+        assert_eq!(fit_in_square((16, 16), 27), (27, 27, 0, 0));
+        // 細長い画像も消えない。
+        assert_eq!(fit_in_square((1000, 1), 18), (18, 1, 0, 8));
     }
 }
