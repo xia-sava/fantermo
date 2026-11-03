@@ -350,6 +350,8 @@ impl Renderer {
         self.atlas = GlyphAtlas::new(&self.device, dwrite, font, ui_font, wide_glyph)?;
         self.cell_width = font.cell_width_px;
         self.cell_height = font.cell_height_px;
+        // タブのアイコンは一辺ごとに作るので、前の一辺のものを残さず新しい一辺で作り直させる。
+        self.tab_icons.clear();
         Ok(())
     }
 
