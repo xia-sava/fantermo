@@ -4,32 +4,19 @@ use crate::common::Server;
 use crate::common::processes;
 use crate::common::processes::Process;
 use crate::ui::{
-    CMD_LONG_COMMAND, CMD_LONG_PROCESS, SH_LONG_COMMAND, cygwin_config, cygwin_sleep_is_running,
-    tab_count, unique_sleep_seconds, wait_cygwin_sleep, wait_sh_ready, wsl_config,
+    BackendSetup, CMD_LONG_COMMAND, CMD_LONG_PROCESS, conpty_setup, cygwin_config, cygwin_setup,
+    cygwin_sleep_is_running, open_tabs_with_long_commands, tab_count, unique_sleep_seconds,
+    wait_cygwin_sleep, wait_sh_ready, wsl_setup,
 };
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
 /// 長く動くコマンドを動かしているタブ 2 つと、何も動かしていないタブ 1 つでウィンドウを閉じると、子孫のプロセスが
-/// 残らない。`wait_ready` はタブのシェルが入力を受け付けるのを待つ。
-fn exercise_closing_the_window(
-    mut server: Server,
-    long_commands: [&str; 2],
-    wait_long_commands: &dyn Fn(&Server),
-    wait_ready: fn(&Server),
-) {
-    wait_ready(&server);
-    server.send_line(long_commands[0]);
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("two tabs", |state| tab_count(state) == 2);
-    wait_ready(&server);
-    server.send_line(long_commands[1]);
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("three tabs", |state| tab_count(state) == 3);
-    wait_ready(&server);
-
-    wait_long_commands(&server);
+/// 残らない。
+fn exercise_closing_the_window(setup: &BackendSetup) {
+    let mut server = setup.start_watching_children();
+    open_tabs_with_long_commands(setup, &server);
     server.post("/e2e/quit", b"");
     assert_eq!(server.wait_exit(), 0);
     server.assert_no_children_remained();
@@ -54,18 +41,7 @@ const CYGWIN_SLEEP_SETTLE: Duration = Duration::from_secs(2);
 
 #[test]
 fn closing_the_window_ends_the_child_processes_of_every_tab() {
-    let server = Server::start_watching_children("", &CMD_COMMAND);
-    let wait_pings = |server: &Server| {
-        processes::wait_descendants_named(server.pid(), CMD_LONG_PROCESS, 2);
-    };
-    exercise_closing_the_window(
-        server,
-        [CMD_LONG_COMMAND, CMD_LONG_COMMAND],
-        &wait_pings,
-        |server| {
-            server.wait_text(CMD_PROMPT);
-        },
-    );
+    exercise_closing_the_window(&conpty_setup());
 }
 
 /// 長く動くコマンドを動かしているタブを閉じると、そのタブの子孫のプロセスが終わり、ほかのタブのものは動き続ける。
@@ -261,23 +237,10 @@ fn cygwin_closing_the_window_right_after_typing_a_command_ends_it() {
 
 #[test]
 fn cygwin_closing_the_window_ends_the_child_processes_of_every_tab() {
-    let Some(config) = cygwin_config("cygwin_closing_the_window") else {
+    let Some(setup) = cygwin_setup("cygwin_closing_the_window") else {
         return;
     };
-    let server = Server::start_watching_children(&config, &[]);
-    let (first, second) = (unique_sleep_seconds(), unique_sleep_seconds());
-    let wait_sleeps = |_: &Server| {
-        wait_cygwin_sleep(&first, true);
-        wait_cygwin_sleep(&second, true);
-    };
-    exercise_closing_the_window(
-        server,
-        [&format!("sleep {first}"), &format!("sleep {second}")],
-        &wait_sleeps,
-        wait_sh_ready,
-    );
-    wait_cygwin_sleep(&first, false);
-    wait_cygwin_sleep(&second, false);
+    exercise_closing_the_window(&setup);
 }
 
 #[test]
@@ -307,14 +270,8 @@ fn cygwin_closing_a_tab_ends_its_child_processes_only() {
 /// WSL の中のプロセスは見えないので、Windows の側の `wsl.exe` までを見る。
 #[test]
 fn wsl_closing_the_window_ends_the_child_processes_of_every_tab() {
-    let Some(config) = wsl_config("wsl_closing_the_window") else {
+    let Some(setup) = wsl_setup("wsl_closing_the_window") else {
         return;
     };
-    let server = Server::start_watching_children(&config, &[]);
-    exercise_closing_the_window(
-        server,
-        [SH_LONG_COMMAND, SH_LONG_COMMAND],
-        &|_| {},
-        wait_sh_ready,
-    );
+    exercise_closing_the_window(&setup);
 }

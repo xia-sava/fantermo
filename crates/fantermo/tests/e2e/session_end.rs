@@ -3,9 +3,9 @@ use crate::common::CMD_PROMPT;
 use crate::common::Server;
 use crate::common::processes;
 use crate::ui::{
-    CMD_LONG_COMMAND, CMD_LONG_PROCESS, SH_LONG_COMMAND, current_window, cygwin_config, quit,
-    saved_window, start_with_state, tab_count, unique_sleep_seconds, wait_cygwin_sleep,
-    wait_sh_ready, wait_text_dialog, wsl_config,
+    BackendSetup, CMD_LONG_COMMAND, CMD_LONG_PROCESS, check_cmd_responds, conpty_setup,
+    current_window, cygwin_setup, open_tabs_with_long_commands, quit, saved_window,
+    start_with_state, tab_count, wait_text_dialog, wsl_setup,
 };
 
 /// ログオフの問い合わせ（`WM_QUERYENDSESSION`）と、その結果の知らせ（`WM_ENDSESSION`）の名前。
@@ -33,36 +33,12 @@ fn terminate_like_the_session_end(server: &mut Server) {
     assert_eq!(server.wait_exit(), SESSION_END_EXIT_CODE as i32);
 }
 
-fn check_cmd_responds(server: &Server) {
-    server.type_line("echo alive-%ERRORLEVEL%-shell");
-    server.wait_text("alive-0-shell");
-}
-
-fn check_sh_responds(server: &Server) {
-    server.type_line("echo alive-$((1+1))");
-    server.wait_text("alive-2");
-}
-
 /// 長く動くコマンドを動かしているタブ 2 つと、何も動かしていないタブ 1 つで、ログオフの問い合わせ・取りやめ・
 /// 実行の順にメッセージを受ける。問われた時点と実行のときに状態を書き、取りやめでは書かない。その間ウィンドウと
 /// シェルは動き続け、プロセスごと終わらされたあとに子孫のプロセスが残らない。
-fn exercise_session_end(
-    mut server: Server,
-    long_commands: [&str; 2],
-    wait_long_commands: &dyn Fn(&Server),
-    wait_ready: fn(&Server),
-    check_responds: fn(&Server),
-) {
-    wait_ready(&server);
-    server.send_line(long_commands[0]);
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("two tabs", |state| tab_count(state) == 2);
-    wait_ready(&server);
-    server.send_line(long_commands[1]);
-    server.post("/e2e/tab/new", b"");
-    server.wait_until("three tabs", |state| tab_count(state) == 3);
-    wait_ready(&server);
-    wait_long_commands(&server);
+fn exercise_session_end(setup: &BackendSetup) {
+    let mut server = setup.start_watching_children();
+    open_tabs_with_long_commands(setup, &server);
     assert!(!server.state_file().exists());
 
     server.resize(87, 23);
@@ -81,7 +57,7 @@ fn exercise_session_end(
         !server.state_file().exists(),
         "the state was written though the session continues"
     );
-    check_responds(&server);
+    (setup.check_responds)(&server);
 
     server.resize(90, 25);
     let ending = current_window(&server.state());
@@ -93,7 +69,7 @@ fn exercise_session_end(
     let state = server.state();
     assert_eq!(tab_count(&state), 3, "{state:#}");
     assert_eq!(state["dialogs"].as_array().map(Vec::len), Some(0));
-    check_responds(&server);
+    (setup.check_responds)(&server);
 
     terminate_like_the_session_end(&mut server);
     assert_eq!(saved_window(&server), ending);
@@ -102,57 +78,24 @@ fn exercise_session_end(
 
 #[test]
 fn the_session_end_saves_the_state_and_leaves_no_child_processes() {
-    let server = Server::start_watching_children("", &CMD_COMMAND);
-    let wait_pings = |server: &Server| {
-        processes::wait_descendants_named(server.pid(), CMD_LONG_PROCESS, 2);
-    };
-    exercise_session_end(
-        server,
-        [CMD_LONG_COMMAND, CMD_LONG_COMMAND],
-        &wait_pings,
-        |server| {
-            server.wait_text(CMD_PROMPT);
-        },
-        check_cmd_responds,
-    );
+    exercise_session_end(&conpty_setup());
 }
 
 #[test]
 fn cygwin_the_session_end_saves_the_state_and_leaves_no_child_processes() {
-    let Some(config) = cygwin_config("cygwin_the_session_end") else {
+    let Some(setup) = cygwin_setup("cygwin_the_session_end") else {
         return;
     };
-    let server = Server::start_watching_children(&config, &[]);
-    let (first, second) = (unique_sleep_seconds(), unique_sleep_seconds());
-    let wait_sleeps = |_: &Server| {
-        wait_cygwin_sleep(&first, true);
-        wait_cygwin_sleep(&second, true);
-    };
-    exercise_session_end(
-        server,
-        [&format!("sleep {first}"), &format!("sleep {second}")],
-        &wait_sleeps,
-        wait_sh_ready,
-        check_sh_responds,
-    );
-    wait_cygwin_sleep(&first, false);
-    wait_cygwin_sleep(&second, false);
+    exercise_session_end(&setup);
 }
 
 /// WSL の中のプロセスは見えないので、Windows の側の `wsl.exe` までを見る。
 #[test]
 fn wsl_the_session_end_saves_the_state_and_leaves_no_child_processes() {
-    let Some(config) = wsl_config("wsl_the_session_end") else {
+    let Some(setup) = wsl_setup("wsl_the_session_end") else {
         return;
     };
-    let server = Server::start_watching_children(&config, &[]);
-    exercise_session_end(
-        server,
-        [SH_LONG_COMMAND, SH_LONG_COMMAND],
-        &|_| {},
-        wait_sh_ready,
-        check_sh_responds,
-    );
+    exercise_session_end(&setup);
 }
 
 /// ほかのアプリが止めて取りやめになったら、普段どおりに動き、閉じれば子孫のプロセスは残らない。

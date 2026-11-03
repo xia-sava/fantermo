@@ -2,6 +2,7 @@ use crate::common;
 use crate::common::CMD_COMMAND;
 use crate::common::CMD_PROMPT;
 use crate::common::Server;
+use crate::common::processes;
 use fantermo_core::state;
 use fantermo_core::state::State;
 use fantermo_core::state::WindowState;
@@ -77,6 +78,103 @@ pub const SH_LONG_COMMAND: &str = "sleep 300";
 pub fn wait_sh_ready(server: &Server) {
     server.type_line("echo ready-$((1+1))");
     server.wait_text("ready-2");
+}
+
+/// 接続方式（ConPTY・Cygwin・WSL）ごとの、起動の準備と動作の確認の手順。
+pub struct BackendSetup {
+    /// 設定の TOML。
+    pub config: String,
+    /// fantermo の引数。
+    pub arguments: &'static [&'static str],
+    /// 表示しているタブのシェルが入力を受け付けるのを待つ。
+    pub wait_ready: fn(&Server),
+    /// 表示しているタブのシェルが入力に応えることを確認する。
+    pub check_responds: fn(&Server),
+    /// 長く動くコマンドの行。呼ぶたびに、動いているかを区別できる行を返す。
+    pub long_command: fn() -> String,
+    /// `long_command` で打った行のコマンドが動き出すのを待つ。
+    pub wait_running: fn(&Server, &[String]),
+}
+
+impl BackendSetup {
+    /// 子孫のプロセスの終わりを見る形で起動する。
+    pub fn start_watching_children(&self) -> Server {
+        Server::start_watching_children(&self.config, self.arguments)
+    }
+}
+
+pub fn conpty_setup() -> BackendSetup {
+    BackendSetup {
+        config: String::new(),
+        arguments: &CMD_COMMAND,
+        wait_ready: |server| {
+            server.wait_text(CMD_PROMPT);
+        },
+        check_responds: check_cmd_responds,
+        long_command: || CMD_LONG_COMMAND.to_owned(),
+        wait_running: |server, commands| {
+            processes::wait_descendants_named(server.pid(), CMD_LONG_PROCESS, commands.len());
+        },
+    }
+}
+
+/// Cygwin のブリッジのタブの手順。環境変数がなければスキップしたと知らせて `None`。
+pub fn cygwin_setup(test: &str) -> Option<BackendSetup> {
+    Some(BackendSetup {
+        config: cygwin_config(test)?,
+        arguments: &[],
+        wait_ready: wait_sh_ready,
+        check_responds: check_sh_responds,
+        long_command: || format!("sleep {}", unique_sleep_seconds()),
+        wait_running: |_, commands| {
+            for command in commands {
+                let marker = command.strip_prefix("sleep ").expect("not a sleep command");
+                wait_cygwin_sleep(marker, true);
+            }
+        },
+    })
+}
+
+/// WSL のブリッジのタブの手順。WSL の中のプロセスは見えないので、動き出すのは待たない。環境変数がなければ
+/// スキップしたと知らせて `None`。
+pub fn wsl_setup(test: &str) -> Option<BackendSetup> {
+    Some(BackendSetup {
+        config: wsl_config(test)?,
+        arguments: &[],
+        wait_ready: wait_sh_ready,
+        check_responds: check_sh_responds,
+        long_command: || SH_LONG_COMMAND.to_owned(),
+        wait_running: |_, _| {},
+    })
+}
+
+/// 長く動くコマンドを動かしているタブ 2 つと、何も動かしていないタブ 1 つにして、コマンドが動き出すのを待つ。
+#[track_caller]
+pub fn open_tabs_with_long_commands(setup: &BackendSetup, server: &Server) {
+    (setup.wait_ready)(server);
+    let first = (setup.long_command)();
+    server.send_line(&first);
+    server.post("/e2e/tab/new", b"");
+    server.wait_until("two tabs", |state| tab_count(state) == 2);
+    (setup.wait_ready)(server);
+    let second = (setup.long_command)();
+    server.send_line(&second);
+    server.post("/e2e/tab/new", b"");
+    server.wait_until("three tabs", |state| tab_count(state) == 3);
+    (setup.wait_ready)(server);
+    (setup.wait_running)(server, &[first, second]);
+}
+
+/// `cmd.exe` が入力に応えることを確認する。
+pub fn check_cmd_responds(server: &Server) {
+    server.type_line("echo alive-%ERRORLEVEL%-shell");
+    server.wait_text("alive-0-shell");
+}
+
+/// `/bin/sh` が入力に応えることを確認する。
+pub fn check_sh_responds(server: &Server) {
+    server.type_line("echo alive-$((1+1))");
+    server.wait_text("alive-2");
 }
 
 /// Cygwin のプログラムの親は Windows のプロセスの親子で辿れないので、`/proc` のコマンドラインを見る。
