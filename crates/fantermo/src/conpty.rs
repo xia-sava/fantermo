@@ -41,7 +41,7 @@ use fantermo_core::{
 use windows::{
     Wdk::System::Threading::{NtQueryInformationProcess, PROCESSINFOCLASS},
     Win32::{
-        Foundation::{ERROR_MORE_DATA, HANDLE, WAIT_OBJECT_0},
+        Foundation::{ERROR_MORE_DATA, HANDLE},
         System::{
             Console::{COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole},
             Diagnostics::ToolHelp::{
@@ -58,19 +58,21 @@ use windows::{
             Threading::{
                 CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
                 DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcessId,
-                GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList,
-                LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, PROCESS_NAME_WIN32,
-                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
-                QueryFullProcessImageNameW, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-                TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+                InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
+                PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+                PROCESS_TERMINATE, QueryFullProcessImageNameW, ResumeThread, STARTF_USESTDHANDLES,
+                STARTUPINFOEXW, UpdateProcThreadAttribute,
             },
         },
     },
     core::{PCWSTR, PWSTR},
 };
 
-use crate::output_budget::{MAX_PENDING_OUTPUT, OutputBudget};
+use crate::{
+    output_budget::{MAX_PENDING_OUTPUT, OutputBudget},
+    process,
+};
 
 /// 出力のパイプから一度に読む大きさ。
 const READ_BUFFER_SIZE: usize = 64 * 1024;
@@ -81,14 +83,11 @@ const CLOSE_TIMEOUT_MS: u32 = 5000;
 /// 猶予のあと、遅れて接続するプロセスを終わらせ続ける上限。
 const SWEEP_LIMIT: Duration = Duration::from_secs(30);
 
-/// 猶予のあと、コンソールに接続しているプロセスを探す間隔（ミリ秒）。
-const SWEEP_INTERVAL_MS: u32 = 200;
+/// 猶予のあと、コンソールに接続しているプロセスを探す間隔。
+const SWEEP_INTERVAL: Duration = Duration::from_millis(200);
 
 /// 猶予のあと、接続し終えないまま止まっているとみなすまでの時間。起動の途中のプロセスはふつう数ミリ秒で接続する。
 const STALLED_CONNECTION: Duration = Duration::from_secs(3);
-
-/// プロセスを終わらせるときの終了コード。
-const TERMINATED_EXIT_CODE: u32 = 1;
 
 /// [`wait_for_closing_consoles`] が待つ上限。猶予と、止まっているとみなすまでの時間に、終わらせる分を足す。
 const CLOSING_AT_EXIT_TIMEOUT: Duration =
@@ -255,7 +254,7 @@ impl ConPty {
             .spawn({
                 let process = Arc::clone(&pty.process);
                 move || {
-                    wait_for_exit(&process);
+                    process::wait(&process, None);
                     wake();
                 }
             })?;
@@ -301,16 +300,13 @@ impl Backend for ConPty {
         if self.exit.is_some() {
             return self.exit;
         }
-        let process = HANDLE(self.process.as_raw_handle());
-        // SAFETY: process は self.process が持つ有効なハンドル。
-        if unsafe { WaitForSingleObject(process, 0) } != WAIT_OBJECT_0 {
+        if !process::wait(&self.process, Some(Duration::ZERO)) {
             return None;
         }
-        let mut code = 0u32;
-        // SAFETY: process は終了済みのプロセスの有効なハンドルで、code は書き込める。
-        if let Err(e) = unsafe { GetExitCodeProcess(process, &mut code) } {
+        let code = process::exit_code(&self.process).unwrap_or_else(|e| {
             tracing::warn!("failed to get the child exit code: {e}");
-        }
+            0
+        });
         self.exit = Some(ExitCode(code));
         self.exit
     }
@@ -362,10 +358,9 @@ fn close_console(
     // SAFETY: console は Drop がこのスレッドに渡したもので、ここで一度だけ閉じる。
     unsafe { ClosePseudoConsole(console) };
 
-    let child = HANDLE(process.as_raw_handle());
-    let deadline = Instant::now() + Duration::from_millis(CLOSE_TIMEOUT_MS.into());
-    // SAFETY: child は process が持つ有効なハンドル。
-    let child_ended = unsafe { WaitForSingleObject(child, CLOSE_TIMEOUT_MS) } == WAIT_OBJECT_0;
+    let close_timeout = Duration::from_millis(CLOSE_TIMEOUT_MS.into());
+    let deadline = Instant::now() + close_timeout;
+    let child_ended = process::wait(process, Some(close_timeout));
     // 閉じる前に接続していなかった子プロセスは、動いている間は接続した先の conhost が残っている。
     let host = host_before_closing.or_else(|| {
         if child_ended {
@@ -379,8 +374,7 @@ fn close_console(
     }
     if !child_ended {
         tracing::warn!("the child did not end after closing the pseudo console; terminating it");
-        // SAFETY: child は process が持つ有効なハンドル。
-        if let Err(e) = unsafe { TerminateProcess(child, TERMINATED_EXIT_CODE) } {
+        if let Err(e) = process::terminate(process) {
             tracing::warn!("failed to terminate the child: {e}");
         }
     }
@@ -410,30 +404,24 @@ impl ConsoleHost {
     /// `client` が接続しているコンソールのプロセス。接続する前か、開けなければ `None`。
     fn of(client: &OwnedHandle) -> Option<Self> {
         let pid = connected_console_host(query_console_host(HANDLE(client.as_raw_handle()))?)?;
-        // SAFETY: 終わるのを待つ権限で開くだけ。
-        let process = match unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) } {
+        // 終わるのを待つ権限で開く。
+        let process = match process::open(pid, PROCESS_SYNCHRONIZE) {
             Ok(process) => process,
             Err(e) => {
                 tracing::debug!("cannot open the console host {pid}: {e}");
                 return None;
             }
         };
-        // SAFETY: OpenProcess が成功したので、ハンドルは有効で、ほかに持ち主はいない。
-        let process = unsafe { OwnedHandle::from_raw_handle(process.0) };
         Some(Self { pid, process })
     }
 
-    /// 終わったか。`milliseconds` まで待つ。
-    fn wait(&self, milliseconds: u32) -> bool {
-        // SAFETY: self.process は有効なハンドル。
-        let waited =
-            unsafe { WaitForSingleObject(HANDLE(self.process.as_raw_handle()), milliseconds) };
-        waited == WAIT_OBJECT_0
+    /// 終わったか。`timeout` まで待つ。
+    fn wait(&self, timeout: Duration) -> bool {
+        process::wait(&self.process, Some(timeout))
     }
 
     fn wait_until(&self, deadline: Instant) {
-        let left = deadline.saturating_duration_since(Instant::now());
-        self.wait(u32::try_from(left.as_millis()).unwrap_or(CLOSE_TIMEOUT_MS));
+        self.wait(deadline.saturating_duration_since(Instant::now()));
     }
 
     /// このコンソールに接続しているプロセスと、`job` の中で接続し終えないまま止まっているコンソールのプログラムを、
@@ -441,7 +429,7 @@ impl ConsoleHost {
     fn end_clients(&self, job: Option<&OwnedHandle>) -> bool {
         let deadline = Instant::now() + SWEEP_LIMIT;
         let mut connecting = HashMap::new();
-        while !self.wait(0) {
+        while !self.wait(Duration::ZERO) {
             if Instant::now() >= deadline {
                 tracing::warn!(
                     "the console host {} did not end; processes of the tab: {:?}",
@@ -454,7 +442,7 @@ impl ConsoleHost {
             if let Some(job) = job {
                 terminate_stalled_connections(job, &mut connecting);
             }
-            self.wait(SWEEP_INTERVAL_MS);
+            self.wait(SWEEP_INTERVAL);
         }
         true
     }
@@ -494,8 +482,7 @@ fn terminate_stalled_connections(
     };
     connecting.retain(|pid, _| pids.contains(pid));
     for pid in pids {
-        let Some(process) =
-            open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE)
+        let Ok(process) = process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE)
         else {
             continue;
         };
@@ -516,10 +503,8 @@ fn terminate_stalled_connections(
         tracing::warn!(
             "ending the process {pid}, which did not finish connecting to the closed console"
         );
-        // SAFETY: held は終わらせる権限で開いた有効なハンドル。
-        let terminated =
-            unsafe { TerminateProcess(HANDLE(held.as_raw_handle()), TERMINATED_EXIT_CODE) };
-        if let Err(e) = terminated {
+        // held は終わらせる権限で開いてある。
+        if let Err(e) = process::terminate(held) {
             tracing::warn!("failed to terminate the process {pid}: {e}");
         }
         connecting.remove(&pid);
@@ -532,7 +517,8 @@ fn describe_job_processes(job: &OwnedHandle) -> Vec<(u32, Option<usize>)> {
         .unwrap_or_default()
         .into_iter()
         .map(|pid| {
-            let value = open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION)
+            let value = process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION)
+                .ok()
                 .and_then(|process| query_console_host(HANDLE(process.as_raw_handle())));
             (pid, value)
         })
@@ -567,13 +553,7 @@ fn start_in_job(spawned: Spawned) -> io::Result<(OwnedHandle, Option<OwnedHandle
     // SAFETY: thread は止めた状態で作った子プロセスのメインスレッドの有効なハンドル。
     if unsafe { ResumeThread(HANDLE(spawned.thread.as_raw_handle())) } == u32::MAX {
         let error = io::Error::last_os_error();
-        // SAFETY: process は自分が作った子プロセスの有効なハンドル。
-        if let Err(e) = unsafe {
-            TerminateProcess(
-                HANDLE(spawned.process.as_raw_handle()),
-                TERMINATED_EXIT_CODE,
-            )
-        } {
+        if let Err(e) = process::terminate(&spawned.process) {
             tracing::warn!("failed to terminate the child that did not start: {e}");
         }
         return Err(error);
@@ -702,16 +682,6 @@ fn image_subsystem(header: &[u8]) -> Option<u16> {
     read_u16(nt_headers + OPTIONAL_HEADER_OFFSET + SUBSYSTEM_OFFSET)
 }
 
-fn open_process(
-    pid: u32,
-    access: windows::Win32::System::Threading::PROCESS_ACCESS_RIGHTS,
-) -> Option<OwnedHandle> {
-    // SAFETY: 指定した権限で開くだけ。
-    let process = unsafe { OpenProcess(access, false, pid) }.ok()?;
-    // SAFETY: OpenProcess が成功したので、ハンドルは有効で、ほかに持ち主はいない。
-    Some(unsafe { OwnedHandle::from_raw_handle(process.0) })
-}
-
 /// `ProcessConsoleHostProcess` の値から、接続しているコンソールのプロセスの番号を取り出す。
 ///
 /// 接続する前は作ったプロセスの番号に別の印が付いた値で、ウィンドウのプログラムはそのまま変わらない。コンソールを
@@ -747,25 +717,19 @@ fn query_console_host(process: HANDLE) -> Option<usize> {
 /// プロセス `pid` が接続しているコンソールのプロセスの番号。開けない（ほかの利用者のものなど）か、接続して
 /// いなければ `None`。
 fn console_host_of_process(pid: u32) -> Option<u32> {
-    let process = open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+    let process = process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION).ok()?;
     connected_console_host(query_console_host(HANDLE(process.as_raw_handle()))?)
 }
 
 fn terminate_process(pid: u32) {
-    // SAFETY: 終わらせる権限で開くだけ。
-    let process = match unsafe { OpenProcess(PROCESS_TERMINATE, false, pid) } {
+    let process = match process::open(pid, PROCESS_TERMINATE) {
         Ok(process) => process,
         Err(e) => {
             tracing::warn!("cannot open the process {pid}: {e}");
             return;
         }
     };
-    // SAFETY: OpenProcess が成功したので、ハンドルは有効で、ほかに持ち主はいない。
-    let process = unsafe { OwnedHandle::from_raw_handle(process.0) };
-    // SAFETY: ハンドルは有効で、終わらせる権限がある。
-    let terminated =
-        unsafe { TerminateProcess(HANDLE(process.as_raw_handle()), TERMINATED_EXIT_CODE) };
-    if let Err(e) = terminated {
+    if let Err(e) = process::terminate(&process) {
         tracing::warn!("failed to terminate the process {pid}: {e}");
     }
 }
@@ -1022,11 +986,6 @@ fn read_output(
             }
         }
     }
-}
-
-fn wait_for_exit(process: &OwnedHandle) {
-    // SAFETY: process は呼び出し元の Arc が持つ有効なハンドル。
-    unsafe { WaitForSingleObject(HANDLE(process.as_raw_handle()), INFINITE) };
 }
 
 #[cfg(test)]
@@ -1295,7 +1254,7 @@ mod tests {
         /// 閉じてから動かすまでの時間。
         const RESUME_AFTER_CLOSING: Duration = Duration::from_millis(200);
         /// 猶予と、残りを探す間隔の分より長くする。
-        const END_TIMEOUT_MS: u32 = CLOSE_TIMEOUT_MS + 10_000;
+        const END_TIMEOUT: Duration = Duration::from_millis(CLOSE_TIMEOUT_MS as u64 + 10_000);
 
         let shell_options = SpawnOptions {
             command_line: "cmd.exe /k prompt e2e$G",
@@ -1334,12 +1293,9 @@ mod tests {
         // SAFETY: thread は止めた状態で作ったスレッドの有効なハンドル。
         unsafe { ResumeThread(HANDLE(late.thread.as_raw_handle())) };
 
-        let process = HANDLE(late.process.as_raw_handle());
-        // SAFETY: process は有効なハンドル。
-        let ended = unsafe { WaitForSingleObject(process, END_TIMEOUT_MS) } == WAIT_OBJECT_0;
+        let ended = process::wait(&late.process, Some(END_TIMEOUT));
         if !ended {
-            // SAFETY: process は有効なハンドルで、自分が作ったプロセス。
-            unsafe { TerminateProcess(process, TERMINATED_EXIT_CODE) }.unwrap();
+            process::terminate(&late.process).unwrap();
         }
         assert!(ended, "the process connected late did not end");
     }

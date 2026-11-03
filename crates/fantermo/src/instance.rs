@@ -29,9 +29,7 @@ use windows::{
         Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
         System::{
             DataExchange::COPYDATASTRUCT,
-            Threading::{
-                GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
-            },
+            Threading::{GetCurrentProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION},
         },
         UI::WindowsAndMessaging::{
             AllowSetForegroundWindow, EnumWindows, GetClassNameW, GetWindowThreadProcessId,
@@ -43,6 +41,7 @@ use windows::{
 
 use crate::{
     command_line::{Options, TabRequest},
+    process,
     window::WINDOW_CLASS,
 };
 
@@ -384,16 +383,14 @@ fn send_to(window: HWND, units: &[u16], timeout: Duration) -> bool {
 
 /// プロセス `pid` が、管理者として動いているかどうかでこのプロセスと同じか。読めなければ `false`。
 fn same_elevation_as_this_process(pid: u32) -> bool {
-    // SAFETY: 読み取りの権限で開くだけ。
-    let process = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) } {
+    // 読み取りの権限で開く。
+    let process = match process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION) {
         Ok(process) => process,
         Err(e) => {
             tracing::debug!("cannot open process {pid}: {e}");
             return false;
         }
     };
-    // SAFETY: OpenProcess が成功したので、ハンドルは有効で、ほかに持ち主はいない。
-    let process = unsafe { OwnedHandle::from_raw_handle(process.0) };
     // SAFETY: このプロセスの疑似ハンドルを得るだけ。
     let this = unsafe { GetCurrentProcess() };
     match (

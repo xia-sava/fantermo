@@ -45,6 +45,7 @@ mod output_budget;
 mod paint;
 mod paste_editor;
 mod pipeline;
+mod process;
 mod renderer;
 mod scroll_bar;
 mod session;

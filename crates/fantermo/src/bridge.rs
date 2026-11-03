@@ -10,10 +10,7 @@ use std::{
     env,
     ffi::OsString,
     io::{self, BufRead, BufReader, Read, Write},
-    os::windows::{
-        io::{AsRawHandle, OwnedHandle},
-        process::CommandExt,
-    },
+    os::windows::{io::OwnedHandle, process::CommandExt},
     path::{Path, PathBuf},
     process::{ChildStdout, Command, Stdio},
     sync::{
@@ -32,16 +29,12 @@ use fantermo_core::{
     backend::{Backend, ExitCode, GridSize, SpawnOptions, Wake},
     config::{COMMON_CYGWIN_ROOTS, cygwin_dll_path, find_cygwin_root, is_cygwin_root},
 };
-use windows::Win32::{
-    Foundation::{HANDLE, WAIT_OBJECT_0},
-    System::Threading::{
-        CREATE_NO_WINDOW, GetExitCodeProcess, INFINITE, TerminateProcess, WaitForSingleObject,
-    },
-};
+use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use crate::{
     known_folder,
     output_budget::{MAX_PENDING_OUTPUT, OutputBudget},
+    process,
 };
 
 /// Cygwin 向けのブリッジの実行ファイルの名前と、開発中にビルドしたものを探すときのターゲット。
@@ -276,10 +269,9 @@ impl Drop for Bridge {
         let reaper = thread::Builder::new()
             .name("bridge-reaper".into())
             .spawn(move || {
-                if !wait_for(&process, Some(QUIT_TIMEOUT)) {
+                if !process::wait(&process, Some(QUIT_TIMEOUT)) {
                     tracing::warn!("the bridge did not stop; terminating it");
-                    // SAFETY: process は Arc が持つ有効なプロセスのハンドル。
-                    if let Err(e) = unsafe { TerminateProcess(handle(&process), 1) } {
+                    if let Err(e) = process::terminate(&process) {
                         tracing::warn!("failed to terminate the bridge: {e}");
                     }
                 }
@@ -639,8 +631,14 @@ fn read_output(
         return;
     }
     // 終わりの単位もエラーもなく閉じた。ブリッジの終了コードを添えて知らせる。
-    let code = wait_for(process, Some(QUIT_TIMEOUT)).then(|| exit_code(process));
-    send_all(sender, budget, reader.closed(code.flatten()), wake);
+    let code = process::wait(process, Some(QUIT_TIMEOUT))
+        .then(|| {
+            process::exit_code(process)
+                .inspect_err(|e| tracing::warn!("failed to get the bridge's exit code: {e}"))
+                .ok()
+        })
+        .flatten();
+    send_all(sender, budget, reader.closed(code), wake);
 }
 
 /// `events` を `sender` へ渡し、すべて渡せたら `wake` で知らせる（まとめ方は [`OutputBudget::sent`]）。端末に
@@ -807,32 +805,6 @@ fn log_stderr(stderr: impl Read) {
                 tracing::debug!("stopped reading the bridge's stderr: {e}");
                 return;
             }
-        }
-    }
-}
-
-fn handle(process: &OwnedHandle) -> HANDLE {
-    HANDLE(process.as_raw_handle())
-}
-
-/// プロセスが終わるのを `timeout` まで（`None` なら終わるまで）待つ。終わったら `true`。
-fn wait_for(process: &OwnedHandle, timeout: Option<Duration>) -> bool {
-    let millis = timeout.map_or(INFINITE, |timeout| {
-        u32::try_from(timeout.as_millis()).unwrap_or(INFINITE)
-    });
-    // SAFETY: process は呼び出し元が持つ有効なプロセスのハンドル。
-    unsafe { WaitForSingleObject(handle(process), millis) == WAIT_OBJECT_0 }
-}
-
-/// 終わったプロセスの終了コード。読めなければ `None`。
-fn exit_code(process: &OwnedHandle) -> Option<u32> {
-    let mut code = 0u32;
-    // SAFETY: process は終わったプロセスの有効なハンドルで、code は書き込める。
-    match unsafe { GetExitCodeProcess(handle(process), &mut code) } {
-        Ok(()) => Some(code),
-        Err(e) => {
-            tracing::warn!("failed to get the bridge's exit code: {e}");
-            None
         }
     }
 }
