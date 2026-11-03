@@ -21,14 +21,13 @@ use windows::{
         System::Threading::GetCurrentThreadId,
         UI::WindowsAndMessaging::{
             EnumThreadWindows, GW_OWNER, GetClassNameW, GetWindow, InternalGetWindowText, IsWindow,
-            MB_ICONERROR, MB_ICONWARNING, MB_OK, MESSAGEBOX_STYLE, MessageBoxW, PostMessageW,
-            WM_CLOSE,
+            MB_ICONERROR, MB_ICONWARNING, MB_OK, MESSAGEBOX_STYLE, PostMessageW, WM_CLOSE,
         },
     },
-    core::{BOOL, HSTRING},
+    core::BOOL,
 };
 
-use crate::clipboard_prompt;
+use crate::{clipboard_prompt, dialog};
 
 /// 警告の話題。同じ話題の警告は、新しいものが古いものに代わる。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,21 +103,8 @@ pub fn error(text: &str) {
 }
 
 fn message_box(owner: Option<HWND>, text: &str, icon: MESSAGEBOX_STYLE) {
-    // SAFETY: 文字列は呼び出しの間は生きている。owner は None か有効なウィンドウで、借用は持っていない。
-    let result = unsafe {
-        MessageBoxW(
-            owner,
-            &HSTRING::from(text),
-            &HSTRING::from(TITLE),
-            MB_OK | icon,
-        )
-    };
-    if result.0 == 0 {
-        tracing::warn!(
-            "failed to show a message box: {}",
-            windows::core::Error::from_thread()
-        );
-    }
+    // 借用は持っていない。
+    dialog::message_box(owner, text, TITLE, MB_OK | icon);
 }
 
 /// このスレッドで `owner` のウィンドウを持ち主として開いている警告のメッセージボックスに、WM_CLOSE を積む。

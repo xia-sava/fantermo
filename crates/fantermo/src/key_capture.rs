@@ -14,19 +14,16 @@ use fantermo_core::{
 };
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
-        Graphics::Gdi::{COLOR_BTNFACE, HBRUSH, HFONT},
+        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+        Graphics::Gdi::HFONT,
         System::LibraryLoader::GetModuleHandleW,
         UI::{
-            HiDpi::AdjustWindowRectExForDpi,
             Input::KeyboardAndMouse::SetFocus,
             WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW,
-                GetWindowRect, HMENU, IDC_ARROW, LoadCursorW, MSG, RegisterClassW, SW_SHOW,
-                SendMessageW, SetWindowLongPtrW, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE,
-                WM_CHAR, WM_CLOSE, WM_DEADCHAR, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_SETFONT,
-                WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW, WS_CAPTION,
-                WS_CHILD, WS_EX_DLGMODALFRAME, WS_POPUP, WS_SYSMENU, WS_VISIBLE,
+                CreateWindowExW, DefWindowProcW, HMENU, MSG, SW_SHOW, SetWindowTextW, ShowWindow,
+                WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_DEADCHAR, WM_DESTROY, WM_KEYDOWN, WM_KEYUP,
+                WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP, WS_CAPTION, WS_CHILD,
+                WS_EX_DLGMODALFRAME, WS_POPUP, WS_SYSMENU, WS_VISIBLE,
             },
         },
     },
@@ -34,6 +31,7 @@ use windows::{
 };
 
 use crate::{
+    dialog::{self, scale},
     keyboard::{self, KeyPosition},
     modal,
 };
@@ -42,7 +40,6 @@ const CLASS: PCWSTR = w!("fantermo-key-capture");
 const TITLE: &str = "キーの割り当て";
 
 /// 96 DPI のときの寸法（ピクセル）。
-const BASE_DPI: u32 = 96;
 const CLIENT_WIDTH: i32 = 360;
 /// 読み取りの文、断る文、Esc の案内の 3 行が入る高さ。
 const CLIENT_HEIGHT: i32 = 96;
@@ -66,8 +63,9 @@ pub fn capture(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> Option<KeyCo
         }
     };
     let closed = Cell::new(false);
-    // SAFETY: hwnd は作ったばかりのウィンドウ。ポインタは modal::run が戻るまで有効で、WM_DESTROY で外す。
-    unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, std::ptr::from_ref(&closed) as isize) };
+    // SAFETY: closed は modal::run が戻るまで生きていて、modal::run はダイアログが壊れる（WM_DESTROY で外す）まで
+    // 戻らない。
+    unsafe { dialog::attach_state(hwnd, &closed) };
     // SAFETY: hwnd は有効なウィンドウ。
     unsafe {
         _ = ShowWindow(hwnd, SW_SHOW);
@@ -81,8 +79,8 @@ pub fn capture(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> Option<KeyCo
         match read {
             Read::Done(combo) => {
                 captured.set(combo);
-                // SAFETY: hwnd はこのダイアログ。閉じると WM_DESTROY で closed が立つ。
-                unsafe { _ = DestroyWindow(hwnd) };
+                // 閉じると WM_DESTROY で closed が立つ。
+                dialog::destroy(hwnd);
             }
             Read::Refused(combo) => show_refusal(label, prompt, combo),
             Read::Wait => {}
@@ -164,50 +162,15 @@ fn combo_read(combo: KeyCombo) -> Read {
 
 fn register_class() -> windows::core::Result<()> {
     static REGISTERED: OnceLock<()> = OnceLock::new();
-    if REGISTERED.get().is_some() {
-        return Ok(());
-    }
-    // SAFETY: 自分のモジュールのハンドルを問い合わせるだけ。
-    let instance = unsafe { GetModuleHandleW(None)? };
-    let class = WNDCLASSW {
-        lpfnWndProc: Some(capture_proc),
-        hInstance: instance.into(),
-        // SAFETY: システムの矢印カーソルを読むだけ。
-        hCursor: unsafe { LoadCursorW(None, IDC_ARROW)? },
-        // システムの色の番号に 1 を足した値は、その色のブラシとして扱われる。
-        hbrBackground: HBRUSH((COLOR_BTNFACE.0 + 1) as isize as *mut _),
-        lpszClassName: CLASS,
-        ..Default::default()
-    };
-    // SAFETY: class は初期化済みで、名前は静的な文字列。
-    if unsafe { RegisterClassW(&class) } == 0 {
-        return Err(windows::core::Error::from_thread());
-    }
-    _ = REGISTERED.set(());
-    Ok(())
-}
-
-fn scale(value: i32, dpi: u32) -> i32 {
-    (value as f32 * dpi as f32 / BASE_DPI as f32).round() as i32
+    dialog::register_class(&REGISTERED, CLASS, Some(capture_proc), None)
 }
 
 /// ダイアログを作り、`owner` の真ん中に置く。ダイアログと、その中の文のウィンドウを返す。
 fn create(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> windows::core::Result<(HWND, HWND)> {
     let style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
-    let mut rect = RECT {
-        left: 0,
-        top: 0,
-        right: scale(CLIENT_WIDTH, dpi),
-        bottom: scale(CLIENT_HEIGHT, dpi),
-    };
-    // SAFETY: rect は書き込める。
-    unsafe { AdjustWindowRectExForDpi(&mut rect, style, false, WS_EX_DLGMODALFRAME, dpi)? };
-    let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
-    let mut owner_rect = RECT::default();
-    // SAFETY: owner は有効なウィンドウで、owner_rect は書き込める。
-    unsafe { GetWindowRect(owner, &mut owner_rect)? };
-    let left = owner_rect.left + (owner_rect.right - owner_rect.left - width) / 2;
-    let top = owner_rect.top + (owner_rect.bottom - owner_rect.top - height) / 2;
+    let (width, height) =
+        dialog::window_size(CLIENT_WIDTH, CLIENT_HEIGHT, style, WS_EX_DLGMODALFRAME, dpi)?;
+    let (left, top) = dialog::center_in(&dialog::window_rect(owner)?, width, height);
     // SAFETY: 自分のモジュールのハンドルを問い合わせるだけ。
     let instance = unsafe { GetModuleHandleW(None)? };
     // SAFETY: クラスは登録済みで、文字列はこの呼び出しの間は生きている。
@@ -245,34 +208,22 @@ fn create(owner: HWND, prompt: &str, font: HFONT, dpi: u32) -> windows::core::Re
             None,
         )?
     };
-    // SAFETY: label は有効なウィンドウで、フォントは呼び出し元のダイアログが閉じるまで消さない。
-    unsafe {
-        SendMessageW(
-            label,
-            WM_SETFONT,
-            Some(WPARAM(font.0 as usize)),
-            Some(LPARAM(0)),
-        )
-    };
+    // フォントは呼び出し元のダイアログのもので、そのダイアログが閉じるまで消さない。
+    dialog::set_font(label, font, false);
     Ok((hwnd, label))
 }
 
 extern "system" fn capture_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_CLOSE => {
-            // SAFETY: hwnd はこのダイアログ。
-            unsafe { _ = DestroyWindow(hwnd) };
+            dialog::destroy(hwnd);
             LRESULT(0)
         }
         WM_DESTROY => {
-            // SAFETY: GWLP_USERDATA には capture が入れた Cell<bool> のポインタか 0 が入っている。
-            let closed = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const Cell<bool>;
-            // SAFETY: 0 でなければ capture の中の Cell を指し、modal::run が戻るまで有効。
-            if let Some(closed) = unsafe { closed.as_ref() } {
-                closed.set(true);
+            // SAFETY: capture が結び付けたのは Cell<bool>。
+            if let Some(closed) = unsafe { dialog::state_of::<Cell<bool>>(hwnd) } {
+                dialog::on_destroy(hwnd, closed);
             }
-            // SAFETY: hwnd はこのダイアログ。以後、ポインタは使わせない。
-            unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
             LRESULT(0)
         }
         // SAFETY: 受け取った引数をそのまま既定の処理に渡す。

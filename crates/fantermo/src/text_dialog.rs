@@ -13,38 +13,34 @@ use std::{
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM},
-        Graphics::Gdi::{
-            COLOR_BTNFACE, CreateFontIndirectW, DeleteObject, GetDC, GetMonitorInfoW,
-            GetTextExtentPoint32W, HBRUSH, HFONT, HGDIOBJ, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-            MonitorFromWindow, ReleaseDC, SelectObject,
-        },
+        Graphics::Gdi::{GetTextExtentPoint32W, HFONT},
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Controls::{
-                ICC_LINK_CLASS, INITCOMMONCONTROLSEX, InitCommonControlsEx, NM_CLICK, NM_RETURN,
-                NMHDR, WC_LINK,
+                EM_GETRECT, EM_SETLIMITTEXT, ICC_LINK_CLASS, NM_CLICK, NM_RETURN, NMHDR, WC_LINK,
             },
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_CONTROL, VK_MENU},
             WindowsAndMessaging::{
-                BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CW_USEDEFAULT, CreateWindowExW, DC_HASDEFID,
-                DM_GETDEFID, DefWindowProcW, DestroyWindow, ES_AUTOHSCROLL, ES_AUTOVSCROLL,
-                ES_MULTILINE, ES_READONLY, ES_WANTRETURN, GWLP_USERDATA, GetClientRect,
-                GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, HMENU,
-                IDC_ARROW, IDCANCEL, IDOK, LoadCursorW, MSG, MoveWindow, RegisterClassW, SW_SHOW,
-                SWP_NOZORDER, SendMessageW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
-                ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY,
-                WM_KEYDOWN, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETFONT, WM_SIZE, WNDCLASSW, WS_CAPTION,
-                WS_CHILD, WS_DISABLED, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME,
-                WS_HSCROLL, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE,
-                WS_VSCROLL,
+                BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
+                ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, ES_WANTRETURN,
+                GetClientRect, HMENU, IDCANCEL, IDOK, MSG, MoveWindow, SW_SHOW, SWP_NOZORDER,
+                SendMessageW, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE,
+                WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_KEYDOWN, WM_NOTIFY, WM_SIZE,
+                WS_CAPTION, WS_CHILD, WS_DISABLED, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT,
+                WS_EX_DLGMODALFRAME, WS_HSCROLL, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME,
+                WS_VISIBLE, WS_VSCROLL,
             },
         },
     },
     core::{HSTRING, PCWSTR, w},
 };
 
-use crate::{font::Font, link_opener, modal, ui_font};
+use crate::{
+    dialog::{self, DialogState, OwnedFont, scale},
+    font::Font,
+    link_opener, modal,
+};
 
 const CLASS: PCWSTR = w!("fantermo-text-dialog");
 
@@ -53,23 +49,15 @@ const EDIT_ID: i32 = 100;
 /// 入力欄の上の行のコントロール ID の始まり。上から順に 1 ずつ増やす。
 const HEADER_ID: i32 = 200;
 
-/// `EM_SETLIMITTEXT` と、その上限を外す値。
-const EM_SETLIMITTEXT: u32 = 0x00C5;
+/// `EM_SETLIMITTEXT` で上限を外す値。
 const NO_TEXT_LIMIT: usize = 0;
-/// `EM_GETRECT`。入力欄の中で文字を並べる矩形を返す。
-const EM_GETRECT: u32 = 0x00B2;
-/// `EM_SETSEL` と、すべてを選ぶときの範囲。
-const EM_SETSEL: u32 = 0x00B1;
-const SELECT_FROM_START: usize = 0;
-const SELECT_TO_END: isize = -1;
 /// Ctrl+A の A の仮想キー。
 const VK_A: usize = b'A' as usize;
 
 /// 96 DPI のときの寸法（ピクセル）。ウィンドウの DPI に合わせて拡大する。
-const BASE_DPI: f32 = 96.0;
-const MARGIN: f32 = 8.0;
-const BUTTON_WIDTH: f32 = 112.0;
-const BUTTON_HEIGHT: f32 = 30.0;
+const MARGIN: i32 = 8;
+const BUTTON_WIDTH: i32 = 112;
+const BUTTON_HEIGHT: i32 = 30;
 /// 呼び出し元のウィンドウに対する、ダイアログの大きさの割合。
 const SIZE_RATIO: f32 = 0.7;
 /// 端末の文字に対する、入力欄の文字の大きさの割合。
@@ -136,9 +124,9 @@ pub fn run(owner: HWND, dialog: &Dialog, font: &Font) -> Closed {
         tracing::warn!("failed to register the text dialog: {e}");
         return Closed::Cancel;
     }
-    let state = DialogState {
+    let state = TextDialogState {
         on_button: dialog.on_button,
-        ..DialogState::default()
+        ..TextDialogState::default()
     };
     let hwnd = match create(owner, dialog, &state, font) {
         Ok(hwnd) => hwnd,
@@ -152,26 +140,18 @@ pub fn run(owner: HWND, dialog: &Dialog, font: &Font) -> Closed {
 
     run_modal(owner, hwnd, &state, dialog.on_owner_message);
 
-    for created_font in [state.font.get(), state.header_font.get()] {
-        if !created_font.is_invalid() {
-            // SAFETY: フォントはダイアログのために作ったもので、ダイアログはもう閉じている。
-            unsafe { _ = DeleteObject(HGDIOBJ(created_font.0)) };
-        }
-    }
+    // フォントは state と一緒に、ダイアログが壊れたあとで消える。
     state.result.take().unwrap_or(Closed::Cancel)
 }
 
 /// 開いているダイアログ `dialog` を閉じる。閉じたわけは [`Closed::Cancel`] になる。
 pub fn close(dialog: HWND) {
-    // SAFETY: dialog はこのスレッドのウィンドウ。もう閉じていれば失敗するだけ。
-    if let Err(e) = unsafe { DestroyWindow(dialog) } {
-        tracing::warn!("failed to close the text dialog: {e}");
-    }
+    dialog::destroy(dialog);
 }
 
 /// ダイアログの状態。ウィンドウプロシージャからも使うので、共有の参照だけで読み書きする。
 #[derive(Default)]
-struct DialogState<'a> {
+struct TextDialogState<'a> {
     /// [`Dialog::on_button`]。
     on_button: Option<&'a dyn Fn(HWND, i32) -> bool>,
     edit: Cell<HWND>,
@@ -183,11 +163,12 @@ struct DialogState<'a> {
     header_line_height: Cell<i32>,
     /// ボタン。左から順に並べる。
     buttons: RefCell<Vec<HWND>>,
-    font: Cell<HFONT>,
+    /// 入力欄とボタンのフォント。
+    font: RefCell<OwnedFont>,
     /// 入力欄の上の行のフォント。行がなければ作らない。
-    header_font: Cell<HFONT>,
-    /// 寸法の拡大率（ウィンドウの DPI / 96）。
-    scale: Cell<f32>,
+    header_font: RefCell<OwnedFont>,
+    /// 寸法を決める DPI。
+    dpi: Cell<u32>,
     /// 閉じたわけ。ボタンで閉じるまでは `None`。
     result: RefCell<Option<Closed>>,
     /// ボタンのコントロール ID。入力欄などのほかの子からの WM_COMMAND と見分ける。
@@ -197,37 +178,15 @@ struct DialogState<'a> {
     default_id: Cell<Option<i32>>,
 }
 
+impl DialogState for TextDialogState<'_> {
+    fn closed(&self) -> &Cell<bool> {
+        &self.closed
+    }
+}
+
 fn register_class() -> windows::core::Result<()> {
     static REGISTERED: OnceLock<()> = OnceLock::new();
-    if REGISTERED.get().is_some() {
-        return Ok(());
-    }
-    let controls = INITCOMMONCONTROLSEX {
-        dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
-        dwICC: ICC_LINK_CLASS,
-    };
-    // SAFETY: controls は大きさを入れて初期化してある。
-    if !unsafe { InitCommonControlsEx(&controls) }.as_bool() {
-        tracing::warn!("failed to register the link control");
-    }
-    // SAFETY: 自分のモジュールのハンドルを問い合わせるだけ。
-    let instance = unsafe { GetModuleHandleW(None)? };
-    let class = WNDCLASSW {
-        lpfnWndProc: Some(dialog_proc),
-        hInstance: instance.into(),
-        // SAFETY: システムの矢印カーソルを読むだけ。
-        hCursor: unsafe { LoadCursorW(None, IDC_ARROW)? },
-        // システムの色の番号に 1 を足した値は、その色のブラシとして扱われる。
-        hbrBackground: HBRUSH((COLOR_BTNFACE.0 + 1) as isize as *mut _),
-        lpszClassName: CLASS,
-        ..Default::default()
-    };
-    // SAFETY: class は初期化済みで、名前は静的な文字列。
-    if unsafe { RegisterClassW(&class) } == 0 {
-        return Err(windows::core::Error::from_thread());
-    }
-    _ = REGISTERED.set(());
-    Ok(())
+    dialog::register_class(&REGISTERED, CLASS, Some(dialog_proc), Some(ICC_LINK_CLASS))
 }
 
 /// 呼び出し元のウィンドウの真ん中に、その大きさの 7 割でダイアログを作る。`min_columns` があれば、その
@@ -235,20 +194,17 @@ fn register_class() -> windows::core::Result<()> {
 fn create(
     owner: HWND,
     dialog: &Dialog,
-    state: &DialogState<'_>,
+    state: &TextDialogState<'_>,
     font: &Font,
 ) -> windows::core::Result<HWND> {
     // SAFETY: owner は呼び出し元の有効なウィンドウ。
     let dpi = unsafe { GetDpiForWindow(owner) };
-    state.scale.set(dpi as f32 / BASE_DPI);
+    state.dpi.set(dpi);
 
-    let mut owner_rect = RECT::default();
-    // SAFETY: owner は有効なウィンドウで、owner_rect は書き込める。
-    unsafe { GetWindowRect(owner, &mut owner_rect)? };
+    let owner_rect = dialog::window_rect(owner)?;
     let width = ((owner_rect.right - owner_rect.left) as f32 * SIZE_RATIO) as i32;
     let height = ((owner_rect.bottom - owner_rect.top) as f32 * SIZE_RATIO) as i32;
-    let left = owner_rect.left + (owner_rect.right - owner_rect.left - width) / 2;
-    let top = owner_rect.top + (owner_rect.bottom - owner_rect.top - height) / 2;
+    let (left, top) = dialog::center_in(&owner_rect, width, height);
 
     // SAFETY: 自分のモジュールのハンドルを問い合わせるだけ。
     let instance = unsafe { GetModuleHandleW(None)? };
@@ -352,12 +308,8 @@ fn create(
     // 入力欄は端末と同じ書体にして、少し小さくする。
     let mut logfont = font.logfont();
     logfont.lfHeight = (logfont.lfHeight as f32 * FONT_RATIO) as i32;
-    // SAFETY: logfont は初期化済み。作ったフォントはダイアログが閉じた後に消す。
-    state.font.set(unsafe { CreateFontIndirectW(&logfont) });
-    let controls = std::iter::once(state.edit.get()).chain(state.buttons.borrow().clone());
-    for control in controls {
-        set_font(control, state.font.get());
-    }
+    state.font.replace(OwnedFont::create(&logfont));
+    set_control_font(state);
     if !dialog.header.is_empty() {
         create_header_font(state, dpi);
     }
@@ -372,12 +324,11 @@ fn create(
     };
 
     // 状態を結び付けてから大きさを決め、WM_SIZE で子を並べさせる。
-    // SAFETY: hwnd は作ったばかりのウィンドウ。ポインタは run_modal が戻るまで有効で、WM_DESTROY で外す。
-    unsafe {
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, std::ptr::from_ref(state) as isize);
-        SetWindowPos(hwnd, None, left, top, width, height, SWP_NOZORDER)?;
-        layout(hwnd, state);
-    }
+    // SAFETY: state は run の中にあり、run は run_modal でダイアログが壊れる（WM_DESTROY で外す）まで待つ。
+    unsafe { dialog::attach_state(hwnd, state) };
+    // SAFETY: hwnd は作ったばかりのウィンドウ。
+    unsafe { SetWindowPos(hwnd, None, left, top, width, height, SWP_NOZORDER)? };
+    layout(hwnd, state);
     if let Some(columns) = dialog.min_columns {
         widen_for_columns(owner, &owner_rect, hwnd, state, columns);
     }
@@ -389,35 +340,28 @@ fn create(
     Ok(hwnd)
 }
 
-/// `control` の文字のフォントを `font` にする。
-fn set_font(control: HWND, font: HFONT) {
-    // SAFETY: control はダイアログの子で、フォントはダイアログが閉じるまで消さない。
-    unsafe {
-        SendMessageW(
-            control,
-            WM_SETFONT,
-            Some(WPARAM(font.0 as usize)),
-            Some(LPARAM(1)),
-        )
-    };
+/// 入力欄とボタンに、入力欄のフォントを付ける。
+fn set_control_font(state: &TextDialogState) {
+    let font = state.font.borrow().handle();
+    let controls = std::iter::once(state.edit.get()).chain(state.buttons.borrow().clone());
+    for control in controls {
+        dialog::set_font(control, font, true);
+    }
 }
 
 /// 入力欄の上の行に、DPI が `dpi` のときの Windows のメッセージのフォントを付け、1 行の高さを測る。
-fn create_header_font(state: &DialogState, dpi: u32) {
-    let logfont = match ui_font::message_logfont(dpi) {
-        Ok(logfont) => logfont,
-        Err(e) => {
-            tracing::warn!("failed to read the message font: {e}");
-            return;
-        }
+fn create_header_font(state: &TextDialogState, dpi: u32) {
+    let Some(font) = OwnedFont::message(dpi) else {
+        return;
     };
-    // SAFETY: logfont は初期化済み。作ったフォントはダイアログが閉じた後に消す。
-    let font = unsafe { CreateFontIndirectW(&logfont) };
-    state.header_font.set(font);
+    let previous = state.header_font.replace(font);
+    let font = state.header_font.borrow().handle();
     let header = state.header.borrow();
     for &control in header.iter() {
-        set_font(control, font);
+        dialog::set_font(control, font, true);
     }
+    // 前のフォントは、どの行ももう使っていない。
+    drop(previous);
     let Some(&first) = header.first() else {
         return;
     };
@@ -430,19 +374,12 @@ fn create_header_font(state: &DialogState, dpi: u32) {
 /// `control` に `font` で文字を 1 行描いたときの高さ（ピクセル）。測れなければ `None`。
 fn line_height(control: HWND, font: HFONT) -> Option<i32> {
     let sample: Vec<u16> = "Ag版".encode_utf16().collect();
-    // SAFETY: control は有効なウィンドウ。選んだフォントは戻し、DC は読み終えたら返す。
-    unsafe {
-        let dc = GetDC(Some(control));
-        if dc.is_invalid() {
-            return None;
-        }
-        let previous = SelectObject(dc, HGDIOBJ(font.0));
-        let mut size = SIZE::default();
-        let measured = GetTextExtentPoint32W(dc, &sample, &mut size).as_bool();
-        SelectObject(dc, previous);
-        ReleaseDC(Some(control), dc);
-        measured.then_some(size.cy)
-    }
+    let mut size = SIZE::default();
+    // SAFETY: dc は with_font_dc が font を選んだ DC で、size は書き込める。
+    let measured = dialog::with_font_dc(control, font, |dc| unsafe {
+        GetTextExtentPoint32W(dc, &sample, &mut size).as_bool()
+    })?;
+    measured.then_some(size.cy)
 }
 
 /// 入力欄の文字を並べる幅に `columns` 桁が収まらなければ、足りない分だけダイアログを広げ、
@@ -451,7 +388,7 @@ fn widen_for_columns(
     owner: HWND,
     owner_rect: &RECT,
     dialog: HWND,
-    state: &DialogState,
+    state: &TextDialogState,
     columns: u32,
 ) {
     let Some(text_width) = text_width(state, columns) else {
@@ -472,12 +409,13 @@ fn widen_for_columns(
     if shortfall <= 0 {
         return;
     }
-    let mut window = RECT::default();
-    // SAFETY: dialog は有効なウィンドウで、window は書き込める。
-    if let Err(e) = unsafe { GetWindowRect(dialog, &mut window) } {
-        tracing::warn!("failed to read the text dialog position: {e}");
-        return;
-    }
+    let window = match dialog::window_rect(dialog) {
+        Ok(window) => window,
+        Err(e) => {
+            tracing::warn!("failed to read the text dialog position: {e}");
+            return;
+        }
+    };
     let width = window.right - window.left + shortfall;
     let left = owner_rect.left + (owner_rect.right - owner_rect.left - width) / 2;
     let (left, width) = fit_horizontally(owner, left, width);
@@ -491,44 +429,30 @@ fn widen_for_columns(
 }
 
 /// 入力欄のフォントで `columns` 桁を並べた幅（ピクセル）。測れなければ `None`。
-fn text_width(state: &DialogState, columns: u32) -> Option<i32> {
-    let edit = state.edit.get();
+fn text_width(state: &TextDialogState, columns: u32) -> Option<i32> {
     // 平均の文字幅は実際の送り幅より小さいことがあるので、その桁数の文字列の幅を測る。
     let line: Vec<u16> = std::iter::repeat_n(u16::from(b'0'), columns as usize).collect();
-    // SAFETY: edit は有効なウィンドウ。選んだフォントは戻し、DC は読み終えたら返す。
-    unsafe {
-        let dc = GetDC(Some(edit));
-        if dc.is_invalid() {
-            return None;
-        }
-        let previous = SelectObject(dc, HGDIOBJ(state.font.get().0));
-        let mut size = SIZE::default();
-        let measured = GetTextExtentPoint32W(dc, &line, &mut size).as_bool();
-        SelectObject(dc, previous);
-        ReleaseDC(Some(edit), dc);
-        measured.then_some(size.cx)
-    }
+    let mut size = SIZE::default();
+    let font = state.font.borrow().handle();
+    // SAFETY: dc は with_font_dc が font を選んだ DC で、size は書き込める。
+    let measured = dialog::with_font_dc(state.edit.get(), font, |dc| unsafe {
+        GetTextExtentPoint32W(dc, &line, &mut size).as_bool()
+    })?;
+    measured.then_some(size.cx)
 }
 
-/// 横の位置 `left` と幅 `width` を、呼び出し元のウィンドウがあるモニターの作業領域に収める。
+/// 横の位置 `left` と幅 `width` を、呼び出し元のウィンドウがあるモニターの作業領域に収める。幅が作業領域より
+/// 広ければ、作業領域の幅に縮める。
 fn fit_horizontally(owner: HWND, left: i32, width: i32) -> (i32, i32) {
-    let mut info = MONITORINFO {
-        cbSize: size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: owner は有効なウィンドウで、info は大きさを入れて初期化してある。
-    let found = unsafe {
-        let monitor = MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST);
-        GetMonitorInfoW(monitor, &mut info).as_bool()
-    };
-    if !found {
+    let Some(work) = dialog::work_area(owner) else {
         tracing::warn!("failed to read the monitor of the window");
         return (left, width);
-    }
-    let work = info.rcWork;
+    };
     let width = width.min(work.right - work.left);
-    let left = left.clamp(work.left, work.right - width);
-    (left, width)
+    (
+        dialog::keep_within(left, width, work.left, work.right),
+        width,
+    )
 }
 
 /// 呼び出し元のウィンドウを無効にし、ダイアログが閉じるまでメッセージを回す。入力欄での Ctrl+A は、すべてを
@@ -536,7 +460,7 @@ fn fit_horizontally(owner: HWND, left: i32, width: i32) -> (i32, i32) {
 fn run_modal(
     owner: HWND,
     dialog: HWND,
-    state: &DialogState<'_>,
+    state: &TextDialogState<'_>,
     on_owner_message: Option<&OwnerMessageHook<'_>>,
 ) {
     modal::run(owner, dialog, &state.closed, |msg| {
@@ -548,15 +472,7 @@ fn run_modal(
         if !is_select_all(msg, state.edit.get()) {
             return false;
         }
-        // SAFETY: 入力欄は有効なウィンドウ。
-        unsafe {
-            SendMessageW(
-                state.edit.get(),
-                EM_SETSEL,
-                Some(WPARAM(SELECT_FROM_START)),
-                Some(LPARAM(SELECT_TO_END)),
-            )
-        };
+        dialog::select_all(state.edit.get());
         true
     });
 }
@@ -573,14 +489,13 @@ fn is_select_all(msg: &MSG, edit: HWND) -> bool {
 }
 
 /// 入力欄の上の行を上から並べ、入力欄を広く取り、ボタンを右下に並べる。
-fn layout(dialog: HWND, state: &DialogState<'_>) {
+fn layout(dialog: HWND, state: &TextDialogState<'_>) {
     let mut client = RECT::default();
     // SAFETY: dialog は有効なウィンドウで、client は書き込める。
     if unsafe { GetClientRect(dialog, &mut client) }.is_err() {
         return;
     }
-    let scale = state.scale.get();
-    let px = |value: f32| (value * scale).round() as i32;
+    let px = |value: i32| scale(value, state.dpi.get());
     let (margin, button_w, button_h) = (px(MARGIN), px(BUTTON_WIDTH), px(BUTTON_HEIGHT));
     let button_top = client.bottom - margin - button_h;
     let line_height = state.header_line_height.get();
@@ -621,28 +536,16 @@ fn layout(dialog: HWND, state: &DialogState<'_>) {
     }
 }
 
-fn read_text(edit: HWND) -> String {
-    // SAFETY: edit は有効な入力欄。
-    let length = unsafe { GetWindowTextLengthW(edit) }.max(0) as usize;
-    let mut buffer = vec![0u16; length + 1];
-    // SAFETY: buffer は length + 1 個の u16 を書き込める。
-    let copied = unsafe { GetWindowTextW(edit, &mut buffer) }.max(0) as usize;
-    String::from_utf16_lossy(&buffer[..copied])
-}
-
-/// ダイアログに結び付けた状態。WM_DESTROY で外すまで有効。
-fn state_of<'a>(dialog: HWND) -> Option<&'a DialogState<'a>> {
-    // SAFETY: GWLP_USERDATA には create が入れた DialogState のポインタか 0 が入っている。
-    let pointer = unsafe { GetWindowLongPtrW(dialog, GWLP_USERDATA) } as *const DialogState<'a>;
-    // SAFETY: 0 でなければ、run の中の DialogState を指し、ダイアログが閉じるまで有効。
-    unsafe { pointer.as_ref() }
-}
-
 extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    let Some(state) = state_of(hwnd) else {
+    // SAFETY: create が結び付けたのは TextDialogState。
+    let Some(state) = (unsafe { dialog::state_of::<TextDialogState>(hwnd) }) else {
         // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
     };
+    if let Some(result) = dialog::handle_common_message(msg, wparam, lparam, state.default_id.get())
+    {
+        return result;
+    }
     match msg {
         WM_SIZE => {
             layout(hwnd, state);
@@ -651,7 +554,7 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         WM_COMMAND => {
             let id = (wparam.0 & 0xffff) as i32;
             let closed = if id == IDOK.0 {
-                Some(Closed::Ok(from_crlf(&read_text(state.edit.get()))))
+                Some(Closed::Ok(from_crlf(&dialog::get_text(state.edit.get()))))
             } else if id == IDCANCEL.0 {
                 Some(Closed::Cancel)
             } else if state.button_ids.borrow().contains(&id) {
@@ -662,8 +565,7 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             };
             if let Some(closed) = closed {
                 state.result.replace(Some(closed));
-                // SAFETY: hwnd はこのダイアログ。
-                unsafe { _ = DestroyWindow(hwnd) };
+                dialog::destroy(hwnd);
             }
             LRESULT(0)
         }
@@ -678,29 +580,12 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
             LRESULT(0)
         }
-        // Enter を自分で使わない入力欄は、既定のボタンをこの二つで問い合わせて押させる。
-        DM_GETDEFID => match state.default_id.get() {
-            Some(id) => LRESULT(((DC_HASDEFID as isize) << 16) | id as isize),
-            None => LRESULT(0),
-        },
-        WM_NEXTDLGCTL => {
-            // lparam が 0 でなければ、wparam は移す先の子のウィンドウ。順に移すほうは使われないので
-            // 扱わない。
-            if lparam.0 & 0xffff != 0 {
-                // SAFETY: wparam はこのダイアログの子のウィンドウのハンドルとして渡される。
-                unsafe { _ = SetFocus(Some(HWND(wparam.0 as *mut _))) };
-            }
-            LRESULT(0)
-        }
         WM_CLOSE => {
-            // SAFETY: hwnd はこのダイアログ。
-            unsafe { _ = DestroyWindow(hwnd) };
+            dialog::destroy(hwnd);
             LRESULT(0)
         }
         WM_DESTROY => {
-            state.closed.set(true);
-            // SAFETY: hwnd はこのダイアログ。以後、状態のポインタは使わせない。
-            unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
+            dialog::on_destroy(hwnd, state);
             LRESULT(0)
         }
         _ => {

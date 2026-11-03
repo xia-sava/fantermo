@@ -9,10 +9,9 @@ use fantermo_core::{
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, RECT, WPARAM},
-        Graphics::Gdi::{
-            DT_CALCRECT, DT_WORDBREAK, DrawTextW, GetDC, HFONT, HGDIOBJ, ReleaseDC, SelectObject,
-        },
+        Graphics::Gdi::{DT_CALCRECT, DT_WORDBREAK, DrawTextW, HFONT},
         UI::{
+            Controls::EM_SETCUEBANNER,
             Input::KeyboardAndMouse::{EnableWindow, SetFocus},
             WindowsAndMessaging::{
                 BN_CLICKED, CBN_SELCHANGE, EN_CHANGE, LBN_SELCHANGE, MoveWindow, SWP_NOACTIVATE,
@@ -29,7 +28,7 @@ use super::{
     scale,
     widgets::{Builder, ChoiceBox, ListBox, get_text, set_text},
 };
-use crate::file_dialog;
+use crate::{dialog, file_dialog};
 
 /// このページのコントロールの ID の範囲。範囲がページの間で重ならないことと、このページの ID が範囲に
 /// 入ることを単体のテストで見る。
@@ -58,16 +57,10 @@ const PROFILE_BACKEND_LABELS: [&str; BackendKind::ALL.len()] = [
     "Cygwin（ブリッジ）",
     "WSL（ブリッジ）",
 ];
-/// `EM_SETCUEBANNER`（入力欄が空のときに薄く見せる文字）。
-const EM_SETCUEBANNER: u32 = 0x1501;
-/// `EM_SETCUEBANNER` の wParam。入力欄にフォーカスがあっても見せる。
+/// `EM_SETCUEBANNER`（入力欄が空のときに薄く見せる文字）の wParam。入力欄にフォーカスがあっても見せる。
 const CUE_BANNER_ALWAYS: usize = 1;
 /// プロファイルの一覧の、コマンドラインの列の位置（ダイアログの単位）。
 const PROFILE_COLUMN_TAB_STOP: i32 = 120;
-/// `EM_SETSEL` と、すべてを選ぶときの範囲。
-const EM_SETSEL: u32 = 0x00B1;
-const SELECT_FROM_START: usize = 0;
-const SELECT_TO_END: isize = -1;
 /// 足したプロファイルの名前。同じ名前があれば後ろに番号を付ける。
 const NEW_PROFILE_NAME: &str = "新しいプロファイル";
 
@@ -135,16 +128,12 @@ fn wrapped_text_height(control: HWND, font: HFONT, text: &str, width: i32) -> i3
         right: width,
         ..RECT::default()
     };
-    // SAFETY: control は有効なウィンドウで、font はダイアログが閉じるまで消さない。選んだフォントは
-    // DC を返す前に元に戻す。wide と rect は書き込める。
-    let height = unsafe {
-        let dc = GetDC(Some(control));
-        let previous = SelectObject(dc, HGDIOBJ(font.0));
-        let height = DrawTextW(dc, &mut wide, &mut rect, DT_CALCRECT | DT_WORDBREAK);
-        SelectObject(dc, previous);
-        ReleaseDC(Some(control), dc);
-        height
-    };
+    // SAFETY: dc は with_font_dc が font を選んだ DC で、wide と rect は書き込める。font はダイアログが閉じるまで
+    // 消さない。
+    let height = dialog::with_font_dc(control, font, |dc| unsafe {
+        DrawTextW(dc, &mut wide, &mut rect, DT_CALCRECT | DT_WORDBREAK)
+    })
+    .unwrap_or(0);
     if height == 0 {
         tracing::warn!("failed to measure the text of a settings dialog control");
     }
@@ -665,15 +654,8 @@ impl ProfilesPage {
         // SAFETY: focus はダイアログの子の有効なウィンドウ。押したボタンが押せなくなることがあるので移す。
         unsafe { _ = SetFocus(Some(focus)) };
         if id == ID_PROFILE_ADD {
-            // SAFETY: 入力欄は有効なウィンドウ。名前をすぐ打ち替えられるように全体を選ぶ。
-            unsafe {
-                SendMessageW(
-                    focus,
-                    EM_SETSEL,
-                    Some(WPARAM(SELECT_FROM_START)),
-                    Some(LPARAM(SELECT_TO_END)),
-                )
-            };
+            // 名前をすぐ打ち替えられるように全体を選ぶ。
+            dialog::select_all(focus);
         }
     }
 }

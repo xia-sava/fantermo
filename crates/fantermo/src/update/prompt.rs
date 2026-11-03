@@ -1,18 +1,15 @@
 //! 更新の確認とダウンロードの結果を、メッセージボックスで見せて次にすることを決める。
 
-use windows::{
-    Win32::{
-        Foundation::HWND,
-        UI::WindowsAndMessaging::{
-            IDOK, IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONQUESTION, MB_ICONWARNING, MB_OK,
-            MB_OKCANCEL, MB_YESNO, MESSAGEBOX_RESULT, MESSAGEBOX_STYLE, MessageBoxW,
-        },
+use windows::Win32::{
+    Foundation::HWND,
+    UI::WindowsAndMessaging::{
+        IDOK, IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONQUESTION, MB_ICONWARNING, MB_OK,
+        MB_OKCANCEL, MB_YESNO, MESSAGEBOX_RESULT, MESSAGEBOX_STYLE,
     },
-    core::HSTRING,
 };
 
 use super::{CheckError, Comparison, Downloaded, Event, Release, current_version, wait_minutes};
-use crate::logging;
+use crate::{dialog, logging};
 
 /// メッセージボックスのタイトル。
 pub(crate) const TITLE: &str = "fantermo の更新";
@@ -139,16 +136,8 @@ fn on_downloaded(owner: HWND, downloaded: Downloaded) -> Next {
 }
 
 fn show(owner: HWND, text: &str, style: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
-    // SAFETY: owner は有効なウィンドウで、文字列はこの呼び出しの間は生きている。ウィンドウの借用は
-    // 持っていない。
-    unsafe {
-        MessageBoxW(
-            Some(owner),
-            &HSTRING::from(text),
-            &HSTRING::from(TITLE),
-            style,
-        )
-    }
+    // ウィンドウの借用は持っていない。
+    dialog::message_box(Some(owner), text, TITLE, style)
 }
 
 #[cfg(test)]

@@ -6,18 +6,14 @@ use fantermo_core::{
     config::Config,
     keymap::{Action, KeyCombo, Keymap},
 };
-use windows::{
-    Win32::{
-        Foundation::HWND,
-        UI::{
-            Input::KeyboardAndMouse::{EnableWindow, SetFocus},
-            WindowsAndMessaging::{
-                BN_CLICKED, IDYES, LBN_DBLCLK, LBN_SELCHANGE, MB_ICONQUESTION, MB_YESNO,
-                MessageBoxW,
-            },
+use windows::Win32::{
+    Foundation::HWND,
+    UI::{
+        Input::KeyboardAndMouse::{EnableWindow, SetFocus},
+        WindowsAndMessaging::{
+            BN_CLICKED, IDYES, LBN_DBLCLK, LBN_SELCHANGE, MB_ICONQUESTION, MB_YESNO,
         },
     },
-    core::HSTRING,
 };
 
 use super::{
@@ -25,7 +21,7 @@ use super::{
     ROW_HEIGHT, TITLE, row,
     widgets::{Builder, ListBox},
 };
-use crate::key_capture;
+use crate::{dialog, key_capture};
 
 /// このページのコントロールの ID の範囲。範囲がページの間で重ならないことと、このページの ID が範囲に
 /// 入ることを単体のテストで見る。
@@ -275,15 +271,9 @@ impl KeysPage {
                 action_label(other),
                 action_label(action)
             );
-            // SAFETY: hwnd は有効なウィンドウで、文字列はこの呼び出しの間は生きている。借用は持っていない。
-            let answer = unsafe {
-                MessageBoxW(
-                    Some(ctx.hwnd()),
-                    &HSTRING::from(text),
-                    &HSTRING::from(TITLE),
-                    MB_YESNO | MB_ICONQUESTION,
-                )
-            };
+            // 借用は持っていない。
+            let answer =
+                dialog::message_box(Some(ctx.hwnd()), &text, TITLE, MB_YESNO | MB_ICONQUESTION);
             if answer != IDYES {
                 return false;
             }

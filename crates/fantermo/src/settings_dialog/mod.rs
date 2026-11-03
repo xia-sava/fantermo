@@ -20,27 +20,18 @@ use fantermo_core::{
 };
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
-        Graphics::Gdi::{
-            COLOR_BTNFACE, CreateFontIndirectW, DeleteObject, GetMonitorInfoW, HBRUSH, HFONT,
-            HGDIOBJ, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
-        },
+        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+        Graphics::Gdi::HFONT,
         System::LibraryLoader::GetModuleHandleW,
         UI::{
-            Controls::{
-                ICC_UPDOWN_CLASS, INITCOMMONCONTROLSEX, InitCommonControlsEx, NMHDR, NMUPDOWN,
-                UDN_DELTAPOS,
-            },
-            HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow},
+            Controls::{ICC_UPDOWN_CLASS, NMHDR, NMUPDOWN, UDN_DELTAPOS},
+            HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::SetFocus,
             WindowsAndMessaging::{
-                BN_CLICKED, CW_USEDEFAULT, CreateWindowExW, DC_HASDEFID, DM_GETDEFID,
-                DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW, GetWindowRect,
-                IDC_ARROW, IDCANCEL, IDOK, KillTimer, LBN_SELCHANGE, LoadCursorW, MB_ICONWARNING,
-                MB_OK, MessageBoxW, MoveWindow, RegisterClassW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE,
-                SWP_NOZORDER, SendMessageW, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-                WINDOW_EX_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY,
-                WM_DPICHANGED, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETFONT, WM_TIMER, WNDCLASSW,
+                BN_CLICKED, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, IDCANCEL, IDOK,
+                KillTimer, LBN_SELCHANGE, MB_ICONWARNING, MB_OK, MoveWindow, SW_HIDE, SW_SHOW,
+                SWP_NOZORDER, SetTimer, SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WM_CLOSE,
+                WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_NOTIFY, WM_TIMER,
                 WS_CAPTION, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_POPUP, WS_SYSMENU,
             },
         },
@@ -48,7 +39,11 @@ use windows::{
     core::{HSTRING, PCWSTR, w},
 };
 
-use crate::{file_dialog, modal, ui_font};
+use crate::{
+    dialog::{self, DialogState, OwnedFont, scale},
+    file_dialog, modal,
+    paint::BASE_DPI,
+};
 
 mod appearance;
 mod background;
@@ -80,7 +75,6 @@ const ID_APPLY: i32 = 101;
 const ID_ERROR: i32 = 102;
 
 /// 96 DPI のときの寸法（ピクセル）。ウィンドウの DPI に合わせて拡大する。
-const BASE_DPI: u32 = 96;
 const CLIENT_WIDTH: i32 = 640;
 const CLIENT_HEIGHT: i32 = 540;
 const MARGIN: i32 = 12;
@@ -193,8 +187,9 @@ pub fn run(owner: HWND, request: Request, host: &mut dyn Host) {
     // fill が警告の文の高さをこの DPI のフォントで測れるように、先に決める。
     state.set_dpi(dpi);
     state.fill(&current);
-    // SAFETY: hwnd は作ったばかりのウィンドウ。ポインタは modal::run が戻るまで有効で、WM_DESTROY で外す。
-    unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, std::ptr::from_ref(&state) as isize) };
+    // SAFETY: state は modal::run が戻るまで生きていて、modal::run はダイアログが壊れる（WM_DESTROY で外す）まで
+    // 戻らない。
+    unsafe { dialog::attach_state(hwnd, &state) };
     if let Err(e) = place(owner, hwnd, dpi) {
         tracing::warn!("failed to place the settings dialog: {e}");
     }
@@ -207,45 +202,18 @@ pub fn run(owner: HWND, request: Request, host: &mut dyn Host) {
 
     modal::run(owner, hwnd, &state.closed, |_| false);
 
-    let font = state.font.get();
-    if !font.is_invalid() {
-        // SAFETY: フォントはダイアログのために作ったもので、ダイアログはもう閉じている。
-        unsafe { _ = DeleteObject(HGDIOBJ(font.0)) };
-    }
+    // フォントは state と一緒に、ダイアログが壊れたあとで消える。
     state.colors.delete_swatch_brushes();
 }
 
 fn register_class() -> windows::core::Result<()> {
     static REGISTERED: OnceLock<()> = OnceLock::new();
-    if REGISTERED.get().is_some() {
-        return Ok(());
-    }
-    let controls = INITCOMMONCONTROLSEX {
-        dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
-        dwICC: ICC_UPDOWN_CLASS,
-    };
-    // SAFETY: controls は大きさを入れて初期化してある。
-    if !unsafe { InitCommonControlsEx(&controls) }.as_bool() {
-        tracing::warn!("failed to register the up-down control");
-    }
-    // SAFETY: 自分のモジュールのハンドルを問い合わせるだけ。
-    let instance = unsafe { GetModuleHandleW(None)? };
-    let class = WNDCLASSW {
-        lpfnWndProc: Some(dialog_proc),
-        hInstance: instance.into(),
-        // SAFETY: システムの矢印カーソルを読むだけ。
-        hCursor: unsafe { LoadCursorW(None, IDC_ARROW)? },
-        // システムの色の番号に 1 を足した値は、その色のブラシとして扱われる。
-        hbrBackground: HBRUSH((COLOR_BTNFACE.0 + 1) as isize as *mut _),
-        lpszClassName: CLASS,
-        ..Default::default()
-    };
-    // SAFETY: class は初期化済みで、名前は静的な文字列。
-    if unsafe { RegisterClassW(&class) } == 0 {
-        return Err(windows::core::Error::from_thread());
-    }
-    _ = REGISTERED.set(());
-    Ok(())
+    dialog::register_class(
+        &REGISTERED,
+        CLASS,
+        Some(dialog_proc),
+        Some(ICC_UPDOWN_CLASS),
+    )
 }
 
 /// ダイアログ全体のコントロール。ページの中のコントロールは、それぞれのページが持つ。
@@ -322,9 +290,15 @@ struct State<'a> {
     base: RefCell<Config>,
     /// 最後に端末に反映した設定。
     previewed: RefCell<Config>,
-    font: Cell<HFONT>,
+    font: RefCell<OwnedFont>,
     dpi: Cell<u32>,
     closed: Cell<bool>,
+}
+
+impl DialogState for State<'_> {
+    fn closed(&self) -> &Cell<bool> {
+        &self.closed
+    }
 }
 
 /// ダイアログとコントロールを作る。大きさと位置は後で決める（[`place`]）。`current` はいま使っている
@@ -423,70 +397,34 @@ fn create<'a>(
         host: RefCell::new(host),
         base: RefCell::new(current.clone()),
         previewed: RefCell::new(current.clone()),
-        font: Cell::new(HFONT::default()),
+        font: RefCell::default(),
         dpi: Cell::new(BASE_DPI),
         closed: Cell::new(false),
     })
 }
 
 /// ダイアログを、DPI が `dpi` のときの大きさにして、呼び出し元のウィンドウの真ん中に置く。
-fn place(owner: HWND, dialog: HWND, dpi: u32) -> windows::core::Result<()> {
-    let mut rect = RECT {
-        left: 0,
-        top: 0,
-        right: scale(CLIENT_WIDTH, dpi),
-        bottom: scale(CLIENT_HEIGHT, dpi),
+fn place(owner: HWND, hwnd: HWND, dpi: u32) -> windows::core::Result<()> {
+    let (width, height) = dialog::window_size(
+        CLIENT_WIDTH,
+        CLIENT_HEIGHT,
+        WS_POPUP | WS_CAPTION | WS_SYSMENU,
+        WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+        dpi,
+    )?;
+    let (left, top) = dialog::center_in(&dialog::window_rect(owner)?, width, height);
+    let (left, top) = match dialog::work_area(owner) {
+        Some(work) => (
+            dialog::keep_within(left, width, work.left, work.right),
+            dialog::keep_within(top, height, work.top, work.bottom),
+        ),
+        None => {
+            tracing::warn!("failed to read the work area for the settings dialog");
+            (left, top)
+        }
     };
-    // SAFETY: rect は書き込める。
-    unsafe {
-        AdjustWindowRectExForDpi(
-            &mut rect,
-            WS_POPUP | WS_CAPTION | WS_SYSMENU,
-            false,
-            WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
-            dpi,
-        )?
-    };
-    let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
-    let mut owner_rect = RECT::default();
-    // SAFETY: owner は有効なウィンドウで、owner_rect は書き込める。
-    unsafe { GetWindowRect(owner, &mut owner_rect)? };
-    let left = owner_rect.left + (owner_rect.right - owner_rect.left - width) / 2;
-    let top = owner_rect.top + (owner_rect.bottom - owner_rect.top - height) / 2;
-    let mut monitor = MONITORINFO {
-        cbSize: size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: owner は有効なウィンドウで、monitor は cbSize を入れて初期化済み。
-    let found = unsafe {
-        GetMonitorInfoW(
-            MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST),
-            &mut monitor,
-        )
-    };
-    let (left, top) = if found.as_bool() {
-        let work = monitor.rcWork;
-        (
-            keep_within(left, width, work.left, work.right),
-            keep_within(top, height, work.top, work.bottom),
-        )
-    } else {
-        tracing::warn!("failed to read the work area for the settings dialog");
-        (left, top)
-    };
-    // SAFETY: dialog は有効なウィンドウ。
-    unsafe { SetWindowPos(dialog, None, left, top, width, height, SWP_NOZORDER) }
-}
-
-/// 位置 `start` から長さ `length` の範囲が `low` から `high` までに収まる位置。収まらなければ `low`（タイトルバーを画面に
-/// 残す）。
-fn keep_within(start: i32, length: i32, low: i32, high: i32) -> i32 {
-    start.min(high - length).max(low)
-}
-
-/// 96 DPI のときの `value` ピクセルを、DPI が `dpi` のときのピクセルにする。
-fn scale(value: i32, dpi: u32) -> i32 {
-    (value as f32 * dpi as f32 / BASE_DPI as f32).round() as i32
+    // SAFETY: hwnd は有効なウィンドウ。
+    unsafe { SetWindowPos(hwnd, None, left, top, width, height, SWP_NOZORDER) }
 }
 
 impl State<'_> {
@@ -516,27 +454,18 @@ impl State<'_> {
     /// DPI を `dpi` にし、フォントを作り直してコントロールを並べ直す。
     fn set_dpi(&self, dpi: u32) {
         self.dpi.set(dpi);
-        let font = match ui_font::message_logfont(dpi) {
-            // SAFETY: logfont は初期化済み。作ったフォントはダイアログが閉じた後に消す。
-            Ok(logfont) => unsafe { CreateFontIndirectW(&logfont) },
-            Err(e) => {
-                tracing::warn!("failed to read the message font: {e}");
-                HFONT::default()
-            }
-        };
+        let font = OwnedFont::message(dpi).unwrap_or_default();
         let previous = self.font.replace(font);
         self.layout();
-        if !previous.is_invalid() {
-            // SAFETY: 前のフォントは、どのコントロールももう使っていない。
-            unsafe { _ = DeleteObject(HGDIOBJ(previous.0)) };
-        }
+        // 前のフォントは、どのコントロールももう使っていない。
+        drop(previous);
     }
 
     /// コントロールを、いまの DPI の大きさで並べ、フォントを付ける。
     fn layout(&self) {
         let dpi = self.dpi.get();
         let c = &self.controls;
-        let font = self.font.get();
+        let font = self.font();
         let number_fields: Vec<&dyn NumberInput> = self
             .pages()
             .into_iter()
@@ -548,15 +477,7 @@ impl State<'_> {
             .map(|(control, _)| *control)
             .chain(number_fields.iter().map(|field| field.spin()));
         for control in all {
-            // SAFETY: control はダイアログの子で、フォントはダイアログが閉じるまで消さない。
-            unsafe {
-                SendMessageW(
-                    control,
-                    WM_SETFONT,
-                    Some(WPARAM(font.0 as usize)),
-                    Some(LPARAM(0)),
-                )
-            };
+            dialog::set_font(control, font, false);
         }
         for &(control, [left, top, width, height]) in &c.placed {
             // SAFETY: control はダイアログの子の有効なウィンドウ。
@@ -656,15 +577,8 @@ impl State<'_> {
             Err(_) => return false,
         };
         if let Err(text) = saved {
-            // SAFETY: hwnd は有効なウィンドウで、文字列はこの呼び出しの間は生きている。借用は持っていない。
-            unsafe {
-                MessageBoxW(
-                    Some(self.hwnd),
-                    &HSTRING::from(text),
-                    &HSTRING::from("fantermo"),
-                    MB_OK | MB_ICONWARNING,
-                )
-            };
+            // 借用は持っていない。
+            dialog::message_box(Some(self.hwnd), &text, "fantermo", MB_OK | MB_ICONWARNING);
             return false;
         }
         self.appearance.saved(&base);
@@ -682,8 +596,7 @@ impl State<'_> {
     }
 
     fn close(&self) {
-        // SAFETY: hwnd はこのダイアログ。
-        unsafe { _ = DestroyWindow(self.hwnd) };
+        dialog::destroy(self.hwnd);
     }
 
     /// 上下の矢印のボタン `spin` が押された。相手の入力欄の数を `delta` の向きに一つ動かす。入力欄が
@@ -714,7 +627,7 @@ impl DialogContext for State<'_> {
     }
 
     fn font(&self) -> HFONT {
-        self.font.get()
+        self.font.borrow().handle()
     }
 
     fn dpi(&self) -> u32 {
@@ -767,19 +680,15 @@ fn filters_for<'a>(extensions: impl Iterator<Item = &'a str>) -> Vec<file_dialog
     ]
 }
 
-/// ダイアログに結び付けた状態。WM_DESTROY で外すまで有効。
-fn state_of<'a>(dialog: HWND) -> Option<&'a State<'a>> {
-    // SAFETY: GWLP_USERDATA には run が入れた State のポインタか 0 が入っている。
-    let pointer = unsafe { GetWindowLongPtrW(dialog, GWLP_USERDATA) } as *const State;
-    // SAFETY: 0 でなければ、run の中の State を指し、ダイアログが閉じるまで有効。
-    unsafe { pointer.as_ref() }
-}
-
 extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    let Some(state) = state_of(hwnd) else {
+    // SAFETY: run が結び付けたのは State。
+    let Some(state) = (unsafe { dialog::state_of::<State>(hwnd) }) else {
         // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
     };
+    if let Some(result) = dialog::handle_common_message(msg, wparam, lparam, Some(IDOK.0)) {
+        return result;
+    }
     match msg {
         WM_COMMAND => {
             let id = (wparam.0 & 0xffff) as i32;
@@ -834,35 +743,9 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             LRESULT(0)
         }
         WM_DPICHANGED => {
-            let dpi = (wparam.0 & 0xffff) as u32;
-            // SAFETY: WM_DPICHANGED の lparam は推奨された矩形を指す。
-            let suggested = unsafe { &*(lparam.0 as *const RECT) };
-            // SAFETY: hwnd はこのダイアログ。
-            if let Err(e) = unsafe {
-                SetWindowPos(
-                    hwnd,
-                    None,
-                    suggested.left,
-                    suggested.top,
-                    suggested.right - suggested.left,
-                    suggested.bottom - suggested.top,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                )
-            } {
-                tracing::warn!("failed to move the settings dialog for {dpi} DPI: {e}");
-            }
-            state.set_dpi(dpi);
-            LRESULT(0)
-        }
-        // Enter を自分で使わないコントロールは、既定のボタンをこの二つで問い合わせて押させる。
-        DM_GETDEFID => LRESULT(((DC_HASDEFID as isize) << 16) | IDOK.0 as isize),
-        WM_NEXTDLGCTL => {
-            // lparam が 0 でなければ、wparam は移す先の子のウィンドウ。順に移すほうは使われないので
-            // 扱わない。
-            if lparam.0 & 0xffff != 0 {
-                // SAFETY: wparam はこのダイアログの子のウィンドウのハンドルとして渡される。
-                unsafe { _ = SetFocus(Some(HWND(wparam.0 as *mut _))) };
-            }
+            // SAFETY: lparam は WM_DPICHANGED で受け取ったもの。
+            unsafe { dialog::move_to_suggested_rect(hwnd, lparam) };
+            state.set_dpi(dialog::dpi_of(wparam));
             LRESULT(0)
         }
         WM_CLOSE => {
@@ -870,9 +753,7 @@ extern "system" fn dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             LRESULT(0)
         }
         WM_DESTROY => {
-            state.closed.set(true);
-            // SAFETY: hwnd はこのダイアログ。以後、状態のポインタは使わせない。
-            unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
+            dialog::on_destroy(hwnd, state);
             LRESULT(0)
         }
         _ => {
@@ -935,13 +816,5 @@ mod tests {
                 assert!(!range.contains(&id), "{id} in {range:?}");
             }
         }
-    }
-
-    #[test]
-    fn the_dialog_position_stays_within_the_work_area() {
-        assert_eq!(keep_within(100, 50, 0, 1000), 100, "already inside");
-        assert_eq!(keep_within(-30, 50, 0, 1000), 0, "past the start");
-        assert_eq!(keep_within(980, 50, 0, 1000), 950, "past the end");
-        assert_eq!(keep_within(100, 2000, 0, 1000), 0, "longer than the area");
     }
 }

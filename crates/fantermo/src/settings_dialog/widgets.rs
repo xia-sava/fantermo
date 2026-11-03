@@ -17,17 +17,18 @@ use windows::{
             WindowsAndMessaging::{
                 BM_GETCHECK, BM_SETCHECK, BS_AUTORADIOBUTTON, BS_DEFPUSHBUTTON, BS_GROUPBOX,
                 BS_PUSHBUTTON, CB_ADDSTRING, CB_DELETESTRING, CB_GETCURSEL, CB_INSERTSTRING,
-                CB_SETCURSEL, CBS_DROPDOWNLIST, CreateWindowExW, ES_AUTOHSCROLL,
-                GetWindowTextLengthW, GetWindowTextW, HMENU, LB_ADDSTRING, LB_DELETESTRING,
-                LB_GETCURSEL, LB_INSERTSTRING, LB_RESETCONTENT, LB_SETCURSEL, LB_SETTABSTOPS,
-                LBS_NOTIFY, LBS_USETABSTOPS, SendMessageW, SetWindowTextW, WINDOW_EX_STYLE,
-                WINDOW_STYLE, WS_CHILD, WS_EX_CLIENTEDGE, WS_GROUP, WS_TABSTOP, WS_VISIBLE,
-                WS_VSCROLL,
+                CB_SETCURSEL, CBS_DROPDOWNLIST, CreateWindowExW, ES_AUTOHSCROLL, HMENU,
+                LB_ADDSTRING, LB_DELETESTRING, LB_GETCURSEL, LB_INSERTSTRING, LB_RESETCONTENT,
+                LB_SETCURSEL, LB_SETTABSTOPS, LBS_NOTIFY, LBS_USETABSTOPS, SendMessageW,
+                WINDOW_EX_STYLE, WINDOW_STYLE, WS_CHILD, WS_EX_CLIENTEDGE, WS_GROUP, WS_TABSTOP,
+                WS_VISIBLE, WS_VSCROLL,
             },
         },
     },
     core::{HSTRING, PCWSTR, w},
 };
+
+pub(super) use crate::dialog::{get_text, set_text};
 
 /// 見出しや説明の文字。押せないので同じ ID でよい。
 const ID_LABEL: i32 = -1;
@@ -641,18 +642,4 @@ impl<T: Copy + PartialEq> ChoiceBox<T> {
             );
         }
     }
-}
-
-pub(super) fn set_text(control: HWND, text: &str) {
-    // SAFETY: control は有効なウィンドウで、文字列はこの呼び出しの間は生きている。
-    unsafe { _ = SetWindowTextW(control, &HSTRING::from(text)) };
-}
-
-pub(super) fn get_text(control: HWND) -> String {
-    // SAFETY: control は有効なウィンドウ。
-    let length = unsafe { GetWindowTextLengthW(control) }.max(0) as usize;
-    let mut buffer = vec![0u16; length + 1];
-    // SAFETY: buffer は length + 1 個の u16 を書き込める。
-    let copied = unsafe { GetWindowTextW(control, &mut buffer) }.max(0) as usize;
-    String::from_utf16_lossy(&buffer[..copied])
 }

@@ -27,6 +27,7 @@ mod config_file;
 mod conpty;
 mod context_menu;
 mod decoration;
+mod dialog;
 mod dump;
 #[cfg(feature = "e2e")]
 mod e2e_server;
