@@ -1147,7 +1147,7 @@ impl App {
             }
             Request::NewTab => (done(), self.run_tab_command(TabCommand::New)),
             Request::NewProfileTab(index) => {
-                if index >= self.profiles.len() {
+                if index >= self.config.profiles.len() {
                     return (
                         Response::bad_request(format!("no profile at {index}")),
                         None,
@@ -1259,6 +1259,7 @@ impl App {
             })
             .collect();
         let profiles: Vec<&str> = self
+            .config
             .profiles
             .iter()
             .map(|profile| profile.name.as_str())

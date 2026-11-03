@@ -146,7 +146,8 @@ impl App {
                 hovered: self.tab_bar_hover,
                 pressed,
             },
-            &tab_bar::Palette::from_system(system_colors()).with_colors(&self.colors.tab_bar),
+            &tab_bar::Palette::from_system(system_colors())
+                .with_colors(&self.config.colors.tab_bar),
             &*self.ui_font,
         )
     }

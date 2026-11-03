@@ -34,7 +34,7 @@ impl App {
 
     /// 改行が LF の `text` を貼り付ける。確認が要るときは、編集のダイアログを開くよう返す。
     pub(super) fn paste_text(&mut self, text: String) -> Option<Deferred> {
-        let (needs_confirmation, large) = match paste_action(&self.paste_config, &text) {
+        let (needs_confirmation, large) = match paste_action(&self.config.paste, &text) {
             PasteAction::Confirm { large } => (true, large),
             PasteAction::Paste { allow_unsafe } => (
                 self.paste(&text, allow_unsafe) == Some(PasteOutcome::Unsafe),
@@ -100,7 +100,7 @@ impl App {
         let id = self.sessions[index].id();
         for request in self.sessions[index].vt.take_clipboard_reads() {
             let allowed = self.sessions[index].clipboard_read_allowed;
-            match read_decision(self.clipboard_read, allowed) {
+            match read_decision(self.config.clipboard.read, allowed) {
                 ReadDecision::Answer => self.answer_clipboard_read(id, request),
                 ReadDecision::Refuse => tracing::debug!("refused a clipboard read from {id:?}"),
                 ReadDecision::Ask => {
@@ -150,7 +150,7 @@ impl App {
         while let Some((id, request)) = self.clipboard_prompts.start_next() {
             let index = self.sessions.iter().position(|session| session.id() == id);
             let allowed = index.is_some_and(|index| self.sessions[index].clipboard_read_allowed);
-            match read_decision(self.clipboard_read, allowed) {
+            match read_decision(self.config.clipboard.read, allowed) {
                 ReadDecision::Answer => self.answer_clipboard_read(id, request),
                 ReadDecision::Refuse => tracing::debug!("refused a clipboard read from {id:?}"),
                 ReadDecision::Ask => {
@@ -176,7 +176,8 @@ impl App {
     pub(super) fn finish_clipboard_prompt(&mut self, choice: Choice) {
         if let Some((id, request)) = self.clipboard_prompts.finish() {
             tracing::debug!("the user answered a clipboard read from {id:?}: {choice:?}");
-            let allows = choice != Choice::Deny && self.clipboard_read != ClipboardRead::Deny;
+            let allows =
+                choice != Choice::Deny && self.config.clipboard.read != ClipboardRead::Deny;
             if allows {
                 if choice == Choice::AllowForTab
                     && let Some(session) =

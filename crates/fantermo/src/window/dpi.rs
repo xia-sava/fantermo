@@ -105,7 +105,7 @@ impl App {
     /// 前のフォントのまま描く。
     pub(super) fn apply_dpi(&mut self, dpi: u32) {
         self.dpi = dpi;
-        let font = match font::find_or_default(&self.dwrite, &self.font_config, dpi) {
+        let font = match font::find_or_default(&self.dwrite, &self.config.font, dpi) {
             Ok(font) => font,
             Err(e) => {
                 tracing::warn!("failed to measure the font for {dpi} DPI: {e}");
@@ -134,7 +134,7 @@ impl App {
                 &self.dwrite,
                 &font,
                 ui_font.clone(),
-                self.font_config.wide_glyph,
+                self.config.font.wide_glyph,
             ),
             None => Ok(()),
         };
@@ -158,7 +158,7 @@ impl App {
 
     /// DPI が `dpi` に変わったときに、いまの桁数と行数がそのまま収まるクライアント領域の大きさ。
     fn scaled_client_size(&self, dpi: u32) -> windows::core::Result<SIZE> {
-        let font = font::find_or_default(&self.dwrite, &self.font_config, dpi)?;
+        let font = font::find_or_default(&self.dwrite, &self.config.font, dpi)?;
         let size = self.session().vt.size();
         Ok(client_size_for_terminal(
             grid_pixels(&font, size.cols, size.rows),

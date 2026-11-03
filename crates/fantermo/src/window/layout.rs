@@ -343,7 +343,11 @@ impl App {
 
     /// DPI が `dpi` のときの、端末の画面の周りに取る場所の寸法。
     pub(super) fn insets(&self, dpi: u32) -> Insets {
-        Insets::new(dpi, self.scroll_bar_width, self.padding)
+        Insets::new(
+            dpi,
+            self.config.scroll_bar.width,
+            self.config.window.padding,
+        )
     }
 
     /// タブバーを描く領域。ウィンドウの上端に、ウィンドウの幅いっぱい。その下の端末の画面の上の余白は

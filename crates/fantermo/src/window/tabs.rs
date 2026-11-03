@@ -135,7 +135,7 @@ impl App {
     fn startup_of(&self, request: &TabRequest, launch: Launch) -> Startup {
         startup_for(
             request,
-            &self.profiles,
+            &self.config.profiles,
             self.default_profile_index(),
             launch,
             self.config_path.as_deref().and_then(Path::parent),
@@ -154,7 +154,7 @@ impl App {
             id,
             startup,
             size,
-            &self.colors.terminal_colors(),
+            &self.config.colors.terminal_colors(),
             wake_poster(self.hwnd, id),
         );
         let mut session = match spawned {
@@ -218,7 +218,7 @@ impl App {
     fn open_forwarded(&mut self, forwarded: &Forwarded) -> Option<String> {
         let mut startup = self.startup_of(&forwarded.options.tab, Launch::Default);
         startup.working_folder = forwarded.usable_working_folder().map(Path::to_owned);
-        let mut notice = forwarded.options.notice(&self.profiles);
+        let mut notice = forwarded.options.notice(&self.config.profiles);
         if let Err(e) = self.open_startup(&startup) {
             let failed = format!(
                 "「{}」を起動できませんでした。\n\n{e}",
@@ -305,7 +305,10 @@ impl App {
 
     /// 既定のプロファイルの、`profiles` の中の位置。
     pub(super) fn default_profile_index(&self) -> usize {
-        config::default_profile_index(&self.profiles, self.default_profile.as_deref())
+        config::default_profile_index(
+            &self.config.profiles,
+            self.config.default_profile.as_deref(),
+        )
     }
 
     /// 端末 `id` に出力が届いたか、子プロセスが終わった。出力を流し込み、タイトルとベルを反映する。

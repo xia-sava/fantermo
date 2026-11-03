@@ -24,9 +24,10 @@ impl App {
         let config_dir = self.config_path.as_deref().and_then(Path::parent);
         let mut renderer = self.renderer.as_mut();
         let profile_icons = self
+            .config
             .profiles
             .iter()
-            .zip(TabIcon::for_profiles(&self.profiles, config_dir))
+            .zip(TabIcon::for_profiles(&self.config.profiles, config_dir))
             .map(|(profile, icon)| {
                 // `Renderer` がないとき（作り直しを待つ間と、描画をやめたあと）は、アイコンを付けない。
                 match renderer.as_mut()?.tab_icon_pixels(&icon, side) {
@@ -43,6 +44,7 @@ impl App {
             self.client_to_screen(profiles.right() as i32, profiles.bottom() as i32);
         Deferred::Menu(MenuRequest {
             profiles: self
+                .config
                 .profiles
                 .iter()
                 .map(|profile| profile.name.clone())
@@ -64,7 +66,7 @@ impl App {
     /// `menu` を出す要求。位置はウィンドウの左上で、隠さない矩形はない。
     fn menu_request(&self, menu: Menu) -> MenuRequest {
         MenuRequest {
-            keys: self.keymap.clone(),
+            keys: self.config.keys.clone(),
             menu,
             x: 0,
             y: 0,

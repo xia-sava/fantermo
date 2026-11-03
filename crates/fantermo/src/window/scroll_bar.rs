@@ -200,7 +200,7 @@ impl App {
     fn scroll_bar_metrics(&self) -> scroll_bar::Metrics {
         scroll_bar::Metrics {
             dpi: self.dpi,
-            base_width: self.scroll_bar_width,
+            base_width: self.config.scroll_bar.width,
         }
     }
 }

@@ -2,9 +2,7 @@
 
 use std::path::PathBuf;
 
-use fantermo_core::config::{
-    ClipboardConfig, Config, FontConfig, ScrollBarConfig, WideGlyph, WindowConfig,
-};
+use fantermo_core::config::{Config, FontConfig, WideGlyph};
 use windows::Win32::Foundation::HWND;
 
 use super::{
@@ -37,7 +35,7 @@ impl App {
             config,
             notice,
             notice_key,
-        } = config_file::reload(self.config_path.as_deref(), &self.config_in_use());
+        } = config_file::reload(self.config_path.as_deref(), &self.config);
         let warn = match notice {
             Some(_) if notice_key == self.settings_notice_key => None,
             Some(text) => Some(Deferred::Warn {
@@ -61,38 +59,38 @@ impl App {
     /// 端末の桁数と行数を決め直す。グリフの描き方だけが変わったときは、セルの寸法は変わらないので、
     /// アトラスだけを作り直す。貼り付けの設定はすぐに入れ替える。プロファイルは次に開く端末から使う。
     fn apply_config(&mut self, config: Config) {
-        self.paste_config = config.paste;
-        self.clipboard_read = config.clipboard.read;
-        self.profiles = config.profiles;
-        self.default_profile = config.default_profile;
-        self.keymap = config.keys;
-        if config.background != self.background {
+        // フォントは、測れたものだけを `apply_font_config` が入れ替える。
+        let new_font = config.font.clone();
+        let font_in_use = self.config.font.clone();
+        let old = std::mem::replace(
+            &mut self.config,
+            Config {
+                font: font_in_use,
+                ..config
+            },
+        );
+        if self.config.background != old.background {
             // 項目ごとの表示方法と不透明度だけが変わったなら、選んだ画像のまま描き直す（描くときに項目から
             // 決める）。
-            let paths_changed = !config.background.same_paths(&self.background);
-            self.background = config.background;
-            if paths_changed {
+            if !self.config.background.same_paths(&old.background) {
                 self.rechoose_background_images();
             }
             self.invalidate();
         }
-        if config.colors != self.colors {
-            let terminal_colors = config.colors.terminal_colors();
-            if terminal_colors != self.colors.terminal_colors() {
+        if self.config.colors != old.colors {
+            let terminal_colors = self.config.colors.terminal_colors();
+            if terminal_colors != old.colors.terminal_colors() {
                 for session in &mut self.sessions {
                     if let Err(e) = session.vt.set_default_colors(&terminal_colors) {
                         tracing::warn!("failed to change the terminal colors: {e}");
                     }
                 }
             }
-            self.colors = config.colors;
             self.invalidate();
         }
-        let insets_changed = config.scroll_bar.width != self.scroll_bar_width
-            || config.window.padding != self.padding;
-        self.scroll_bar_width = config.scroll_bar.width;
-        self.padding = config.window.padding;
-        let font = self.apply_font_config(config.font);
+        let insets_changed = self.config.scroll_bar.width != old.scroll_bar.width
+            || self.config.window.padding != old.window.padding;
+        let font = self.apply_font_config(new_font);
         let font_changed = font.is_some();
         if let Some(font) = font {
             self.apply_font(font);
@@ -106,11 +104,11 @@ impl App {
     /// 読み直したフォントの設定を入れ替える。フォントを測り直す作り直しが要れば、いまの DPI で測った
     /// フォントを返す（作り直しは呼び出し元が [`App::apply_font`] で行う）。
     fn apply_font_config(&mut self, font: FontConfig) -> Option<Font> {
-        if font == self.font_config {
+        if font == self.config.font {
             return None;
         }
         let same_face =
-            font.families == self.font_config.families && font.size_pt == self.font_config.size_pt;
+            font.families == self.config.font.families && font.size_pt == self.config.font.size_pt;
         if same_face {
             self.set_wide_glyph(font.wide_glyph);
             return None;
@@ -122,35 +120,13 @@ impl App {
                 return None;
             }
         };
-        self.font_config = font;
+        self.config.font = font;
         Some(measured)
-    }
-
-    /// いま使っている設定。フォントは、いまのフォントを探したときの設定。
-    fn config_in_use(&self) -> Config {
-        Config {
-            font: self.font_config.clone(),
-            profiles: self.profiles.clone(),
-            default_profile: self.default_profile.clone(),
-            paste: self.paste_config.clone(),
-            clipboard: ClipboardConfig {
-                read: self.clipboard_read,
-            },
-            scroll_bar: ScrollBarConfig {
-                width: self.scroll_bar_width,
-            },
-            window: WindowConfig {
-                padding: self.padding,
-            },
-            colors: self.colors.clone(),
-            background: self.background.clone(),
-            keys: self.keymap.clone(),
-        }
     }
 
     /// 設定ダイアログに渡すもの。いま使っている設定と、フォントの一覧。
     fn settings_request(&mut self) -> settings_dialog::Request {
-        let current = self.config_in_use();
+        let current = self.config.clone();
         let tab_bar_colors = tab_bar::Palette::from_system(system_colors()).colors();
         let fonts = match font::monospaced_families(&self.dwrite) {
             Ok(families) => families
@@ -202,7 +178,7 @@ impl App {
                 return;
             }
         };
-        self.font_config.wide_glyph = wide_glyph;
+        self.config.font.wide_glyph = wide_glyph;
         if let Some(e) = lost {
             self.on_device_lost(&e);
         }

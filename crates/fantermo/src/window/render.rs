@@ -50,12 +50,13 @@ impl App {
     /// 空か、どれも読めなければ `None`。`Renderer` がないとき（作り直しを待つ間と、描画をやめたあと）も
     /// `None`（作り直したときに選び直す）。
     pub(super) fn choose_background_image(&mut self) -> Option<Candidate> {
-        if self.background.images.is_empty() {
+        if self.config.background.images.is_empty() {
             return None;
         }
         let renderer = self.renderer.as_mut()?;
         let base = self.config_path.as_deref().and_then(Path::parent);
-        let expanded = fantermo_core::background::expand(&self.background.images, base, &DiskFiles);
+        let expanded =
+            fantermo_core::background::expand(&self.config.background.images, base, &DiskFiles);
         for warning in &expanded.warnings {
             tracing::warn!("{warning}");
         }
@@ -166,7 +167,7 @@ impl App {
             &self.dwrite,
             &self.font,
             self.ui_font.clone(),
-            self.font_config.wide_glyph,
+            self.config.font.wide_glyph,
             device_removed_poster(self.hwnd),
         ) {
             Ok(renderer) => renderer,
@@ -276,7 +277,7 @@ impl App {
         let mut paints = self.tab_bar_paints();
         let scroll_bar_colors =
             scroll_bar::Palette::from_terminal(frame.background, frame.foreground)
-                .with_colors(&self.colors.scroll_bar);
+                .with_colors(&self.config.colors.scroll_bar);
         let over_image = self.session().background_image.is_some();
         if let Some(position) = position {
             paints.extend(self.scroll_bar_paints(position, &scroll_bar_colors, over_image));
@@ -285,7 +286,7 @@ impl App {
             .background_image
             .as_ref()
             .map(|image| {
-                let (fit, image_opacity) = self.background.settings_for(image.entry);
+                let (fit, image_opacity) = self.config.background.settings_for(image.entry);
                 Backdrop {
                     image: &image.path,
                     region: self.backdrop_area,

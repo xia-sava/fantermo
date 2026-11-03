@@ -16,11 +16,7 @@ use fantermo_core::{
     backend::ExitCode,
     background::Random,
     clipboard::ReadPrompts,
-    config::{
-        self, BackgroundConfig, ClipboardRead, ColorsConfig, Config, FontConfig, PasteConfig,
-        Profile,
-    },
-    keymap::Keymap,
+    config::{self, Config},
     state::State,
     vt::{Key, MouseButton},
 };
@@ -330,22 +326,14 @@ struct App {
     dpi: u32,
     /// 設定ファイルの場所。
     config_path: Option<PathBuf>,
-    /// `font` を探したときの設定。
-    font_config: FontConfig,
-    /// 貼り付ける前に、編集のダイアログで確認するとき。
-    paste_config: PasteConfig,
-    /// アプリがクリップボードの内容を読み取ろうとしたときにどうするか。
-    clipboard_read: ClipboardRead,
+    /// いま使っている設定。`config.font` は、`font` を探したときの設定。
+    config: Config,
     /// 確認を待っているクリップボードの読み取りの依頼。
     clipboard_prompts: ReadPrompts<SessionId>,
     /// fantermo の引数の、タブで起動するものの指定。
     arguments: TabRequest,
     /// 別のプロセスから渡され、まだ開いていない起動の指定。ダイアログやメニューの間は待たせる。
     pending_launches: VecDeque<Forwarded>,
-    /// 設定のプロファイル。少なくとも一つある。
-    profiles: Vec<Profile>,
-    /// 設定の既定のプロファイルの名前。`None` なら先頭。
-    default_profile: Option<String>,
     /// ウィンドウが持つ端末。タブの並びの順。少なくとも一つある。
     sessions: Vec<Session>,
     /// 表示している端末の、`sessions` の中の位置。
@@ -376,12 +364,6 @@ struct App {
     image_animation_timer_running: bool,
     /// マウスの、ウィンドウのクライアント領域の中の位置。ウィンドウの外へ出たら `None`。
     pointer_in_window: Option<(i32, i32)>,
-    /// fantermo が受け持つキーの割り当て。
-    keymap: Keymap,
-    /// 設定で書いたタブバーとスクロールバーの色。
-    colors: ColorsConfig,
-    /// 背景画像の設定。
-    background: BackgroundConfig,
     /// 背景画像を選ぶ乱数。
     random: Random,
     /// ウィンドウのクライアント領域のうち、背景画像を敷く領域。
@@ -400,10 +382,6 @@ struct App {
     blink_visible: bool,
     /// 点滅のタイマーを動かしている。
     blink_timer_running: bool,
-    /// 設定のスクロールバーの幅（96 DPI でのピクセル）。
-    scroll_bar_width: u32,
-    /// 設定の端末の画面の余白（96 DPI でのピクセル）。
-    padding: u32,
     /// ウィンドウのクライアント領域のうち、スクロールバーを描く領域。
     scroll_bar_area: Area,
     /// スクロールバーの上で押したマウスのボタンと、左ボタンならその操作。離すまで、マウスの操作を
@@ -446,11 +424,8 @@ impl App {
         notice_key: Option<String>,
         arguments: TabRequest,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let font_config = config.font;
         let (width, height) = client_size(hwnd);
-        let scroll_bar_width = config.scroll_bar.width;
-        let padding = config.window.padding;
-        let insets = Insets::new(dpi, scroll_bar_width, padding);
+        let insets = Insets::new(dpi, config.scroll_bar.width, config.window.padding);
         let terminal_area = terminal_area_in_client(width, height, insets);
         let scroll_bar_area = scroll_bar_area_in_client(width, terminal_area, insets);
         let backdrop_area = backdrop_area_in_client(width, height, insets);
@@ -464,7 +439,7 @@ impl App {
             &dwrite,
             &font,
             ui_font.clone(),
-            font_config.wide_glyph,
+            config.font.wide_glyph,
             device_removed_poster(hwnd),
         )?;
         let first_id = SessionId(0);
@@ -506,14 +481,10 @@ impl App {
             ui_font,
             dpi,
             config_path,
-            font_config,
-            paste_config: config.paste,
-            clipboard_read: config.clipboard.read,
+            config,
             clipboard_prompts: ReadPrompts::default(),
             arguments,
             pending_launches: VecDeque::new(),
-            profiles: config.profiles,
-            default_profile: config.default_profile,
             sessions: vec![session],
             active: 0,
             next_session_id: first_id.0 + 1,
@@ -529,9 +500,6 @@ impl App {
             clock: Instant::now(),
             image_animation_timer_running: false,
             pointer_in_window: None,
-            keymap: config.keys,
-            colors: config.colors,
-            background: config.background,
             random: Random::new(random_seed()),
             backdrop_area,
             suppressed_release: None,
@@ -540,8 +508,6 @@ impl App {
             window_active: false,
             blink_visible: true,
             blink_timer_running: false,
-            scroll_bar_width,
-            padding,
             scroll_bar_area,
             scroll_bar_press: None,
             scroll_bar_hover: false,

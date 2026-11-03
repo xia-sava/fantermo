@@ -60,7 +60,7 @@ impl App {
             return None;
         }
         if action != KeyAction::Release
-            && let Some(bound) = self.keymap.lookup(key, mods)
+            && let Some(bound) = self.config.keys.lookup(key, mods)
             && let Some(deferred) = self.run_bound_action(bound, action)
         {
             self.suppressed_release = Some(key);
