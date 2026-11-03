@@ -307,6 +307,46 @@ mod tests {
         assert!(raw_signature(&[]).is_none());
     }
 
+    /// r と s が同じ値の、DER の署名を base64 にした文字列。
+    fn der_signature_of(value: u8) -> String {
+        let mut integer = [0u8; 32];
+        integer[31] = value;
+        let mut der = vec![0x30, 68];
+        for _ in 0..2 {
+            der.extend([0x02, 32]);
+            der.extend(integer);
+        }
+        let mut encoded = Vec::new();
+        fantermo_core::base64::push(&mut encoded, &der);
+        String::from_utf8(encoded).unwrap()
+    }
+
+    #[test]
+    fn signatures_that_are_not_a_signature_of_the_manifest_are_rejected() {
+        // r と s が 0 や 1 の署名は、形は DER として読めるが、検証は通らない。
+        for value in [0, 1] {
+            assert!(
+                verify(MANIFEST, &der_signature_of(value), TEST_PUBLIC_KEY).is_err(),
+                "r and s are {value}"
+            );
+        }
+        // DER ではない 3 バイトと、本体のハッシュそのもの（署名にする前の値）。
+        assert!(matches!(
+            verify(MANIFEST, "AAAA", TEST_PUBLIC_KEY),
+            Err(VerifyError::Encoding)
+        ));
+        let mut encoded = Vec::new();
+        fantermo_core::base64::push(&mut encoded, &sha256(MANIFEST).unwrap());
+        assert!(matches!(
+            verify(
+                MANIFEST,
+                std::str::from_utf8(&encoded).unwrap(),
+                TEST_PUBLIC_KEY
+            ),
+            Err(VerifyError::Encoding)
+        ));
+    }
+
     #[test]
     fn sha256_matches_the_known_digest() {
         assert_eq!(
