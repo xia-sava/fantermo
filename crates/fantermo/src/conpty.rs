@@ -280,12 +280,18 @@ impl Backend for ConPty {
         Ok(())
     }
 
-    fn drain_output(&mut self, sink: &mut dyn FnMut(&[u8])) {
+    fn drain_output(&mut self, limit: usize, sink: &mut dyn FnMut(&[u8])) -> bool {
         self.budget.receiving();
-        while let Ok(chunk) = self.output.try_recv() {
+        let mut passed = 0usize;
+        while passed < limit {
+            let Ok(chunk) = self.output.try_recv() else {
+                return false;
+            };
             sink(&chunk);
             self.budget.drained(chunk.len());
+            passed = passed.saturating_add(chunk.len());
         }
+        true
     }
 
     fn poll_exit(&mut self) -> Option<ExitCode> {
@@ -1062,7 +1068,7 @@ mod tests {
         let mut vt = Vt::new(SIZE, "xterm-256color").unwrap();
         let deadline = Instant::now() + TIMEOUT;
         loop {
-            pty.drain_output(&mut |data| vt.feed(data));
+            pty.drain_output(usize::MAX, &mut |data| vt.feed(data));
             let screen = vt.plain_text().unwrap();
             if let Some(code) = pty.poll_exit()
                 && screen.contains(expected)
@@ -1219,7 +1225,7 @@ mod tests {
         let deadline = Instant::now() + TIMEOUT;
         loop {
             let mut output = Vec::new();
-            pty.drain_output(&mut |data| output.extend_from_slice(data));
+            pty.drain_output(usize::MAX, &mut |data| output.extend_from_slice(data));
             if ConsoleHost::of(&pty.process).is_some() {
                 return;
             }
@@ -1246,7 +1252,7 @@ mod tests {
         let job = pty.job.take().expect("the child is not in a job");
         let deadline = Instant::now() + TIMEOUT;
         let all = loop {
-            pty.drain_output(&mut |_| {});
+            pty.drain_output(usize::MAX, &mut |_| {});
             let pids = job_process_ids(&job).unwrap();
             // cmd と ping。
             if pids.len() >= 2 {
@@ -1300,7 +1306,7 @@ mod tests {
         let mut vt = Vt::new(SIZE, "xterm-256color").unwrap();
         let deadline = Instant::now() + TIMEOUT;
         loop {
-            pty.drain_output(&mut |data| vt.feed(data));
+            pty.drain_output(usize::MAX, &mut |data| vt.feed(data));
             if vt.plain_text().unwrap().contains("e2e>") {
                 break;
             }

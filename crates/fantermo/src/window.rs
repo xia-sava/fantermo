@@ -58,21 +58,22 @@ use windows::{
                 DestroyWindow, DispatchMessageW, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO,
                 FlashWindowEx, GUI_INMENUMODE, GUI_POPUPMENUMODE, GUITHREADINFO, GWLP_USERDATA,
                 GetClientRect, GetForegroundWindow, GetGUIThreadInfo, GetLastActivePopup,
-                GetMessageW, GetWindowLongPtrW, GetWindowRect, HTCLIENT, IDC_ARROW, IDC_HAND,
-                IsIconic, KillTimer, LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostMessageW,
-                PostQuitMessage, RegisterClassExW, SIZE_MINIMIZED, SPI_GETWHEELSCROLLLINES,
-                SW_RESTORE, SW_SHOWDEFAULT, SW_SHOWMAXIMIZED, SWP_NOACTIVATE, SWP_NOZORDER,
+                GetMessageW, GetQueueStatus, GetWindowLongPtrW, GetWindowRect, HTCLIENT, IDC_ARROW,
+                IDC_HAND, IsIconic, KillTimer, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
+                PostMessageW, PostQuitMessage, QS_INPUT, QS_PAINT, RegisterClassExW,
+                SIZE_MINIMIZED, SPI_GETWHEELSCROLLLINES, SW_RESTORE, SW_SHOWDEFAULT,
+                SW_SHOWMAXIMIZED, SWP_NOACTIVATE, SWP_NOZORDER,
                 SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetCursor, SetForegroundWindow,
                 SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-                SystemParametersInfoW, TranslateMessage, WA_INACTIVE, WHEEL_DELTA, WINDOW_EX_STYLE,
-                WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE,
-                WM_CONTEXTMENU, WM_COPYDATA, WM_DEADCHAR, WM_DESTROY, WM_DPICHANGED, WM_ENABLE,
-                WM_ENDSESSION, WM_EXITMENULOOP, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION,
-                WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
-                WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT,
-                WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE,
-                WM_SYSCHAR, WM_SYSCOLORCHANGE, WM_SYSDEADCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP,
-                WM_TIMER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+                SystemParametersInfoW, TranslateMessage, USER_TIMER_MINIMUM, WA_INACTIVE,
+                WHEEL_DELTA, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED,
+                WM_CHAR, WM_CLOSE, WM_CONTEXTMENU, WM_COPYDATA, WM_DEADCHAR, WM_DESTROY,
+                WM_DPICHANGED, WM_ENABLE, WM_ENDSESSION, WM_EXITMENULOOP, WM_IME_COMPOSITION,
+                WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN,
+                WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+                WM_NCDESTROY, WM_PAINT, WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP,
+                WM_SETCURSOR, WM_SIZE, WM_SYSCHAR, WM_SYSCOLORCHANGE, WM_SYSDEADCHAR,
+                WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -166,6 +167,9 @@ const RENDERER_RETRY_TIMER_ID: usize = 6;
 
 /// `Renderer` を作り直せなかったときに、もう一度試すまでの間。
 const RENDERER_RETRY_DELAY: Duration = Duration::from_millis(1500);
+
+/// 出力を流しきれなかった端末の続きを、キー入力と描き直しを処理させたあとで流すタイマー。
+const OUTPUT_TIMER_ID: usize = 7;
 
 /// 画像のアニメーションで描き直す間隔の下限。
 const MIN_IMAGE_ANIMATION_INTERVAL: Duration = Duration::from_millis(8);
@@ -760,6 +764,8 @@ struct App {
     active: usize,
     /// 次に開く端末の番号。閉じた端末の番号は使い直さない（閉じたあとに届く知らせを捨てるため）。
     next_session_id: usize,
+    /// 出力を流しきれず、[`OUTPUT_TIMER_ID`] のタイマーで続きを流す端末。
+    output_continuations: Vec<SessionId>,
     /// ウィンドウのクライアント領域のうち、表示している端末を描く領域。
     terminal_area: Area,
     /// Direct3D で描くもの。デバイスを失ってから、作り直しを待つ間と、描画をやめたあとは `None`。
@@ -918,6 +924,7 @@ impl App {
             sessions: vec![session],
             active: 0,
             next_session_id: first_id.0 + 1,
+            output_continuations: Vec::new(),
             terminal_area,
             renderer: Some(renderer),
             renderer_recreations: 0,
@@ -1256,6 +1263,7 @@ impl App {
         if self.clipboard_prompts.discard_tab(closed.id()) {
             clipboard_prompt::close();
         }
+        self.output_continuations.retain(|id| *id != closed.id());
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.drop_terminal_images(closed.id().0);
         }
@@ -2324,9 +2332,14 @@ impl App {
     }
 
     /// 端末 `id` に出力が届いたか、子プロセスが終わった。出力を流し込み、タイトルとベルを反映する。
-    /// 表示していない端末の出力も流し込む（描くのは表示している端末だけ）。ウィンドウを閉じるときは
-    /// `true` を返す。
+    /// 表示していない端末の出力も流し込む（描くのは表示している端末だけ）。一度に流す量には上限があり、
+    /// 残れば [`continue_output`](Self::continue_output) で、続きを次のメッセージで流す。タイマーで続きを
+    /// 待っている端末への知らせは流さずに戻る（続きはタイマーが流す）。子プロセスの終了は、出力を流しきって
+    /// から扱う。ウィンドウを閉じるときは `true` を返す。
     fn on_wake(&mut self, id: SessionId) -> bool {
+        if self.output_continuations.contains(&id) {
+            return false;
+        }
         let Some(index) = self.sessions.iter().position(|session| session.id() == id) else {
             tracing::debug!("ignoring a wake for an unknown terminal {id:?}");
             return false;
@@ -2351,9 +2364,59 @@ impl App {
             }
             self.invalidate();
         }
+        if events.more_output {
+            self.continue_output(id);
+        }
         events
             .exited
             .is_some_and(|code| self.on_session_ended(index, code))
+    }
+
+    /// 端末 `id` の流しきれなかった出力を、次のメッセージで続けて流す。積んだメッセージはキー入力と描き直しより
+    /// 先に取り出されるので、それらが待っていればタイマーで流す（`WM_TIMER` はそれらのあとに届く）。待って
+    /// いなければ、すぐに [`WM_APP_WAKE`] を積む。積めなければタイマーで流す。
+    fn continue_output(&mut self, id: SessionId) {
+        // SAFETY: このスレッドのキューを調べるだけ。上位の 16 ビットが、いまキューにあるものの種類。
+        let waiting = unsafe { GetQueueStatus(QS_INPUT | QS_PAINT) } >> 16;
+        if waiting == 0 {
+            match post(self.hwnd, WM_APP_WAKE, WPARAM(id.0)) {
+                Ok(()) => return,
+                Err(e) => warn_post_failed(WM_APP_WAKE, &e),
+            }
+        }
+        if !self.output_continuations.contains(&id) {
+            self.output_continuations.push(id);
+        }
+        if start_output_timer(self.hwnd) {
+            return;
+        }
+        // タイマーも動かせなければ、キー入力と描き直しより先になっても積む。
+        for id in std::mem::take(&mut self.output_continuations) {
+            if let Err(e) = post(self.hwnd, WM_APP_WAKE, WPARAM(id.0)) {
+                warn_post_failed(WM_APP_WAKE, &e);
+            }
+        }
+    }
+
+    /// 流しきれなかった出力の続きを流す。キー入力と描き直しはこのタイマーの前に処理されている。積めなかった
+    /// 端末は残して、タイマーでもう一度試す。
+    fn on_output_timer(&mut self) {
+        // SAFETY: self.hwnd は有効なウィンドウ。
+        if let Err(e) = unsafe { KillTimer(Some(self.hwnd), OUTPUT_TIMER_ID) } {
+            tracing::warn!("failed to stop the timer to continue the output: {e}");
+        }
+        let hwnd = self.hwnd;
+        self.output_continuations
+            .retain(|id| match post(hwnd, WM_APP_WAKE, WPARAM(id.0)) {
+                Ok(()) => false,
+                Err(e) => {
+                    warn_post_failed(WM_APP_WAKE, &e);
+                    true
+                }
+            });
+        if !self.output_continuations.is_empty() {
+            start_output_timer(self.hwnd);
+        }
     }
 
     /// `sessions` の `index` の端末の子プロセスが `code` で終わった。その端末を閉じる。最後の端末なら、
@@ -3096,6 +3159,11 @@ fn poster(hwnd: HWND, message: u32, wparam: WPARAM) -> impl Fn() + Send + Sync +
     }
 }
 
+/// [`post`] が、宛先のウィンドウが壊れていて失敗した。
+fn window_is_gone(error: &windows::core::Error) -> bool {
+    error.code() == ERROR_INVALID_WINDOW_HANDLE.to_hresult()
+}
+
 /// `hwnd` に `message` を `wparam` を添えて積む。どのスレッドから呼んでもよい。
 fn post(hwnd: HWND, message: u32, wparam: WPARAM) -> windows::core::Result<()> {
     // SAFETY: ウィンドウがすでに壊れていれば失敗するだけで、害はない。
@@ -3105,7 +3173,7 @@ fn post(hwnd: HWND, message: u32, wparam: WPARAM) -> windows::core::Result<()> {
 /// [`post`] の失敗を残す。ウィンドウが壊れたあと（閉じる途中に届いた出力や終了の知らせ）は害がないので
 /// debug にとどめる。ほかの失敗（キューがいっぱいなど）は、知らせを失ってそのタブの出力が止まりうるので warn。
 fn warn_post_failed(message: u32, error: &windows::core::Error) {
-    if error.code() == ERROR_INVALID_WINDOW_HANDLE.to_hresult() {
+    if window_is_gone(error) {
         tracing::debug!("the window is gone; did not post message {message:#06x}: {error}");
     } else {
         tracing::warn!("failed to post message {message:#06x}: {error}");
@@ -3547,13 +3615,35 @@ fn remember_skipped_wake(hwnd: HWND, wparam: WPARAM) {
     });
 }
 
-/// 借用が重なって飛ばした [`WM_APP_WAKE`] を積み直す。借用を手放したところで呼ぶ。
+/// 借用が重なって飛ばした [`WM_APP_WAKE`] を積み直す。借用を手放したところで呼ぶ。積めなかったものは残し、
+/// [`OUTPUT_TIMER_ID`] のタイマーを動かす（タイマーの処理が借用を手放したところで、ここをもう一度通る）。
 fn repost_skipped_wakes() {
+    let mut failed = Vec::new();
     for (hwnd, wparam) in SKIPPED_WAKES.take() {
         if let Err(e) = post(hwnd, WM_APP_WAKE, wparam) {
             warn_post_failed(WM_APP_WAKE, &e);
+            if !window_is_gone(&e) {
+                failed.push((hwnd, wparam));
+            }
         }
     }
+    for (hwnd, wparam) in failed {
+        remember_skipped_wake(hwnd, wparam);
+        start_output_timer(hwnd);
+    }
+}
+
+/// [`OUTPUT_TIMER_ID`] のタイマーを動かす。動かせなければ warn を残して `false` を返す。
+fn start_output_timer(hwnd: HWND) -> bool {
+    // SAFETY: hwnd は有効なウィンドウ。同じ番号のタイマーは置き換わる。
+    if unsafe { SetTimer(Some(hwnd), OUTPUT_TIMER_ID, USER_TIMER_MINIMUM, None) } != 0 {
+        return true;
+    }
+    tracing::warn!(
+        "failed to start the timer to continue the output: {}",
+        windows::core::Error::from_thread()
+    );
+    false
 }
 
 /// `hwnd` の `GWLP_USERDATA` に入っている値を、App のポインタとして読む。参照は作らないので、App を結び付けて
@@ -3732,6 +3822,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         WM_TIMER if wparam.0 == RENDERER_RETRY_TIMER_ID => {
             with_app(&mut |app| app.on_renderer_retry_timer());
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == OUTPUT_TIMER_ID => {
+            with_app(&mut |app| app.on_output_timer());
             LRESULT(0)
         }
         // ほかのウィンドウにマウスのキャプチャが移ったら（Alt+Tab など）、離したことが届かないので、
@@ -3928,6 +4022,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 _ = KillTimer(Some(hwnd), SCROLL_BAR_TIMER_ID);
                 _ = KillTimer(Some(hwnd), IMAGE_ANIMATION_TIMER_ID);
                 _ = KillTimer(Some(hwnd), RENDERER_RETRY_TIMER_ID);
+                _ = KillTimer(Some(hwnd), OUTPUT_TIMER_ID);
             };
             let mut code = 0;
             with_app(&mut |app| {

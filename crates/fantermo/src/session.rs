@@ -23,6 +23,15 @@ use crate::{
 const TERM: &str = "xterm-256color";
 /// 子プロセスの `TERM_PROGRAM`。
 const TERM_PROGRAM: &str = "fantermo";
+/// [`Session::on_output`] 一回で端末エミュレーションに流すバイト数の上限。残りは次のメッセージで流すので、
+/// その間にキー入力・描画・タブの操作が処理される。1 MiB の流し込みは、文字だけで約 1.4 ms、数文字ごとに色を
+/// 変える出力で約 27 ms、重ね塗りを繰り返す sixel で約 36 ms（リリースのビルド、120×40 の端末）。流す回数を
+/// 増やさずに、ウィンドウのスレッドが止まる時間を数フレームまでに収める大きさ。ブリッジのデータの単位の上限
+/// （1 MiB）と同じなので、一つの単位は一回で流せる。表示している端末の続きはたいていタイマーを通るので
+/// （`App::continue_output`）、溜まった分は 1 MiB ごとに少なくともタイマーの刻みをかけて流れる。描画と入力を
+/// 先にするための遅れで、意図したもの。
+const MAX_OUTPUT_PER_CALL: usize = 1024 * 1024;
+
 /// 子プロセスへ渡す環境変数。
 const CHILD_ENV: [(&str, &str); 3] = [
     ("TERM", TERM),
@@ -143,6 +152,8 @@ pub struct OutputEvents {
     pub bell: bool,
     /// 子プロセスが終了した。その終了コード。
     pub exited: Option<ExitCode>,
+    /// 上限まで流して、まだ流していない出力が残っているかもしれない。
+    pub more_output: bool,
 }
 
 impl Session {
@@ -221,10 +232,14 @@ impl Session {
         }
     }
 
-    /// 届いている出力を端末に流し込み、応答を返す。タイトルとベルの変化、子プロセスの終了を返す。
+    /// 届いている出力を [`MAX_OUTPUT_PER_CALL`] まで端末に流し込み、応答を返す。タイトルとベルの変化、
+    /// 子プロセスの終了、流しきれずに残った出力があるかを返す。残っていれば、子プロセスの終了は残りを流しきった
+    /// あとの呼び出しで返す。
     pub fn on_output(&mut self) -> OutputEvents {
         let vt = &mut self.vt;
-        self.backend.drain_output(&mut |data| vt.feed(data));
+        let more_output = self
+            .backend
+            .drain_output(MAX_OUTPUT_PER_CALL, &mut |data| vt.feed(data));
         let replies = self.vt.take_replies();
         if !replies.is_empty()
             && let Err(e) = self.backend.write(&replies)
@@ -234,7 +249,11 @@ impl Session {
         let title_changed = self.update_title();
         let bell = self.vt.take_bell();
 
-        let exited = self.backend.poll_exit();
+        let exited = if more_output {
+            None
+        } else {
+            self.backend.poll_exit()
+        };
         if let Some(code) = exited {
             tracing::info!("child process exited with code {}", code.0);
         }
@@ -242,6 +261,7 @@ impl Session {
             title_changed,
             bell,
             exited,
+            more_output,
         }
     }
 
@@ -334,10 +354,16 @@ mod tests {
             Ok(())
         }
 
-        fn drain_output(&mut self, sink: &mut dyn FnMut(&[u8])) {
-            while let Some(chunk) = self.0.borrow_mut().output.pop_front() {
+        fn drain_output(&mut self, limit: usize, sink: &mut dyn FnMut(&[u8])) -> bool {
+            let mut passed = 0usize;
+            while passed < limit {
+                let Some(chunk) = self.0.borrow_mut().output.pop_front() else {
+                    return false;
+                };
                 sink(&chunk);
+                passed += chunk.len();
             }
+            true
         }
 
         fn poll_exit(&mut self) -> Option<ExitCode> {
@@ -391,6 +417,27 @@ mod tests {
         let (mut session, state) = fake_session();
         state.borrow_mut().exit = Some(ExitCode(3));
         assert_eq!(session.on_output().exited, Some(ExitCode(3)));
+    }
+
+    #[test]
+    fn output_over_the_limit_is_fed_over_calls_and_the_exit_comes_after_it() {
+        let (mut session, state) = fake_session();
+        {
+            let mut state = state.borrow_mut();
+            // 復帰だけなら画面は変わらないので、上限の分を流しても後ろの文字だけが見える。
+            state.output.push_back(vec![b'\r'; MAX_OUTPUT_PER_CALL]);
+            state.output.push_back(b"tail".to_vec());
+            state.exit = Some(ExitCode(3));
+        }
+        let first = session.on_output();
+        assert!(first.more_output);
+        assert_eq!(first.exited, None);
+        assert!(!session.vt.plain_text().unwrap().contains("tail"));
+
+        let second = session.on_output();
+        assert!(!second.more_output);
+        assert_eq!(second.exited, Some(ExitCode(3)));
+        assert!(session.vt.plain_text().unwrap().contains("tail"));
     }
 
     #[test]

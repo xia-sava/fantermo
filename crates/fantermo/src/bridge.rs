@@ -226,17 +226,24 @@ impl Backend for Bridge {
         Ok(())
     }
 
-    fn drain_output(&mut self, sink: &mut dyn FnMut(&[u8])) {
+    fn drain_output(&mut self, limit: usize, sink: &mut dyn FnMut(&[u8])) -> bool {
         self.budget.receiving();
-        while let Ok(event) = self.events.try_recv() {
+        // 終わりの単位は出力のあとに届くので、上限で止めたら、まだ受け取らない。
+        let mut passed = 0usize;
+        while passed < limit {
+            let Ok(event) = self.events.try_recv() else {
+                return false;
+            };
             match event {
                 Event::Output(data) => {
                     sink(&data);
                     self.budget.drained(data.len());
+                    passed = passed.saturating_add(data.len());
                 }
                 Event::Exit(code) => self.exit = Some(code),
             }
         }
+        true
     }
 
     fn poll_exit(&mut self) -> Option<ExitCode> {
@@ -847,6 +854,43 @@ mod tests {
             messages.push(message);
         }
         messages
+    }
+
+    #[test]
+    fn the_exit_is_taken_only_after_the_output_before_it() {
+        let (sender, events) = mpsc::channel();
+        let budget = Arc::new(OutputBudget::new(MAX_PENDING_OUTPUT));
+        assert!(send_all(
+            &sender,
+            &budget,
+            vec![
+                Event::Output(b"first".to_vec()),
+                Event::Output(b"second".to_vec()),
+                Event::Exit(ExitCode(3)),
+            ],
+        ));
+        let mut bridge = Bridge {
+            input: None,
+            process: None,
+            events,
+            budget,
+            closing: Arc::new(AtomicBool::new(false)),
+            size: window_size(GridSize {
+                cols: 80,
+                rows: 24,
+                cell_width_px: 8,
+                cell_height_px: 16,
+            }),
+            exit: None,
+        };
+        let mut output = Vec::new();
+        assert!(bridge.drain_output(1, &mut |data| output.extend_from_slice(data)));
+        assert_eq!(output, b"first");
+        assert_eq!(bridge.poll_exit(), None);
+
+        assert!(!bridge.drain_output(1024, &mut |data| output.extend_from_slice(data)));
+        assert_eq!(output, b"firstsecond");
+        assert_eq!(bridge.poll_exit(), Some(ExitCode(3)));
     }
 
     #[test]
