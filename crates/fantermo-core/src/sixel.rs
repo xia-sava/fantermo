@@ -2,7 +2,7 @@
 //!
 //! 色レジスタは画像ごとに持つ（`CSI ? 1070` は見ない）。画素の色は、描いたときに選んでいたレジスタの色で
 //! 決まり、あとでそのレジスタを定義し直しても変わらない（xterm はあとの定義で変わる）。縦横比（DCS の P1 と
-//! ラスター属性の `Pan;Pad`）は見ず、常に 1:1 で描く。大きさか中身のバイト数が上限を超えた画像は捨てる。
+//! ラスター属性の `Pan;Pad`）は見ず、常に 1:1 で描く。大きさ、中身のバイト数、塗った画素の数のどれかが上限を超えた画像は捨てる。
 
 use crate::base64;
 
@@ -12,6 +12,9 @@ pub const MAX_IMAGE_WIDTH: u32 = 4096;
 pub const MAX_IMAGE_HEIGHT: u32 = 4096;
 /// 色レジスタの数。画像ごとに持つ。
 pub const COLOR_REGISTERS: u32 = 1024;
+/// 画像一つで塗る画素の数の上限（重ね塗りを含む）。色を変えて同じ場所を塗り直す出力が通るよう、画像の
+/// 最大の面積の 4 倍とする。
+const MAX_PAINTED_PIXELS: u64 = MAX_IMAGE_WIDTH as u64 * MAX_IMAGE_HEIGHT as u64 * 4;
 /// 画像一つの DCS の中身のバイト数の上限。
 const MAX_DATA_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -128,6 +131,7 @@ enum Command {
 enum Overflow {
     Size,
     Bytes,
+    Pixels,
 }
 
 /// sixel のデコーダ。[`SixelDecoder::feed`] で中身を渡し、[`SixelDecoder::finish`] で画像を受け取る。
@@ -156,6 +160,8 @@ pub struct SixelDecoder {
     capacity_width: u32,
     capacity_height: u32,
     data_bytes: u64,
+    /// 塗った画素の数（重ね塗りを含む）。
+    painted_pixels: u64,
     overflow: Option<Overflow>,
     register_overflow_logged: bool,
 }
@@ -185,6 +191,7 @@ impl SixelDecoder {
             capacity_width: 0,
             capacity_height: 0,
             data_bytes: 0,
+            painted_pixels: 0,
             overflow: None,
             register_overflow_logged: false,
         }
@@ -340,6 +347,12 @@ impl SixelDecoder {
             let end_y = self.y.saturating_add(top_bit + 1);
             if end_x > MAX_IMAGE_WIDTH || end_y > MAX_IMAGE_HEIGHT {
                 self.discard(Overflow::Size);
+                return;
+            }
+            let painted = u64::from(bits.count_ones()) * u64::from(end_x - self.x);
+            self.painted_pixels = self.painted_pixels.saturating_add(painted);
+            if self.painted_pixels > MAX_PAINTED_PIXELS {
+                self.discard(Overflow::Pixels);
                 return;
             }
             self.reserve(end_x, end_y);
@@ -583,6 +596,22 @@ mod tests {
         // 上限ちょうどは通る。
         let limit = format!("!{}@", MAX_IMAGE_WIDTH);
         assert_eq!(decode(1, limit.as_bytes()).unwrap().width, MAX_IMAGE_WIDTH);
+    }
+
+    #[test]
+    fn painting_over_the_pixel_budget_discards_the_image() {
+        // 数バイトの繰り返しと行頭への復帰で、小さな画像のまま大きな塗りを起こす入力。
+        let rows = MAX_PAINTED_PIXELS / (u64::from(MAX_IMAGE_WIDTH) * 6) + 1;
+        let overpainted = "!4096~$".repeat(rows as usize);
+        assert_eq!(decode(1, overpainted.as_bytes()), None);
+        // 各画素を一度ずつ塗る最大の画像は通る。
+        let rows = MAX_IMAGE_HEIGHT as usize / 6;
+        let full = "!4096~-".repeat(rows);
+        let image = decode(1, full.as_bytes()).unwrap();
+        assert_eq!(image.width, MAX_IMAGE_WIDTH);
+        // 同じ場所を 4 回まで塗り直す出力は通る。
+        let layered = "!4096~$".repeat(4 * rows);
+        assert!(decode(1, layered.as_bytes()).is_some());
     }
 
     #[test]
