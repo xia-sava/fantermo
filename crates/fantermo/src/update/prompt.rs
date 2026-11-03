@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn failed_check_is_told_with_ok_only() {
-        let prompt = check_failed_prompt(&CheckError::Fetch(HttpError::Status(404)));
+        let prompt = check_failed_prompt(&CheckError::Fetch("latest.json", HttpError::Status(404)));
         assert_eq!(
             prompt,
             Prompt {

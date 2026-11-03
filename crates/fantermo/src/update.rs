@@ -60,12 +60,43 @@ const PUBLIC_KEY: &[u8] = include_bytes!("../../../assets/manifest-public-key.de
 /// ダウンロードした MSI を置く一時フォルダの名前の前半。後ろにプロセスの ID と時刻を付ける。
 const DOWNLOAD_DIR_PREFIX: &str = "fantermo-update";
 
-/// この fantermo を更新できるか。インストーラで入れたリリースのビルドなら真。
-pub fn can_update() -> bool {
+/// この fantermo を更新できるか。できないときはそのわけ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Availability {
+    /// 更新できる。
+    Available,
+    /// インストーラで入れたリリースのビルドではない。
+    NotInstalled,
+    /// 管理者として動いている。管理者の権限で、利用者が書けるフォルダの MSI を入れることになるので更新しない。
+    Elevated,
+}
+
+/// この fantermo を更新できるか。インストーラで入れたリリースのビルドで、管理者として動いていなければ
+/// `Available`。
+pub fn availability() -> Availability {
     #[cfg(feature = "e2e")]
     if stand_in::is_active() {
-        return true;
+        return Availability::Available;
     }
+    availability_of(is_installed_here, is_elevated_process)
+}
+
+/// 場所と昇格の判定から `Availability` を決める。インストーラで入れたビルドでなければ、昇格は調べない。
+fn availability_of(
+    installed: impl FnOnce() -> bool,
+    elevated: impl FnOnce() -> bool,
+) -> Availability {
+    if !installed() {
+        return Availability::NotInstalled;
+    }
+    if elevated() {
+        return Availability::Elevated;
+    }
+    Availability::Available
+}
+
+/// この実行ファイルが、インストーラで入れたリリースのビルドか。
+fn is_installed_here() -> bool {
     if !version::RELEASE {
         return false;
     }
@@ -79,20 +110,11 @@ pub fn can_update() -> bool {
     let Some(programs) = known_folder::path(&FOLDERID_UserProgramFiles) else {
         return false;
     };
-    allows_update(
-        is_installed_build(version::RELEASE, &exe, &programs),
-        is_elevated_process(),
-    )
+    is_installed_build(version::RELEASE, &exe, &programs)
 }
 
-/// 更新できるか。インストーラで入れたビルド（`installed`）で、管理者として動いていない（`elevated` が偽）
-/// ときだけ真。管理者として更新すると、管理者の権限で、利用者が書けるフォルダの MSI を入れることになる。
-fn allows_update(installed: bool, elevated: bool) -> bool {
-    installed && !elevated
-}
-
-/// このプロセスが管理者として動いているか。調べられなければ偽。
-pub fn is_elevated_process() -> bool {
+/// このプロセスが管理者として動いているか。調べられなければ偽で、警告を残す。
+fn is_elevated_process() -> bool {
     // SAFETY: このプロセスの疑似ハンドルを得るだけ。
     let this = unsafe { GetCurrentProcess() };
     instance::is_elevated(this).unwrap_or_else(|| {
@@ -194,8 +216,8 @@ pub fn start(work: Work, events: Sender<Event>, notify: impl Fn() + Send + 'stat
 /// 更新を確認できなかったわけ。
 #[derive(Debug)]
 pub enum CheckError {
-    /// 更新の情報か署名を取得できなかった。
-    Fetch(HttpError),
+    /// 更新の情報か署名（ファイルの名前）を取得できなかった。
+    Fetch(&'static str, HttpError),
     /// 署名を読めなかったか、検証できなかった。
     Signature(String),
     /// 更新の情報を読めなかった。
@@ -208,10 +230,10 @@ impl CheckError {
     /// 利用者に見せる文。内訳はログに残す。
     pub fn message(&self) -> String {
         match self {
-            Self::Fetch(HttpError::Status(status)) => {
+            Self::Fetch(_, HttpError::Status(status)) => {
                 format!("更新情報を取得できませんでした（HTTP {status}）。")
             }
-            Self::Fetch(_) => {
+            Self::Fetch(..) => {
                 "更新情報を取得できませんでした。ネットワークの接続を確認してください。".to_owned()
             }
             Self::Signature(_) => "更新情報の署名を確認できませんでした。".to_owned(),
@@ -224,10 +246,7 @@ impl CheckError {
 impl fmt::Display for CheckError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Fetch(e) => write!(
-                f,
-                "failed to fetch {MANIFEST_NAME} or {SIGNATURE_NAME}: {e}"
-            ),
+            Self::Fetch(name, e) => write!(f, "failed to fetch {name}: {e}"),
             Self::Signature(e) => write!(f, "failed to verify {MANIFEST_NAME}: {e}"),
             Self::Manifest(e) => write!(f, "failed to read {MANIFEST_NAME}: {e}"),
             Self::CurrentVersion => write!(
@@ -243,8 +262,10 @@ impl fmt::Display for CheckError {
 /// スレッドからは呼ばない。
 fn check() -> Result<Comparison, CheckError> {
     let current = current_version().ok_or(CheckError::CurrentVersion)?;
-    let manifest = fetch(MANIFEST_NAME, MANIFEST_MAX_BYTES).map_err(CheckError::Fetch)?;
-    let signature = fetch(SIGNATURE_NAME, SIGNATURE_MAX_BYTES).map_err(CheckError::Fetch)?;
+    let manifest = fetch(MANIFEST_NAME, MANIFEST_MAX_BYTES)
+        .map_err(|e| CheckError::Fetch(MANIFEST_NAME, e))?;
+    let signature = fetch(SIGNATURE_NAME, SIGNATURE_MAX_BYTES)
+        .map_err(|e| CheckError::Fetch(SIGNATURE_NAME, e))?;
     let comparison = compare_signed(&manifest, &signature, &public_key(), current)?;
     tracing::info!("checked for an update: {comparison:?}");
     Ok(comparison)
@@ -477,11 +498,14 @@ mod tests {
     }
 
     #[test]
-    fn an_elevated_process_cannot_update() {
-        assert!(allows_update(true, false));
-        assert!(!allows_update(true, true));
-        assert!(!allows_update(false, false));
-        assert!(!allows_update(false, true));
+    fn the_reason_not_to_update_is_the_location_before_the_elevation() {
+        assert_eq!(availability_of(|| true, || false), Availability::Available);
+        assert_eq!(availability_of(|| true, || true), Availability::Elevated);
+        // インストーラで入れたビルドでなければ、昇格していても場所のわけを返し、昇格は調べない。
+        assert_eq!(
+            availability_of(|| false, || panic!("the token is read")),
+            Availability::NotInstalled
+        );
     }
 
     #[test]
@@ -531,7 +555,7 @@ mod tests {
     #[test]
     fn messages_tell_apart_fetching_verifying_and_reading() {
         assert_eq!(
-            CheckError::Fetch(HttpError::Status(404)).message(),
+            CheckError::Fetch(MANIFEST_NAME, HttpError::Status(404)).message(),
             "更新情報を取得できませんでした（HTTP 404）。"
         );
         assert_eq!(
@@ -603,13 +627,17 @@ mod tests {
         }
         let key = public_key();
         let version = current_version();
-        let can = can_update();
+        let availability = availability();
         for (name, _) in VARIABLES {
             // SAFETY: 同上。
             unsafe { std::env::remove_var(name) };
         }
         assert_eq!(key.as_ref(), PUBLIC_KEY);
         assert_eq!(version, Version::parse(version::PACKAGE));
-        assert!(!can, "a test build is not an installed build");
+        assert_eq!(
+            availability,
+            Availability::NotInstalled,
+            "a test build is not an installed build"
+        );
     }
 }

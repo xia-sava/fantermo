@@ -16,7 +16,8 @@ use windows::Win32::{
 use crate::{
     font::Font,
     text_dialog::{self, Button, Dialog, HeaderLine},
-    update, version,
+    update::{self, Availability},
+    version,
 };
 
 const TITLE: &str = "fantermo について";
@@ -70,10 +71,11 @@ pub enum Received {
 
 /// 「fantermo について」のダイアログを開き、閉じるまで待つ。
 ///
-/// 「更新を確認」は、インストーラで入れたバージョン（[`update::can_update`]）でだけ押せる。押してもダイアログは
+/// 「更新を確認」は、[`update::availability`] が `Available` のときだけ押せる。押してもダイアログは
 /// 閉じず、確認している間は押せなくする。結果は `hooks` がダイアログの上に見せる。
 pub fn show(owner: HWND, font: &Font, hooks: &UpdateHooks) {
-    let can_update = update::can_update();
+    let availability = update::availability();
+    let can_update = availability == Availability::Available;
     let version = format!("バージョン: {}", version::display());
     let commit = format!("コミット: {}", version::COMMIT);
     let mut header = vec![
@@ -83,12 +85,10 @@ pub fn show(owner: HWND, font: &Font, hooks: &UpdateHooks) {
         HeaderLine::Text(copyright()),
         HeaderLine::Link(REPOSITORY_URL),
     ];
-    if !can_update {
-        header.push(HeaderLine::Text(if update::is_elevated_process() {
-            UPDATE_UNAVAILABLE_ELEVATED
-        } else {
-            UPDATE_UNAVAILABLE
-        }));
+    match availability {
+        Availability::Available => {}
+        Availability::NotInstalled => header.push(HeaderLine::Text(UPDATE_UNAVAILABLE)),
+        Availability::Elevated => header.push(HeaderLine::Text(UPDATE_UNAVAILABLE_ELEVATED)),
     }
     let buttons = [
         Button {

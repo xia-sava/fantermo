@@ -173,10 +173,10 @@ IME の確定した文字と，キーを伴わない `WM_CHAR` は `on_text_unit
 
 ### 更新の確認と適用
 
-1. 「fantermo について」（`show_about`）の「更新を確認」は，`update::can_update` が真のとき（インストーラで `%LOCALAPPDATA%\Programs\fantermo` に入れたリリースのビルド）だけ押せます．
+1. 「fantermo について」（`show_about`）の「更新を確認」は，`update::availability` が `Available` のとき（インストーラで `%LOCALAPPDATA%\Programs\fantermo` に入れたリリースのビルドで，管理者として動いていない）だけ押せます．
 2. `update::start(Work::Check)` が別のスレッドで `latest.json` と署名を WinHTTP で取得し（`update/http`），埋め込みの公開鍵で ECDSA P-256 の署名を検証し（`update/signature`），バージョンを比べます（`update/manifest`）．結果は `update_events` に送り，`WM_APP_UPDATE` で知らせます．「fantermo について」を開いている間はそのループが先に受け取ります．
 3. `update/prompt` が結果を見せて次を決めます．更新するなら `Work::Download` で MSI をダウンロードして SHA-256 を照合し，ほかの fantermo が動いていれば知らせて確認し，`update/apply` のスクリプト（PowerShell）に引き渡してからウィンドウを閉じます．スクリプトは fantermo の終了を待ち，MSI の SHA-256 を照合し直してから `msiexec` で入れ，fantermo を起動し直します．
-4. feature `e2e` のビルドは，取得先・公開鍵・いまのバージョン・スクリプトの起動を `update/stand_in` で差し替え，`127.0.0.1` のほかへ接続せず，スクリプトも起動しません．
+4. feature `e2e` のビルドは，取得先・公開鍵・いまのバージョン・スクリプトの起動（と，更新できるかの判定。管理者の判定も含めて）を `update/stand_in` で差し替え，`127.0.0.1` のほかへ接続せず，スクリプトも起動しません．
 
 ## 4. バックエンド
 
