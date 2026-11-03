@@ -340,7 +340,7 @@ run-hidden は利用者のセッションのウィンドウステーション（
 `[window] padding` が一通りそろった例です（`grep -rn padding crates/` でたどれます）．
 
 1. `fantermo-core/src/config.rs`: 型にフィールドを足し，`Default` に既定値を入れます．既定値と範囲は `DEFAULT_*`・`*_RANGE` の定数にします．数か名前一つだけの項目なら，項目の一覧 `SCALARS` に 1 行（テーブル，キー，値の種類 `ScalarKind` と範囲，フィールドを読み書きする `get`・`set`）を足します．読む処理（`parse`）と書き戻す処理（`config_edit::update`）はこの一覧を上から順に処理し，設定ダイアログの入力欄から読む処理（`parse_input`）は項目を名前で引きます．`parse` は，型が違う・範囲外・知らない名前なら警告を残してその項目だけ前の値にします．名前で書く値は，その型に値と名前の表 `NAMES` を置き，`ALL`・`name`・`from_name` をそこから作ります．`TEMPLATE` に説明と `# キー = 既定値` の行を足します．
-2. 一覧に載らない項目（`font.family`，`default_profile`，プロファイル，背景画像の一覧，色，キーの割り当て）は，読む処理と書き戻す処理をそれぞれ書きます．読む処理は，一覧の項目のあるテーブルなら `config/read.rs` の `read_table` に，ほかは `parse` に書きます（`parse` が `read_table` で回すのは，一覧の項目のあるテーブルだけです）．書き戻す処理は `fantermo-core/src/config_edit.rs` の `update` から呼びます．
+2. 一覧に載らない項目（`font.family`，`default_profile`，プロファイル，背景画像の一覧，色，キーの割り当て）は，読む処理と書き戻す処理をそれぞれ書きます．読む処理は，一覧の項目のあるテーブルなら `config/read.rs` の `read_table` に，ほかは `parse` に書きます（`parse` が `read_table` で回すのは，一覧の項目のあるテーブルだけです）．書き戻す処理は `fantermo-core/src/config_edit.rs` の `update` から呼びます（`default_profile`・`font.family`・色・キーの割り当ては `config_edit.rs` に，背景画像の一覧は `config_edit/images.rs` に，プロファイルは `config_edit/profiles.rs` にあります）．
 3. `fantermo/src/window/mod.rs` と `window/settings.rs`: `App` はいま使っている設定を `Config` 一つ（`App::config`）で持つので，項目を足すと `App` の構造体と `App::new` は変わりません．使う側が `self.config.<項目>` を読み，反映に配置やアトラスの作り直しが要るかを `apply_config`（`settings.rs`）で決めます．
 4. `fantermo/src/settings_dialog/`: 項目を置くページのファイル（`appearance.rs` など．`Page` を実装した `AppearancePage` などの型）に，コントロールの ID（`ID_*`．そのページの `ID_RANGE` の中の番号．範囲がページの間で重ならないことと ID が範囲に入ることは単体のテストが見るので，ID を足したらそのページの `the_ids_are_within_the_range_of_the_page` にも足す），フィールド，`create` で作る，`fill` で値を入れる，`read` で `Config` に戻す（不正なら入力欄を返してフォーカスする），`on_command` で `WM_COMMAND` の知らせを受ける，を足します．ページからダイアログ全体（端末への反映，最後に書いた設定，DPI など）へは `DialogContext` を通します．コントロールは種類ごとの部品（`settings_dialog/widgets.rs`）で作ります．
    - 数なら `NumberField`．読み方（`config::parse_input` に項目の名前を渡す）・見せ方・矢印での動かし方・読めないときの文を `NumberKind` の定数に書き，ページの `number_fields()` に足します．矢印での増減と矢印の配置は，すべてのページのこの一覧を回します．`number_fields()` に足せば，`on_command` の数の入力欄をまとめて受ける分岐が `EN_CHANGE` で反映を待ちます．
@@ -348,27 +348,28 @@ run-hidden は利用者のセッションのウィンドウステーション（
    - 固定の選択肢のコンボボックスなら `ChoiceBox`．選択肢と画面の名前を渡します．`CBN_SELCHANGE` の処理は `on_command` に書きます．
    - 変えたときに反映のほかにも処理が要るものは，`on_command` の，数の入力欄やラジオボタンをまとめて受ける分岐より上に，その ID の分岐を書きます．
 5. 書き方を改めるとき（キーの名前を変える，型を変える）は，`config::migrate` の `STEPS` の最後に手順を足します．今の書き方には何もしない手順にします．
-6. テスト: `config/read.rs` の `template_shows_every_setting_with_its_default`・`all_items_are_read` と範囲のテスト（`SCALARS` の項目は，ひな形の項目，入力欄の範囲，既定値に戻す書き戻しのテストが一覧から数えます．`invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults` は設定の文字列に読めない値を 1 行足すまで落ちます．`all_items_are_read` と `config_edit.rs` の `customized()` は手で書いた値なので，足さなくても落ちませんが，既定値と違う値を足します．`customized()` に足すと，`settings_replace_the_commented_lines_of_the_template` の期待値にもその行の置き換えが要ります），`config_edit.rs` の書き戻しのテスト，設定ダイアログの e2e（`crates/fantermo/tests/e2e/settings.rs`）．利用者に見える項目なら README も．
+6. テスト: `config/read.rs` の `template_shows_every_setting_with_its_default`・`all_items_are_read` と範囲のテスト（`SCALARS` の項目は，ひな形の項目，入力欄の範囲，既定値に戻す書き戻しのテストが一覧から数えます．`invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults` は設定の文字列に読めない値を 1 行足すまで落ちます．`all_items_are_read` と，`config/read.rs`・`config_edit.rs` それぞれの `customized()` は手で書いた値なので，足さなくても落ちませんが，既定値と違う値を足します．`customized()` に足すと，`settings_replace_the_commented_lines_of_the_template` の期待値にもその行の置き換えが要ります），`config_edit.rs` の書き戻しのテスト，設定ダイアログの e2e（`crates/fantermo/tests/e2e/settings.rs`）．利用者に見える項目なら README も．
 
 ### キーの割り当てを足す
 
-1. `fantermo-core/src/keymap.rs`: `Action` に足し，`ACTION_NAMES`（設定ファイルに書く snake_case の名前）と `Action::ALL` に足します（どちらも配列の長さを書いています）．既定で割り当てるなら `DEFAULT_BINDINGS` に足します．
+1. `fantermo-core/src/keymap.rs`: `Action` に足し，`ACTION_NAMES`（設定ファイルに書く snake_case の名前）と `Action::ALL` に足します（どちらも配列の長さを書いています）．既定で割り当てるなら `DEFAULT_BINDINGS`（これも配列の長さを書いています）に足します．
 2. `fantermo/src/window/keys.rs`: `run_bound_action` に動作を書きます．成り立たないときにシェルへ送るか，押し続けたときに繰り返すかもここで決めます．
-3. `fantermo/src/settings_dialog/keys.rs`: `ACTION_LABELS` に画面の名前を足します．`Action::ALL` と同じ順に並べます．
-4. メニューにも同じ項目があれば，`context_menu.rs` の `MenuCommand::action` でつなぎます（メニューに添えるキーが割り当てから決まります）．
+3. `fantermo/src/settings_dialog/keys.rs`: `ACTION_LABELS` に画面の名前を足します．`Action::ALL` と同じ順に並べます（長さは `Action::ALL.len()` なので，足りないとビルドが通りません）．
+4. メニューにも同じ項目があれば，`context_menu.rs` の `COMMANDS` の，その項目の 3 つ目の値に `Some(Action::…)` を書きます（メニューに添えるキーが割り当てから決まります）．
 5. `TEMPLATE` の `[keys]` の説明（`template_lists_the_default_keys` が既定の割り当てとの一致を見ます）．
 
 ### メニューの項目を足す
 
-1. `fantermo/src/context_menu.rs`: `MenuCommand` に足し，`ALL`・`id`（0 と `PROFILE_ID_BASE` 以上は使わない）・`name`（アクセラレータ付き）・`action` に足し，`Menu::items` のどのメニューのどこに並べるかを決めます．押せないときがあれば `MenuRequest` に条件を足します．
-2. `fantermo/src/window/menu.rs`: `run_menu_command` に動作を書きます．ダイアログを開くものは `Deferred` を返し，借用の外で開きます．
-3. e2e のメニューのテストは項目の並びを見ているので，合わせて直します．
+1. `fantermo/src/context_menu.rs`: `MenuCommand` に足し，宣言と同じ順に `COMMANDS` へ 1 行（項目，アクセラレータ付きの名前，同じことをするキーの割り当ての動作）足します．項目の ID は `COMMANDS` の位置 + 1 で決まり，`PROFILE_ID_BASE`（100）未満に収めます（`ids_round_trip_and_avoid_zero` が見ます）．`Menu::items` で，どのメニューのどこに並べるかを決めます．押せないときがあれば `MenuRequest` に条件を足し，`enabled` で判定します．
+2. `fantermo/src/window/menu.rs`: `run_menu_command` の `match` に動作を書きます．ダイアログを開くものは `Deferred` を返し，借用の外で開きます．
+3. `context_menu.rs` の単体のテストを直します．`menu_items_keep_their_order_and_separators` は並びを書いているので足し，`every_command_is_in_the_main_menu` は項目をタブバーのメニューに入れることを求めます．押せない項目は `only_copy_and_the_settings_items_can_be_disabled` に足します．
+4. e2e のメニューのテスト（`crates/fantermo/tests/e2e/menu.rs`）は並びを `menu_shape` の形で書いているので，並びが変わるメニューの分を直します．
 
 ### 制御の口の要求を足す
 
 1. `fantermo/src/e2e_server.rs`: `Request` に足し，`parse_request` でパスと本文を読み，先頭のコメントの表に足します．
-2. `fantermo/src/window/e2e.rs`: `run` の `match` で処理します．状態の JSON に項目を足すときもこのファイルです．
-3. `fantermo/tests/common/mod.rs`: テストから呼ぶ関数を足します．
+2. `fantermo/src/window/e2e.rs`: `run` の `match` に，借用の外で処理するもの（ダイアログ，メニュー，メッセージの送信など）を書きます．それ以外の要求は `App::run_e2e_request` が借用の中で処理します．状態の JSON に項目を足すときは `App::e2e_state` です．
+3. `fantermo/tests/common/mod.rs`: テストから呼ぶ関数を足します．複数の話題のテストが使う補助は `fantermo/tests/e2e/ui.rs` です．
 4. `.claude/skills/e2e-verify/SKILL.md` の「要求の一覧」に足します．
 
 ### ブリッジのプロトコルを変える
