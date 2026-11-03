@@ -2643,10 +2643,9 @@ impl App {
         self.invalidate();
     }
 
-    /// DPI が `dpi` に変わった。端末のフォントと UI のフォントを測り直し、グリフアトラスを作り直す。
-    /// 端末の大きさは呼び出し元が合わせる（DPI の変更ではこのあと届く WM_SIZE の [`App::on_resize`]、
-    /// 設定の変更では [`App::apply_config`]）。失敗したら前のフォントのまま描く（UI のフォントだけを
-    /// 作れなければ、UI のフォントだけ前のまま）。
+    /// DPI が `dpi` に変わった。端末のフォントを測り直し、[`App::apply_font`] で入れ替える。
+    /// 端末の大きさは呼び出し元が合わせる（このあと届く WM_SIZE の [`App::on_resize`]）。測れなければ
+    /// 前のフォントのまま描く。
     fn apply_dpi(&mut self, dpi: u32) {
         self.dpi = dpi;
         let font = match load_font(&self.dwrite, &self.font_config, dpi) {
@@ -2656,6 +2655,14 @@ impl App {
                 return;
             }
         };
+        self.apply_font(font);
+    }
+
+    /// いまの DPI で測った端末のフォント `font` に入れ替える。UI のフォントを測り直し、グリフアトラスを
+    /// 作り直す。端末の大きさは呼び出し元が合わせる。アトラスを作り直せなければ前のフォントのまま描く
+    /// （UI のフォントだけを作れなければ、UI のフォントだけ前のまま）。
+    fn apply_font(&mut self, font: Font) {
+        let dpi = self.dpi;
         let ui_font = match UiFont::for_dpi(&self.dwrite, dpi) {
             Ok(ui_font) => Rc::new(ui_font),
             Err(e) => {
@@ -2762,9 +2769,10 @@ impl App {
             || config.window.padding != self.padding;
         self.scroll_bar_width = config.scroll_bar.width;
         self.padding = config.window.padding;
-        let font_changed = self.apply_font_config(config.font);
-        if font_changed {
-            self.apply_dpi(self.dpi);
+        let font = self.apply_font_config(config.font);
+        let font_changed = font.is_some();
+        if let Some(font) = font {
+            self.apply_font(font);
         }
         if font_changed || insets_changed {
             self.fit_to_client();
@@ -2772,24 +2780,27 @@ impl App {
         }
     }
 
-    /// 読み直したフォントの設定を入れ替える。フォントを測り直す作り直しが要れば `true`（作り直しは
-    /// 呼び出し元が行う）。
-    fn apply_font_config(&mut self, font: FontConfig) -> bool {
+    /// 読み直したフォントの設定を入れ替える。フォントを測り直す作り直しが要れば、いまの DPI で測った
+    /// フォントを返す（作り直しは呼び出し元が [`App::apply_font`] で行う）。
+    fn apply_font_config(&mut self, font: FontConfig) -> Option<Font> {
         if font == self.font_config {
-            return false;
+            return None;
         }
         let same_face =
             font.families == self.font_config.families && font.size_pt == self.font_config.size_pt;
         if same_face {
             self.set_wide_glyph(font.wide_glyph);
-            return false;
+            return None;
         }
-        if let Err(e) = load_font(&self.dwrite, &font, self.dpi) {
-            tracing::warn!("keeping the current font: {e}");
-            return false;
-        }
+        let measured = match load_font(&self.dwrite, &font, self.dpi) {
+            Ok(measured) => measured,
+            Err(e) => {
+                tracing::warn!("keeping the current font: {e}");
+                return None;
+            }
+        };
         self.font_config = font;
-        true
+        Some(measured)
     }
 
     /// いま使っている設定。フォントは、いまのフォントを探したときの設定。

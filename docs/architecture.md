@@ -104,7 +104,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 - **メッセージの定数と `run`** … `WM_APP_WAKE`（出力と子プロセスの終了），`WM_APP_CONFIG_CHANGED`，`WM_APP_UPDATE`，`WM_APP_CLIPBOARD_PROMPT`，`WM_APP_E2E`，`WM_APP_LAUNCH`，`WM_APP_DEVICE_REMOVED` とタイマーの番号．`run` がウィンドウと `App` を作り，メッセージループを回します．
 - **配置の関数** … `Insets`，`terminal_area_in_client`，`scroll_bar_area_in_client`，`backdrop_area_in_client`，`grid_size`．クライアント領域を，タブバー，端末を描く領域，余白，スクロールバー，背景画像を敷く領域に分けます．
 - **`App`** … ウィンドウ一つ分の状態．端末の並び（`sessions` と `active`），フォント，`Renderer`，いま使っている設定の値，マウスとタブバーとスクロールバーの操作の途中の状態など．
-- **`App` のメソッド** … キー（`on_key`，`on_key_input`，`run_bound_action`），タブ（`run_tab_command`，`open_startup`，`close_session`，`activate`），起動中の起動（`accept_launch`，`open_pending_launches`），貼り付けとクリップボード，マウスとリンク，スクロールバー，タブバー，メニュー，出力（`on_wake`），大きさ（`on_resize`，`layout`，`resize_sessions`），DPI（`apply_dpi`），設定（`reload_config`，`apply_config`，`config_in_use`，`settings_request`），描画（`render_to`，`on_device_lost`，`on_device_removed_message`，`recreate_renderer`），点滅と画像のアニメーションのタイマー．
+- **`App` のメソッド** … キー（`on_key`，`on_key_input`，`run_bound_action`），タブ（`run_tab_command`，`open_startup`，`close_session`，`activate`），起動中の起動（`accept_launch`，`open_pending_launches`），貼り付けとクリップボード，マウスとリンク，スクロールバー，タブバー，メニュー，出力（`on_wake`），大きさ（`on_resize`，`layout`，`resize_sessions`），DPI とフォント（`apply_dpi`，`apply_font`），設定（`reload_config`，`apply_config`，`config_in_use`，`settings_request`），描画（`render_to`，`on_device_lost`，`on_device_removed_message`，`recreate_renderer`），点滅と画像のアニメーションのタイマー．
 - **借用の外ですること** … `Deferred` と `run_deferred`，`show_about`，`continue_update`，`run_menu_command`，`edit_settings`（`SettingsHost`），`destroy_window`，`save_window_state`，`repost_skipped_messages`．
 - **`window_proc`** … メッセージごとの振り分け．
 
@@ -152,12 +152,12 @@ IME の確定した文字と，キーを伴わない `WM_CHAR` は `on_text_unit
 
 1. `config_file::watch` のスレッドがフォルダの変化を見て `WM_APP_CONFIG_CHANGED` を積みます．ウィンドウは `CONFIG_RELOAD_DELAY` のタイマーで知らせをまとめ，止んでから一度だけ読み直します．
 2. `App::reload_config` が `config_file::reload` で読みます．エラーのある項目は前の値のまま，TOML として読めなければ全体を前の値のままにします．警告は前と同じ中身（`notice_key`）なら続けて見せず，エラーがなくなれば `notice::withdraw` で取り下げます．
-3. `App::apply_config` が値を入れ替えます．フォントが変われば `apply_dpi` でアトラスを作り直し，フォント・スクロールバーの幅・余白が変われば `layout` します．プロファイルは次に開く端末から使います．
+3. `App::apply_config` が値を入れ替えます．フォントが変われば，`apply_font_config` が測ったフォントを `apply_font` に渡してアトラスを作り直し，フォント・スクロールバーの幅・余白が変われば `layout` します．プロファイルは次に開く端末から使います．
 4. 設定ダイアログを開いている間は読まず（`settings_dialog_open`），閉じてから読みます．ダイアログの試し表示（`Host::preview`）も同じ `apply_config` を通ります．
 
 ### DPI の変更
 
-`WM_DPICHANGED` で，`App::apply_dpi` が端末のフォントと UI のフォントを測り直してアトラスを作り直し，アイコンを付け直し，推奨の矩形へ `SetWindowPos` します．変わったあとの大きさ（`WM_GETDPISCALEDSIZE`）は既定の処理に任せ，Windows が DPI の比で拡大・縮小します．そのあと届く `WM_SIZE` で桁数と行数が決まります．クライアント領域の大きさが変わらず `WM_SIZE` が届かないときのために，最後に `fit_to_client`（`on_resize`）を呼びます．最小化中は呼んでも何もせず，戻したときの `WM_SIZE` に任せます．`state.toml` は位置と大きさをピクセルのまま覚え，DPI は書きません．
+`WM_DPICHANGED` で，`App::apply_dpi` が端末のフォントを測り直し，`apply_font` が UI のフォントを測り直してアトラスを作り直し，アイコンを付け直し，推奨の矩形へ `SetWindowPos` します．変わったあとの大きさ（`WM_GETDPISCALEDSIZE`）は既定の処理に任せ，Windows が DPI の比で拡大・縮小します．そのあと届く `WM_SIZE` で桁数と行数が決まります．クライアント領域の大きさが変わらず `WM_SIZE` が届かないときのために，最後に `fit_to_client`（`on_resize`）を呼びます．最小化中は呼んでも何もせず，戻したときの `WM_SIZE` に任せます．`state.toml` は位置と大きさをピクセルのまま覚え，DPI は書きません．
 
 タブバーとスクロールバーの寸法は DPI から決め（`paint::scale`），端末のフォントによりません．設定ダイアログと文字のダイアログは開くときにモニターの DPI（`GetDpiForWindow`）を読みます．
 
