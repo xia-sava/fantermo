@@ -127,6 +127,11 @@ pub fn close() {
     }
 }
 
+/// `hwnd` が、いま開いている確認のダイアログか。
+pub fn is_open_dialog(hwnd: HWND) -> bool {
+    OPEN_DIALOG.get() == Some(hwnd)
+}
+
 /// ダイアログの知らせ。開いているダイアログのハンドルを覚える。
 unsafe extern "system" fn on_notification(
     hwnd: HWND,

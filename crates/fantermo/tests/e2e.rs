@@ -1057,6 +1057,34 @@ fn cygwin_clipboard_read_follows_the_answer_to_the_dialog() {
     );
 }
 
+/// 確認のダイアログの上に設定ファイルの警告が重なり、エラーが直って警告を取り下げても、確認のダイアログは
+/// 残って答えを受ける。
+#[test]
+fn cygwin_clipboard_read_dialog_stays_when_the_settings_warning_is_withdrawn() {
+    let Some(config) = cygwin_config("cygwin_clipboard_read_dialog_stays") else {
+        return;
+    };
+    let server = Server::start(&config, &[]);
+    wait_sh_ready(&server);
+    server.set_clipboard(CLIPBOARD_TEXT);
+
+    start_clipboard_read(&server, "withdrawn");
+    server.wait_dialogs(1);
+    let path = config_path(&server);
+    std::fs::write(&path, format!("[font\n{config}")).expect("failed to write the settings");
+    server.wait_dialogs(2);
+    std::fs::write(&path, &config).expect("failed to write the settings");
+    server.wait_dialogs(1);
+
+    server.press_dialog_button(BUTTON_ALLOW);
+    server.wait_dialogs(0);
+    let answer = finish_clipboard_read(&server, "withdrawn");
+    assert!(
+        answer.contains(&clipboard_answer(CLIPBOARD_TEXT)),
+        "{answer}"
+    );
+}
+
 #[test]
 fn cygwin_clipboard_write_from_an_application_reaches_the_clipboard() {
     let Some(config) = cygwin_config("cygwin_clipboard_write") else {

@@ -7,6 +7,11 @@
 //! だけを残す。開いているメッセージボックスと同じ話題で違う文の警告が届いたら、開いているものを閉じて
 //! 新しい文で見せ直す。同じ文なら見せ直さない。取り下げた話題を見せていれば、それも閉じる。ほかの話題の
 //! 警告は、開いているものを閉じたあとにまとめて一つのメッセージボックスで見せる。
+//!
+//! 閉じるのは、このモジュールが開いたメッセージボックスだけ。このスレッドで主ウィンドウを持ち主とする
+//! クラス `#32770` のウィンドウは、このモジュールのメッセージボックスのほかに、クリップボードの読み取りの
+//! 確認（`clipboard_prompt`）と更新の確認（`update::prompt`）しかない。更新の確認はタイトルで分け、
+//! クリップボードの確認はタイトルが同じなので、`clipboard_prompt` が覚えているハンドルで除く。
 
 use std::cell::RefCell;
 
@@ -15,12 +20,15 @@ use windows::{
         Foundation::{HWND, LPARAM, WPARAM},
         System::Threading::GetCurrentThreadId,
         UI::WindowsAndMessaging::{
-            EnumThreadWindows, GW_OWNER, GetClassNameW, GetWindow, IsWindow, MB_ICONERROR,
-            MB_ICONWARNING, MB_OK, MESSAGEBOX_STYLE, MessageBoxW, PostMessageW, WM_CLOSE,
+            EnumThreadWindows, GW_OWNER, GetClassNameW, GetWindow, InternalGetWindowText, IsWindow,
+            MB_ICONERROR, MB_ICONWARNING, MB_OK, MESSAGEBOX_STYLE, MessageBoxW, PostMessageW,
+            WM_CLOSE,
         },
     },
-    core::{BOOL, HSTRING, w},
+    core::{BOOL, HSTRING},
 };
+
+use crate::clipboard_prompt;
 
 /// 警告の話題。同じ話題の警告は、新しいものが古いものに代わる。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,6 +47,13 @@ const SEPARATOR: &str = "\n\n";
 
 /// メッセージボックスのウィンドウのクラス名。
 const MESSAGE_BOX_CLASS: &str = "#32770";
+
+/// メッセージボックスのタイトル。
+const TITLE: &str = "fantermo";
+
+/// 列挙したウィンドウのタイトルを読む長さ（UTF-16 の単位）。[`TITLE`] より長いタイトルは、途中までで
+/// 違うと分かれば足りる。
+const TITLE_CAPACITY: usize = 64;
 
 thread_local! {
     /// ウィンドウのスレッドの警告の待ち行列。
@@ -86,7 +101,14 @@ pub fn error(text: &str) {
 
 fn message_box(owner: Option<HWND>, text: &str, icon: MESSAGEBOX_STYLE) {
     // SAFETY: 文字列は呼び出しの間は生きている。owner は None か有効なウィンドウで、借用は持っていない。
-    let result = unsafe { MessageBoxW(owner, &HSTRING::from(text), w!("fantermo"), MB_OK | icon) };
+    let result = unsafe {
+        MessageBoxW(
+            owner,
+            &HSTRING::from(text),
+            &HSTRING::from(TITLE),
+            MB_OK | icon,
+        )
+    };
     if result.0 == 0 {
         tracing::warn!(
             "failed to show a message box: {}",
@@ -95,7 +117,7 @@ fn message_box(owner: Option<HWND>, text: &str, icon: MESSAGEBOX_STYLE) {
     }
 }
 
-/// このスレッドで `owner` のウィンドウを持ち主として開いているメッセージボックスに、WM_CLOSE を積む。
+/// このスレッドで `owner` のウィンドウを持ち主として開いている警告のメッセージボックスに、WM_CLOSE を積む。
 /// 閉じると [`warn`] の中の `MessageBoxW` が戻り、待っている警告があれば続けて見せる。
 fn close_message_box(owner: HWND) {
     let mut search = BoxSearch { owner, closed: 0 };
@@ -119,17 +141,46 @@ struct BoxSearch {
     closed: usize,
 }
 
+/// 列挙したウィンドウの、閉じるかを決めるのに使う性質。
+struct Candidate<'a> {
+    hwnd: HWND,
+    class: &'a str,
+    /// 持ち主のウィンドウ。
+    owner: Option<HWND>,
+    title: &'a str,
+}
+
+/// `candidate` が、`owner` のウィンドウに [`message_box`] で開いた警告のメッセージボックスか。
+/// `is_clipboard_prompt` は、ハンドルがクリップボードの読み取りの確認のダイアログかを答える。
+fn is_warning_box(
+    candidate: &Candidate,
+    owner: HWND,
+    is_clipboard_prompt: impl Fn(HWND) -> bool,
+) -> bool {
+    candidate.class == MESSAGE_BOX_CLASS
+        && candidate.owner == Some(owner)
+        && candidate.title == TITLE
+        && !is_clipboard_prompt(candidate.hwnd)
+}
+
 extern "system" fn close_if_message_box(hwnd: HWND, lparam: LPARAM) -> BOOL {
     // SAFETY: lparam は close_message_box が渡した BoxSearch を指し、列挙の間は生きている。
     let search = unsafe { &mut *(lparam.0 as *mut BoxSearch) };
     let mut class = [0u16; 16];
     // SAFETY: hwnd は列挙されたウィンドウで、class は書き込める。
-    let length = unsafe { GetClassNameW(hwnd, &mut class) }.max(0) as usize;
-    if String::from_utf16_lossy(&class[..length]) != MESSAGE_BOX_CLASS {
-        return true.into();
-    }
-    // SAFETY: hwnd は列挙されたウィンドウ。
-    if unsafe { GetWindow(hwnd, GW_OWNER) }.ok() != Some(search.owner) {
+    let class_length = unsafe { GetClassNameW(hwnd, &mut class) }.max(0) as usize;
+    let mut title = [0u16; TITLE_CAPACITY];
+    // メッセージを送らずに読むので、借用を持ったまま呼ばれても主ウィンドウのプロシージャは動かない。
+    // SAFETY: hwnd は列挙されたウィンドウで、title は書き込める。
+    let title_length = unsafe { InternalGetWindowText(hwnd, &mut title) }.max(0) as usize;
+    let candidate = Candidate {
+        hwnd,
+        class: &String::from_utf16_lossy(&class[..class_length]),
+        // SAFETY: hwnd は列挙されたウィンドウ。
+        owner: unsafe { GetWindow(hwnd, GW_OWNER) }.ok(),
+        title: &String::from_utf16_lossy(&title[..title_length]),
+    };
+    if !is_warning_box(&candidate, search.owner, clipboard_prompt::is_open_dialog) {
         return true.into();
     }
     // OK だけのメッセージボックスは、WM_CLOSE で OK を押したのと同じに閉じる。
@@ -233,6 +284,45 @@ mod tests {
         let mut queue = queue_with(&[(topic, text)]);
         assert_eq!(queue.take().as_deref(), Some(text));
         queue
+    }
+
+    /// 主ウィンドウ、警告のメッセージボックス、クリップボードの確認、ほかのウィンドウのハンドル。
+    const MAIN: HWND = HWND(1 as _);
+    const WARNING: HWND = HWND(2 as _);
+    const CLIPBOARD_PROMPT: HWND = HWND(3 as _);
+    const OTHER: HWND = HWND(4 as _);
+
+    fn is_closed(hwnd: HWND, class: &str, owner: HWND, title: &str) -> bool {
+        let candidate = Candidate {
+            hwnd,
+            class,
+            owner: Some(owner),
+            title,
+        };
+        is_warning_box(&candidate, MAIN, |hwnd| hwnd == CLIPBOARD_PROMPT)
+    }
+
+    #[test]
+    fn only_the_warning_box_is_closed() {
+        assert!(is_closed(WARNING, MESSAGE_BOX_CLASS, MAIN, TITLE));
+        // クリップボードの確認は、クラスもタイトルも持ち主も同じ。
+        assert!(!is_closed(CLIPBOARD_PROMPT, MESSAGE_BOX_CLASS, MAIN, TITLE));
+        // 更新の確認。
+        assert!(!is_closed(
+            OTHER,
+            MESSAGE_BOX_CLASS,
+            MAIN,
+            "fantermo の更新"
+        ));
+        assert!(!is_closed(OTHER, "fantermo-text-dialog", MAIN, TITLE));
+        assert!(!is_closed(OTHER, MESSAGE_BOX_CLASS, OTHER, TITLE));
+        let unowned = Candidate {
+            hwnd: OTHER,
+            class: MESSAGE_BOX_CLASS,
+            owner: None,
+            title: TITLE,
+        };
+        assert!(!is_warning_box(&unowned, MAIN, |_| false));
     }
 
     #[test]
