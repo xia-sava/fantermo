@@ -4,7 +4,7 @@
 //! 書き込みは常に受ける。読み取りは `clipboard.read` とタブごとの許可で決め、確認が要る依頼は
 //! [`ReadPrompts`] で待たせて、一つずつ確認する。
 
-use crate::{base64, config::ClipboardRead};
+use crate::{base64, config::ClipboardRead, vt::normalize_paste};
 
 /// アプリから書き込める文字列のバイト数の上限（デコードしたあと）。libghostty-vt がエスケープシーケンスの
 /// 長さに持つ上限（OSC 52 は base64 なので、デコードすると約 6 MiB）と同じ値で、OSC 5522 にも同じ値を使う。
@@ -56,10 +56,12 @@ pub struct ReadRequest {
 
 impl ReadRequest {
     /// 依頼への答え（`OSC 52 ; Pc ; <base64> ST`）。`Pc` は依頼のもの（書いていなければ `c`）。
-    /// `text` が上限を超えていれば、空のクリップボードとして答える（アプリを待たせない）。
+    /// `text` の改行 CRLF は LF にして答える。LF にしたあとのバイト数が上限を超えていれば、空の
+    /// クリップボードとして答える（アプリを待たせない）。
     pub fn reply(&self, text: &str) -> Vec<u8> {
+        let text = normalize_paste(text);
         let text = if text.len() <= MAX_READ_BYTES {
-            text
+            &*text
         } else {
             tracing::warn!(
                 "answering a clipboard read with nothing: {} bytes is over the limit of {MAX_READ_BYTES}",
@@ -204,6 +206,18 @@ mod tests {
             terminator: Terminator::St,
         };
         assert_eq!(request.reply("hello"), b"\x1b]52;p;aGVsbG8=\x1b\\");
+    }
+
+    #[test]
+    fn a_reply_turns_crlf_into_lf() {
+        assert_eq!(REQUEST.reply("a\r\nb\rc"), REQUEST.reply("a\nb\rc"));
+    }
+
+    #[test]
+    fn a_reply_counts_the_limit_after_the_lf() {
+        let text = "a\r\n".repeat(MAX_READ_BYTES / 2);
+        assert!(text.len() > MAX_READ_BYTES);
+        assert!(REQUEST.reply(&text).len() > MAX_READ_BYTES);
     }
 
     #[test]

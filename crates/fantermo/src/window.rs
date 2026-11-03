@@ -104,7 +104,6 @@ use crate::{
     settings_dialog::{self, FontChoice},
     tab_bar::{self, Hit, TabView},
     tab_icon::TabIcon,
-    text_dialog,
     ui_font::UiFont,
     update, version, window_state,
 };
@@ -1334,7 +1333,7 @@ impl App {
     /// 要るときは、編集のダイアログを開くよう返す。
     fn paste_clipboard(&mut self) -> Option<Deferred> {
         let text = match clipboard::text(self.hwnd) {
-            Ok(Some(text)) => text_dialog::from_crlf(&text),
+            Ok(Some(text)) => vt::normalize_paste(&text).into_owned(),
             Ok(None) => return None,
             Err(e) => {
                 tracing::warn!("failed to read the clipboard: {e}");
@@ -1432,7 +1431,7 @@ impl App {
     /// いまのクリップボードの文字列を、端末 `id` のアプリへ答える。文字列がなければ空で答える。
     fn answer_clipboard_read(&mut self, id: SessionId, request: ReadRequest) {
         let text = match clipboard::text(self.hwnd) {
-            Ok(text) => text.as_deref().map(text_dialog::from_crlf),
+            Ok(text) => text,
             Err(e) => {
                 tracing::warn!("failed to read the clipboard for an application: {e}");
                 None

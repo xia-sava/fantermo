@@ -89,6 +89,16 @@ pub fn is_safe_to_paste(text: &str) -> bool {
     libghostty_vt::paste::is_safe(text)
 }
 
+/// クリップボードの文字列 `text` の改行 CRLF を LF にする。貼り付けと、アプリへ返すクリップボードの
+/// 答えは、この形にしてから扱う。
+pub fn normalize_paste(text: &str) -> Cow<'_, str> {
+    if text.contains("\r\n") {
+        Cow::Owned(text.replace("\r\n", "\n"))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
 /// 端末の外で文字列をセルに並べるときの、書記素クラスタ一つ。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grapheme {
@@ -612,6 +622,7 @@ impl Vt {
     /// 改行を含む文字列は、アプリが bracketed paste に対応していなければコマンドとして実行される可能性がある
     /// ので、`allow_unsafe` でなければ送らずに [`PasteOutcome::Unsafe`] を返す。
     pub fn paste(&mut self, text: &str, allow_unsafe: bool) -> Result<PasteOutcome, VtError> {
+        let text = normalize_paste(text);
         let mimes = [ClipboardMime::new(PLAIN_TEXT_MIME)];
         let options = PasteOptions::new().with_allow_unsafe(allow_unsafe);
         let read = |_mime: &str, out: &mut dyn std::io::Write| out.write_all(text.as_bytes());
@@ -2021,7 +2032,17 @@ mod tests {
         assert_eq!(vt.take_replies(), b"a b c");
         // CR は改行と同じく、そのまま送る。
         assert_eq!(vt.paste("a\rb\r\n", true).unwrap(), PasteOutcome::Pasted);
-        assert_eq!(vt.take_replies(), b"a\rb\r\r");
+        assert_eq!(vt.take_replies(), b"a\rb\r");
+    }
+
+    #[test]
+    fn crlf_in_pasted_text_is_one_line_break() {
+        assert_eq!(normalize_paste("a\r\nb\r\n"), "a\nb\n");
+        assert_eq!(normalize_paste("a\rb\nc"), "a\rb\nc");
+        assert!(matches!(normalize_paste("ab"), Cow::Borrowed(_)));
+        let mut vt = new_vt();
+        assert_eq!(vt.paste("a\r\nb", true).unwrap(), PasteOutcome::Pasted);
+        assert_eq!(vt.take_replies(), b"a\rb");
     }
 
     #[test]

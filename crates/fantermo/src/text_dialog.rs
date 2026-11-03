@@ -716,7 +716,7 @@ fn to_crlf(text: &str) -> String {
 }
 
 /// 入力欄やクリップボードの `\r\n` を `\n` にする。
-pub fn from_crlf(text: &str) -> String {
+fn from_crlf(text: &str) -> String {
     text.replace("\r\n", "\n")
 }
 
