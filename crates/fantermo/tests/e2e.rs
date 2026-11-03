@@ -1085,6 +1085,46 @@ fn cygwin_clipboard_read_dialog_stays_when_the_settings_warning_is_withdrawn() {
     );
 }
 
+/// メニューを開いている間に裏のタブから読み取りの依頼が届いても、確認のダイアログはメニューを閉じてから開く。
+#[test]
+fn cygwin_clipboard_read_dialog_waits_for_the_menu_to_close() {
+    let Some(config) = cygwin_config("cygwin_clipboard_read_dialog_waits_for_the_menu") else {
+        return;
+    };
+    let server = Server::start(&config, &[]);
+    wait_sh_ready(&server);
+    server.post("/e2e/tab/new", b"");
+    server.wait_until("two tabs", |state| tab_count(state) == 2);
+    wait_sh_ready(&server);
+
+    // 裏に回したあとで依頼を出させるため、ファイルができるのを待ってから依頼し、タイトルで知らせる。
+    let trigger = server.dir().join("clipboard-read-trigger");
+    server.send_line(&format!(
+        r#"t=$(cygpath -u '{}'); echo waiting-$((1+1)); while [ ! -e "$t" ]; do sleep 0.1; done; printf '\033]52;c;?\007\033]2;read-sent\007'"#,
+        trigger.display()
+    ));
+    server.wait_text("waiting-2");
+    server.post("/e2e/tab/select/0", b"");
+    let state = server.wait_until("the first tab", |state| state["active"] == 0);
+    open_menu(&server, &right_click_terminal(&state));
+
+    std::fs::write(&trigger, b"").expect("failed to write the trigger");
+    server.wait_until("the read from the other tab", |state| {
+        state["tabs"][1]["title"] == "read-sent"
+    });
+    let only_the_menu = |state: &Value| {
+        state["dialogs"].as_array().is_some_and(|dialogs| {
+            !dialogs.is_empty() && dialogs.iter().all(|dialog| dialog["class"] == MENU_CLASS)
+        })
+    };
+    server.assert_holds_for(Duration::from_secs(1), "only the menu", only_the_menu);
+
+    server.post("/e2e/menu/close", b"");
+    wait_dialog_of_class(&server, SYSTEM_DIALOG_CLASS);
+    server.press_dialog_button(BUTTON_DENY);
+    server.wait_dialogs(0);
+}
+
 #[test]
 fn cygwin_clipboard_write_from_an_application_reaches_the_clipboard() {
     let Some(config) = cygwin_config("cygwin_clipboard_write") else {

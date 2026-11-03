@@ -1439,10 +1439,11 @@ impl App {
     }
 
     /// 次に確認する依頼があれば、ダイアログを開くよう返す。ほかのダイアログを開いている間（ウィンドウが無効の
-    /// 間）は開かず、有効に戻ったときに見直す。待っている間に設定やタブの許可が変わったら、それに従って片づける。
+    /// 間）とメニューを開いている間は開かず、有効に戻ったときとメニューを閉じたときに見直す。待っている間に設定や
+    /// タブの許可が変わったら、それに従って片づける。
     fn next_clipboard_prompt(&mut self) -> Option<Deferred> {
         // SAFETY: ウィンドウのハンドルを調べるだけ。
-        if !unsafe { IsWindowEnabled(self.hwnd) }.as_bool() {
+        if !unsafe { IsWindowEnabled(self.hwnd) }.as_bool() || in_menu() {
             return None;
         }
         while let Some((id, request)) = self.clipboard_prompts.start_next() {
@@ -3803,6 +3804,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             LRESULT(0)
         }
         WM_EXITMENULOOP => {
+            poster(hwnd, WM_APP_CLIPBOARD_PROMPT, WPARAM(0))();
             poster(hwnd, WM_APP_LAUNCH, WPARAM(0))();
             LRESULT(0)
         }
