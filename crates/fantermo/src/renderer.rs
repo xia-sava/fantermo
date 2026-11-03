@@ -13,7 +13,7 @@ use fantermo_core::{
     vt::Vt,
 };
 use windows::Win32::{
-    Foundation::{HMODULE, HWND},
+    Foundation::{D2DERR_RECREATE_TARGET, HMODULE, HWND},
     Graphics::{
         Direct3D::{D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP},
         Direct3D11::{
@@ -26,9 +26,11 @@ use windows::Win32::{
         DirectWrite::IDWriteFactory,
         Dxgi::{
             Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC},
-            CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_PRESENT, DXGI_SCALING_NONE,
-            DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD,
-            DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIFactory2, IDXGISwapChain1,
+            CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_ERROR_DEVICE_REMOVED,
+            DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_DRIVER_INTERNAL_ERROR, DXGI_PRESENT,
+            DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
+            DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIFactory2,
+            IDXGISwapChain1,
         },
     },
 };
@@ -151,6 +153,29 @@ impl Renderer {
         };
         renderer.create_target()?;
         Ok(renderer)
+    }
+
+    /// デバイスを失った理由（`GetDeviceRemovedReason`）。失っていなければ `S_OK`。
+    pub fn device_removed_reason(&self) -> String {
+        // SAFETY: 引数のない問い合わせ。
+        match unsafe { self.device.GetDeviceRemovedReason() } {
+            Ok(()) => "S_OK".to_owned(),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    /// すべての資源を手放す。同じウィンドウに新しい `Renderer` を作る前に使う。
+    ///
+    /// 一つのウィンドウに flip model のスワップチェーンは一つしか持てず、Direct3D 11 はオブジェクトの解放を
+    /// 遅らせるので、スワップチェーンを手放したあとに `ClearState` と `Flush` で解放を済ませる。
+    pub fn release(self) {
+        let context = self.context.clone();
+        drop(self);
+        // SAFETY: 引数のない呼び出し。デバイスを失っていても呼べる。
+        unsafe {
+            context.ClearState();
+            context.Flush();
+        }
     }
 
     /// 背景画像 `path` を読んでテクスチャにする。読んであれば何もしない。
@@ -819,6 +844,17 @@ fn image_instance(placement: &Placement) -> Instance {
     }
 }
 
+/// `error` が、デバイスを失った（ドライバの更新やリセット、ドライバの内部のエラーなど）ことによるもの。
+/// グリフアトラスの Direct2D が描画先の作り直しを求めるのも、同じデバイスを失ったときなので含める。
+/// `Renderer` を作り直せば描き続けられる。
+pub fn is_device_lost(error: &windows::core::Error) -> bool {
+    let code = error.code();
+    code == DXGI_ERROR_DEVICE_REMOVED
+        || code == DXGI_ERROR_DEVICE_RESET
+        || code == DXGI_ERROR_DRIVER_INTERNAL_ERROR
+        || code == D2DERR_RECREATE_TARGET
+}
+
 fn create_device() -> windows::core::Result<(ID3D11Device, ID3D11DeviceContext)> {
     match create_device_with(D3D_DRIVER_TYPE_HARDWARE) {
         Ok(created) => Ok(created),
@@ -865,4 +901,21 @@ fn write_png(
     encoder.set_depth(png::BitDepth::Eight);
     encoder.write_header()?.write_image_data(rgba)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use windows::Win32::Foundation::{E_FAIL, E_OUTOFMEMORY};
+
+    use super::*;
+
+    #[test]
+    fn only_errors_from_losing_the_device_count_as_losing_it() {
+        assert!(is_device_lost(&DXGI_ERROR_DEVICE_REMOVED.into()));
+        assert!(is_device_lost(&DXGI_ERROR_DEVICE_RESET.into()));
+        assert!(is_device_lost(&DXGI_ERROR_DRIVER_INTERNAL_ERROR.into()));
+        assert!(is_device_lost(&D2DERR_RECREATE_TARGET.into()));
+        assert!(!is_device_lost(&E_FAIL.into()));
+        assert!(!is_device_lost(&E_OUTOFMEMORY.into()));
+    }
 }

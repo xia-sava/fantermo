@@ -94,7 +94,7 @@ use crate::{
     notice::{self, Topic},
     paint::{Area, Paint, scale},
     paste_editor,
-    renderer::{Backdrop, Renderer},
+    renderer::{self, Backdrop, Renderer},
     scroll_bar,
     session::{Session, SessionId, Startup},
     settings_dialog::{self, FontChoice},
@@ -159,6 +159,12 @@ const SCROLL_BAR_TIMER_ID: usize = 4;
 /// 端末の中の画像のアニメーションの次のコマで描き直すタイマー。
 const IMAGE_ANIMATION_TIMER_ID: usize = 5;
 
+/// Direct3D のデバイスを失って `Renderer` を作り直せなかったときに、もう一度試すタイマー。
+const RENDERER_RETRY_TIMER_ID: usize = 6;
+
+/// `Renderer` を作り直せなかったときに、もう一度試すまでの間。
+const RENDERER_RETRY_DELAY: Duration = Duration::from_millis(1500);
+
 /// 画像のアニメーションで描き直す間隔の下限。
 const MIN_IMAGE_ANIMATION_INTERVAL: Duration = Duration::from_millis(8);
 
@@ -167,6 +173,10 @@ const SCROLL_BAR_REPEAT_DELAY: Duration = Duration::from_millis(250);
 
 /// スクロールバーのつまみの外を押し続けている間に、ページを送る間隔。
 const SCROLL_BAR_REPEAT_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Direct3D のデバイスを失ったときに、`Renderer` を作り直しても描けないことがこの回数続いたら、描画を
+/// やめる。
+const MAX_RENDERER_RECREATIONS: u32 = 3;
 
 /// キーボードから開いた WM_CONTEXTMENU が `lparam` に入れてくる位置。
 const KEYBOARD_CONTEXT_MENU_POSITION: (i32, i32) = (-1, -1);
@@ -750,7 +760,11 @@ struct App {
     next_session_id: usize,
     /// ウィンドウのクライアント領域のうち、表示している端末を描く領域。
     terminal_area: Area,
-    renderer: Renderer,
+    /// Direct3D で描くもの。デバイスを失ってから、作り直しを待つ間と、描画をやめたあとは `None`。
+    renderer: Option<Renderer>,
+    /// デバイスを失ってから `Renderer` を作り直そうとした回数（作れなかった回も数える）。描けたら 0 に
+    /// 戻す。
+    renderer_recreations: u32,
     dump: Option<ScreenDump>,
     /// ウィンドウのタイトルに出している文字列。
     window_title: String,
@@ -903,7 +917,8 @@ impl App {
             active: 0,
             next_session_id: first_id.0 + 1,
             terminal_area,
-            renderer,
+            renderer: Some(renderer),
+            renderer_recreations: 0,
             dump,
             window_title: window_title("", &version::display()),
             exit: None,
@@ -943,18 +958,19 @@ impl App {
     }
 
     /// 設定の背景画像の一覧から、ランダムに一枚選んで読む。読めない画像は警告を残して飛ばす。一覧が
-    /// 空か、どれも読めなければ `None`。
+    /// 空か、どれも読めなければ `None`。`Renderer` がないとき（作り直しを待つ間と、描画をやめたあと）も
+    /// `None`（作り直したときに選び直す）。
     fn choose_background_image(&mut self) -> Option<Candidate> {
         if self.background.images.is_empty() {
             return None;
         }
+        let renderer = self.renderer.as_mut()?;
         let base = self.config_path.as_deref().and_then(Path::parent);
         let expanded = fantermo_core::background::expand(&self.background.images, base, &DiskFiles);
         for warning in &expanded.warnings {
             tracing::warn!("{warning}");
         }
         let mut candidates = expanded.candidates;
-        let renderer = &mut self.renderer;
         let random = &mut self.random;
         let picked = fantermo_core::background::pick(
             &mut candidates,
@@ -987,8 +1003,11 @@ impl App {
 
     /// どの端末も使っていない背景画像を捨てる。
     fn drop_unused_background_images(&mut self) {
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
         let sessions = &self.sessions;
-        self.renderer.retain_images(|path| {
+        renderer.retain_images(|path| {
             sessions.iter().any(|session| {
                 session
                     .background_image
@@ -1235,12 +1254,16 @@ impl App {
         if self.clipboard_prompts.discard_tab(closed.id()) {
             clipboard_prompt::close();
         }
-        self.renderer.drop_terminal_images(closed.id().0);
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.drop_terminal_images(closed.id().0);
+        }
         drop(closed);
         self.drop_unused_background_images();
-        let sessions = &self.sessions;
-        self.renderer
-            .retain_tab_icons(|icon| sessions.iter().any(|session| session.tab_icon == *icon));
+        if let Some(renderer) = self.renderer.as_mut() {
+            let sessions = &self.sessions;
+            renderer
+                .retain_tab_icons(|icon| sessions.iter().any(|session| session.tab_icon == *icon));
+        }
         self.active = active_after_close(self.active, index, self.sessions.len());
         if was_active {
             self.on_activated();
@@ -1949,20 +1972,21 @@ impl App {
         let (new_tab, profiles) = self.tab_bar_layout().new_tab_buttons();
         let side = tab_bar::tab_icon_size(self.dpi);
         let config_dir = self.config_path.as_deref().and_then(Path::parent);
-        let renderer = &mut self.renderer;
+        let mut renderer = self.renderer.as_mut();
         let profile_icons = self
             .profiles
             .iter()
             .zip(TabIcon::for_profiles(&self.profiles, config_dir))
-            .map(
-                |(profile, icon)| match renderer.tab_icon_pixels(&icon, side) {
+            .map(|(profile, icon)| {
+                // `Renderer` がないとき（作り直しを待つ間と、描画をやめたあと）は、アイコンを付けない。
+                match renderer.as_mut()?.tab_icon_pixels(&icon, side) {
                     Ok(pixels) => Some(pixels),
                     Err(e) => {
                         tracing::warn!("failed to make the icon of {:?}: {e}", profile.name);
                         None
                     }
-                },
-            )
+                }
+            })
             .collect();
         let (left, top) = self.client_to_screen(new_tab.x as i32, new_tab.y as i32);
         let (right, bottom) =
@@ -2360,10 +2384,122 @@ impl App {
 
     /// ウィンドウのクライアント領域の大きさが変わった。端末を描く領域と、端末の大きさを合わせる。
     fn on_resize(&mut self, width: u32, height: u32) {
-        if let Err(e) = self.renderer.resize(width, height) {
-            tracing::warn!("failed to resize the swap chain: {e}");
+        if let Some(renderer) = self.renderer.as_mut()
+            && let Err(e) = renderer.resize(width, height)
+        {
+            if renderer::is_device_lost(&e) {
+                self.on_device_lost(&e);
+            } else {
+                tracing::warn!("failed to resize the swap chain: {e}");
+            }
         }
         self.layout(width, height);
+    }
+
+    /// Direct3D のデバイスを失って `error` になった。理由をログに残し、`Renderer` を作り直す。最初の
+    /// 作り直しはこの場で、作り直したのに描けなかったあとは [`RENDERER_RETRY_DELAY`] のあとに試す。
+    /// 作り直しても描けないことが [`MAX_RENDERER_RECREATIONS`] 回続いていたら、作り直さずに描画をやめる。
+    fn on_device_lost(&mut self, error: &windows::core::Error) {
+        if let Some(renderer) = self.renderer.take() {
+            tracing::warn!(
+                "lost the Direct3D device ({error}), reason: {}",
+                renderer.device_removed_reason()
+            );
+            // 同じウィンドウに新しいスワップチェーンを作るので、古いものを先に手放す。
+            renderer.release();
+        }
+        if self.renderer_recreations >= MAX_RENDERER_RECREATIONS {
+            tracing::warn!(
+                "stopped rendering: could not draw after recreating the renderer {} times",
+                self.renderer_recreations
+            );
+            return;
+        }
+        if self.renderer_recreations == 0 {
+            self.recreate_renderer();
+        } else {
+            self.start_renderer_retry_timer();
+        }
+    }
+
+    /// 失ったデバイスの代わりに `Renderer` を作り直し、各端末が選んだ背景画像を読み直す。読み直せなかった
+    /// 端末と、`Renderer` がない間に開いた端末には、背景画像を選び直す。端末の中の画像とタブのアイコンの
+    /// テクスチャは、描くときに作り直される。
+    ///
+    /// 作れなければ [`RENDERER_RETRY_DELAY`] のあとにもう一度試す。作り直しても描けないことが
+    /// [`MAX_RENDERER_RECREATIONS`] 回続いたら、描画をやめる。
+    fn recreate_renderer(&mut self) {
+        if self.renderer_recreations >= MAX_RENDERER_RECREATIONS {
+            return;
+        }
+        self.renderer_recreations += 1;
+        let (width, height) = client_size(self.hwnd);
+        let renderer = match Renderer::new(
+            self.hwnd,
+            width,
+            height,
+            &self.dwrite,
+            &self.font,
+            self.ui_font.clone(),
+            self.font_config.wide_glyph,
+        ) {
+            Ok(renderer) => renderer,
+            Err(e) if self.renderer_recreations >= MAX_RENDERER_RECREATIONS => {
+                tracing::warn!(
+                    "stopped rendering: could not recreate the renderer or draw with it {} times: {e}",
+                    self.renderer_recreations
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("failed to recreate the renderer, retrying later: {e}");
+                self.start_renderer_retry_timer();
+                return;
+            }
+        };
+        tracing::info!("recreated the renderer after losing the Direct3D device");
+        let renderer = self.renderer.insert(renderer);
+        for session in &mut self.sessions {
+            let Some(image) = &session.background_image else {
+                continue;
+            };
+            if let Err(e) = renderer.load_image(&image.path) {
+                tracing::warn!(
+                    "cannot read the background image {} again: {e}",
+                    image.path.display()
+                );
+                session.background_image = None;
+            }
+        }
+        for index in 0..self.sessions.len() {
+            if self.sessions[index].background_image.is_none() {
+                self.sessions[index].background_image = self.choose_background_image();
+            }
+        }
+        self.invalidate();
+    }
+
+    /// [`RENDERER_RETRY_DELAY`] のあとに `Renderer` の作り直しをもう一度試すタイマーを動かす。
+    fn start_renderer_retry_timer(&self) {
+        let millis = RENDERER_RETRY_DELAY.as_millis() as u32;
+        // SAFETY: self.hwnd は有効なウィンドウ。同じ番号のタイマーは置き換わる。
+        if unsafe { SetTimer(Some(self.hwnd), RENDERER_RETRY_TIMER_ID, millis, None) } == 0 {
+            tracing::warn!(
+                "stopped rendering: failed to start the timer to recreate the renderer: {}",
+                windows::core::Error::from_thread()
+            );
+        }
+    }
+
+    /// `Renderer` の作り直しをもう一度試す時刻になった。一度だけのタイマーとして止めてから試す。
+    fn on_renderer_retry_timer(&mut self) {
+        // SAFETY: self.hwnd は有効なウィンドウ。
+        if let Err(e) = unsafe { KillTimer(Some(self.hwnd), RENDERER_RETRY_TIMER_ID) } {
+            tracing::warn!("failed to stop the timer to recreate the renderer: {e}");
+        }
+        if self.renderer.is_none() {
+            self.recreate_renderer();
+        }
     }
 
     /// いまのクライアント領域の大きさに合わせる。最小化していれば何もしない（大きさ 0 を端末に伝えないため。
@@ -2422,19 +2558,32 @@ impl App {
                 self.ui_font.clone()
             }
         };
-        if let Err(e) = self.renderer.set_font(
-            &self.dwrite,
-            &font,
-            ui_font.clone(),
-            self.font_config.wide_glyph,
-        ) {
-            tracing::warn!("failed to rebuild the glyph atlas for {dpi} DPI: {e}");
-            return;
-        }
+        // `Renderer` がないとき（作り直しを待つ間と、描画をやめたあと）と、デバイスを失ったときも、
+        // フォントは入れ替え、作り直す `Renderer` に使う。
+        let rebuilt = match self.renderer.as_mut() {
+            Some(renderer) => renderer.set_font(
+                &self.dwrite,
+                &font,
+                ui_font.clone(),
+                self.font_config.wide_glyph,
+            ),
+            None => Ok(()),
+        };
+        let lost = match rebuilt {
+            Ok(()) => None,
+            Err(e) if renderer::is_device_lost(&e) => Some(e),
+            Err(e) => {
+                tracing::warn!("failed to rebuild the glyph atlas for {dpi} DPI: {e}");
+                return;
+            }
+        };
         log_font(&font, dpi);
         log_ui_font(&ui_font, dpi);
         self.font = font;
         self.ui_font = ui_font;
+        if let Some(e) = lost {
+            self.on_device_lost(&e);
+        }
         self.invalidate();
     }
 
@@ -2598,14 +2747,26 @@ impl App {
 
     /// セルより広いグリフの描き方を変え、グリフアトラスを作り直す。失敗したら前の描き方のまま。
     fn set_wide_glyph(&mut self, wide_glyph: WideGlyph) {
-        if let Err(e) =
-            self.renderer
-                .set_font(&self.dwrite, &self.font, self.ui_font.clone(), wide_glyph)
-        {
-            tracing::warn!("failed to rebuild the glyph atlas for {wide_glyph:?}: {e}");
-            return;
-        }
+        // `Renderer` がないとき（作り直しを待つ間と、描画をやめたあと）と、デバイスを失ったときも、描き方は
+        // 入れ替え、作り直す `Renderer` に使う。
+        let rebuilt = match self.renderer.as_mut() {
+            Some(renderer) => {
+                renderer.set_font(&self.dwrite, &self.font, self.ui_font.clone(), wide_glyph)
+            }
+            None => Ok(()),
+        };
+        let lost = match rebuilt {
+            Ok(()) => None,
+            Err(e) if renderer::is_device_lost(&e) => Some(e),
+            Err(e) => {
+                tracing::warn!("failed to rebuild the glyph atlas for {wide_glyph:?}: {e}");
+                return;
+            }
+        };
         self.font_config.wide_glyph = wide_glyph;
+        if let Some(e) = lost {
+            self.on_device_lost(&e);
+        }
         self.invalidate();
     }
 
@@ -2677,16 +2838,20 @@ impl App {
                     image_opacity,
                 }
             });
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
         let session = &self.sessions[self.active];
-        self.renderer
-            .prepare_terminal_images(session.id().0, &frame.images, &session.vt);
-        if let Err(e) = self.renderer.render(
+        renderer.prepare_terminal_images(session.id().0, &frame.images, &session.vt);
+        match renderer.render(
             &[(&frame, self.terminal_area)],
             backdrop.as_ref(),
             &paints,
             capture,
         ) {
-            tracing::warn!("failed to render: {e}");
+            Ok(()) => self.renderer_recreations = 0,
+            Err(e) if renderer::is_device_lost(&e) => self.on_device_lost(&e),
+            Err(e) => tracing::warn!("failed to render: {e}"),
         }
     }
 
@@ -3495,6 +3660,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             with_app(&mut |app| app.on_image_animation_timer());
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == RENDERER_RETRY_TIMER_ID => {
+            with_app(&mut |app| app.on_renderer_retry_timer());
+            LRESULT(0)
+        }
         // ほかのウィンドウにマウスのキャプチャが移ったら（Alt+Tab など）、離したことが届かないので、
         // スクロールバーの操作と選択のドラッグを終える（選択範囲は残す）。lparam はマウスをキャプチャするウィンドウ。
         WM_CAPTURECHANGED if lparam.0 != hwnd.0 as isize => {
@@ -3688,6 +3857,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 _ = KillTimer(Some(hwnd), BLINK_TIMER_ID);
                 _ = KillTimer(Some(hwnd), SCROLL_BAR_TIMER_ID);
                 _ = KillTimer(Some(hwnd), IMAGE_ANIMATION_TIMER_ID);
+                _ = KillTimer(Some(hwnd), RENDERER_RETRY_TIMER_ID);
             };
             let mut code = 0;
             with_app(&mut |app| {
