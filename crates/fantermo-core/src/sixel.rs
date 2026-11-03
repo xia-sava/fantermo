@@ -2,7 +2,7 @@
 //!
 //! 色レジスタは画像ごとに持つ（`CSI ? 1070` は見ない）。画素の色は、描いたときに選んでいたレジスタの色で
 //! 決まり、あとでそのレジスタを定義し直しても変わらない（xterm はあとの定義で変わる）。縦横比（DCS の P1 と
-//! ラスター属性の `Pan;Pad`）は見ず、常に 1:1 で描く。大きさ、中身のバイト数、塗った画素の数のどれかが上限を超えた画像は捨てる。
+//! ラスター属性の `Pan;Pad`）は見ず、常に 1:1 で描く。大きさ、中身のバイト数、重ね塗りを含めて塗った画素の数のどれかが上限を超えた画像は捨てる。
 
 use crate::base64;
 
@@ -12,9 +12,13 @@ pub const MAX_IMAGE_WIDTH: u32 = 4096;
 pub const MAX_IMAGE_HEIGHT: u32 = 4096;
 /// 色レジスタの数。画像ごとに持つ。
 pub const COLOR_REGISTERS: u32 = 1024;
-/// 画像一つで塗る画素の数の上限（重ね塗りを含む）。色を変えて同じ場所を塗り直す出力が通るよう、画像の
-/// 最大の面積の 4 倍とする。
-const MAX_PAINTED_PIXELS: u64 = MAX_IMAGE_WIDTH as u64 * MAX_IMAGE_HEIGHT as u64 * 4;
+/// 画像一つで塗り直せる回数の上限を、画像の最大の面積に対する倍率で表したもの。色を変えながら同じ
+/// 場所を塗り直す出力を切らない大きさにする。
+const MAX_REPAINT_FACTOR: u64 = 4;
+/// 画像一つで塗る画素の数の上限（重ね塗りを含む）。一枚の画像で同じ場所を繰り返し塗り直す仕事を、
+/// 最大の面積の [`MAX_REPAINT_FACTOR`] 倍までに抑える。
+const MAX_PAINTED_PIXELS: u64 =
+    MAX_IMAGE_WIDTH as u64 * MAX_IMAGE_HEIGHT as u64 * MAX_REPAINT_FACTOR;
 /// 画像一つの DCS の中身のバイト数の上限。
 const MAX_DATA_BYTES: u64 = 256 * 1024 * 1024;
 
