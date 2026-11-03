@@ -1068,6 +1068,20 @@ impl<T: Copy> NumberField<T> {
         set_text(self.edit, &(self.kind.format)(value));
     }
 
+    /// 入力欄を空にする。
+    fn clear(&self) {
+        set_text(self.edit, "");
+    }
+
+    /// 入力欄を `value` にする（`None` なら空にする）。いまの文字と同じなら書かない（書くと `EN_CHANGE` が
+    /// 届く）。
+    fn fill_if_changed(&self, value: Option<T>) {
+        let text = value.map(self.kind.format).unwrap_or_default();
+        if get_text(self.edit) != text {
+            set_text(self.edit, &text);
+        }
+    }
+
     /// 入力欄の値。読めなければ、見せる文と入力欄。
     fn read(&self) -> Result<T, (&'static str, HWND)> {
         (self.kind.parse)(&get_text(self.edit)).ok_or((self.kind.message, self.edit))
@@ -2759,10 +2773,7 @@ impl State<'_> {
         self.enable_item_opacity(custom.is_some());
         // 値が変わったときだけ書く（書くと EN_CHANGE が届いて、端末への反映の予約が掛かる）。借用は
         // 持っていない。
-        let text = custom.map(format_opacity).unwrap_or_default();
-        if get_text(c.background_item_opacity.edit) != text {
-            set_text(c.background_item_opacity.edit, &text);
-        }
+        c.background_item_opacity.fill_if_changed(custom);
     }
 
     /// 項目の不透明度の入力欄と上下の矢印を、`enabled` なら触れるようにする。
@@ -2862,7 +2873,7 @@ impl State<'_> {
             c.background_item_opacity.fill(opacity);
             self.set_item_opacity(index, Some(opacity));
         } else {
-            set_text(c.background_item_opacity.edit, "");
+            c.background_item_opacity.clear();
             self.set_item_opacity(index, None);
         }
         self.preview();
