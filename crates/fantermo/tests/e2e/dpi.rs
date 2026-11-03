@@ -977,7 +977,8 @@ fn the_size_saved_after_a_dpi_change_opens_in_pixels() {
 }
 
 /// `FANTERMO_DPI` を使わず、モニターの DPI で起動する。`[window]` の `dpi` を書いた `state.toml`（`dpi` を書いていた
-/// バージョンのもの）も読め、`dpi` は無視してピクセルのまま開く。
+/// バージョンのもの）も読め、`dpi` は無視してピクセルのまま開く。`dpi` の値は読まれないので、書く値は固定でよい
+/// （モニターの DPI と同じ手元でも成り立つ）。
 #[test]
 fn a_size_saved_at_another_monitor_dpi_opens_in_pixels() {
     let saved = format!(

@@ -1023,6 +1023,8 @@ fn an_invalid_input_on_a_hidden_page_is_shown_and_focused() {
             assert_eq!(control(&dialog, id)["visible"], true, "{id} {how}");
             assert_eq!(dialog["focus"], id, "{id} {how}");
         };
+        // 前の周の「適用」で書いたかもしれないので、この周の前のファイルと比べる。
+        let before = config_text(&server);
         // 悪い入力は 2 つ目のプロファイルに書き、1 つ目を選んで見えないページへ移る。
         let edited_profile = usize::from(id == ID_PROFILE_COMMAND);
         if id == ID_PROFILE_COMMAND {
@@ -1035,6 +1037,7 @@ fn an_invalid_input_on_a_hidden_page_is_shown_and_focused() {
         show_page(&server, PAGE_COLORS);
         press_apply(&server);
         shown(&server, "applying");
+        assert_eq!(config_text(&server), before, "{id} applying");
         if id == ID_PROFILE_COMMAND {
             let dialog = read_controls(&server);
             assert_eq!(
@@ -1047,6 +1050,7 @@ fn an_invalid_input_on_a_hidden_page_is_shown_and_focused() {
         show_page(&server, PAGE_COLORS);
         click(&server, ID_OK);
         shown(&server, "pressing OK");
+        assert_eq!(config_text(&server), before, "{id} pressing OK");
         assert_eq!(open_dialog_count(&server), 1, "{id}");
 
         set_text(&server, id, good);
@@ -1585,7 +1589,7 @@ fn the_terminal_keeps_working_while_the_settings_dialog_is_open() {
     assert_eq!(state["window_enabled"], true, "{state:#}");
     check_terminal_still_works(&server, "after-settings");
 
-    // 最後のシェルが終わるように、裏のタブを閉じる。
+    // 最後のシェルが終わるように、表のタブを閉じて 1 つにする。
     server.post("/e2e/tab/close", b"");
     server.wait_until("one tab", |state| tab_count(state) == 1);
     open_settings(&server);

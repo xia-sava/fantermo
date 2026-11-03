@@ -129,10 +129,16 @@ fn the_context_menu_has_the_same_items_wherever_it_opens_and_copy_follows_the_se
     );
 }
 
-/// ≡ のメニューの並び。項目に添えるキーは割り当てから決まる。
+/// ≡ のメニューの並び。項目に添えるキーは設定ファイルの `[keys]` を重ねた割り当てから決まる（`alt+t` を新しいタブに
+/// 割り当て、`ctrl+shift+t` と `ctrl+shift+w` を外している）。
 #[test]
 fn the_main_menu_has_its_items_in_order_and_copy_follows_the_selection() {
-    let server = Server::start_cmd();
+    let config = r#"[keys]
+"alt+t" = "new_tab"
+"ctrl+shift+t" = "none"
+"ctrl+shift+w" = "none"
+"#;
+    let server = Server::start(config, &CMD_COMMAND);
     server.wait_text(CMD_PROMPT);
     let state = echo_lines(&server, "alpha", "other");
 
@@ -145,8 +151,8 @@ fn the_main_menu_has_its_items_in_order_and_copy_follows_the_selection() {
         "{items:#?}"
     );
     for (key, shortcut) in [
-        ('T', Some("Ctrl+Shift+T")),
-        ('W', Some("Ctrl+Shift+W")),
+        ('T', Some("Alt+T")),
+        ('W', None),
         ('C', Some("Ctrl+C")),
         ('P', Some("Shift+Insert")),
         ('A', None),

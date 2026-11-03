@@ -67,7 +67,7 @@ fn input_reaches_the_shell_and_its_output_is_read() {
 
 #[test]
 fn tabs_open_switch_and_close() {
-    let server = Server::start_cmd();
+    let mut server = Server::start_cmd();
     server.wait_text(CMD_PROMPT);
     server.type_line("echo first-%ERRORLEVEL%-tab");
     server.wait_text("first-0-tab");
@@ -106,6 +106,10 @@ fn tabs_open_switch_and_close() {
     let state = server.wait_until("one tab", |state| tab_count(state) == 1);
     assert_eq!(state["active"], 0);
     server.wait_text("first-0-tab");
+
+    // 最後のタブをキーで閉じると、ウィンドウも閉じる。
+    server.press("ctrl+shift+w");
+    assert_eq!(server.wait_exit(), 0);
 }
 
 #[test]
