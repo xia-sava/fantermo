@@ -29,6 +29,7 @@
 //! | `GET /e2e/clipboard` | クリップボードの文字列の JSON |
 //! | `POST /e2e/clipboard` | クリップボードを本文の文字で置き換える |
 //! | `POST /e2e/message/<名前>`、`/e2e/message/<名前>/<wParam>` | ウィンドウにメッセージを送り、戻り値の JSON を返す（[`WindowMessage`]） |
+//! | `POST /e2e/message/<名前>/<wParam>/in-borrow` | App を借りている間の処理の中からメッセージを送り、戻り値の JSON を返す（`queryendsession`、`endsession`、`close` だけ） |
 //! | `POST /e2e/mouse` | 本文の各行のマウスの操作を、続けてウィンドウへ送る（[`MouseStep`]） |
 //! | `GET /e2e/menu` | 開いているメニューの項目の JSON |
 //! | `POST /e2e/menu/highlight/<位置>` | メニューのループへ上下の矢印のキーを送って、その項目へ移る |
@@ -91,6 +92,8 @@ pub enum WindowMessage {
     /// 戻り値の `result` と、ウィンドウプロシージャが書いた `width` と `height`（書かなければ 0）が入る。ウィンドウは
     /// 変えない。
     GetDpiScaledSize,
+    /// ウィンドウを閉じる（× と同じ `WM_CLOSE`）。
+    Close,
 }
 
 impl WindowMessage {
@@ -101,6 +104,7 @@ impl WindowMessage {
             "capturechanged" => Some(Self::CaptureChanged),
             "dpichanged" => Some(Self::DpiChanged),
             "getdpiscaledsize" => Some(Self::GetDpiScaledSize),
+            "close" => Some(Self::Close),
             _ => None,
         }
     }
@@ -108,6 +112,12 @@ impl WindowMessage {
     /// `<wParam>` の位置に DPI を書くメッセージか。
     fn takes_dpi(self) -> bool {
         matches!(self, Self::DpiChanged | Self::GetDpiScaledSize)
+    }
+
+    /// App を借りている間の処理の中から送れるメッセージか。この場でウィンドウプロシージャに入り直すので、借用が
+    /// 重なったときの処理の確認に使う。DPI のものは送る側で App を読むので送れない。
+    fn sendable_in_borrow(self) -> bool {
+        matches!(self, Self::QueryEndSession | Self::EndSession | Self::Close)
     }
 }
 
@@ -267,6 +277,11 @@ pub enum Request {
     ReadClipboard,
     WriteClipboard(String),
     SendMessage {
+        message: WindowMessage,
+        wparam: usize,
+    },
+    /// App を借りている間の処理の中から送る（[`WindowMessage::sendable_in_borrow`]）。
+    SendMessageInBorrow {
         message: WindowMessage,
         wparam: usize,
     },
@@ -507,6 +522,9 @@ fn parse_request(method: &str, path: &str, body: Vec<u8>) -> Result<Request, Res
         }
         ("POST", ["e2e", "message", name]) => parse_message(name, 0),
         ("POST", ["e2e", "message", name, wparam]) => parse_message(name, parse_number(wparam)?),
+        ("POST", ["e2e", "message", name, wparam, "in-borrow"]) => {
+            parse_message_in_borrow(name, parse_number(wparam)?)
+        }
         ("POST", ["e2e", "mouse"]) => parse_mouse(body),
         ("GET", ["e2e", "menu"]) => Ok(Request::MenuItems),
         ("POST", ["e2e", "menu", "highlight", position]) => {
@@ -545,6 +563,17 @@ fn parse_message(name: &str, wparam: usize) -> Result<Request, Response> {
         )));
     }
     Ok(Request::SendMessage { message, wparam })
+}
+
+fn parse_message_in_borrow(name: &str, wparam: usize) -> Result<Request, Response> {
+    let message = WindowMessage::from_name(name)
+        .ok_or_else(|| Response::bad_request(format!("no such message: {name}")))?;
+    if !message.sendable_in_borrow() {
+        return Err(Response::bad_request(format!(
+            "{name} cannot be sent while the App is borrowed"
+        )));
+    }
+    Ok(Request::SendMessageInBorrow { message, wparam })
 }
 
 fn parse_mouse(body: Vec<u8>) -> Result<Request, Response> {
@@ -689,9 +718,26 @@ mod tests {
                 wparam: 192,
             })
         );
+        assert_eq!(
+            parse("POST /e2e/message/close HTTP/1.1\r\n\r\n"),
+            Ok(Request::SendMessage {
+                message: WindowMessage::Close,
+                wparam: 0,
+            })
+        );
+        assert_eq!(
+            parse("POST /e2e/message/endsession/1/in-borrow HTTP/1.1\r\n\r\n"),
+            Ok(Request::SendMessageInBorrow {
+                message: WindowMessage::EndSession,
+                wparam: 1,
+            })
+        );
         for request in [
-            "POST /e2e/message/close HTTP/1.1\r\n\r\n",
+            "POST /e2e/message/destroy HTTP/1.1\r\n\r\n",
             "POST /e2e/message/endsession/x HTTP/1.1\r\n\r\n",
+            "POST /e2e/message/queryendsession/in-borrow HTTP/1.1\r\n\r\n",
+            "POST /e2e/message/dpichanged/144/in-borrow HTTP/1.1\r\n\r\n",
+            "POST /e2e/message/capturechanged/0/in-borrow HTTP/1.1\r\n\r\n",
             "POST /e2e/message/dpichanged HTTP/1.1\r\n\r\n",
             "POST /e2e/message/dpichanged/0 HTTP/1.1\r\n\r\n",
             "POST /e2e/message/dpichanged/577 HTTP/1.1\r\n\r\n",

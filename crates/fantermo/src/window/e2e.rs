@@ -277,11 +277,7 @@ fn send_window_message(
     wparam: usize,
     with_app: &WithApp,
 ) -> Response {
-    let (id, lparam) = match message {
-        WindowMessage::QueryEndSession => (WM_QUERYENDSESSION, ENDSESSION_LOGOFF as isize),
-        WindowMessage::EndSession => (WM_ENDSESSION, ENDSESSION_LOGOFF as isize),
-        // lParam はキャプチャしたウィンドウ。このウィンドウではないことだけが意味を持つ。
-        WindowMessage::CaptureChanged => (WM_CAPTURECHANGED, 0),
+    match message {
         WindowMessage::DpiChanged => {
             let mut from = None;
             with_app(&mut |app| from = Some(app.dpi));
@@ -290,11 +286,31 @@ fn send_window_message(
             };
             let to = wparam as u32;
             send_dpi_changed(hwnd, to, &dpi_scaled_rect(hwnd, from, to));
-            return Response::json(&json!({ "result": 0 }));
+            Response::json(&json!({ "result": 0 }))
         }
-        WindowMessage::GetDpiScaledSize => return get_dpi_scaled_size(hwnd, wparam),
+        WindowMessage::GetDpiScaledSize => get_dpi_scaled_size(hwnd, wparam),
+        WindowMessage::QueryEndSession
+        | WindowMessage::EndSession
+        | WindowMessage::CaptureChanged
+        | WindowMessage::Close => send_fixed_message(hwnd, message, wparam),
+    }
+}
+
+/// `lParam` が決まっているメッセージ `message` をウィンドウに送り、ウィンドウプロシージャの戻り値を返す。DPI を
+/// 渡すメッセージ（`lParam` が矩形や大きさを指す）は送らずに断る。App の借用の外からも中からも呼ぶ。
+fn send_fixed_message(hwnd: HWND, message: WindowMessage, wparam: usize) -> Response {
+    let (id, lparam) = match message {
+        WindowMessage::QueryEndSession => (WM_QUERYENDSESSION, ENDSESSION_LOGOFF as isize),
+        WindowMessage::EndSession => (WM_ENDSESSION, ENDSESSION_LOGOFF as isize),
+        // lParam はキャプチャしたウィンドウ。このウィンドウではないことだけが意味を持つ。
+        WindowMessage::CaptureChanged => (WM_CAPTURECHANGED, 0),
+        WindowMessage::Close => (WM_CLOSE, 0),
+        WindowMessage::DpiChanged | WindowMessage::GetDpiScaledSize => {
+            return Response::bad_request(format!("{message:?} has no fixed lParam"));
+        }
     };
-    // SAFETY: hwnd は有効なウィンドウ。ウィンドウプロシージャがこの場で動くが、借用は持っていない。
+    // SAFETY: hwnd は有効なウィンドウ。ウィンドウプロシージャがこの場で動く。App の借用の中から呼んだときは、
+    // ウィンドウプロシージャの with_app が借りられずに処理を飛ばすので、借用は重ならない。
     let result = unsafe { SendMessageW(hwnd, id, Some(WPARAM(wparam)), Some(LPARAM(lparam))) };
     Response::json(&json!({ "result": result.0 }))
 }
@@ -1163,6 +1179,10 @@ impl App {
                 }
                 self.activate(index);
                 (done(), None)
+            }
+            // App を借りたまま送り、ウィンドウプロシージャに入り直させる。受ける処理は借用が重なったときの形で動く。
+            Request::SendMessageInBorrow { message, wparam } => {
+                (send_fixed_message(self.hwnd, message, wparam), None)
             }
             Request::Quit
             | Request::ResizeWindow { .. }

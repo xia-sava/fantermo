@@ -2198,6 +2198,8 @@ fn each_tab_keeps_the_background_image_it_chose() {
 /// ログオフの問い合わせ（`WM_QUERYENDSESSION`）と、その結果の知らせ（`WM_ENDSESSION`）の名前。
 const QUERY_END_SESSION: &str = "queryendsession";
 const END_SESSION: &str = "endsession";
+/// ウィンドウを閉じる知らせ（`WM_CLOSE`）の名前。
+const CLOSE: &str = "close";
 /// `WM_ENDSESSION` の `wParam`。
 const SESSION_CONTINUES: usize = 0;
 const SESSION_ENDS: usize = 1;
@@ -2394,6 +2396,43 @@ fn the_session_end_saves_the_state_while_a_dialog_is_open() {
     assert_eq!(server.send_message(END_SESSION, SESSION_ENDS), 0);
     assert_eq!(saved_window(&server), window);
     wait_text_dialog(&server);
+}
+
+/// App を借りている間の処理の中で問い合わせと知らせが届いても（ほかのスレッドから送られて、借用の中の同期の
+/// 呼び出しの間に処理されたとき）、状態を書く。借用を手放したあとも端末は動き続ける。
+#[test]
+fn the_session_end_saves_the_state_while_the_app_is_borrowed() {
+    let server = Server::start_cmd();
+    server.wait_text(CMD_PROMPT);
+    server.resize(87, 23);
+    let window = current_window(&server.state());
+    assert!(!server.state_file().exists());
+
+    assert_eq!(
+        server.send_message_in_borrow(QUERY_END_SESSION, 0),
+        SESSION_MAY_END,
+        "{}",
+        server.log()
+    );
+    assert_eq!(saved_window(&server), window);
+    remove_state_file(&server);
+    assert_eq!(server.send_message_in_borrow(END_SESSION, SESSION_ENDS), 0);
+    assert_eq!(saved_window(&server), window);
+    check_cmd_responds(&server);
+}
+
+/// App を借りている間の処理の中で `WM_CLOSE` が届いたら、その場では閉じず、借用を手放したあとで状態を書いて閉じる。
+#[test]
+fn a_close_while_the_app_is_borrowed_closes_the_window_afterwards() {
+    let mut server = Server::start_cmd();
+    server.wait_text(CMD_PROMPT);
+    server.resize(87, 23);
+    let window = current_window(&server.state());
+    assert!(!server.state_file().exists());
+
+    assert_eq!(server.send_message_in_borrow(CLOSE, 0), 0);
+    assert_eq!(server.wait_exit(), 0, "{}", server.log());
+    assert_eq!(saved_window(&server), window);
 }
 
 /// クライアント領域の中の位置。ウィンドウの外を指す負の値も持てる。

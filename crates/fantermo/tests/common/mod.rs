@@ -493,6 +493,14 @@ impl Server {
         value["result"].as_i64().expect("the answer has no result")
     }
 
+    /// `send_message` と同じメッセージを、fantermo が App を借りている間の処理の中から送り、ウィンドウプロシージャの
+    /// 戻り値を返す。借用が重なったときの処理を見るのに使う。送れるのは `queryendsession`・`endsession`・`close`。
+    pub fn send_message_in_borrow(&self, name: &str, wparam: usize) -> i64 {
+        let answer = self.post(&format!("/e2e/message/{name}/{wparam}/in-borrow"), b"");
+        let value: Value = serde_json::from_slice(&answer).expect("the answer is not JSON");
+        value["result"].as_i64().expect("the answer has no result")
+    }
+
     /// `steps` の各行のマウスの操作を、続けてウィンドウへ送る。行の形は `e2e_server` の `MouseStep`。一つの要求の
     /// 中で続けて送るので、ダブルクリックの間隔やスクロールバーの繰り返しの待ち時間にかからない。
     pub fn mouse(&self, steps: &str) {
