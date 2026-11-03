@@ -40,6 +40,7 @@ use windows::{
 };
 
 use crate::{
+    app_files::same_path,
     command_line::{Options, TabRequest},
     process,
     window::WINDOW_CLASS,
@@ -229,11 +230,6 @@ fn optional_text(field: &[u16]) -> Result<Option<String>, String> {
     String::from_utf16(field)
         .map(Some)
         .map_err(|e| e.to_string())
-}
-
-/// 同じパスか。Windows のパスなので大文字小文字を区別しない。
-fn same_path(left: &Path, right: &Path) -> bool {
-    left.to_string_lossy().to_lowercase() == right.to_string_lossy().to_lowercase()
 }
 
 /// `WM_COPYDATA` の `lparam` の中身を読む。読めなければ `None`。

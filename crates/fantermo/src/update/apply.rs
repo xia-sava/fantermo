@@ -27,6 +27,8 @@ use windows::{
     core::PWSTR,
 };
 
+use crate::app_files::same_path;
+
 /// スクリプトのファイルの名前。MSI と同じフォルダに書く。
 pub const SCRIPT_NAME: &str = "apply-update.ps1";
 /// 結果を書くファイルの名前。ログのフォルダに置く。
@@ -220,10 +222,9 @@ pub fn other_instances(exe: &Path, own: u32) -> Vec<u32> {
             return Vec::new();
         }
     };
-    let exe = exe.to_string_lossy().to_lowercase();
     pids.into_iter()
         .filter(|&pid| pid != own)
-        .filter(|&pid| image_of(pid).is_some_and(|image| image.to_lowercase() == exe))
+        .filter(|&pid| image_of(pid).is_some_and(|image| same_path(Path::new(&image), exe)))
         .collect()
 }
 

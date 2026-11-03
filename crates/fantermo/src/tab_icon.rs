@@ -45,7 +45,7 @@ use windows::{
 };
 use windows_numerics::{Matrix3x2, Vector2};
 
-use crate::{atlas, background::Decoded, boxdraw::Shape, bridge, paint::arc};
+use crate::{app_files::path_key, atlas, background::Decoded, boxdraw::Shape, bridge, paint::arc};
 
 /// プロファイル名から選ぶ背景の色。青・水色・青緑・緑・藍・紫の淡い色で、警告に使う赤・橙・黄は入れない。
 /// 濃い色の絵と頭文字が読め、明るいタブの白と灰色のどちらからも、暗いタブからも分かれる明るさの色だけを
@@ -223,11 +223,6 @@ impl Picture {
             (None, None) => Self::Drawn(icon.backend),
         }
     }
-}
-
-/// パス `path` を比べるための文字列。
-fn path_key(path: &Path) -> String {
-    path.to_string_lossy().replace('/', "\\").to_lowercase()
 }
 
 /// `pictures` のそれぞれについて、同じ絵がほかにもあるか。

@@ -35,7 +35,7 @@ pub use self::manifest::{Comparison, Release, Version};
 use self::{
     http::HttpError, manifest::ManifestError, signature::SHA256_LEN, signature::VerifyError,
 };
-use crate::{instance, known_folder, logging, version};
+use crate::{app_files::same_path, instance, known_folder, logging, version};
 
 /// インストーラが fantermo を入れる、`%LOCALAPPDATA%\Programs` の下のフォルダ。
 const INSTALL_DIR_NAME: &str = "fantermo";
@@ -131,16 +131,6 @@ fn is_installed_build(release: bool, exe: &Path, programs: &Path) -> bool {
     };
     let install_dir = programs.join(INSTALL_DIR_NAME);
     release && same_path(dir, &install_dir)
-}
-
-fn same_path(a: &Path, b: &Path) -> bool {
-    let normalize = |path: &Path| {
-        path.to_string_lossy()
-            .trim_end_matches(['\\', '/'])
-            .replace('/', "\\")
-            .to_lowercase()
-    };
-    normalize(a) == normalize(b)
 }
 
 /// いまのバージョン。

@@ -29,6 +29,20 @@ pub fn app_data_file(override_env: &str, file_name: &str) -> Option<PathBuf> {
     Some(path)
 }
 
+/// パス `path` を比べるための文字列。Windows のパスなので、大文字と小文字、`/` と `\`、末尾の区切りの
+/// 有無の違いは同じ場所を指す。
+pub fn path_key(path: &Path) -> String {
+    path.to_string_lossy()
+        .trim_end_matches(['\\', '/'])
+        .replace('/', "\\")
+        .to_lowercase()
+}
+
+/// 同じ場所を指すパスか（[`path_key`] が等しいか）。
+pub fn same_path(left: &Path, right: &Path) -> bool {
+    path_key(left) == path_key(right)
+}
+
 /// `path` の名前の後ろに `suffix` を足した場所。
 pub fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = OsString::from(path.as_os_str());
@@ -79,6 +93,16 @@ mod tests {
             std::fs::remove_dir_all(&dir).unwrap();
         }
         dir
+    }
+
+    #[test]
+    fn paths_differing_in_case_separator_or_trailing_separator_are_the_same() {
+        assert!(same_path(
+            Path::new(r"C:\Users\Xia\fantermo.exe"),
+            Path::new("c:/users/xia/FANTERMO.EXE")
+        ));
+        assert!(same_path(Path::new(r"C:\Apps\"), Path::new(r"c:\apps")));
+        assert!(!same_path(Path::new(r"C:\Apps"), Path::new(r"C:\Apps2")));
     }
 
     #[test]

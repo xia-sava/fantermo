@@ -67,7 +67,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `main` | 起動の順番（3 節の「起動」） |
 | `command_line` | コマンドライン（`--new-window`，`--profile`，`--`）の解釈 |
 | `instance` | 動いている fantermo のウィンドウへ起動の指定を `WM_COPYDATA` で渡す側と受け取る側 |
-| `app_files` | `%APPDATA%\fantermo` のファイルの場所（環境変数での差し替え），一時ファイルを経由した置き換え書き込み |
+| `app_files` | `%APPDATA%\fantermo` のファイルの場所（環境変数での差し替え），一時ファイルを経由した置き換え書き込み，パスの比較（`same_path`） |
 | `config_file` | 設定ファイルの場所，読み込み，ひな形の作成，書き戻し（`save`），フォルダの監視 |
 | `window_state` | `state.toml` の場所と読み書き，ウィンドウの位置・大きさ・最大化との受け渡し |
 | `window` | 端末のウィンドウ．Win32 のメッセージを受け，端末・バックエンド・描画をつなぐ（下の節） |
