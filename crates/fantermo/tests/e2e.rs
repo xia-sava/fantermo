@@ -4373,8 +4373,8 @@ const ID_BACKGROUND_OPACITY: i32 = 454;
 const ID_BACKGROUND_FIT: i32 = 456;
 const ID_BACKGROUND_ITEM_FIT: i32 = 457;
 const ID_BACKGROUND_ITEM_OPACITY: i32 = 458;
-const ID_BACKGROUND_ITEM_OPACITY_DEFAULT: i32 = 460;
-const ID_BACKGROUND_ITEM_OPACITY_CUSTOM: i32 = 461;
+/// 項目の不透明度の「既定」と、続く「指定」のラジオボタン。
+const ID_BACKGROUND_ITEM_OPACITY_CHOICE: i32 = 460;
 const ID_KEYS: i32 = 500;
 const ID_KEY_ADD: i32 = 501;
 const ID_KEY_CHANGE: i32 = 502;
@@ -4727,14 +4727,17 @@ fn every_settings_page_opens_and_shows_the_values_of_the_file() {
         control(&dialog, ID_BACKGROUND_ITEM_FIT)["selected"],
         ITEM_FIT_DEFAULT
     );
-    assert!(radio_checked(&dialog, ID_BACKGROUND_ITEM_OPACITY_DEFAULT));
+    assert!(radio_checked(&dialog, ID_BACKGROUND_ITEM_OPACITY_CHOICE));
     select(&server, ID_BACKGROUND_IMAGES, 1);
     let dialog = read_controls(&server);
     assert_eq!(
         control(&dialog, ID_BACKGROUND_ITEM_FIT)["selected"],
         ITEM_FIT_CENTER
     );
-    assert!(radio_checked(&dialog, ID_BACKGROUND_ITEM_OPACITY_CUSTOM));
+    assert!(radio_checked(
+        &dialog,
+        ID_BACKGROUND_ITEM_OPACITY_CHOICE + 1
+    ));
     assert_eq!(control(&dialog, ID_BACKGROUND_ITEM_OPACITY)["text"], "0.25");
 
     // 動作
@@ -5623,7 +5626,7 @@ fn the_background_page_changes_the_items_and_the_picture() {
     set_text(&server, ID_BACKGROUND_OPACITY, "0.5");
     wait_pixels(&server, &[(top, over_terminal_background(BAND_TOP, 0.5))]);
     // 項目の不透明度は既定より優先する。
-    choose_radio(&server, ID_BACKGROUND_ITEM_OPACITY_CUSTOM);
+    choose_radio(&server, ID_BACKGROUND_ITEM_OPACITY_CHOICE + 1);
     assert!(control_enabled(&server, ID_BACKGROUND_ITEM_OPACITY));
     set_text(&server, ID_BACKGROUND_ITEM_OPACITY, "0.25");
     wait_pixels(&server, &[(top, over_terminal_background(BAND_TOP, 0.25))]);
@@ -5645,7 +5648,7 @@ fn the_background_page_changes_the_items_and_the_picture() {
 
     // 項目の値を既定に戻すと、テーブルからキーが消え、既定の値で描く。
     select(&server, ID_BACKGROUND_ITEM_FIT, ITEM_FIT_DEFAULT);
-    choose_radio(&server, ID_BACKGROUND_ITEM_OPACITY_DEFAULT);
+    choose_radio(&server, ID_BACKGROUND_ITEM_OPACITY_CHOICE);
     assert!(!control_enabled(&server, ID_BACKGROUND_ITEM_OPACITY));
     assert_eq!(control_text(&server, ID_BACKGROUND_ITEM_OPACITY), "");
     wait_pixels(&server, &[(top, over_terminal_background(BAND_TOP, 0.5))]);
