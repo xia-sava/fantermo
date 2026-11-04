@@ -183,8 +183,8 @@ pub struct ConPty {
 }
 
 impl ConPty {
-    /// `options` のコマンドラインを疑似コンソールに接続して起動する。コマンドラインは
-    /// `CreateProcessW` にそのまま渡す。最初の語が名前だけなら、実行ファイルは [`program_to_start`] で決める。
+    /// `options` のコマンドラインを疑似コンソールに接続して起動する。最初の語が名前だけなら、実行ファイルは
+    /// [`program_to_start`] で決め、`CreateProcessW` に渡すコマンドラインは [`command_line_to_start`] で決める。
     pub fn spawn(options: &SpawnOptions, wake: Wake) -> io::Result<Self> {
         let application = program_to_start(options)?;
         let (console_input, input) = create_pipe()?;
@@ -758,7 +758,7 @@ fn spawn_process(
     options: &SpawnOptions,
     flags: PROCESS_CREATION_FLAGS,
 ) -> io::Result<Spawned> {
-    let application = application.map(|path| to_wide_nul(path.as_os_str()));
+    let application_name = application.map(|path| to_wide_nul(path.as_os_str()));
 
     // 一度目の呼び出しは属性リストに要る大きさを返すだけで、失敗として戻る。
     let mut size = 0usize;
@@ -796,7 +796,7 @@ fn spawn_process(
     startup_info.lpAttributeList = attributes;
 
     // CreateProcessW はコマンドラインの領域を書き換えることがあるので、書き込める領域を渡す。
-    let mut command_line = to_wide_nul(OsStr::new(options.command_line));
+    let mut command_line = to_wide_nul(&command_line_to_start(application, options.command_line));
     let environment = environment_block(options.env);
     let working_folder = options
         .working_folder
@@ -806,7 +806,7 @@ fn spawn_process(
     // 終端の空文字列まで含む。
     let created = unsafe {
         CreateProcessW(
-            application
+            application_name
                 .as_ref()
                 .map_or(PCWSTR::null(), |path| PCWSTR(path.as_ptr())),
             Some(PWSTR(command_line.as_mut_ptr())),
@@ -857,6 +857,44 @@ fn program_to_start(options: &SpawnOptions) -> io::Result<Option<PathBuf>> {
                 format!("「{program}」が環境変数 PATH のフォルダに見つかりません。"),
             )
         })
+}
+
+/// `CreateProcessW` に渡すコマンドライン。
+///
+/// `application` がバッチファイル（`.bat`、`.cmd`）なら、最初の語を `application` の絶対パスに置き換える。
+/// `CreateProcessW` はバッチファイルを `cmd.exe /c` にコマンドラインを渡して実行し、cmd は `lpApplicationName`
+/// ではなくコマンドラインの最初の語を探し直すので、名前のままだとタブの作業フォルダに置かれた同じ名前の
+/// バッチファイルを先に見つける（環境変数 `NoDefaultCurrentDirectoryInExePath` がないとき）。パスに空白が
+/// あれば `"` で囲む。ほかはコマンドラインのまま。
+fn command_line_to_start(application: Option<&Path>, command_line: &str) -> OsString {
+    const BATCH_EXTENSIONS: [&str; 2] = ["bat", "cmd"];
+    let Some(batch) = application.filter(|path| {
+        path.extension().is_some_and(|extension| {
+            BATCH_EXTENSIONS
+                .iter()
+                .any(|batch| extension.eq_ignore_ascii_case(batch))
+        })
+    }) else {
+        return OsString::from(command_line);
+    };
+    let (_, arguments) = config::split_program(command_line);
+    let needs_quotes = batch
+        .as_os_str()
+        .encode_wide()
+        .any(|unit| char::from_u32(unit.into()).is_some_and(char::is_whitespace));
+    let mut rewritten = OsString::new();
+    if needs_quotes {
+        rewritten.push("\"");
+        rewritten.push(batch);
+        rewritten.push("\"");
+    } else {
+        rewritten.push(batch);
+    }
+    if !arguments.is_empty() {
+        rewritten.push(" ");
+        rewritten.push(arguments);
+    }
+    rewritten
 }
 
 /// 子プロセスに渡す環境の `PATH`。`overrides` になければこのプロセスのもの（[`environment_block`] と同じ）。
@@ -1072,11 +1110,11 @@ mod tests {
     fn a_bare_batch_file_runs_the_one_found_on_path() {
         let root =
             std::env::temp_dir().join(format!("fantermo-conpty-batch-{}", std::process::id()));
-        let on_path = root.join("a");
+        let on_path = root.join("a b");
         let working_folder = root.join("b");
         for (folder, marker) in [(&on_path, "marker-a"), (&working_folder, "marker-b")] {
             std::fs::create_dir_all(folder).unwrap();
-            std::fs::write(folder.join("tool.bat"), format!("@echo {marker}\r\n")).unwrap();
+            std::fs::write(folder.join("tool.bat"), format!("@echo {marker}-%1-\r\n")).unwrap();
         }
         let system = std::env::var_os("SystemRoot").expect("no SystemRoot");
         let path_variable = format!(
@@ -1095,8 +1133,31 @@ mod tests {
             "marker-",
         );
         _ = std::fs::remove_dir_all(&root);
-        assert!(screen.contains("marker-a"), "{screen}");
+        assert!(screen.contains("marker-a-x-"), "{screen}");
         assert!(!screen.contains("marker-b"), "{screen}");
+    }
+
+    #[test]
+    fn only_a_batch_file_gets_its_path_in_the_command_line() {
+        let start = |application: Option<&str>, command_line| {
+            command_line_to_start(application.map(Path::new), command_line)
+        };
+        assert_eq!(
+            start(Some(r"C:\tools\tool.BAT"), r#""tool.bat"  "x y""#),
+            OsString::from(r#"C:\tools\tool.BAT "x y""#)
+        );
+        assert_eq!(
+            start(Some(r"C:\my tools\tool.cmd"), "tool.cmd"),
+            OsString::from(r#""C:\my tools\tool.cmd""#)
+        );
+        assert_eq!(
+            start(Some(r"C:\tools\tool.exe"), "tool x"),
+            OsString::from("tool x")
+        );
+        assert_eq!(
+            start(None, r"C:\tools\tool.bat x"),
+            OsString::from(r"C:\tools\tool.bat x")
+        );
     }
 
     #[test]
