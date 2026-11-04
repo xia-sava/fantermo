@@ -101,6 +101,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `image_decoder` | 画像のファイルと実行ファイルのアイコンを WIC で読む（背景画像，タブのアイコン）．読んだ画像 `Decoded` と，Direct3D 11 のテクスチャの一辺の上限．アイコンのコマの選び方と正方形への収め方 |
 | `background`・`image_cache` | 背景画像の候補を実際のファイルシステムから探す（`DiskFiles`）．端末の中の画像のテクスチャの入れ物 |
 | `context_menu` | コンテキストメニュー，≡ のメニュー，プロファイルの一覧（`MenuCommand`，`Menu`） |
+| `gdi_image` | 読んだ画像 `Decoded` から GDI のビットマップを作る．`context_menu` が使う |
 | `settings_dialog`・`key_capture` | 設定ダイアログ．キーの割り当てで押したキーを読み取るダイアログ．`settings_dialog` は，ダイアログ全体（`State`，`dialog_proc`，ページの型が使う `Page` と `DialogContext`）を `settings_dialog/mod.rs`，ページを `appearance.rs`・`background.rs`・`behavior.rs`・`profiles.rs`・`keys.rs`・`colors.rs`，コントロールを作る部品と種類ごとの部品を `widgets.rs` に置く |
 | `text_dialog`・`paste_editor`・`about` | 入力欄のダイアログと，その上に作った貼り付けの編集と「fantermo について」 |
 | `modal` | 自分で作ったダイアログを開いている間のメッセージのループ |

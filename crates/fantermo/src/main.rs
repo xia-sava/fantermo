@@ -36,6 +36,7 @@ mod e2e_server;
 mod elevate;
 mod file_dialog;
 mod font;
+mod gdi_image;
 mod image_cache;
 mod image_decoder;
 mod ime;
