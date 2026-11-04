@@ -169,6 +169,7 @@ impl Forwarded {
                 },
                 profile_without_name,
                 new_window: false,
+                elevate: false,
             },
         })
     }
@@ -442,6 +443,7 @@ mod tests {
                 },
                 profile_without_name: true,
                 new_window: false,
+                elevate: false,
             },
         }
     }

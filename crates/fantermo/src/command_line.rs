@@ -10,6 +10,8 @@ use windows::Win32::System::Environment::GetCommandLineW;
 pub const PROFILE_OPTION: &str = "--profile";
 /// すでに動いているウィンドウがあっても新しいウィンドウを開くオプション。
 pub const NEW_WINDOW_OPTION: &str = "--new-window";
+/// 管理者として開くオプション。
+pub const ELEVATE_OPTION: &str = "--elevate";
 /// オプションの終わりを示す語。
 pub const END_OF_OPTIONS: &str = "--";
 /// オプションと同じ形の語の先頭。`--profile` の値としては受け取らない。
@@ -32,6 +34,8 @@ pub struct Options {
     pub profile_without_name: bool,
     /// すでに動いているウィンドウがあっても新しいウィンドウを開く。
     pub new_window: bool,
+    /// 管理者として開く。
+    pub elevate: bool,
 }
 
 impl Options {
@@ -60,6 +64,10 @@ impl Options {
                 }
                 NEW_WINDOW_OPTION => {
                     options.new_window = true;
+                    rest = after_word;
+                }
+                ELEVATE_OPTION => {
+                    options.elevate = true;
                     rest = after_word;
                 }
                 PROFILE_OPTION => {
@@ -275,6 +283,29 @@ mod tests {
         let options = Options::parse("--profile --new-window");
         assert!(options.new_window);
         assert!(options.profile_without_name);
+    }
+
+    #[test]
+    fn the_elevate_option_is_read_at_the_start() {
+        let options = Options::parse("--elevate --new-window --profile one zsh --elevate");
+        assert!(options.elevate);
+        assert!(options.new_window);
+        assert_eq!(options.tab.profile.as_deref(), Some("one"));
+        assert_eq!(options.tab.command.as_deref(), Some("zsh --elevate"));
+
+        assert!(Options::parse("--profile one --elevate").elevate);
+        assert!(!Options::parse("").elevate);
+        let after_dashes = Options::parse("-- --elevate");
+        assert!(!after_dashes.elevate);
+        assert_eq!(after_dashes.tab.command.as_deref(), Some("--elevate"));
+        let in_command = Options::parse("vim --elevate");
+        assert!(!in_command.elevate);
+        assert_eq!(in_command.tab.command.as_deref(), Some("vim --elevate"));
+        // `--profile` の名前の代わりに書かれていれば、名前がないものとして続ける。
+        let options = Options::parse("--profile --elevate");
+        assert!(options.elevate);
+        assert!(options.profile_without_name);
+        assert_eq!(options.tab.profile, None);
     }
 
     #[test]
