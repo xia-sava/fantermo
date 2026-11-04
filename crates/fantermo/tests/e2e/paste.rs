@@ -67,8 +67,8 @@ fn a_paste_of_the_size_is_confirmed_and_can_be_cancelled() {
 
 /// 編集のダイアログは、開いている間に DPI が変われば、その DPI の寸法で並べ直し、フォントを作り直す。モニターの DPI は
 /// 変えられないので、ダイアログへ送った `WM_DPICHANGED` への反応を見る。送る DPI はモニターの DPI の 2 倍で、
-/// 制御の口が受ける上限を超えるとき、2 倍にしたダイアログが作業領域に収まらないとき（OS がウィンドウの大きさを
-/// 画面の大きさで切り詰める）は半分にする。
+/// 制御の口が受ける上限を超えるとき、広げたダイアログが作業領域に収まらないとき（OS がウィンドウの大きさを
+/// 画面の大きさで切り詰める）は 1.5 倍、それも合わなければ半分にする。
 #[test]
 fn the_text_dialog_follows_a_dpi_change() {
     /// 入力欄の上の行（大きさを添える文）のコントロール ID。
@@ -101,11 +101,10 @@ fn the_text_dialog_follows_a_dpi_change() {
                 <= field(&work[end]) - field(&work[start])
         })
     };
-    let to = if 2 * from <= MAX_DPI && fits_the_work_area(2 * from) {
-        2 * from
-    } else {
-        from / 2
-    };
+    let to = [2 * from, 3 * from / 2]
+        .into_iter()
+        .find(|&to| to <= MAX_DPI && fits_the_work_area(to))
+        .unwrap_or(from / 2);
     let scaled = |value: u64| scaled_to(value, to);
     let scaled_font = |height: i64| (height as f64 * to as f64 / from as f64).round() as i64;
     let font_height = |dialog: &Value, id: i32| {
