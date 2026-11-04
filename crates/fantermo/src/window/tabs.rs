@@ -412,8 +412,12 @@ impl App {
 
     /// ウィンドウのタイトルを、表示している端末のタイトルとバージョンから決める（`window_title`）。
     /// 変わったときだけウィンドウに設定する。
-    fn update_window_title(&mut self) {
-        let title = window_title(self.session().title(), &version::display(), self.elevated);
+    pub(super) fn update_window_title(&mut self) {
+        let title = window_title(
+            self.session().shown_title(),
+            &version::display(),
+            self.elevated,
+        );
         if title == self.window_title {
             return;
         }
@@ -446,9 +450,9 @@ impl App {
     }
 }
 
-/// 端末のタブに出すタイトル。アプリが付けたタイトル、付けていなければ既定のタイトル。
+/// 端末のタブに出すタイトル。[`Session::shown_title`]、それが空なら既定のタイトル。
 pub(super) fn tab_title(session: &Session) -> &str {
-    match session.title() {
+    match session.shown_title() {
         "" => WINDOW_TITLE,
         title => title,
     }
@@ -457,7 +461,7 @@ pub(super) fn tab_title(session: &Session) -> &str {
 /// 管理者として動いているウィンドウのタイトルの先頭に付ける印。
 const ELEVATED_TITLE_PREFIX: &str = "管理者: ";
 
-/// ウィンドウに出すタイトル。アプリが付けたタイトル `tab_title` があれば
+/// ウィンドウに出すタイトル。タブのタイトル `tab_title`（[`Session::shown_title`]）があれば
 /// `<tab_title> - fantermo <version>`、なければ（空なら）`fantermo <version>`。`elevated` なら
 /// 先頭に [`ELEVATED_TITLE_PREFIX`] を付ける。
 pub(super) fn window_title(tab_title: &str, version: &str, elevated: bool) -> String {

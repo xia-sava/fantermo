@@ -543,6 +543,7 @@ impl App {
             e2e: crate::e2e_server::start(poster(hwnd, WM_APP_E2E, WPARAM(0))),
         };
         app.sessions[0].background_image = app.choose_background_image();
+        app.update_window_title();
         Ok(app)
     }
 

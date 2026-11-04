@@ -203,10 +203,17 @@ fn shell_exit_closes_its_tab_and_then_the_window() {
     assert_eq!(server.wait_exit(), 7);
 }
 
-/// ブリッジのタブの基本: 入出力、大きさ、タイトル、シェルの終了コード。シェルは `/bin/sh`。
+/// ブリッジのタブの基本: 入出力、大きさ、タイトル、シェルの終了コード。シェルは `/bin/sh`。タイトルがなければ
+/// プロファイルの名前を出す。
 fn exercise_bridge_profile(mut server: Server) {
     let state = server.state();
     let (cols, rows) = (number(&state["cols"]), number(&state["rows"]));
+    let profile = state["tabs"][0]["profile"]
+        .as_str()
+        .expect("no profile")
+        .to_owned();
+    wait_window_title(&server, &profile);
+    assert_eq!(state["tabs"][0]["title"], profile, "{state:#}");
     server.type_line("echo hello-$((6*7)); stty size");
     server.wait_text("hello-42");
     server.wait_text(&format!("{rows} {cols}"));
@@ -217,6 +224,8 @@ fn exercise_bridge_profile(mut server: Server) {
 
     server.type_line(r"printf '\033]2;e2e-bridge\007'");
     wait_window_title(&server, "e2e-bridge");
+    server.type_line(r"printf '\033]2;\007'");
+    wait_window_title(&server, &profile);
 
     server.type_line("exit 7");
     assert_eq!(server.wait_exit(), 7);

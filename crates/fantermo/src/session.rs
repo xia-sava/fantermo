@@ -203,6 +203,8 @@ pub struct Session {
     pub tab_icon: TabIcon,
     /// 開いたときのプロファイルの名前。プロファイルなしで開いたなら `None`。
     pub profile_name: Option<String>,
+    /// 子プロセスとの接続方式。
+    pub backend_kind: BackendKind,
     /// このタブのアプリには、クリップボードの読み取りを確認せずに許可する。利用者がダイアログで決める。
     pub clipboard_read_allowed: bool,
 }
@@ -246,6 +248,7 @@ impl Session {
         let mut session = Self::with_backend(id, vt, backend, wake);
         session.tab_icon = startup.tab_icon.clone();
         session.profile_name = startup.profile_name.clone();
+        session.backend_kind = startup.backend;
         Ok(session)
     }
 
@@ -272,6 +275,7 @@ impl Session {
             background_image: None,
             tab_icon: TabIcon::without_profile(),
             profile_name: None,
+            backend_kind: BackendKind::Conpty,
             clipboard_read_allowed: false,
         }
     }
@@ -292,9 +296,14 @@ impl Session {
         self.wake.received();
     }
 
-    /// アプリが付けたタイトル。消されたか、付けていなければ空。
-    pub fn title(&self) -> &str {
-        &self.title
+    /// タブとウィンドウに出すタイトル。アプリが付けたタイトルで、なければブリッジのタブはプロファイルの名前。
+    /// どちらもなければ空。ConPTY のタブは起動してすぐ ConPTY が実行ファイルのパスをタイトルとして送るので、
+    /// プロファイルの名前を出さない。
+    pub fn shown_title(&self) -> &str {
+        if !self.title.is_empty() || self.backend_kind == BackendKind::Conpty {
+            return &self.title;
+        }
+        self.profile_name.as_deref().unwrap_or_default()
     }
 
     /// マウスの操作の途中の状態（選択のドラッグ、リンクの下線、押したリンク）を終える。表示から
@@ -544,11 +553,37 @@ mod tests {
         let events = session.on_output();
         assert!(events.title_changed);
         assert!(events.bell);
-        assert_eq!(session.title(), "fantermo-title");
+        assert_eq!(session.shown_title(), "fantermo-title");
 
         let events = session.on_output();
         assert!(!events.title_changed);
         assert!(!events.bell);
+    }
+
+    #[test]
+    fn a_bridge_tab_without_a_title_shows_the_profile_name() {
+        let (mut session, state) = fake_session();
+        session.profile_name = Some("Cygwin".to_owned());
+        session.backend_kind = BackendKind::Cygwin;
+        assert_eq!(session.shown_title(), "Cygwin");
+
+        state
+            .borrow_mut()
+            .output
+            .push_back(b"\x1b]2;vim\x07".to_vec());
+        session.on_output();
+        assert_eq!(session.shown_title(), "vim");
+
+        state.borrow_mut().output.push_back(b"\x1b]2;\x07".to_vec());
+        session.on_output();
+        assert_eq!(session.shown_title(), "Cygwin");
+    }
+
+    #[test]
+    fn a_conpty_tab_without_a_title_does_not_show_the_profile_name() {
+        let (mut session, _) = fake_session();
+        session.profile_name = Some("cmd".to_owned());
+        assert_eq!(session.shown_title(), "");
     }
 
     #[test]
