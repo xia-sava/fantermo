@@ -154,20 +154,27 @@ impl App {
 
     /// 開いているタブのアイコンのピクセルを、いまの DPI の一辺と UI のフォントの書体で揃える。タブを開いたとき・
     /// 閉じたとき、DPI か UI のフォントが変わったときに呼び、描くときには呼ばない。アイコンのファイルを読むのは、
-    /// 持っていないアイコンと、一辺か書体が変わったときだけ。
+    /// 持っていないアイコンと、一辺か書体が変わったときだけ。管理者として動いているウィンドウでは、右下に UAC の
+    /// 盾を重ねたものを持つ（重ねられなければ警告して盾なし）。
     pub(super) fn update_tab_icons(&mut self) {
         let side = tab_bar::tab_icon_size(self.dpi);
         let generator = self.tab_icon_generator.as_ref();
         let family = &self.ui_font.family;
+        let elevated = self.elevated;
         self.tab_icon_pixels.update(
             self.sessions.iter().map(|session| &session.tab_icon),
             side,
             family,
             |icon| {
-                generator?
+                let generator = generator?;
+                let mut pixels = generator
                     .pixels(icon, side, family)
                     .inspect_err(|e| tracing::warn!("failed to create a tab icon: {e}"))
-                    .ok()
+                    .ok()?;
+                if elevated && let Err(e) = generator.overlay_shield(&mut pixels) {
+                    tracing::warn!("failed to put the shield on a tab icon: {e}");
+                }
+                Some(pixels)
             },
         );
     }

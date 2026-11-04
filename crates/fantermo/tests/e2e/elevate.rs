@@ -1,13 +1,19 @@
 //! 管理者として開く。feature `e2e` のビルドは `ShellExecuteExW` の `runas` を呼ばず、起動の指定をファイルに書くか、
 //! 環境変数で指定した結果を返す（`crates/fantermo/src/elevate/stand_in.rs`）。UAC の確認は出ない。
 
+use crate::common;
 use crate::common::CMD_PROMPT;
 use crate::common::LaunchAgain;
 use crate::common::Server;
-use crate::ui::{ONE_PROFILE, tab_count};
+use crate::ui::{
+    DPI_200_PERCENT, ONE_PROFILE, PICTURE_POLL_INTERVAL, PICTURE_TIMEOUT, change_dpi,
+    color_is_close, number, tab_count,
+};
+use serde_json::Value;
 use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Instant;
 
 /// このプロセスを管理者として扱わせる環境変数。
 const ELEVATED_ENV: &str = "FANTERMO_E2E_ELEVATED";
@@ -113,4 +119,115 @@ fn the_elevate_option_starts_an_elevated_fantermo_and_ends() {
     assert_eq!(tab_count(&server.state()), 1);
     let log = elevated.log();
     assert!(log.contains("it may run with other rights"), "{log}");
+}
+
+/// タブのアイコンにする、一色の赤の画像。
+const RED_ICON: &str = "red-icon.png";
+const RED_ICON_SIDE: u32 = 64;
+const RED: [u8; 3] = [0xff, 0x00, 0x00];
+/// 96 DPI と 192 DPI のタブのアイコンの一辺と、そこに重ねる盾の一辺。
+const TAB_ICON_AT_100_PERCENT: u32 = 18;
+const SHIELD_AT_100_PERCENT: u32 = 10;
+const TAB_ICON_AT_200_PERCENT: u32 = 36;
+const SHIELD_AT_200_PERCENT: u32 = 18;
+
+/// 画像のアイコンのプロファイルが一つの設定。
+fn red_icon_profile() -> String {
+    format!(
+        r#"[[profiles]]
+name = "red"
+command = "cmd.exe /k prompt red$G"
+icon = '{RED_ICON}'
+"#
+    )
+}
+
+/// 一時フォルダ `dir` に [`RED_ICON`] を書く。
+fn write_red_icon(dir: &Path) {
+    let pixels = RED.repeat((RED_ICON_SIDE * RED_ICON_SIDE) as usize);
+    std::fs::write(
+        dir.join(RED_ICON),
+        common::encode_png(RED_ICON_SIDE, RED_ICON_SIDE, &pixels),
+    )
+    .expect("failed to write the icon");
+}
+
+/// 最初のタブのアイコンの、赤くない画素のアイコンの中の位置と色。アイコンは [`RED`] の画素を囲む矩形で、一辺が
+/// `side` になるまで絵を読み直す（盾はアイコンの右下にだけ重なるので、上の辺と左の辺は赤のまま残る）。
+#[track_caller]
+fn wait_tab_icon_marks(server: &Server, side: u32) -> Vec<(u32, u32, [u8; 3])> {
+    let deadline = Instant::now() + PICTURE_TIMEOUT;
+    loop {
+        let state = server.state();
+        let picture = server.picture();
+        let area = &state["tab_bar"]["tabs"][0]["area"];
+        let coordinate = |value: &Value| u32::try_from(number(value)).expect("the position fits");
+        let (x, y) = (coordinate(&area["x"]), coordinate(&area["y"]));
+        let (width, height) = (coordinate(&area["width"]), coordinate(&area["height"]));
+        let red: Vec<(u32, u32)> = (y..y + height)
+            .flat_map(|py| (x..x + width).map(move |px| (px, py)))
+            .filter(|&(px, py)| color_is_close(picture.rgb(px, py), RED))
+            .collect();
+        let left = red.iter().map(|&(px, _)| px).min();
+        let top = red.iter().map(|&(_, py)| py).min();
+        let right = red.iter().map(|&(px, _)| px).max();
+        let bottom = red.iter().map(|&(_, py)| py).max();
+        if let (Some(left), Some(top), Some(right), Some(bottom)) = (left, top, right, bottom)
+            && right + 1 - left == side
+            && bottom + 1 - top == side
+        {
+            return (top..top + side)
+                .flat_map(|py| (left..left + side).map(move |px| (px, py)))
+                .map(|(px, py)| (px - left, py - top, picture.rgb(px, py)))
+                .filter(|&(_, _, color)| !color_is_close(color, RED))
+                .collect();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no {side} px red icon in the first tab\n{state:#}\n{}",
+            server.log()
+        );
+        std::thread::sleep(PICTURE_POLL_INTERVAL);
+    }
+}
+
+/// 一辺 `side` のアイコンの赤くない画素 `marks` が、右下の一辺 `shield` の中だけにあり、盾の青を含む。
+#[track_caller]
+fn assert_shield_in_the_corner(marks: &[(u32, u32, [u8; 3])], side: u32, shield: u32) {
+    let corner = side - shield;
+    assert!(
+        marks.iter().all(|&(x, y, _)| x >= corner && y >= corner),
+        "marks outside the bottom right {shield} px: {marks:?}"
+    );
+    assert!(
+        marks.iter().any(|&(_, _, [r, _, b])| b > 0x80 && r < 0x80),
+        "no blue of the shield: {marks:?}"
+    );
+}
+
+/// 管理者のウィンドウのタブのアイコンは、右下に UAC の盾が重なる。DPI が変わってアイコンを作り直しても重なる。
+/// 管理者でないウィンドウのアイコンには重ならない。
+#[test]
+fn elevated_tab_icons_carry_the_shield() {
+    let config = red_icon_profile();
+    let normal = Server::start_with_setup(&config, &[], write_red_icon);
+    normal.wait_text("red>");
+    assert_eq!(
+        wait_tab_icon_marks(&normal, TAB_ICON_AT_100_PERCENT),
+        [],
+        "the icon of a window that is not elevated"
+    );
+
+    let elevated = Server::start_with_environment(&config, &[], |dir| {
+        write_red_icon(dir);
+        vec![(ELEVATED_ENV, "1".into())]
+    });
+    elevated.wait_text("red>");
+    let marks = wait_tab_icon_marks(&elevated, TAB_ICON_AT_100_PERCENT);
+    assert_shield_in_the_corner(&marks, TAB_ICON_AT_100_PERCENT, SHIELD_AT_100_PERCENT);
+
+    elevated.resize(50, 12);
+    change_dpi(&elevated, DPI_200_PERCENT);
+    let marks = wait_tab_icon_marks(&elevated, TAB_ICON_AT_200_PERCENT);
+    assert_shield_in_the_corner(&marks, TAB_ICON_AT_200_PERCENT, SHIELD_AT_200_PERCENT);
 }

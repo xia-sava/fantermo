@@ -278,6 +278,11 @@ impl Generator {
             side,
         )
     }
+
+    /// 作ったピクセル `pixels` の右下に、管理者の印の UAC の盾を重ねる。
+    pub fn overlay_shield(&self, pixels: &mut Decoded) -> windows::core::Result<()> {
+        self.decoder.overlay_shield(pixels)
+    }
 }
 
 /// 頭文字を組む書体。
