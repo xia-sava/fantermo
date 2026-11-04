@@ -29,11 +29,16 @@ use std::{
 
 use serde_json::Value;
 use windows::{
-    Win32::System::{
-        StationsAndDesktops::{
-            CloseDesktop, DESKTOP_CONTROL_FLAGS, GetThreadDesktop, OpenDesktopW, SetThreadDesktop,
+    Win32::{
+        Foundation::{CloseHandle, HANDLE},
+        Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
+        System::{
+            StationsAndDesktops::{
+                CloseDesktop, DESKTOP_CONTROL_FLAGS, GetThreadDesktop, OpenDesktopW,
+                SetThreadDesktop,
+            },
+            Threading::{GetCurrentProcess, GetCurrentThreadId, OpenProcessToken},
         },
-        Threading::GetCurrentThreadId,
     },
     core::HSTRING,
 };
@@ -1092,8 +1097,37 @@ pub fn install_bridge(triple: &str, file_name: &'static str) {
 
 /// 環境変数の指定がないのでスキップしたと、テストの出力を横取りされない形で知らせる。
 pub fn report_skip(test: &str, variable: &str) {
+    report_skip_because(test, &format!("環境変数 {variable} がない"));
+}
+
+/// `reason` でスキップしたと、テストの出力を横取りされない形で知らせる。
+pub fn report_skip_because(test: &str, reason: &str) {
     let mut stderr = std::io::stderr();
-    if let Err(e) = writeln!(stderr, "SKIPPED: {test}（環境変数 {variable} がない）") {
+    if let Err(e) = writeln!(stderr, "SKIPPED: {test}（{reason}）") {
         panic!("cannot report the skip: {e}");
     }
+}
+
+/// テストを動かすこのプロセスのトークンが昇格しているか。run-hidden から起動する fantermo も同じになる。
+pub fn tests_run_elevated() -> bool {
+    let mut token = HANDLE::default();
+    // SAFETY: このプロセスの疑似ハンドルを渡し、token は書き込める。
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) }
+        .expect("failed to open the token of the test");
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut written = 0;
+    // SAFETY: token は開いたトークンで、elevation は指定した大きさの分だけ書き込める。
+    let read = unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(std::ptr::from_mut(&mut elevation).cast()),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut written,
+        )
+    };
+    // SAFETY: OpenProcessToken が開いたハンドルで、ほかに持ち主はいない。
+    unsafe { CloseHandle(token) }.expect("failed to close the token");
+    read.expect("failed to read the token of the test");
+    elevation.TokenIsElevated != 0
 }

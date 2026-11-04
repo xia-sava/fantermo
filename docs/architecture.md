@@ -73,7 +73,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `main` | 起動の順番（3 節の「起動」） |
 | `command_line` | コマンドライン（`--elevate`，`--new-window`，`--profile`，`--`）の解釈 |
 | `instance` | 動いている fantermo のウィンドウへ起動の指定を `WM_COPYDATA` で渡す側と受け取る側 |
-| `elevate` | 管理者の権限の fantermo の起動（`ShellExecuteExW` の `runas`）．渡す引数の組み立て，このプロセスが管理者として動いているかの判定（`this_process`）．feature `e2e` のときは `elevate/stand_in` で差し替える |
+| `elevate` | 管理者の権限の fantermo の起動（`ShellExecuteExW` の `runas`）．渡す引数の組み立て，このプロセスが管理者として動いているかの判定（ウィンドウの印・メニュー・更新・`--elevate` に使う `this_process` と，動いているウィンドウへ渡すときに相手と比べる `this_process_for_forwarding`），プロセスのトークンの昇格を読む `is_elevated`．feature `e2e` のときは `elevate/stand_in` で差し替える |
 | `app_files` | `%APPDATA%\fantermo` のファイルの場所（環境変数での差し替え），一時ファイルを経由した置き換え書き込み，パスの比較（`same_path`） |
 | `config_file` | 設定ファイルの場所，読み込み，ひな形の作成，書き戻し（`save`），フォルダの監視 |
 | `window_state` | `state.toml` の場所と読み書き，ウィンドウの位置・大きさ・最大化との受け渡し |
@@ -207,7 +207,7 @@ IME の確定した文字と，キーを伴わない `WM_CHAR` は `on_text_unit
 1. 「fantermo について」（`show_about`）の「更新を確認」は，`update::availability` が `Available` のとき（インストーラで `%LOCALAPPDATA%\Programs\fantermo` に入れたリリースのビルドで，管理者として動いていない）だけ押せます．
 2. `update::start(Work::Check)` が別のスレッドで `latest.json` と署名を WinHTTP で取得し（`update/http`），埋め込みの公開鍵で ECDSA P-256 の署名を検証し（`update/signature`），バージョンを比べます（`update/manifest`）．結果は `update_events` に送り，`WM_APP_UPDATE` で知らせます．「fantermo について」を開いている間はそのループが先に受け取ります．
 3. `update/prompt` が結果を見せて次を決めます．更新するなら `Work::Download` で MSI をダウンロードして SHA-256 を照合し，ほかの fantermo が動いていれば知らせて確認し，`update/apply` のスクリプト（PowerShell）に引き渡してからウィンドウを閉じます．スクリプトは fantermo の終了を待ち，MSI の SHA-256 を照合し直してから `msiexec` で入れ，fantermo を起動し直します．
-4. feature `e2e` のビルドは，取得先・公開鍵・いまのバージョン・スクリプトの起動と，インストーラで入れたものかの判定を `update/stand_in` で差し替え，`127.0.0.1` のほかへ接続せず，スクリプトも起動しません．管理者の判定は差し替えず，`elevate::this_process`（`elevate/stand_in` で差し替えられる）を使います．
+4. feature `e2e` のビルドは，取得先・公開鍵・いまのバージョン・スクリプトの起動と，インストーラで入れたものかの判定を `update/stand_in` で差し替え，`127.0.0.1` のほかへ接続せず，スクリプトも起動しません．管理者の判定は `elevate::this_process` で，feature `e2e` のビルドでは環境変数 `FANTERMO_E2E_ELEVATED` の指定だけで決め，本物のトークンは見ません（テストを動かすプロセスが管理者でも，指定がなければ「更新を確認」を押せます）．
 
 ## 4. バックエンド
 

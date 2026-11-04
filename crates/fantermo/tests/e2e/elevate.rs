@@ -1,5 +1,8 @@
 //! 管理者として開く。feature `e2e` のビルドは `ShellExecuteExW` の `runas` を呼ばず、起動の指定をファイルに書くか、
 //! 環境変数で指定した結果を返す（`crates/fantermo/src/elevate/stand_in.rs`）。UAC の確認は出ない。
+//!
+//! 管理者かどうか（ウィンドウの印、メニュー、`--elevate`）は `FANTERMO_E2E_ELEVATED` だけで決まり、テストを動かす
+//! プロセスが管理者でも、付けなければ管理者ではない。
 
 use crate::common;
 use crate::common::CMD_COMMAND;
@@ -62,8 +65,7 @@ fn record_at(path: &Path) -> (&'static str, OsString) {
 
 /// `--elevate` は、動いているウィンドウへ渡さずに管理者の権限の fantermo を起動して終わる。渡す引数は `--elevate` を
 /// 除いて組み立て直したもので、作業フォルダは起動したときの作業フォルダ。UAC の確認で断られたら、何も開かずに終わる。
-/// すでに管理者なら、管理者としての起動はせず、管理者として動いていないウィンドウへも渡さずに自分のウィンドウを開く
-/// （管理者として扱うのは起動した側だけで、ウィンドウの側は本物のトークンで読まれる）。
+/// すでに管理者なら、管理者としての起動はせず、そのまま開く。管理者のウィンドウのタイトルだけ先頭に印が付く。
 #[test]
 fn the_elevate_option_starts_an_elevated_fantermo_and_ends() {
     let server = Server::start(ONE_PROFILE, &[]);
@@ -99,9 +101,9 @@ fn the_elevate_option_starts_an_elevated_fantermo_and_ends() {
     assert!(!record.exists());
     assert_eq!(tab_count(&server.state()), 1);
 
-    // すでに管理者なら、そのまま開く。管理者として動いていない元のウィンドウへは渡さない。
+    // すでに管理者なら、そのまま開く。
     let mut elevated = server.launch_again_with(
-        &["--elevate", "--profile", "one"],
+        &["--elevate", "--new-window", "--profile", "one"],
         &LaunchAgain {
             environment: vec![record_at(&record), (ELEVATED_ENV, "1".into())],
             ..Default::default()
@@ -119,8 +121,6 @@ fn the_elevate_option_starts_an_elevated_fantermo_and_ends() {
     assert!(!normal_title.starts_with("管理者: "), "{normal_title}");
     assert!(!record.exists());
     assert_eq!(tab_count(&server.state()), 1);
-    let log = elevated.log();
-    assert!(log.contains("it may run with other rights"), "{log}");
 }
 
 /// プロファイルが三つの設定。既定は 2 つ目で、3 つ目の名前は引用が要る。

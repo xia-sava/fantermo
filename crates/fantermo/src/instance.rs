@@ -15,7 +15,7 @@ use std::{
     ffi::{OsString, c_void},
     os::windows::{
         ffi::{OsStrExt, OsStringExt},
-        io::{AsRawHandle, FromRawHandle, OwnedHandle},
+        io::AsRawHandle,
         process::CommandExt,
     },
     path::{Path, PathBuf},
@@ -26,11 +26,7 @@ use std::{
 use windows::{
     Win32::{
         Foundation::{HANDLE, HWND, LPARAM, TRUE, WPARAM},
-        Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
-        System::{
-            DataExchange::COPYDATASTRUCT,
-            Threading::{OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION},
-        },
+        System::{DataExchange::COPYDATASTRUCT, Threading::PROCESS_QUERY_LIMITED_INFORMATION},
         UI::WindowsAndMessaging::{
             AllowSetForegroundWindow, EnumWindows, GetClassNameW, GetWindowThreadProcessId,
             IsWindowVisible, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_COPYDATA,
@@ -379,7 +375,7 @@ fn send_to(window: HWND, units: &[u16], timeout: Duration) -> bool {
 }
 
 /// プロセス `pid` が、管理者として動いているかどうかでこのプロセスと同じか。どちらかを読めなければ `false`。
-/// このプロセスの側は [`elevate::this_process`] で読む。
+/// このプロセスの側は [`elevate::this_process_for_forwarding`]、相手の側は本物のトークンで読む。
 fn same_elevation_as_this_process(pid: u32) -> bool {
     let process = match process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION) {
         Ok(process) => process,
@@ -389,41 +385,12 @@ fn same_elevation_as_this_process(pid: u32) -> bool {
         }
     };
     match (
-        is_elevated(HANDLE(process.as_raw_handle())),
-        elevate::this_process(),
+        elevate::is_elevated(HANDLE(process.as_raw_handle())),
+        elevate::this_process_for_forwarding(),
     ) {
         (Some(other), Some(this)) => other == this,
         _ => false,
     }
-}
-
-/// プロセス `process` が管理者として動いているか。読めなければ `None`。
-pub(crate) fn is_elevated(process: HANDLE) -> Option<bool> {
-    let mut token = HANDLE::default();
-    // SAFETY: process は有効なハンドルで、token は書き込める。
-    if let Err(e) = unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } {
-        tracing::debug!("cannot open the token of a process: {e}");
-        return None;
-    }
-    // SAFETY: OpenProcessToken が成功したので、ハンドルは有効で、ほかに持ち主はいない。
-    let token = unsafe { OwnedHandle::from_raw_handle(token.0) };
-    let mut elevation = TOKEN_ELEVATION::default();
-    let mut written = 0;
-    // SAFETY: elevation は指定した大きさの分だけ書き込める。
-    let read = unsafe {
-        GetTokenInformation(
-            HANDLE(token.as_raw_handle()),
-            TokenElevation,
-            Some(std::ptr::from_mut(&mut elevation).cast()),
-            size_of::<TOKEN_ELEVATION>() as u32,
-            &mut written,
-        )
-    };
-    if let Err(e) = read {
-        tracing::debug!("cannot read the token of a process: {e}");
-        return None;
-    }
-    Some(elevation.TokenIsElevated != 0)
 }
 
 #[cfg(test)]

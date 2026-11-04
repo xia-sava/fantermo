@@ -5,20 +5,30 @@
 //! 直し、`--elevate` は入れない。昇格しないまま起動されたときに、起動したものがまた `runas` を求めて UAC の確認を
 //! 繰り返さないため。
 //!
-//! このプロセスが管理者として動いているかは [`this_process`] で読む。feature `e2e` のときは、昇格の判定と起動を
-//! `stand_in` で差し替え、`ShellExecuteExW` を呼ばない。
+//! このプロセスが管理者として動いているかは [`this_process`] で読み、動いているウィンドウへ起動を渡すときの比べる値は
+//! [`this_process_for_forwarding`] で読む。feature `e2e` のときは、昇格の判定と起動を `stand_in` で差し替え、
+//! `ShellExecuteExW` を呼ばない。
+//!
+//! feature `e2e` の [`this_process`] は差し替えの指定だけで決め、本物のトークンを見ない。テストを動かすプロセスが
+//! 管理者でも、指定のない fantermo は管理者ではないものとして動く。[`this_process_for_forwarding`] は、相手のウィンドウを
+//! 本物のトークンで読むので、指定がなければ自分も本物のトークンで比べる。
 
 #[cfg(feature = "e2e")]
 mod stand_in;
 
-use std::{path::PathBuf, sync::OnceLock};
-
-use windows::Win32::{Foundation::HWND, System::Threading::GetCurrentProcess};
-
-use crate::{
-    command_line::{END_OF_OPTIONS, NEW_WINDOW_OPTION, Options, PROFILE_OPTION},
-    instance,
+use std::{
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    path::PathBuf,
+    sync::OnceLock,
 };
+
+use windows::Win32::{
+    Foundation::{HANDLE, HWND},
+    Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
+    System::Threading::{GetCurrentProcess, OpenProcessToken},
+};
+
+use crate::command_line::{END_OF_OPTIONS, NEW_WINDOW_OPTION, Options, PROFILE_OPTION};
 
 /// 管理者として起動するもの。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,7 +44,8 @@ pub struct Launch {
 /// 管理者として起動できなかったわけ。
 #[derive(Debug)]
 pub enum LaunchError {
-    /// 利用者が UAC の確認で断った。
+    /// `ShellExecuteExW` が `ERROR_CANCELLED` を返した。利用者が UAC の確認で断ったときのほか、確認の時間切れなども
+    /// 含む。
     Cancelled,
     /// そのほかの失敗。
     Failed(windows::core::Error),
@@ -45,19 +56,53 @@ pub fn failure_message(error: &windows::core::Error) -> String {
     format!("管理者として起動できませんでした。\n\n{error}")
 }
 
-/// このプロセスが管理者として動いているか。読めなければ `None` で、警告を一度だけ残す。
-///
-/// `None` の扱いは呼ぶ側で決める。ほかのウィンドウへ起動を渡すときは渡さない側に、ほかでは管理者ではないとして扱う。
+/// このプロセスが管理者として動いているか（ウィンドウの印、メニュー、更新、`--elevate`）。読めなければ `None` で、
+/// 警告を一度だけ残す。呼ぶ側は `None` を管理者ではないとして扱う。
 pub fn this_process() -> Option<bool> {
-    #[cfg(feature = "e2e")]
-    if stand_in::is_elevated() {
-        return Some(true);
-    }
+    elevation_of(stand_in_for_this_process(), this_token)
+}
+
+/// 動いているウィンドウへ起動を渡すときに、相手と比べるこのプロセスの昇格。読めなければ `None` で、呼ぶ側は渡さない。
+pub fn this_process_for_forwarding() -> Option<bool> {
+    elevation_of(stand_in_for_forwarding(), this_token)
+}
+
+/// 差し替えの指定 `stand_in` があればそれで、なければトークン `token` で決める。
+fn elevation_of(stand_in: Option<bool>, token: impl FnOnce() -> Option<bool>) -> Option<bool> {
+    stand_in.map_or_else(token, Some)
+}
+
+/// [`this_process`] の差し替えの指定。指定がなければ管理者ではない。
+#[cfg(feature = "e2e")]
+fn stand_in_for_this_process() -> Option<bool> {
+    Some(stand_in::is_elevated())
+}
+
+/// [`this_process_for_forwarding`] の差し替えの指定。管理者として扱うよう指定されたときだけ。
+#[cfg(feature = "e2e")]
+fn stand_in_for_forwarding() -> Option<bool> {
+    stand_in::is_elevated().then_some(true)
+}
+
+/// 配布物のビルドは差し替えない。
+#[cfg(not(feature = "e2e"))]
+fn stand_in_for_this_process() -> Option<bool> {
+    None
+}
+
+/// 配布物のビルドは差し替えない。
+#[cfg(not(feature = "e2e"))]
+fn stand_in_for_forwarding() -> Option<bool> {
+    None
+}
+
+/// このプロセスのトークンが昇格しているか。一度だけ読む。
+fn this_token() -> Option<bool> {
     static ELEVATED: OnceLock<Option<bool>> = OnceLock::new();
     *ELEVATED.get_or_init(|| {
         // SAFETY: このプロセスの疑似ハンドルを得るだけ。
         let this = unsafe { GetCurrentProcess() };
-        let elevated = instance::is_elevated(this);
+        let elevated = is_elevated(this);
         if elevated.is_none() {
             tracing::warn!("failed to tell whether this process is elevated");
         }
@@ -65,10 +110,42 @@ pub fn this_process() -> Option<bool> {
     })
 }
 
+/// プロセス `process` のトークンが昇格しているか。読めなければ `None`。
+pub fn is_elevated(process: HANDLE) -> Option<bool> {
+    let mut token = HANDLE::default();
+    // SAFETY: process は有効なハンドルで、token は書き込める。
+    if let Err(e) = unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } {
+        tracing::debug!("cannot open the token of a process: {e}");
+        return None;
+    }
+    // SAFETY: OpenProcessToken が成功したので、ハンドルは有効で、ほかに持ち主はいない。
+    let token = unsafe { OwnedHandle::from_raw_handle(token.0) };
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut written = 0;
+    // SAFETY: elevation は指定した大きさの分だけ書き込める。
+    let read = unsafe {
+        GetTokenInformation(
+            HANDLE(token.as_raw_handle()),
+            TokenElevation,
+            Some(std::ptr::from_mut(&mut elevation).cast()),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut written,
+        )
+    };
+    if let Err(e) = read {
+        tracing::debug!("cannot read the token of a process: {e}");
+        return None;
+    }
+    Some(elevation.TokenIsElevated != 0)
+}
+
 /// `options` を管理者として開く起動の指定にする。実行ファイルはこのプロセスのもの、作業フォルダはこのプロセスの
 /// 作業フォルダ。
 pub fn launch_request(options: &Options) -> Result<Launch, LaunchError> {
-    let exe = std::env::current_exe().map_err(|e| LaunchError::Failed(e.into()))?;
+    let exe = std::env::current_exe().map_err(|e| {
+        tracing::warn!("failed to get the path of the executable: {e}");
+        LaunchError::Failed(e.into())
+    })?;
     let directory = match std::env::current_dir() {
         Ok(folder) => Some(folder),
         Err(e) => {
@@ -85,8 +162,7 @@ pub fn launch_request(options: &Options) -> Result<Launch, LaunchError> {
 
 /// `options` を、`Options::parse` で同じものに読めるコマンドラインの引数にする。`--elevate` は入れない。
 ///
-/// 名前が `--` で始まるプロファイルと、名前が空のプロファイルは、`Options::parse` が名前のない `--profile` として
-/// 読むので、同じものには戻らない。
+/// 名前が `--` で始まるプロファイルは、`Options::parse` が名前のない `--profile` として読むので、同じものには戻らない。
 fn parameters(options: &Options) -> String {
     let mut words = Vec::new();
     if options.new_window {
@@ -292,8 +368,26 @@ mod tests {
         assert!(message.ends_with(&error.to_string()));
     }
 
-    /// 配布物のビルドでは、e2e テストの環境変数を付けても昇格の判定は変わらない。`launch` は UAC の確認を出すので
-    /// 呼ばない。
+    #[test]
+    fn a_stand_in_decides_without_reading_the_token() {
+        let unread = || panic!("the token is read");
+        assert_eq!(elevation_of(Some(true), unread), Some(true));
+        assert_eq!(elevation_of(Some(false), unread), Some(false));
+        assert_eq!(elevation_of(None, || Some(true)), Some(true));
+        assert_eq!(elevation_of(None, || Some(false)), Some(false));
+        assert_eq!(elevation_of(None, || None), None);
+    }
+
+    #[test]
+    fn this_process_reads_its_own_token() {
+        // SAFETY: このプロセスの疑似ハンドルを得るだけ。
+        let this = unsafe { GetCurrentProcess() };
+        assert!(is_elevated(this).is_some());
+        assert_eq!(this_token(), is_elevated(this));
+    }
+
+    /// 配布物のビルドは差し替えの指定を持たず、どちらの判定もトークンで決める。e2e テストの環境変数を付けても変わらない。
+    /// `launch` は UAC の確認を出すので呼ばない。
     #[cfg(not(feature = "e2e"))]
     #[test]
     fn the_e2e_variables_change_nothing_without_the_feature() {
@@ -306,13 +400,24 @@ mod tests {
             // SAFETY: Windows の環境変数は OS が直列にする。ほかのテストはこの名前を読まない。
             unsafe { std::env::set_var(name, value) };
         }
-        let elevated = this_process();
+        let stand_ins = (stand_in_for_this_process(), stand_in_for_forwarding());
         for (name, _) in VARIABLES {
             // SAFETY: 同上。
             unsafe { std::env::remove_var(name) };
         }
-        // SAFETY: このプロセスの疑似ハンドルを得るだけ。
-        let this = unsafe { GetCurrentProcess() };
-        assert_eq!(elevated, instance::is_elevated(this));
+        assert_eq!(stand_ins, (None, None));
+    }
+
+    /// feature `e2e` のビルドは、指定がなければ、テストを動かすプロセスが管理者でも [`this_process`] を管理者では
+    /// ないとし、起動を渡すときの比べる値は本物のトークンにする。ほかのテストが `FANTERMO_E2E_ELEVATED` を付けない
+    /// ことを前提にする。
+    #[cfg(feature = "e2e")]
+    #[test]
+    fn without_a_stand_in_the_e2e_build_is_not_elevated_but_forwards_by_the_token() {
+        assert!(std::env::var_os("FANTERMO_E2E_ELEVATED").is_none());
+        assert_eq!(stand_in_for_this_process(), Some(false));
+        assert_eq!(this_process(), Some(false));
+        assert_eq!(stand_in_for_forwarding(), None);
+        assert_eq!(this_process_for_forwarding(), this_token());
     }
 }

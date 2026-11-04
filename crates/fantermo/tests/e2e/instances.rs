@@ -3,6 +3,7 @@ use crate::common::CMD_PROMPT;
 use crate::common::LONG_WAIT_CHILDREN_SECONDS;
 use crate::common::LaunchAgain;
 use crate::common::Server;
+use crate::common::{report_skip_because, tests_run_elevated};
 use crate::ui::{
     ONE_PROFILE, TWO_PROMPT_PROFILES, click_main_menu, close_menu, close_message_box,
     cygwin_config, number, open_menu, open_settings, press_cancel, tab_count,
@@ -218,6 +219,35 @@ fn a_second_launch_goes_to_the_window_used_last() {
         tab_count(state) == 3
     });
     assert_eq!(tab_count(&first.state()), 2);
+}
+
+/// 管理者として扱う fantermo は、管理者として動いていないウィンドウへタブを足さず、自分のウィンドウを開く。
+/// 管理者として扱うのは起動した側だけで、渡す相手のウィンドウは本物のトークンで読まれるので、テストを動かすプロセスが
+/// 管理者なら（相手も管理者になり）確認できない。
+#[test]
+fn an_elevated_launch_does_not_add_a_tab_to_a_window_that_is_not_elevated() {
+    const TEST: &str = "an_elevated_launch_does_not_add_a_tab_to_a_window_that_is_not_elevated";
+    if tests_run_elevated() {
+        report_skip_because(TEST, "テストのプロセスが管理者として動いている");
+        return;
+    }
+    let server = Server::start_cmd();
+    let first = server.wait_text(CMD_PROMPT);
+
+    let mut elevated = server.launch_again_with(
+        &CMD_COMMAND,
+        &LaunchAgain {
+            environment: vec![("FANTERMO_E2E_ELEVATED", "1".into())],
+            ..Default::default()
+        },
+    );
+    elevated.wait_for_window();
+    let state = elevated.wait_text(CMD_PROMPT);
+    assert_ne!(state["pid"], first["pid"], "{state:#}");
+    assert_eq!(tab_count(&server.state()), 1);
+    // 応答しないウィンドウを飛ばしたのではなく、昇格の違いで飛ばした。
+    let log = elevated.log();
+    assert!(log.contains("it may run with other rights"), "{log}");
 }
 
 #[test]
