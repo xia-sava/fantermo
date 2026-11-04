@@ -54,7 +54,8 @@ fn record_at(path: &Path) -> (&'static str, OsString) {
 
 /// `--elevate` は、動いているウィンドウへ渡さずに管理者の権限の fantermo を起動して終わる。渡す引数は `--elevate` を
 /// 除いて組み立て直したもので、作業フォルダは起動したときの作業フォルダ。UAC の確認で断られたら、何も開かずに終わる。
-/// すでに管理者なら、管理者としての起動はしない。
+/// すでに管理者なら、管理者としての起動はせず、管理者として動いていないウィンドウへも渡さずに自分のウィンドウを開く
+/// （管理者として扱うのは起動した側だけで、ウィンドウの側は本物のトークンで読まれる）。
 #[test]
 fn the_elevate_option_starts_an_elevated_fantermo_and_ends() {
     let server = Server::start(ONE_PROFILE, &[]);
@@ -90,9 +91,9 @@ fn the_elevate_option_starts_an_elevated_fantermo_and_ends() {
     assert!(!record.exists());
     assert_eq!(tab_count(&server.state()), 1);
 
-    // すでに管理者なら、そのまま開く。
+    // すでに管理者なら、そのまま開く。管理者として動いていない元のウィンドウへは渡さない。
     let mut elevated = server.launch_again_with(
-        &["--elevate", "--new-window", "--profile", "one"],
+        &["--elevate", "--profile", "one"],
         &LaunchAgain {
             environment: vec![record_at(&record), (ELEVATED_ENV, "1".into())],
             ..Default::default()
@@ -101,5 +102,9 @@ fn the_elevate_option_starts_an_elevated_fantermo_and_ends() {
     elevated.wait_for_window();
     let state = elevated.wait_text(CMD_PROMPT);
     assert_eq!(state["tabs"][0]["profile"], "one", "{state:#}");
+    assert_ne!(state["pid"], server.state()["pid"], "{state:#}");
     assert!(!record.exists());
+    assert_eq!(tab_count(&server.state()), 1);
+    let log = elevated.log();
+    assert!(log.contains("it may run with other rights"), "{log}");
 }

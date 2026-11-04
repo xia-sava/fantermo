@@ -9,7 +9,8 @@ use windows::{Win32::Foundation::E_FAIL, core::Error};
 
 use super::http::{self, HttpError};
 
-/// 更新の情報と配布物を返す HTTP の `127.0.0.1` のポート。あれば「更新を確認」を押せる。
+/// 更新の情報と配布物を返す HTTP の `127.0.0.1` のポート。あれば、インストーラで入れたものとして扱う（管理者として
+/// 動いていなければ「更新を確認」を押せる）。
 const PORT_ENV: &str = "FANTERMO_E2E_UPDATE_PORT";
 /// 署名を検証する公開鍵（SubjectPublicKeyInfo の DER）を 16 進で。なければ埋め込みの公開鍵を使う。
 const PUBLIC_KEY_ENV: &str = "FANTERMO_E2E_UPDATE_PUBLIC_KEY";

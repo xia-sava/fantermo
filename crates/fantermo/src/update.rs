@@ -29,13 +29,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use windows::Win32::{System::Threading::GetCurrentProcess, UI::Shell::FOLDERID_UserProgramFiles};
+use windows::Win32::UI::Shell::FOLDERID_UserProgramFiles;
 
 pub use self::manifest::{Comparison, Release, Version};
 use self::{
     http::HttpError, manifest::ManifestError, signature::SHA256_LEN, signature::VerifyError,
 };
-use crate::{app_files::same_path, instance, known_folder, logging, version};
+use crate::{app_files::same_path, elevate, known_folder, logging, version};
 
 /// インストーラが fantermo を入れる、`%LOCALAPPDATA%\Programs` の下のフォルダ。
 const INSTALL_DIR_NAME: &str = "fantermo";
@@ -72,13 +72,14 @@ pub enum Availability {
 }
 
 /// この fantermo を更新できるか。インストーラで入れたリリースのビルドで、管理者として動いていなければ
-/// `Available`。
+/// `Available`。管理者かを読めなければ、管理者ではないとして扱う。
 pub fn availability() -> Availability {
+    let elevated = || elevate::this_process() == Some(true);
     #[cfg(feature = "e2e")]
     if stand_in::is_active() {
-        return Availability::Available;
+        return availability_of(|| true, elevated);
     }
-    availability_of(is_installed_here, is_elevated_process)
+    availability_of(is_installed_here, elevated)
 }
 
 /// 場所と昇格の判定から `Availability` を決める。インストーラで入れたビルドでなければ、昇格は調べない。
@@ -111,16 +112,6 @@ fn is_installed_here() -> bool {
         return false;
     };
     is_installed_build(version::RELEASE, &exe, &programs)
-}
-
-/// このプロセスが管理者として動いているか。調べられなければ偽で、警告を残す。
-fn is_elevated_process() -> bool {
-    // SAFETY: このプロセスの疑似ハンドルを得るだけ。
-    let this = unsafe { GetCurrentProcess() };
-    instance::is_elevated(this).unwrap_or_else(|| {
-        tracing::warn!("failed to tell whether this process is elevated");
-        false
-    })
 }
 
 /// リリースのビルド（`release`）で、実行ファイル `exe` がインストーラの入れる場所（`programs` の下の

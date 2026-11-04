@@ -53,6 +53,8 @@ const DIGEST_MISMATCH_TEXT: &str = "ダウンロードしたファイルが、�
 const CANNOT_START_TEXT: &str = "更新を始められませんでした";
 const OTHER_INSTANCES_TEXT: &str = "ほかに fantermo が";
 const CONFIRM_APPLY_TEXT: &str = "すべてのタブを閉じて";
+/// 管理者として動いているときに「fantermo について…」に添える文（`about.rs`）。
+const ELEVATED_TEXT: &str = "管理者として起動した fantermo からは更新できません";
 /// 何も起きないことを見る時間の窓。取得の要求は起動やダイアログを開く操作の直後に出るので、通信とスレッドの
 /// 切り替えの遅れを見込んで数秒取る。
 const NO_REQUEST_WINDOW: Duration = Duration::from_secs(3);
@@ -254,6 +256,22 @@ fn the_update_button_is_grayed_unless_installed_by_the_installer() {
     assert_eq!(status, 400);
     close_about(&server);
     check_terminal_still_works(&server, "after-grayed");
+}
+
+/// 管理者として動いていれば、インストーラで入れたものでも「更新を確認」を押せず、そのわけを添える。
+#[test]
+fn the_update_button_is_grayed_in_an_elevated_fantermo() {
+    let server = Server::start_with_environment("", &CMD_COMMAND, |_| {
+        vec![
+            ("FANTERMO_E2E_UPDATE_PORT", unused_port().to_string().into()),
+            ("FANTERMO_E2E_ELEVATED", "1".into()),
+        ]
+    });
+    server.wait_text(CMD_PROMPT);
+    let dialog = open_about(&server);
+    assert_contains(&dialog_text(&dialog), ELEVATED_TEXT);
+    assert!(!control_enabled(&server, ID_CHECK_UPDATE));
+    close_about(&server);
 }
 
 /// 確認は押したときだけする。起動しても「fantermo について…」を開いても取得しない。起動時の確認はない。

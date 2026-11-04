@@ -29,7 +29,7 @@ use windows::{
         Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
         System::{
             DataExchange::COPYDATASTRUCT,
-            Threading::{GetCurrentProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION},
+            Threading::{OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION},
         },
         UI::WindowsAndMessaging::{
             AllowSetForegroundWindow, EnumWindows, GetClassNameW, GetWindowThreadProcessId,
@@ -42,7 +42,7 @@ use windows::{
 use crate::{
     app_files::same_path,
     command_line::{Options, TabRequest},
-    process,
+    elevate, process,
     window::WINDOW_CLASS,
 };
 
@@ -378,7 +378,8 @@ fn send_to(window: HWND, units: &[u16], timeout: Duration) -> bool {
     true
 }
 
-/// プロセス `pid` が、管理者として動いているかどうかでこのプロセスと同じか。読めなければ `false`。
+/// プロセス `pid` が、管理者として動いているかどうかでこのプロセスと同じか。どちらかを読めなければ `false`。
+/// このプロセスの側は [`elevate::this_process`] で読む。
 fn same_elevation_as_this_process(pid: u32) -> bool {
     let process = match process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION) {
         Ok(process) => process,
@@ -387,11 +388,9 @@ fn same_elevation_as_this_process(pid: u32) -> bool {
             return false;
         }
     };
-    // SAFETY: このプロセスの疑似ハンドルを得るだけ。
-    let this = unsafe { GetCurrentProcess() };
     match (
         is_elevated(HANDLE(process.as_raw_handle())),
-        is_elevated(this),
+        elevate::this_process(),
     ) {
         (Some(other), Some(this)) => other == this,
         _ => false,
