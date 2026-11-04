@@ -1102,16 +1102,27 @@ mod tests {
     }
 
     /// 名前だけのバッチファイルも、PATH で見つけたものが動き、作業フォルダの同じ名前のものは動かない。
-    /// `CreateProcessW` がバッチファイルのために起動する `cmd.exe` が、渡した絶対パスを使うことを見る。
+    /// `CreateProcessW` がバッチファイルのために起動する `cmd.exe` が、コマンドラインに書いた絶対パスを使うことを
+    /// 見る。PATH のフォルダの名前には空白と `&` を、引数には `"` を入れる。
+    ///
+    /// バッチファイルは、最初の語から `"` を除いたもの（`%~0`）と cmd が決めた絶対パス（`%~f0`）を比べる。
+    /// 名前のままなら一致しないので、環境変数 `NoDefaultCurrentDirectoryInExePath` があって cmd が作業フォルダを
+    /// 見ないときも、コマンドラインに絶対パスを書いたかが分かる。
     #[test]
     fn a_bare_batch_file_runs_the_one_found_on_path() {
         let root =
             std::env::temp_dir().join(format!("fantermo-conpty-batch-{}", std::process::id()));
-        let on_path = root.join("a b");
+        let on_path = root.join("a b&c");
         let working_folder = root.join("b");
         for (folder, marker) in [(&on_path, "marker-a"), (&working_folder, "marker-b")] {
             std::fs::create_dir_all(folder).unwrap();
-            std::fs::write(folder.join("tool.bat"), format!("@echo {marker}-%1-\r\n")).unwrap();
+            std::fs::write(
+                folder.join("tool.bat"),
+                format!(
+                    "@if \"%~0\"==\"%~f0\" (echo {marker}-%1-absolute-end) else (echo {marker}-%1-bare-end)\r\n"
+                ),
+            )
+            .unwrap();
         }
         let system = std::env::var_os("SystemRoot").expect("no SystemRoot");
         let path_variable = format!(
@@ -1127,10 +1138,13 @@ mod tests {
                 size: SIZE,
                 working_folder: Some(working_folder.as_path()),
             },
-            "marker-",
+            "-end",
         );
         _ = std::fs::remove_dir_all(&root);
-        assert!(screen.contains(r#"marker-a-"x y"-"#), "{screen}");
+        assert!(
+            screen.contains(r#"marker-a-"x y"-absolute-end"#),
+            "{screen}"
+        );
         assert!(!screen.contains("marker-b"), "{screen}");
     }
 
