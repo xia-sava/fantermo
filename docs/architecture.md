@@ -213,7 +213,7 @@ IME の確定した文字と，キーを伴わない `WM_CHAR` は `on_text_unit
 
 ### `Backend` trait
 
-`fantermo_core::backend::Backend` は `write`（入力），`resize`（大きさ），`drain_output`（溜まった出力を上限まで渡す．残したら `true`），`poll_exit`（終了コード）の 4 つです．どれもウィンドウのスレッドから呼ばれるので，待たずに戻ります．出力が届いたときと子プロセスが終わったときは，起動のときに受け取った `Wake` を呼びます．破棄すると子プロセスとの接続を閉じて後始末をします．種類はプロファイルの `backend`（`BackendKind`: `conpty`・`cygwin`・`wsl`）で，`session::spawn_backend` の一か所で作ります．子プロセスへ渡す環境変数（`TERM=xterm-256color`，`TERM_PROGRAM`，`TERM_PROGRAM_VERSION`）は `session.rs` の `CHILD_ENV` です．
+`fantermo_core::backend::Backend` は `write`（入力），`resize`（大きさ），`drain_output`（溜まった出力を上限まで渡す．残したら `true`），`poll_exit`（終了コード）の 4 つです．どれもウィンドウのスレッドから呼ばれるので，待たずに戻ります．出力が届いたときと子プロセスが終わったときは，起動のときに受け取った `Wake` を呼びます．破棄すると子プロセスとの接続を閉じて後始末をします．種類はプロファイルの `backend`（`BackendKind`: `conpty`・`cygwin`・`wsl`）で，`session::spawn_backend` の一か所で作ります．子プロセスへ渡す環境変数（`TERM=xterm-256color`，`COLORTERM=truecolor`，`TERM_PROGRAM`，`TERM_PROGRAM_VERSION`）は `session.rs` の `CHILD_ENV` です．
 
 テストでは偽のバックエンドで `Session` を試せます（`session.rs` のテスト）．
 

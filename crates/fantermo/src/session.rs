@@ -36,9 +36,13 @@ const TERM_PROGRAM: &str = "fantermo";
 /// 先にするための遅れで、意図したもの。
 const MAX_OUTPUT_PER_CALL: usize = 1024 * 1024;
 
+/// 子プロセスの `COLORTERM`。24 ビットの色を使えることを伝える。ConPTY も 24 ビットの色を丸めずに通す。
+const COLORTERM: &str = "truecolor";
+
 /// 子プロセスへ渡す環境変数。
-const CHILD_ENV: [(&str, &str); 3] = [
+const CHILD_ENV: [(&str, &str); 4] = [
     ("TERM", TERM),
+    ("COLORTERM", COLORTERM),
     ("TERM_PROGRAM", TERM_PROGRAM),
     ("TERM_PROGRAM_VERSION", version::PACKAGE),
 ];
@@ -413,6 +417,7 @@ mod tests {
             CHILD_ENV,
             [
                 ("TERM", "xterm-256color"),
+                ("COLORTERM", "truecolor"),
                 ("TERM_PROGRAM", "fantermo"),
                 ("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION")),
             ]

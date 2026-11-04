@@ -85,7 +85,7 @@ fantermo がどう振る舞うかと，その理由をまとめたものです�
 - `cygwin_root` を書かなければ，`PATH` の項目を順に見て，絶対パスで名前が `bin`（大文字と小文字は問わない）で `cygwin1.dll` と `sh.exe` があるフォルダの一つ上を使います．なければ `C:\cygwin64`，`C:\cygwin` の順に探します．`sh.exe` も見るのは，`cygwin1.dll` を同梱しているだけのアプリのフォルダを掴まないためです．相対パスの項目は，作業フォルダで結果が変わるので見ません．書いた `cygwin_root` に Cygwin がなければ，探さずにエラーにします．
 - `command` が一つのコマンドなら，前に `exec` を付けて `/bin/sh -c` に渡します（`config::shell_command`）．シェルを親として残さず，Ctrl+C のあとの終了コードがアプリのものになるようにするためです．一つのコマンドとみなすのは，引用の外に `|&;<>()` やバッククォート，改行がなく，先頭の語が `NAME=値` でもシェルの予約語でもないものです．それ以外はそのまま渡します（シェルが親として残ります）．
 - 終了コードは，終了の単位の終了コードをそのまま，シグナルなら 128 + シグナルの番号（シェルと同じ）にします．
-- 子プロセスへは `TERM=xterm-256color`，`TERM_PROGRAM=fantermo`，`TERM_PROGRAM_VERSION=<Cargo のバージョン>` を渡します（`session.rs` の `CHILD_ENV`）．ConPTY とブリッジで同じです．`TERM_PROGRAM` は `ghostty` や `kitty` にしません．
+- 子プロセスへは `TERM=xterm-256color`，`COLORTERM=truecolor`，`TERM_PROGRAM=fantermo`，`TERM_PROGRAM_VERSION=<Cargo のバージョン>` を渡します（`session.rs` の `CHILD_ENV`）．ConPTY とブリッジで同じです．ConPTY も 24 ビットの色を 256 色に丸めずに通すので，`COLORTERM` も分けません．`TERM_PROGRAM` は `ghostty` や `kitty` にしません．
 - WSL の側でブリッジを実行できるのは，既定のマウントで Windows のファイルに実行の権限が付くためです．`/etc/wsl.conf` の `fmask` などで実行の権限を外した環境は扱いません（起動できない理由を端末に出します）．
 
 ## 4. タブとタブバー
