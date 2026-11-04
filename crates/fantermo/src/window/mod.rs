@@ -249,8 +249,9 @@ fn create_window(
 ) -> windows::core::Result<HWND> {
     // SAFETY: 自分のモジュールのハンドルを問い合わせるだけ。
     let instance = unsafe { GetModuleHandleW(None)? };
+    let elevated = elevate::this_process() == Some(true);
     // クラスのアイコンはプロセスが終わるまで捨てない。DPI が変わったら WM_SETICON で付け直す。
-    let icons = app_icon::load(instance.into(), dpi);
+    let icons = app_icon::load(instance.into(), dpi, elevated);
     let class = WNDCLASSEXW {
         cbSize: size_of::<WNDCLASSEXW>() as u32,
         style: CS_HREDRAW | CS_VREDRAW,
@@ -281,11 +282,7 @@ fn create_window(
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
             WINDOW_CLASS,
-            &HSTRING::from(window_title(
-                "",
-                &version::display(),
-                elevate::this_process() == Some(true),
-            )),
+            &HSTRING::from(window_title("", &version::display(), elevated)),
             MAIN_WINDOW_STYLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,

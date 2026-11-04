@@ -1,4 +1,5 @@
-//! 実行ファイルに埋め込んだアプリのアイコン（`fantermo.rc`）を、DPI に合う大きさで読む。
+//! 実行ファイルに埋め込んだアプリのアイコン（`fantermo.rc`）を、DPI に合う大きさで読む。管理者として動いている
+//! ウィンドウのアイコンには、右下に UAC の盾を重ねる。
 
 use windows::{
     Win32::{
@@ -15,6 +16,8 @@ use windows::{
     core::PCWSTR,
 };
 
+use crate::{gdi_image, image_decoder::Decoder};
+
 /// アイコンのリソースの番号。`fantermo.rc` の `IDI_FANTERMO` と揃える。
 const ICON_RESOURCE_ID: u16 = 1;
 
@@ -27,21 +30,61 @@ pub struct Icons {
     pub small: Option<HICON>,
 }
 
-/// DPI が `dpi` のときの大きいアイコンと小さいアイコンを読む。読めなかったほうは `None`。
-/// 返したアイコンは呼び出し側が持ち、要らなくなったら `DestroyIcon` で捨てる。
-pub fn load(instance: HINSTANCE, dpi: u32) -> Icons {
+/// DPI が `dpi` のときの大きいアイコンと小さいアイコンを読む。`elevated` なら右下に UAC の盾を重ねる（重ね
+/// られなければ警告して盾なしのアイコン）。読めなかったほうは `None`。返したアイコンは呼び出し側が持ち、
+/// 要らなくなったら `DestroyIcon` で捨てる。盾を重ねるときは WIC を使うので、COM を初期化したスレッドで呼ぶ。
+pub fn load(instance: HINSTANCE, dpi: u32, elevated: bool) -> Icons {
+    let decoder = if elevated {
+        Decoder::new()
+            .inspect_err(|e| tracing::warn!("failed to create a decoder for the shield: {e}"))
+            .ok()
+    } else {
+        None
+    };
+    let load = |width_metric, height_metric| {
+        let (icon, width) = load_one(instance, dpi, width_metric, height_metric)?;
+        Some(match &decoder {
+            Some(decoder) => with_shield(decoder, icon, width),
+            None => icon,
+        })
+    };
     Icons {
-        big: load_one(instance, dpi, SM_CXICON, SM_CYICON),
-        small: load_one(instance, dpi, SM_CXSMICON, SM_CYSMICON),
+        big: load(SM_CXICON, SM_CYICON),
+        small: load(SM_CXSMICON, SM_CYSMICON),
     }
 }
 
+/// 一辺 `side` のアイコン `icon` の右下に盾を重ねたアイコン。重ねられたら `icon` は捨てる。重ねられなければ
+/// 警告して `icon` を返す。
+fn with_shield(decoder: &Decoder, icon: HICON, side: u32) -> HICON {
+    let marked = decoder
+        .decode_icon_handle(icon, side)
+        .and_then(|mut image| {
+            decoder.overlay_shield(&mut image)?;
+            gdi_image::icon(&image)
+        });
+    match marked {
+        Ok(marked) => {
+            // SAFETY: load_one が読んだアイコンで、ほかからは使っていない。
+            if let Err(e) = unsafe { DestroyIcon(icon) } {
+                tracing::warn!("failed to destroy the application icon: {e}");
+            }
+            marked
+        }
+        Err(e) => {
+            tracing::warn!("failed to put the shield on the application icon: {e}");
+            icon
+        }
+    }
+}
+
+/// アイコンと、その幅。
 fn load_one(
     instance: HINSTANCE,
     dpi: u32,
     width_metric: SYSTEM_METRICS_INDEX,
     height_metric: SYSTEM_METRICS_INDEX,
-) -> Option<HICON> {
+) -> Option<(HICON, u32)> {
     // SAFETY: 大きさを問い合わせるだけ。
     let (width, height) = unsafe {
         (
@@ -54,7 +97,7 @@ fn load_one(
     // SAFETY: instance はこのモジュールで、名前は番号。ICO の中から大きさに合うものを選び、なければ
     // 大きいものを縮めて作る。
     match unsafe { LoadIconWithScaleDown(Some(instance), name, width, height) } {
-        Ok(icon) => Some(icon),
+        Ok(icon) => Some((icon, width.max(0) as u32)),
         Err(e) => {
             tracing::warn!("failed to load the {width}x{height} application icon: {e}");
             None
@@ -62,10 +105,10 @@ fn load_one(
     }
 }
 
-/// ウィンドウ `hwnd` のアイコンを DPI が `dpi` の大きさにする。前に `set` で付けたアイコンは捨てる
-/// （ウィンドウのクラスのアイコンは捨てない）。
-pub fn set(hwnd: HWND, instance: HINSTANCE, dpi: u32) {
-    let icons = load(instance, dpi);
+/// ウィンドウ `hwnd` のアイコンを DPI が `dpi` の大きさにする。`elevated` なら盾を重ねる（[`load`]）。前に
+/// `set` で付けたアイコンは捨てる（ウィンドウのクラスのアイコンは捨てない）。
+pub fn set(hwnd: HWND, instance: HINSTANCE, dpi: u32, elevated: bool) {
+    let icons = load(instance, dpi, elevated);
     for (kind, icon) in [(ICON_BIG, icons.big), (ICON_SMALL, icons.small)] {
         let Some(icon) = icon else {
             continue;

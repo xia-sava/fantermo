@@ -1,4 +1,5 @@
-//! 画像のファイルと実行ファイルのアイコンを WIC で読む（背景画像、タブのアイコン）。
+//! 画像のファイルと実行ファイルのアイコンと Windows のストックアイコンを WIC で読む（背景画像、タブのアイコン、
+//! 管理者の印の盾）。
 //! 背景画像の候補の展開と選び方、表示方法は `fantermo_core::background`。
 
 use std::path::Path;
@@ -15,7 +16,10 @@ use windows::{
         },
         System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
         UI::{
-            Shell::SHDefExtractIconW,
+            Shell::{
+                SHDefExtractIconW, SHGSI_ICONLOCATION, SHGetStockIconInfo, SHSTOCKICONID,
+                SHSTOCKICONINFO, SIID_SHIELD,
+            },
             WindowsAndMessaging::{
                 DestroyIcon, GetSystemMetrics, HICON, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
             },
@@ -112,6 +116,33 @@ impl Decoded {
     pub fn stride(&self) -> u32 {
         self.width * BYTES_PER_PIXEL
     }
+
+    /// `badge` を、左上が (`x`, `y`) になる位置に重ねる（乗算済みアルファの over）。この画像からはみ出す分は
+    /// 切る。
+    pub fn overlay(&mut self, badge: &Decoded, x: u32, y: u32) {
+        let columns = badge.width.min(self.width.saturating_sub(x)) as usize;
+        let rows = badge.height.min(self.height.saturating_sub(y));
+        if columns == 0 || rows == 0 {
+            return;
+        }
+        let bytes = BYTES_PER_PIXEL as usize;
+        for row in 0..rows {
+            let source_start = (row * badge.stride()) as usize;
+            let target_start = ((y + row) * self.stride() + x * BYTES_PER_PIXEL) as usize;
+            let source = &badge.pixels[source_start..source_start + columns * bytes];
+            let target = &mut self.pixels[target_start..target_start + columns * bytes];
+            for (target, source) in target
+                .chunks_exact_mut(bytes)
+                .zip(source.chunks_exact(bytes))
+            {
+                let transparency = 255 - u32::from(source[3]);
+                for (target, source) in target.iter_mut().zip(source) {
+                    let below = (u32::from(*target) * transparency + 127) / 255;
+                    *target = (u32::from(*source) + below).min(255) as u8;
+                }
+            }
+        }
+    }
 }
 
 /// WIC で画像のファイルを読むもの。COM を初期化したスレッドで作って使う。
@@ -173,18 +204,60 @@ impl Decoder {
 
     /// 実行ファイル `path` の最初のアイコンを、一辺 `side` で読む。アイコンがなければエラー。
     fn decode_executable_icon(&self, path: &Path, side: u32) -> windows::core::Result<Decoded> {
+        self.decode_icon_resource(&HSTRING::from(path.as_os_str()), 0, side)
+    }
+
+    /// Windows のストックアイコン `id` を、一辺 `side` で読む。
+    pub fn decode_stock_icon(
+        &self,
+        id: SHSTOCKICONID,
+        side: u32,
+    ) -> windows::core::Result<Decoded> {
+        let mut info = SHSTOCKICONINFO {
+            cbSize: size_of::<SHSTOCKICONINFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: info は cbSize を入れて初期化済みで、呼び出しの間は生きている。場所だけを問い合わせる
+        // ので、アイコンのハンドルは作られない。
+        unsafe { SHGetStockIconInfo(id, SHGSI_ICONLOCATION, &mut info)? };
+        if !info.hIcon.is_invalid() {
+            // SAFETY: SHGetStockIconInfo が作ったアイコンで、ほかからは使っていない。
+            if let Err(e) = unsafe { DestroyIcon(info.hIcon) } {
+                tracing::warn!("failed to destroy a stock icon: {e}");
+            }
+        }
+        let length = info
+            .szPath
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(info.szPath.len());
+        let path = HSTRING::from_wide(&info.szPath[..length]);
+        self.decode_icon_resource(&path, info.iIcon, side)
+    }
+
+    /// `image` の右下に、UAC の盾（管理者の印）を重ねる。盾の一辺は [`shield_side`]。
+    pub fn overlay_shield(&self, image: &mut Decoded) -> windows::core::Result<()> {
+        let side = image.width().min(image.height());
+        let shield = self.decode_stock_icon(SIID_SHIELD, shield_side(side))?;
+        image.overlay(
+            &shield,
+            image.width() - shield.width(),
+            image.height() - shield.height(),
+        );
+        Ok(())
+    }
+
+    /// ファイル `path` の位置 `index`（負ならリソースの番号）のアイコンを、一辺 `side` で読む。アイコンが
+    /// なければエラー。
+    fn decode_icon_resource(
+        &self,
+        path: &HSTRING,
+        index: i32,
+        side: u32,
+    ) -> windows::core::Result<Decoded> {
         let mut icon = HICON::default();
         // SAFETY: 文字列と出力先は呼び出しの間は生きている。
-        let result = unsafe {
-            SHDefExtractIconW(
-                &HSTRING::from(path.as_os_str()),
-                0,
-                0,
-                Some(&mut icon),
-                None,
-                side,
-            )
-        };
+        let result = unsafe { SHDefExtractIconW(path, index, 0, Some(&mut icon), None, side) };
         result.ok()?;
         // アイコンがないときは成功（S_FALSE）で、ハンドルは空のまま。
         if icon.is_invalid() {
@@ -198,8 +271,8 @@ impl Decoder {
         decoded
     }
 
-    /// アイコンのハンドル `icon` を、透過を保って一辺 `side` で読む。
-    fn decode_icon_handle(&self, icon: HICON, side: u32) -> windows::core::Result<Decoded> {
+    /// アイコンのハンドル `icon` を、透過を保って一辺 `side` で読む。`icon` は呼び出す側が持ったまま。
+    pub fn decode_icon_handle(&self, icon: HICON, side: u32) -> windows::core::Result<Decoded> {
         // SAFETY: icon は呼び出す側が持っている有効なハンドル。出力先は呼び出しの間は生きている。
         unsafe {
             let bitmap = self.factory.CreateBitmapFromHICON(icon)?;
@@ -297,6 +370,14 @@ impl Decoder {
             Ok(decoded)
         }
     }
+}
+
+/// 管理者の印の盾の一辺の、少なくともこれだけ。小さいアイコンでも盾の形が分かるようにする。
+const MIN_SHIELD_SIDE: u32 = 10;
+
+/// 一辺 `side` のアイコンに重ねる盾の一辺。アイコンの半分で、少なくとも [`MIN_SHIELD_SIDE`]、多くとも `side`。
+fn shield_side(side: u32) -> u32 {
+    (side / 2).max(MIN_SHIELD_SIDE).min(side)
 }
 
 /// すべてのモニタを合わせた範囲の大きさ。
@@ -485,6 +566,91 @@ mod tests {
         for path in [small, large] {
             std::fs::remove_file(&path).expect("remove the PNG");
         }
+    }
+
+    #[test]
+    fn the_shield_is_read_at_the_asked_size() {
+        const SIDE: u32 = 16;
+        let shield = decoder()
+            .decode_stock_icon(SIID_SHIELD, SIDE)
+            .expect("the shield");
+        assert_eq!((shield.width(), shield.height()), (SIDE, SIDE));
+        let alphas: Vec<u8> = shield.pixels().chunks(4).map(|pixel| pixel[3]).collect();
+        assert!(alphas.contains(&0xff));
+        // 盾の形の外は透明。
+        assert!(alphas.contains(&0));
+    }
+
+    #[test]
+    fn the_shield_sits_in_the_bottom_right_corner() {
+        const SIDE: u32 = 18;
+        let mut image = Decoded::blank(SIDE, SIDE);
+        decoder().overlay_shield(&mut image).expect("the shield");
+        let shield = shield_side(SIDE);
+        let alpha = |x: u32, y: u32| image.pixels()[((y * SIDE + x) * 4 + 3) as usize];
+        let opaque_inside = (0..SIDE)
+            .flat_map(|y| (0..SIDE).map(move |x| (x, y)))
+            .filter(|&(x, y)| alpha(x, y) > 0)
+            .all(|(x, y)| x >= SIDE - shield && y >= SIDE - shield);
+        assert!(opaque_inside);
+        assert!((SIDE - shield..SIDE).any(|x| alpha(x, SIDE - shield / 2) == 0xff));
+    }
+
+    #[test]
+    fn shields_are_half_the_icon_but_not_too_small() {
+        assert_eq!(shield_side(32), 16);
+        assert_eq!(shield_side(36), 18);
+        assert_eq!(shield_side(18), MIN_SHIELD_SIDE);
+        assert_eq!(shield_side(16), MIN_SHIELD_SIDE);
+        assert_eq!(shield_side(4), 4);
+    }
+
+    /// 1×1 の画像。
+    fn pixel(bgra: [u8; 4]) -> Decoded {
+        Decoded::new(1, 1, bgra.to_vec()).unwrap()
+    }
+
+    #[test]
+    fn overlays_blend_premultiplied_pixels() {
+        const BLUE: [u8; 4] = [0xff, 0, 0, 0xff];
+        // 不透明なものは下を隠す。
+        let mut image = pixel(BLUE);
+        image.overlay(&pixel([0, 0, 0xff, 0xff]), 0, 0);
+        assert_eq!(image.pixels(), [0, 0, 0xff, 0xff]);
+        // 半分の透明の赤（乗算済み）は、下の青を半分残す。
+        let mut image = pixel(BLUE);
+        image.overlay(&pixel([0, 0, 0x80, 0x80]), 0, 0);
+        assert_eq!(image.pixels(), [0x7f, 0, 0x80, 0xff]);
+        // 透明なものは何も変えない。
+        let mut image = pixel(BLUE);
+        image.overlay(&pixel([0; 4]), 0, 0);
+        assert_eq!(image.pixels(), BLUE);
+        // 透明の上に重ねると、重ねたものになる。
+        let mut image = pixel([0; 4]);
+        image.overlay(&pixel([0, 0, 0x80, 0x80]), 0, 0);
+        assert_eq!(image.pixels(), [0, 0, 0x80, 0x80]);
+    }
+
+    #[test]
+    fn overlays_are_clipped_to_the_image() {
+        const RED: [u8; 4] = [0, 0, 0xff, 0xff];
+        let badge = Decoded::new(2, 2, RED.repeat(4)).unwrap();
+        let mut image = Decoded::blank(3, 3);
+        image.overlay(&badge, 2, 2);
+        let painted: Vec<usize> = image
+            .pixels()
+            .chunks(4)
+            .enumerate()
+            .filter(|(_, pixel)| pixel[3] > 0)
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(painted, [8]);
+        // 外に置いたものは何も描かない。
+        let mut image = Decoded::blank(3, 3);
+        image.overlay(&badge, 3, 0);
+        image.overlay(&badge, 0, 5);
+        image.overlay(&badge, 100, 100);
+        assert!(image.pixels().iter().all(|&byte| byte == 0));
     }
 
     #[test]

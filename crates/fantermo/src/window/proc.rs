@@ -49,6 +49,7 @@ use super::{WM_APP_E2E, e2e};
 use crate::{
     app_icon, clipboard_prompt,
     context_menu::{self, Chosen, MenuRequest},
+    elevate,
     font::Font,
     instance,
     keyboard::KeyPosition,
@@ -618,7 +619,12 @@ pub(super) extern "system" fn window_proc(
             with_app(&mut |app| app.apply_dpi(dpi));
             // SAFETY: 自分のモジュールのハンドルを問い合わせるだけ。
             match unsafe { GetModuleHandleW(None) } {
-                Ok(instance) => app_icon::set(hwnd, instance.into(), dpi),
+                Ok(instance) => app_icon::set(
+                    hwnd,
+                    instance.into(),
+                    dpi,
+                    elevate::this_process() == Some(true),
+                ),
                 Err(e) => tracing::warn!("failed to get the module handle: {e}"),
             }
             // SAFETY: WM_DPICHANGED の lparam は推奨された矩形を指す。

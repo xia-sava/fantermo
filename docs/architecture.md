@@ -98,10 +98,10 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `paint` | セルの格子によらずピクセルの位置で描くもの（`Paint`）．タブバーとスクロールバーが使う |
 | `tab_bar`・`scroll_bar` | 並べ方，当たり判定，色（`Palette`），描くものの組み立て．ウィンドウと描画に依存しない関数にしてある．`tab_bar` は寸法とタイトルの省略を `tab_bar.rs`，並べ方と当たり判定を `tab_bar/layout.rs`，色と描くものの組み立てを `tab_bar/paints.rs` に置く |
 | `tab_icon`・`tab_icon/` | タブのタイトルの左のアイコン．`tab_icon.rs` がプロファイルからアイコンを決め，`tab_icon/draw.rs` の `Generator` がピクセルを作る（画像を読み，読めなければ絵と頭文字を描く．Direct3D のデバイスを使わない）．開いているタブのピクセルは `Pixels` に持ち，`App::update_tab_icons` がタブを開いたとき・閉じたとき，DPI か UI のフォントの書体が変わったときに揃える |
-| `image_decoder` | 画像のファイルと実行ファイルのアイコンを WIC で読む（背景画像，タブのアイコン）．読んだ画像 `Decoded` と，Direct3D 11 のテクスチャの一辺の上限．アイコンのコマの選び方と正方形への収め方 |
+| `image_decoder` | 画像のファイルと実行ファイルのアイコンと Windows のストックアイコンを WIC で読む（背景画像，タブのアイコン，管理者の印の盾）．読んだ画像 `Decoded` とその重ね合わせ，Direct3D 11 のテクスチャの一辺の上限．アイコンのコマの選び方と正方形への収め方，盾の大きさと置き場所（`overlay_shield`） |
 | `background`・`image_cache` | 背景画像の候補を実際のファイルシステムから探す（`DiskFiles`）．端末の中の画像のテクスチャの入れ物 |
 | `context_menu` | コンテキストメニュー，≡ のメニュー，プロファイルの一覧（`MenuCommand`，`Menu`） |
-| `gdi_image` | 読んだ画像 `Decoded` から GDI のビットマップを作る．`context_menu` が使う |
+| `gdi_image` | 読んだ画像 `Decoded` から GDI のビットマップとアイコンを作る．`context_menu` と `app_icon` が使う |
 | `settings_dialog`・`key_capture` | 設定ダイアログ．キーの割り当てで押したキーを読み取るダイアログ．`settings_dialog` は，ダイアログ全体（`State`，`dialog_proc`，ページの型が使う `Page` と `DialogContext`）を `settings_dialog/mod.rs`，ページを `appearance.rs`・`background.rs`・`behavior.rs`・`profiles.rs`・`keys.rs`・`colors.rs`，コントロールを作る部品と種類ごとの部品を `widgets.rs` に置く |
 | `text_dialog`・`paste_editor`・`about` | 入力欄のダイアログと，その上に作った貼り付けの編集と「fantermo について」 |
 | `modal` | 自分で作ったダイアログを開いている間のメッセージのループ |
@@ -109,7 +109,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `notice`・`clipboard_prompt` | 警告のメッセージボックス（話題 `Topic` ごとに一つ）．クリップボードの読み取りの確認 |
 | `clipboard`・`link_opener`・`file_dialog`・`known_folder` | Windows のクリップボード，リンクと設定ファイルを開く処理，ファイルを選ぶダイアログ，既知のフォルダ |
 | `update`・`update/` | 更新の確認と適用（3 節の「更新の確認と適用」） |
-| `version`・`app_icon`・`logging`・`dump` | バージョンとコミット，アイコン，ログの出し先，`FANTERMO_DUMP` での画面の書き出し |
+| `version`・`app_icon`・`logging`・`dump` | バージョンとコミット，アイコン（管理者のときは盾を重ねる），ログの出し先，`FANTERMO_DUMP` での画面の書き出し |
 
 `build.rs` は，メインスレッドのスタックを 8 MB にし，Common Controls 6 のマニフェストとアイコンのリソースを埋め込み，コミットの短い SHA とリリースのビルドか（`FANTERMO_RELEASE=1`）を埋め込みます．
 
