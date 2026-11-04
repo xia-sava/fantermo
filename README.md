@@ -42,7 +42,7 @@ libghostty-vt は [libghostty-rs](https://github.com/uzaaft/libghostty-rs) の�
 fantermo [--elevate] [--new-window] [--profile <名前>] [--] [コマンド…]
 ```
 
-fantermo がすでに動いていれば，どの起動も新しいウィンドウを開かず，同じデスクトップで最後に使ったウィンドウへタブを足して，起動したプロセスは終わります．
+fantermo がすでに動いていれば，どの起動も（`--new-window` と，管理者として動いていないときの `--elevate` を除いて）新しいウィンドウを開かず，同じデスクトップで最後に使ったウィンドウへタブを足して，起動したプロセスは終わります．
 
 
 - コマンドを書くと，そのコマンドラインをタブで起動します（`fantermo C:\app\cygwin\bin\zsh.exe -l`）．引用符もそのまま渡します．何も書かなければ，設定の既定のプロファイルを起動します．

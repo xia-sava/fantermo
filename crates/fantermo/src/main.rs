@@ -136,7 +136,7 @@ fn start_elevated(options: &command_line::Options) -> i32 {
             0
         }
         Err(elevate::LaunchError::Cancelled) => {
-            tracing::info!("the elevation was cancelled");
+            tracing::info!("the elevation was cancelled or refused");
             1
         }
         Err(elevate::LaunchError::Failed(e)) => {

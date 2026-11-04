@@ -170,7 +170,9 @@ pub(super) fn open_elevated(hwnd: HWND, index: usize, with_app: &WithApp) -> Opt
     match launched {
         Ok(()) => None,
         Err(LaunchError::Cancelled) => {
-            tracing::debug!("opening the profile {index} as administrator was cancelled");
+            tracing::debug!(
+                "opening the profile {index} as administrator was cancelled or refused"
+            );
             None
         }
         Err(LaunchError::Failed(e)) => {
