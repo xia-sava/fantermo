@@ -2,7 +2,10 @@
 
 use std::path::Path;
 
-use windows::Win32::{Foundation::RECT, UI::Shell::SIID_SHIELD};
+use windows::Win32::{
+    Foundation::{HWND, RECT},
+    UI::Shell::SIID_SHIELD,
+};
 
 use super::{
     App,
@@ -10,8 +13,12 @@ use super::{
     tabs::TabCommand,
 };
 use crate::{
+    command_line::{Options, TabRequest},
     context_menu::{Menu, MenuCommand, MenuRequest},
-    link_opener, tab_bar,
+    elevate::{self, LaunchError},
+    link_opener,
+    notice::Topic,
+    tab_bar,
     tab_icon::TabIcon,
 };
 
@@ -136,6 +143,43 @@ impl App {
             .cursor_cell_rect()
             .unwrap_or_else(|| self.cell_rect(0, 0));
         self.context_menu(cursor.x, cursor.y + cursor.height)
+    }
+}
+
+/// プロファイルの一覧の「管理者として開く」で選ばれた、`index` 番目のプロファイルを管理者として開く。UAC の確認が
+/// 閉じるまで戻らないので、借用の外で呼ぶ。起動できなければ、警告を見せるよう返す。
+///
+/// 一覧を開いている間に設定が読み直されて `index` が並びの外になったら、何もしない。選んでいないプロファイルで
+/// UAC の確認を出さないため。UAC の確認で断られたときも、利用者が自分で断ったので何も見せない。
+pub(super) fn open_elevated(hwnd: HWND, index: usize, with_app: &WithApp) -> Option<Deferred> {
+    let mut name = None;
+    with_app(&mut |app| name = app.config.profiles.get(index).map(|p| p.name.clone()));
+    let Some(name) = name else {
+        tracing::debug!("the profile {index} to open as administrator is gone");
+        return None;
+    };
+    let options = Options {
+        tab: TabRequest {
+            profile: Some(name),
+            command: None,
+        },
+        ..Options::default()
+    };
+    let launched =
+        elevate::launch_request(&options).and_then(|request| elevate::launch(Some(hwnd), &request));
+    match launched {
+        Ok(()) => None,
+        Err(LaunchError::Cancelled) => {
+            tracing::debug!("opening the profile {index} as administrator was cancelled");
+            None
+        }
+        Err(LaunchError::Failed(e)) => {
+            tracing::warn!("failed to open the profile {index} as administrator: {e}");
+            Some(Deferred::Warn {
+                topic: Topic::Elevate,
+                text: elevate::failure_message(&e),
+            })
+        }
     }
 }
 

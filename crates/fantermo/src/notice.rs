@@ -36,6 +36,8 @@ pub enum Topic {
     Settings,
     /// コマンドラインの指定のエラー。
     CommandLine,
+    /// 管理者として起動できなかった。
+    Elevate,
     /// 話題が二つ以上あるときの決まりを確認するための話題。
     #[cfg(test)]
     Other,

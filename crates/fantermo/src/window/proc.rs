@@ -34,7 +34,7 @@ use super::{
     SCROLL_BAR_TIMER_ID, WM_APP_CLIPBOARD_PROMPT, WM_APP_CONFIG_CHANGED, WM_APP_DEVICE_REMOVED,
     WM_APP_LAUNCH, WM_APP_UPDATE, WM_APP_WAKE, WindowData,
     keys::take_translated_chars,
-    menu::run_menu_command,
+    menu::{open_elevated, run_menu_command},
     mouse::{
         KEYBOARD_CONTEXT_MENU_POSITION, client_position, message_button, wheel_lines_per_notch,
     },
@@ -111,7 +111,10 @@ pub(super) fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &Wi
                 Some(Chosen::Profile(index)) => {
                     with_app(&mut |app| app.open_session(Launch::Profile(index)))
                 }
-                Some(Chosen::ElevatedProfile(_)) | None => {}
+                Some(Chosen::ElevatedProfile(index)) => {
+                    next = open_elevated(hwnd, index, with_app);
+                }
+                None => {}
             },
             // DestroyWindow はこの場で WM_DESTROY を送るので、借用を手放してから呼ぶ。
             Deferred::CloseWindow => destroy_window(hwnd, with_app),

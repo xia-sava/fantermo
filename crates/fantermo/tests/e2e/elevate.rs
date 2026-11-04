@@ -8,8 +8,8 @@ use crate::common::LaunchAgain;
 use crate::common::Server;
 use crate::ui::{
     DPI_200_PERCENT, ONE_PROFILE, PICTURE_POLL_INTERVAL, PICTURE_TIMEOUT, area_center, change_dpi,
-    close_menu, color_is_close, left_click, menu_position, menu_shape, number, open_menu,
-    open_submenu, tab_count,
+    check_terminal_still_works, close_menu, color_is_close, left_click, menu_position, menu_shape,
+    number, open_menu, open_submenu, select_item, tab_count, wait_message_box_with,
 };
 use serde_json::Value;
 use std::ffi::OsString;
@@ -184,6 +184,70 @@ fn the_profile_menu_offers_the_elevate_submenu_unless_elevated() {
     let items = open_profile_menu(&elevated);
     assert_eq!(menu_shape(&items), "1 2* 3", "{items:#?}");
     close_menu(&elevated);
+}
+
+/// 「管理者として開く」の中の `accelerator_of` のプロファイルを選ぶ。
+#[track_caller]
+fn choose_elevated_profile(server: &Server, accelerator_of: char) {
+    let items = open_profile_menu(server);
+    let inner = open_submenu(server, &items, 'A');
+    select_item(server, &inner, accelerator_of);
+}
+
+/// 「管理者として開く」で選んだプロファイルは、その名前だけを渡して管理者の権限の fantermo を起動する（このウィンドウの
+/// 引数は渡さない）。作業フォルダはこの fantermo の作業フォルダ。このウィンドウにはタブを足さない。
+#[test]
+fn choosing_from_the_elevate_submenu_starts_an_elevated_fantermo() {
+    const RECORD: &str = "elevated.txt";
+    let server = Server::start_with_environment(THREE_PROFILES, &CMD_COMMAND, |dir| {
+        vec![record_at(&dir.join(RECORD))]
+    });
+    server.wait_text(CMD_PROMPT);
+    let record = server.dir().join(RECORD);
+
+    choose_elevated_profile(&server, '3');
+    server.wait_dialogs(0);
+    let deadline = Instant::now() + PICTURE_TIMEOUT;
+    while !record.exists() {
+        assert!(Instant::now() < deadline, "no record\n{}", server.log());
+        std::thread::sleep(PICTURE_POLL_INTERVAL);
+    }
+    let recorded = read_record(&record);
+    assert_same_file(&recorded.exe, Path::new(env!("CARGO_BIN_EXE_fantermo")));
+    assert_eq!(recorded.parameters, r#"--profile "R&D""#);
+    assert_same_file(&recorded.directory, server.dir());
+    let state = server.state();
+    assert_eq!(tab_count(&state), 1, "{state:#}");
+    assert_eq!(state["dialogs"].as_array().map(Vec::len), Some(0));
+    check_terminal_still_works(&server, "after-elevate");
+}
+
+/// UAC の確認で断られたら何も見せない。ほかの理由で起動できなければ、警告のメッセージボックスで知らせる。どちらも
+/// タブは足さず、端末は動き続ける。
+#[test]
+fn a_refused_or_failed_elevation_from_the_menu_keeps_the_window() {
+    let cancelled = Server::start_with_environment(THREE_PROFILES, &CMD_COMMAND, |_| {
+        vec![(RESULT_ENV, "cancelled".into())]
+    });
+    cancelled.wait_text(CMD_PROMPT);
+    choose_elevated_profile(&cancelled, '1');
+    cancelled.wait_dialogs(0);
+    check_terminal_still_works(&cancelled, "after-cancel");
+    assert_eq!(tab_count(&cancelled.state()), 1);
+    let log = cancelled.log();
+    assert!(log.contains("as administrator was cancelled"), "{log}");
+    drop(cancelled);
+
+    let failed = Server::start_with_environment(THREE_PROFILES, &CMD_COMMAND, |_| {
+        vec![(RESULT_ENV, "failed".into())]
+    });
+    failed.wait_text(CMD_PROMPT);
+    choose_elevated_profile(&failed, '1');
+    wait_message_box_with(&failed, "管理者として起動できませんでした。");
+    failed.post("/e2e/dialog/close", b"");
+    failed.wait_dialogs(0);
+    check_terminal_still_works(&failed, "after-failure");
+    assert_eq!(tab_count(&failed.state()), 1);
 }
 
 /// タブのアイコンにする、一色の赤の画像。
