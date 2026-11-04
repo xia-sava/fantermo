@@ -372,6 +372,8 @@ run-hidden は利用者のセッションのウィンドウステーション（
 3. `context_menu.rs` の単体のテストを直します．`menu_items_keep_their_order_and_separators` は並びを書いているので足し，`every_command_is_in_the_main_menu` は項目をタブバーのメニューに入れることを求めます．押せない項目は `only_copy_and_the_settings_items_can_be_disabled` に足します．
 4. e2e のメニューのテスト（`crates/fantermo/tests/e2e/menu.rs`）は並びを `menu_shape` の形で書いているので，並びが変わるメニューの分を直します．
 
+プロファイルの一覧の並びは `profile_menu_entries` が決めます（プロファイル，区切り，「管理者として開く」のサブメニュー．管理者のウィンドウではプロファイルだけ）．サブメニューの中の項目の ID は，プロファイルの項目の ID に `ELEVATED_ID_FLAG`（`0x4000`）を立てたもので，`Chosen::from_id` はこのビットを `PROFILE_ID_BASE` より先に見て `Chosen::ElevatedProfile` にします．サブメニューを開く項目は ID で引けないので，`SetMenuItemInfoW` の ID 指定は使えず，`InsertMenuItemW` で位置を指定して文字・サブメニュー・ビットマップを一度に入れます．`DestroyMenu` はサブメニューも破棄し，ビットマップはどちらの項目のものも `ItemBitmaps` が持って `DestroyMenu` のあとに消します．e2e では，サブメニューを開くと `#32768` のウィンドウが二つになり，`GET /e2e/menu` とメニューへのキーは開いているサブメニューのほうに向きます（`window/e2e.rs` の `open_menu`）．サブメニューは `ui::open_submenu`（Enter で開く）で開きます．
+
 ### 制御の口の要求を足す
 
 1. `fantermo/src/e2e_server.rs`: `Request` に足し，`parse_request` でパスと本文を読み，先頭のコメントの表に足します．

@@ -111,7 +111,7 @@ pub(super) fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &Wi
                 Some(Chosen::Profile(index)) => {
                     with_app(&mut |app| app.open_session(Launch::Profile(index)))
                 }
-                None => {}
+                Some(Chosen::ElevatedProfile(_)) | None => {}
             },
             // DestroyWindow はこの場で WM_DESTROY を送るので、借用を手放してから呼ぶ。
             Deferred::CloseWindow => destroy_window(hwnd, with_app),

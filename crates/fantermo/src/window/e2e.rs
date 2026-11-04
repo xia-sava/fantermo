@@ -1013,7 +1013,8 @@ struct MenuItem {
     checked: bool,
     /// 矢印のキーなどで選んでいる。
     highlighted: bool,
-    submenu: bool,
+    /// 項目が開くサブメニュー。なければ無効なハンドル。
+    submenu: HMENU,
     /// ビットマップ（プロファイルのアイコン）が付いている。
     icon: bool,
 }
@@ -1038,26 +1039,48 @@ fn read_menu_item(menu: HMENU, position: u32) -> windows::core::Result<MenuItem>
         enabled: (info.fState.0 & MFS_GRAYED.0) == 0,
         checked: info.fState.contains(MFS_CHECKED),
         highlighted: info.fState.contains(MFS_HILITE),
-        submenu: !info.hSubMenu.is_invalid(),
+        submenu: info.hSubMenu,
         icon: !info.hbmpItem.is_invalid(),
     })
 }
 
-/// 開いているメニューのウィンドウと、その項目。メニューが開いていなければ、返す答えを `Err` に入れて返す。
-fn open_menu(main: HWND) -> Result<(HWND, Vec<MenuItem>), Response> {
-    let window = open_dialogs(main)
-        .into_iter()
-        .find(|&window| class_name(window) == MENU_CLASS)
-        .ok_or_else(|| Response::bad_request("no menu is open"))?;
-    // SAFETY: window はこのスレッドのメニューのウィンドウ。答えはそのメニューのハンドル。
-    let menu = HMENU(unsafe { SendMessageW(window, MN_GETHMENU, None, None) }.0 as *mut c_void);
+/// `menu` の項目をすべて読む。
+fn read_menu_items(menu: HMENU) -> Result<Vec<MenuItem>, Response> {
     // SAFETY: メニューのハンドルは調べるだけで、無効なら -1 が返る。
     let count = u32::try_from(unsafe { GetMenuItemCount(Some(menu)) })
         .map_err(|_| Response::internal_error("cannot read the number of the menu items"))?;
-    let items = (0..count)
+    (0..count)
         .map(|position| read_menu_item(menu, position))
         .collect::<windows::core::Result<_>>()
-        .map_err(|e| Response::internal_error(format!("cannot read the menu items: {e}")))?;
+        .map_err(|e| Response::internal_error(format!("cannot read the menu items: {e}")))
+}
+
+/// 開いているメニューのウィンドウと、その項目。サブメニューを開いていれば、そのサブメニュー（開いているほかの
+/// メニューの項目が開くもの）。メニューが開いていなければ、返す答えを `Err` に入れて返す。
+fn open_menu(main: HWND) -> Result<(HWND, Vec<MenuItem>), Response> {
+    let mut menus = Vec::new();
+    for window in open_dialogs(main) {
+        if class_name(window) != MENU_CLASS {
+            continue;
+        }
+        // SAFETY: window はこのスレッドのメニューのウィンドウ。答えはそのメニューのハンドル。
+        let menu = HMENU(unsafe { SendMessageW(window, MN_GETHMENU, None, None) }.0 as *mut c_void);
+        menus.push((window, menu, read_menu_items(menu)?));
+    }
+    let is_open_submenu = |menu: HMENU| {
+        !menu.is_invalid()
+            && menus
+                .iter()
+                .any(|(_, _, items)| items.iter().any(|item| item.submenu == menu))
+    };
+    let chosen = menus
+        .iter()
+        .position(|&(_, menu, _)| is_open_submenu(menu))
+        .unwrap_or(0);
+    if chosen >= menus.len() {
+        return Err(Response::bad_request("no menu is open"));
+    }
+    let (window, _, items) = menus.swap_remove(chosen);
     Ok((window, items))
 }
 
@@ -1075,7 +1098,7 @@ fn menu_items(main: HWND) -> Response {
                 "enabled": item.enabled,
                 "checked": item.checked,
                 "highlighted": item.highlighted,
-                "submenu": item.submenu,
+                "submenu": !item.submenu.is_invalid(),
                 "icon": item.icon,
             })
         })

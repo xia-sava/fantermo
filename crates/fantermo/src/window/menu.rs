@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use windows::Win32::Foundation::RECT;
+use windows::Win32::{Foundation::RECT, UI::Shell::SIID_SHIELD};
 
 use super::{
     App,
@@ -39,6 +39,18 @@ impl App {
                 },
             )
             .collect();
+        let elevate_icon = if self.elevated {
+            None
+        } else {
+            generator.and_then(|generator| {
+                generator
+                    .stock_icon(SIID_SHIELD, side)
+                    .inspect_err(|e| {
+                        tracing::warn!("failed to make the icon of the elevate item: {e}")
+                    })
+                    .ok()
+            })
+        };
         let (left, top) = self.client_to_screen(new_tab.x as i32, new_tab.y as i32);
         let (right, bottom) =
             self.client_to_screen(profiles.right() as i32, profiles.bottom() as i32);
@@ -51,6 +63,7 @@ impl App {
                 .collect(),
             default_profile: self.default_profile_index(),
             profile_icons,
+            elevate_icon,
             exclude: Some(RECT {
                 left,
                 top,
@@ -76,6 +89,8 @@ impl App {
             profiles: Vec::new(),
             default_profile: 0,
             profile_icons: Vec::new(),
+            elevated: self.elevated,
+            elevate_icon: None,
         }
     }
 

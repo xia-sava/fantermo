@@ -36,7 +36,7 @@
 //! | `POST /e2e/message/<名前>`、`/e2e/message/<名前>/<wParam>` | ウィンドウにメッセージを送り、戻り値の JSON を返す（[`WindowMessage`]） |
 //! | `POST /e2e/message/<名前>/<wParam>/in-borrow` | App を借りている間の処理の中からメッセージを送り、戻り値の JSON を返す（`queryendsession`、`endsession`、`close` だけ） |
 //! | `POST /e2e/mouse` | 本文の各行のマウスの操作を、続けてウィンドウへ送る（[`MouseStep`]） |
-//! | `GET /e2e/menu` | 開いているメニューの項目の JSON |
+//! | `GET /e2e/menu` | 開いているメニューの項目の JSON。サブメニューを開いていれば、そのサブメニューの項目（メニューへのキーも同じ） |
 //! | `POST /e2e/menu/highlight/<位置>` | メニューのループへ上下の矢印のキーを送って、その項目へ移る |
 //! | `POST /e2e/menu/select/<位置>` | 矢印のキーでその項目へ移り、Enter を送って選ぶ |
 //! | `POST /e2e/menu/key/<キー>` | メニューのループへキーを送る（[`MenuKey`]） |

@@ -2,12 +2,14 @@
 //! 環境変数で指定した結果を返す（`crates/fantermo/src/elevate/stand_in.rs`）。UAC の確認は出ない。
 
 use crate::common;
+use crate::common::CMD_COMMAND;
 use crate::common::CMD_PROMPT;
 use crate::common::LaunchAgain;
 use crate::common::Server;
 use crate::ui::{
-    DPI_200_PERCENT, ONE_PROFILE, PICTURE_POLL_INTERVAL, PICTURE_TIMEOUT, change_dpi,
-    color_is_close, number, tab_count,
+    DPI_200_PERCENT, ONE_PROFILE, PICTURE_POLL_INTERVAL, PICTURE_TIMEOUT, area_center, change_dpi,
+    close_menu, color_is_close, left_click, menu_position, menu_shape, number, open_menu,
+    open_submenu, tab_count,
 };
 use serde_json::Value;
 use std::ffi::OsString;
@@ -119,6 +121,69 @@ fn the_elevate_option_starts_an_elevated_fantermo_and_ends() {
     assert_eq!(tab_count(&server.state()), 1);
     let log = elevated.log();
     assert!(log.contains("it may run with other rights"), "{log}");
+}
+
+/// プロファイルが三つの設定。既定は 2 つ目で、3 つ目の名前は引用が要る。
+const THREE_PROFILES: &str = r#"default_profile = "two"
+
+[[profiles]]
+name = "one"
+command = "cmd.exe /k prompt one$G"
+
+[[profiles]]
+name = "two"
+command = "cmd.exe /k prompt two$G"
+
+[[profiles]]
+name = "R&D"
+command = "cmd.exe /k prompt three$G"
+"#;
+
+/// 開いているウィンドウのプロファイルの一覧を開き、項目を返す。
+#[track_caller]
+fn open_profile_menu(server: &Server) -> Vec<Value> {
+    let state = server.state();
+    open_menu(
+        server,
+        &left_click(area_center(&state["tab_bar"]["profiles"])),
+    )
+}
+
+/// プロファイルの一覧の末尾に「管理者として開く」のサブメニューがあり、盾が付く。中はプロファイルの一覧と同じ並び・印・
+/// アイコン。管理者のウィンドウの一覧には出さない。
+#[test]
+fn the_profile_menu_offers_the_elevate_submenu_unless_elevated() {
+    {
+        let server = Server::start(THREE_PROFILES, &CMD_COMMAND);
+        server.wait_text(CMD_PROMPT);
+        let items = open_profile_menu(&server);
+        assert_eq!(menu_shape(&items), "1 2* 3 | A", "{items:#?}");
+        let elevate = &items[menu_position(&items, 'A')];
+        assert_eq!(elevate["text"], "管理者として開く(&A)", "{items:#?}");
+        assert!(
+            elevate["submenu"] == true && elevate["icon"] == true,
+            "{items:#?}"
+        );
+        let inner = open_submenu(&server, &items, 'A');
+        assert_eq!(menu_shape(&inner), "1 2* 3", "{inner:#?}");
+        let texts: Vec<&Value> = inner.iter().map(|item| &item["text"]).collect();
+        assert_eq!(texts, ["&1 one", "&2 two", "&3 R&&D"], "{inner:#?}");
+        assert!(
+            inner
+                .iter()
+                .all(|item| item["icon"] == true && item["submenu"] == false),
+            "{inner:#?}"
+        );
+        close_menu(&server);
+    }
+
+    let elevated = Server::start_with_environment(THREE_PROFILES, &CMD_COMMAND, |_| {
+        vec![(ELEVATED_ENV, "1".into())]
+    });
+    elevated.wait_text(CMD_PROMPT);
+    let items = open_profile_menu(&elevated);
+    assert_eq!(menu_shape(&items), "1 2* 3", "{items:#?}");
+    close_menu(&elevated);
 }
 
 /// タブのアイコンにする、一色の赤の画像。

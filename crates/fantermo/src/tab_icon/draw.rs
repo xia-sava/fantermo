@@ -22,6 +22,7 @@ use windows::Win32::Graphics::{
     Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
     Imaging::{GUID_WICPixelFormat32bppPBGRA, IWICImagingFactory, WICBitmapCacheOnDemand},
 };
+use windows::Win32::UI::Shell::SHSTOCKICONID;
 use windows_numerics::{Matrix3x2, Vector2};
 
 use super::{TabIcon, rgb};
@@ -282,6 +283,11 @@ impl Generator {
     /// 作ったピクセル `pixels` の右下に、管理者の印の UAC の盾を重ねる。
     pub fn overlay_shield(&self, pixels: &mut Decoded) -> windows::core::Result<()> {
         self.decoder.overlay_shield(pixels)
+    }
+
+    /// Windows のストックアイコン `id` の、一辺 `side` のピクセル。
+    pub fn stock_icon(&self, id: SHSTOCKICONID, side: u32) -> windows::core::Result<Decoded> {
+        self.decoder.decode_stock_icon(id, side)
     }
 }
 

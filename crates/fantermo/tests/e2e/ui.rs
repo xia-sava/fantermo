@@ -877,6 +877,45 @@ pub fn accelerator(item: &Value) -> Option<char> {
     None
 }
 
+/// メニューの並びの短い形。項目はアクセラレータ（なければ `.`）で、押せなければ `-`、印があれば `*` を続け、区切りは
+/// `|`。項目の文字の言い回しによらず、順番と押せるかを比べる。
+pub fn menu_shape(items: &[Value]) -> String {
+    let shapes: Vec<String> = items
+        .iter()
+        .map(|item| {
+            if item["separator"] == true {
+                return "|".to_owned();
+            }
+            let mut shape = accelerator(item).unwrap_or('.').to_string();
+            if item["enabled"] != true {
+                shape.push('-');
+            }
+            if item["checked"] == true {
+                shape.push('*');
+            }
+            shape
+        })
+        .collect();
+    shapes.join(" ")
+}
+
+/// 開いているメニューの `items` の、`accelerator_of` のアクセラレータのサブメニューを Enter で開き、開いたサブメニューの
+/// 項目を返す（`GET /e2e/menu` はサブメニューを開いていればその項目を返す）。
+#[track_caller]
+pub fn open_submenu(server: &Server, items: &[Value], accelerator_of: char) -> Vec<Value> {
+    select_item(server, items, accelerator_of);
+    server.wait_until("a submenu", |state| {
+        state["dialogs"].as_array().is_some_and(|dialogs| {
+            dialogs
+                .iter()
+                .filter(|dialog| dialog["class"] == MENU_CLASS)
+                .count()
+                == 2
+        })
+    });
+    read_menu(server)
+}
+
 /// `steps` を送ってメニューが開くのを待ち、項目を返す。
 #[track_caller]
 pub fn open_menu(server: &Server, steps: &str) -> Vec<Value> {

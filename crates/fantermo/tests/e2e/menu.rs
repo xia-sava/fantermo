@@ -2,12 +2,12 @@ use crate::common::CMD_COMMAND;
 use crate::common::CMD_PROMPT;
 use crate::common::Server;
 use crate::ui::{
-    BUTTON_CANCEL, BUTTON_OK, TERMINAL_BACKGROUND_SETTING, accelerator, area_center,
-    assert_cell_is_drawn, button_click, cell_left, cell_right, check_terminal_still_works,
-    click_main_menu, close_menu, echo_lines, find_cell, highlight_position, left_click, left_drag,
-    menu_position, on_blank_of_tab_bar, on_scroll_bar, on_tab, open_menu, read_menu,
-    right_click_terminal, scroll_bar_middle, select_item, select_position, selection, tab_count,
-    wait_menu, wait_tabs, wait_text_dialog,
+    BUTTON_CANCEL, BUTTON_OK, TERMINAL_BACKGROUND_SETTING, area_center, assert_cell_is_drawn,
+    button_click, cell_left, cell_right, check_terminal_still_works, click_main_menu, close_menu,
+    echo_lines, find_cell, highlight_position, left_click, left_drag, menu_position, menu_shape,
+    on_blank_of_tab_bar, on_scroll_bar, on_tab, open_menu, read_menu, right_click_terminal,
+    scroll_bar_middle, select_item, select_position, selection, tab_count, wait_menu, wait_tabs,
+    wait_text_dialog,
 };
 use serde_json::Value;
 
@@ -17,28 +17,6 @@ const CONTEXT_MENU_WITH_SELECTION: &str = "C P | A | T W";
 /// ≡ のメニューの並び。
 const MAIN_MENU: &str = "T W | C- P A | S F B | X";
 const MAIN_MENU_WITH_SELECTION: &str = "T W | C P A | S F B | X";
-
-/// メニューの並びの短い形。項目はアクセラレータ（なければ `.`）で、押せなければ `-`、印があれば `*` を続け、区切りは
-/// `|`。項目の文字の言い回しによらず、順番と押せるかを比べる。
-fn menu_shape(items: &[Value]) -> String {
-    let shapes: Vec<String> = items
-        .iter()
-        .map(|item| {
-            if item["separator"] == true {
-                return "|".to_owned();
-            }
-            let mut shape = accelerator(item).unwrap_or('.').to_string();
-            if item["enabled"] != true {
-                shape.push('-');
-            }
-            if item["checked"] == true {
-                shape.push('*');
-            }
-            shape
-        })
-        .collect();
-    shapes.join(" ")
-}
 
 /// 項目の表示の、キーの組み合わせの前の部分から、アクセラレータの印を除いたもの。
 fn item_name(item: &Value) -> String {
@@ -424,11 +402,20 @@ command = "cmd.exe /k prompt three$G"
         button_click("right", area_center(&state["tab_bar"]["new_tab"]), ""),
     ] {
         let items = open_menu(&server, &steps);
-        assert_eq!(menu_shape(&items), "1 2* 3", "{steps}: {items:#?}");
+        assert_eq!(menu_shape(&items), "1 2* 3 | A", "{steps}: {items:#?}");
         let names: Vec<String> = items.iter().map(item_name).collect();
-        assert_eq!(names, ["1 one", "2 two", "3 R&D"], "{items:#?}");
+        assert_eq!(
+            names,
+            ["1 one", "2 two", "3 R&D", "", "管理者として開く(A)"],
+            "{items:#?}"
+        );
+        let elevate = menu_item(&items, 'A');
         assert!(
-            items
+            elevate["submenu"] == true && elevate["icon"] == true,
+            "{items:#?}"
+        );
+        assert!(
+            items[..3]
                 .iter()
                 .all(|item| item["icon"] == true && item_shortcut(item).is_none()),
             "{items:#?}"
@@ -489,7 +476,7 @@ command = "cmd.exe /k prompt first$G"
     let path = server.dir().join("config.toml");
 
     let items = open_menu(&server, &list);
-    assert_eq!(menu_shape(&items), "1* 2", "{items:#?}");
+    assert_eq!(menu_shape(&items), "1* 2 | A", "{items:#?}");
     close_menu(&server);
 
     std::fs::write(&path, renamed).expect("failed to write the settings");
@@ -497,8 +484,8 @@ command = "cmd.exe /k prompt first$G"
         state["profiles"].as_array().map_or(0, Vec::len) == 3
     });
     let items = open_menu(&server, &list);
-    assert_eq!(menu_shape(&items), "1 2* 3", "{items:#?}");
-    let names: Vec<String> = items.iter().map(item_name).collect();
+    assert_eq!(menu_shape(&items), "1 2* 3 | A", "{items:#?}");
+    let names: Vec<String> = items[..3].iter().map(item_name).collect();
     assert_eq!(names, ["1 first", "2 added", "3 second"], "{items:#?}");
     close_menu(&server);
 
@@ -511,7 +498,7 @@ command = "cmd.exe /k prompt first$G"
     // タブが増えて、ボタンの位置が変わっている。
     let list = left_click(area_center(&after["tab_bar"]["profiles"]));
     let items = open_menu(&server, &list);
-    assert_eq!(items.len(), 3, "{items:#?}");
+    assert_eq!(menu_shape(&items), "1 2* 3 | A", "{items:#?}");
     std::fs::write(&path, one_profile).expect("failed to write the settings");
     server.wait_until("one profile", |state| {
         state["profiles"].as_array().map_or(0, Vec::len) == 1
@@ -531,7 +518,7 @@ command = "cmd.exe /k prompt first$G"
         &server,
         &left_click(area_center(&state["tab_bar"]["profiles"])),
     );
-    assert_eq!(menu_shape(&items), "1*", "{items:#?}");
+    assert_eq!(menu_shape(&items), "1* | A", "{items:#?}");
     assert_eq!(
         item_name(&items[0]),
         format!("1 {}", state["profiles"][0].as_str().expect("no profile")),
@@ -555,7 +542,11 @@ command = "cmd.exe /k prompt first$G"
         &server,
         &left_click(area_center(&state["tab_bar"]["profiles"])),
     );
-    assert_eq!(menu_shape(&items), "1* 2 3 4 5 6 7 8 9 . .", "{items:#?}");
+    assert_eq!(
+        menu_shape(&items),
+        "1* 2 3 4 5 6 7 8 9 . . | A",
+        "{items:#?}"
+    );
     assert_eq!(item_name(&items[COUNT - 1]), format!("p{COUNT}"));
     select_position(&server, COUNT - 1);
     server.wait_until("four tabs", |state| tab_count(state) == 4);
