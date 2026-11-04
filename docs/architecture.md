@@ -73,6 +73,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `main` | 起動の順番（3 節の「起動」） |
 | `command_line` | コマンドライン（`--elevate`，`--new-window`，`--profile`，`--`）の解釈 |
 | `instance` | 動いている fantermo のウィンドウへ起動の指定を `WM_COPYDATA` で渡す側と受け取る側 |
+| `elevate` | 管理者の権限の fantermo の起動（`ShellExecuteExW` の `runas`）．渡す引数の組み立て，このプロセスが管理者として動いているかの判定（`this_process`）．feature `e2e` のときは `elevate/stand_in` で差し替える |
 | `app_files` | `%APPDATA%\fantermo` のファイルの場所（環境変数での差し替え），一時ファイルを経由した置き換え書き込み，パスの比較（`same_path`） |
 | `config_file` | 設定ファイルの場所，読み込み，ひな形の作成，書き戻し（`save`），フォルダの監視 |
 | `window_state` | `state.toml` の場所と読み書き，ウィンドウの位置・大きさ・最大化との受け渡し |
@@ -142,11 +143,12 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 
 ### 起動
 
-1. `main` がログを初期化し（`logging`），コマンドラインを読み（`command_line::Options::of_process`），`--new-window` がなければ `instance::forward` で動いているウィンドウへ渡します．渡せたらそこで終わります．渡さない条件（応答しない，管理者かどうかが違う，実行ファイルか設定ファイルが違う）は `instance` の先頭のコメントにあります．
-2. DPI の対応を Per-Monitor V2 にし，COM を初期化します（WIC とファイルを選ぶダイアログに使う）．
-3. `config_file::load` が設定ファイルを読みます．なければ `TEMPLATE` で作ります．古い書き方は `config::migrate` で読み替えて書き戻します．`window_state::load` が `state.toml` を読みます．場所は環境変数 `FANTERMO_CONFIG`・`FANTERMO_STATE` で差し替えられます（テストはこれを使います）．
-4. `window::run` がシステムの DPI でフォントを測ってウィンドウを作り，覚えていた位置と大きさを見せる前に戻します（`window_state::restore_hidden`）．`App::new` が最初の端末（`Session::spawn`）を開き，設定ファイルの監視を始めます．
-5. ウィンドウのモニターの DPI がシステムの DPI と違えば，DPI の変更と同じ処理で作り直します．そのあと `ShowWindow` し，設定ファイルの警告とコマンドラインの誤りを見せてから，メッセージループに入ります．
+1. `main` がログを初期化し（`logging`），コマンドラインを読み（`command_line::Options::of_process`），DPI の対応を Per-Monitor V2 にし，COM を初期化します（WIC，ファイルを選ぶダイアログ，`ShellExecuteExW` に使う）．
+2. `--elevate` があり，管理者として動いていなければ（`elevate::this_process`），`elevate::launch` で管理者の権限の fantermo を起動して終わります．動いているウィンドウへ渡す前に判断します．
+3. `--new-window` がなければ `instance::forward` で動いているウィンドウへ渡します．渡せたらそこで終わります．渡さない条件（応答しない，管理者かどうかが違う，実行ファイルか設定ファイルが違う）は `instance` の先頭のコメントにあります．
+4. `config_file::load` が設定ファイルを読みます．なければ `TEMPLATE` で作ります．古い書き方は `config::migrate` で読み替えて書き戻します．`window_state::load` が `state.toml` を読みます．場所は環境変数 `FANTERMO_CONFIG`・`FANTERMO_STATE` で差し替えられます（テストはこれを使います）．
+5. `window::run` がシステムの DPI でフォントを測ってウィンドウを作り，覚えていた位置と大きさを見せる前に戻します（`window_state::restore_hidden`）．`App::new` が最初の端末（`Session::spawn`）を開き，設定ファイルの監視を始めます．
+6. ウィンドウのモニターの DPI がシステムの DPI と違えば，DPI の変更と同じ処理で作り直します．そのあと `ShowWindow` し，設定ファイルの警告とコマンドラインの誤りを見せてから，メッセージループに入ります．
 
 最初の端末で何を起動するかは `startup_for` が決めます（名前の合うプロファイル，コマンドライン，既定のプロファイルの順）．
 

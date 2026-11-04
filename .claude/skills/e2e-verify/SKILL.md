@@ -124,6 +124,7 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
   - テストは並列に動き、実行ファイルが同じなので、ダウンロードのあとに「ほかに fantermo が…」が出ることがある。`wait_confirm_apply` が続けて、最後の確認まで進む。数を固定しない。
   - 「更新を確認」を押して結果を閉じたあと、押せるようになるのは閉じたあとなので、`dismiss_result`・`decline_offer` で待ってから次を押す。
   - 署名や読み取りの文は、`CheckError::message` と同じ文を `tests/e2e/update.rs` の定数に写して見る。統合テストからは `update` を呼べない。本体の文を変えたら定数も直す。読めない・ハッシュが合わない場合を確認するには、読めない更新の情報にもテストの鍵で署名する（`publish_manifest`）。署名しないと署名のエラーで止まる。
+- 管理者として開く: feature `e2e` のときだけ効く環境変数（`crates/fantermo/src/elevate/stand_in.rs`）: `FANTERMO_E2E_ELEVATED=1`（このプロセスを管理者として動いているものとして扱う。`elevate::this_process`）、`FANTERMO_E2E_ELEVATE_RECORD`（管理者として起動する代わりに、実行ファイル・引数・作業フォルダを 1 行ずつ書くファイル）、`FANTERMO_E2E_ELEVATE_RESULT`（`cancelled` で UAC の確認で断ったことに、`failed` で失敗したことにする。記録しない）。記録先も結果もなければ失敗したことにする。feature `e2e` のビルドは `ShellExecuteExW` の `runas` をコンパイルしないので、UAC の確認は出ない。feature なしのビルドは逆に `stand_in` をコンパイルしない。昇格したプロセスには環境変数が届かないので、本物の `runas` で起動したものには `FANTERMO_CONFIG` なども付かない。手で試さない。
 - ブリッジの単体のテストで中身を比べるときは、子プロセスに `/tmp` のファイルへ書かせて読む（テストと子プロセスは同じ環境で動く）。
 - 読み取りの依頼のように答えがないことがあるものは、時間で待たず、依頼と同じ出力の後ろの印を待ってから、区切りの入力を送る（`start_clipboard_read`）。
 

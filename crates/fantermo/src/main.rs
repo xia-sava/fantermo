@@ -6,6 +6,7 @@
 //! 新しいタブも同じ決め方で起動する。設定ファイルは `%APPDATA%\fantermo\config.toml`（`config_file`）。
 //! すでに動いているウィンドウがあれば、新しいウィンドウを開かず、そこへタブを足して終わる（`instance`）。
 //! `--new-window` があれば新しいウィンドウを開く。
+//! `--elevate` があれば、管理者として動いていなければ、管理者の権限の fantermo を起動して終わる（`elevate`）。
 //! ウィンドウの位置・大きさ・最大化は、閉じるときに同じフォルダの `state.toml` に書き、次に起動した
 //! ときに戻す（`window_state`）。
 //!
@@ -32,6 +33,7 @@ mod dialog;
 mod dump;
 #[cfg(feature = "e2e")]
 mod e2e_server;
+mod elevate;
 mod file_dialog;
 mod font;
 mod image_cache;
@@ -77,10 +79,6 @@ fn main() {
     tracing::info!("fantermo {}", version::display());
 
     let options = command_line::Options::of_process();
-    let config_path = config_file::path();
-    if !options.new_window && instance::forward(&options, config_path.as_deref()) {
-        return;
-    }
 
     // SAFETY: 起動直後、ウィンドウを作る前に一度だけ呼ぶ。
     let dpi_awareness =
@@ -88,12 +86,23 @@ fn main() {
     if let Err(e) = dpi_awareness {
         tracing::warn!("failed to enable per-monitor DPI awareness: {e}");
     }
-    // 背景画像を読む WIC と、ファイルを選ぶダイアログを、ウィンドウのスレッドで使う。プロセスが終わるまで
-    // 解放しない。
+    // 背景画像を読む WIC、ファイルを選ぶダイアログ、管理者として起動する `ShellExecuteExW` を、ウィンドウの
+    // スレッドで使う。プロセスが終わるまで解放しない。
     // SAFETY: ウィンドウのスレッド（このスレッド）で、ウィンドウを作る前に一度だけ初期化する。
     let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
     if let Err(e) = com.ok() {
         tracing::warn!("failed to initialize COM: {e}");
+    }
+
+    // 動いているウィンドウへ渡す前に決める。渡したあとでは、普通の権限のウィンドウにタブが足される。
+    // 管理者かを読めなければ、管理者ではないとして起動する。
+    if options.elevate && elevate::this_process() != Some(true) {
+        std::process::exit(start_elevated(&options));
+    }
+
+    let config_path = config_file::path();
+    if !options.new_window && instance::forward(&options, config_path.as_deref()) {
+        return;
     }
 
     let loaded = config_file::load(config_path.as_deref());
@@ -111,6 +120,28 @@ fn main() {
                 notice::error(&startup_error_text(&e.to_string(), log_dir.as_deref()));
             }
             std::process::exit(1);
+        }
+    }
+}
+
+/// `options` を管理者の権限の fantermo で開き、このプロセスの終了コードを返す。UAC の確認で断られたら何も見せず、
+/// ほかの失敗はメッセージボックスで見せる。
+fn start_elevated(options: &command_line::Options) -> i32 {
+    let launched =
+        elevate::launch_request(options).and_then(|request| elevate::launch(None, &request));
+    match launched {
+        Ok(()) => {
+            tracing::info!("started an elevated fantermo");
+            0
+        }
+        Err(elevate::LaunchError::Cancelled) => {
+            tracing::info!("the elevation was cancelled");
+            1
+        }
+        Err(elevate::LaunchError::Failed(e)) => {
+            tracing::warn!("failed to start an elevated fantermo: {e}");
+            notice::error(&elevate::failure_message(&e));
+            1
         }
     }
 }

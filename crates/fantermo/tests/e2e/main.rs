@@ -21,6 +21,7 @@ mod basics;
 mod clipboard;
 mod command_line;
 mod dpi;
+mod elevate;
 mod images;
 mod instances;
 mod menu;
