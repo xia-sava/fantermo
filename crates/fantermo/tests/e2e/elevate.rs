@@ -207,11 +207,7 @@ fn choosing_from_the_elevate_submenu_starts_an_elevated_fantermo() {
 
     choose_elevated_profile(&server, '3');
     server.wait_dialogs(0);
-    let deadline = Instant::now() + PICTURE_TIMEOUT;
-    while !record.exists() {
-        assert!(Instant::now() < deadline, "no record\n{}", server.log());
-        std::thread::sleep(PICTURE_POLL_INTERVAL);
-    }
+    wait_for_file(&server, &record);
     let recorded = read_record(&record);
     assert_same_file(&recorded.exe, Path::new(env!("CARGO_BIN_EXE_fantermo")));
     assert_eq!(recorded.parameters, r#"--profile "R&D""#);
@@ -220,6 +216,67 @@ fn choosing_from_the_elevate_submenu_starts_an_elevated_fantermo() {
     assert_eq!(tab_count(&state), 1, "{state:#}");
     assert_eq!(state["dialogs"].as_array().map(Vec::len), Some(0));
     check_terminal_still_works(&server, "after-elevate");
+    std::fs::remove_file(&record).expect("failed to remove the record");
+
+    // 一覧を開いている間に設定の並びが変わっても、一覧で選んだ名前で開く。
+    let config = server.dir().join("config.toml");
+    let items = open_profile_menu(&server);
+    let inner = open_submenu(&server, &items, 'A');
+    std::fs::write(&config, REORDERED_PROFILES).expect("failed to write the settings");
+    server.wait_until("the reordered profiles", |state| {
+        state["profiles"] == serde_json::json!(["one", "R&D", "two"])
+    });
+    select_item(&server, &inner, '3');
+    server.wait_dialogs(0);
+    wait_for_file(&server, &record);
+    assert_eq!(read_record(&record).parameters, r#"--profile "R&D""#);
+    std::fs::remove_file(&record).expect("failed to remove the record");
+
+    // 一覧を開いている間に選んだ名前のプロファイルがなくなったら、何もしない。
+    let items = open_profile_menu(&server);
+    let inner = open_submenu(&server, &items, 'A');
+    std::fs::write(&config, ONE_PROFILE).expect("failed to write the settings");
+    server.wait_until("one profile", |state| {
+        state["profiles"] == serde_json::json!(["one"])
+    });
+    select_item(&server, &inner, '2');
+    server.wait_dialogs(0);
+    check_terminal_still_works(&server, "after-removed");
+    let log = server.log();
+    assert!(log.contains("the profile is gone"), "{log}");
+    assert!(!record.exists());
+    assert_eq!(tab_count(&server.state()), 1);
+}
+
+/// [`THREE_PROFILES`] の 2 つ目と 3 つ目を入れ替えた設定。
+const REORDERED_PROFILES: &str = r#"default_profile = "two"
+
+[[profiles]]
+name = "one"
+command = "cmd.exe /k prompt one$G"
+
+[[profiles]]
+name = "R&D"
+command = "cmd.exe /k prompt three$G"
+
+[[profiles]]
+name = "two"
+command = "cmd.exe /k prompt two$G"
+"#;
+
+/// `path` のファイルができるまで待つ。
+#[track_caller]
+fn wait_for_file(server: &Server, path: &Path) {
+    let deadline = Instant::now() + PICTURE_TIMEOUT;
+    while !path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "no {}\n{}",
+            path.display(),
+            server.log()
+        );
+        std::thread::sleep(PICTURE_POLL_INTERVAL);
+    }
 }
 
 /// UAC の確認で断られたら何も見せない。ほかの理由で起動できなければ、警告のメッセージボックスで知らせる。どちらも
@@ -346,6 +403,7 @@ fn elevated_tab_icons_carry_the_shield() {
         [],
         "the icon of a window that is not elevated"
     );
+    drop(normal);
 
     let elevated = Server::start_with_environment(&config, &[], |dir| {
         write_red_icon(dir);

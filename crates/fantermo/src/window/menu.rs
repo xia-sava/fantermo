@@ -146,21 +146,24 @@ impl App {
     }
 }
 
-/// プロファイルの一覧の「管理者として開く」で選ばれた、`index` 番目のプロファイルを管理者として開く。UAC の確認が
-/// 閉じるまで戻らないので、借用の外で呼ぶ。起動できなければ、警告を見せるよう返す。
+/// プロファイルの一覧の「管理者として開く」で選ばれた、名前が `name` のプロファイルを管理者として開く。名前は
+/// 利用者が見た一覧（メニューを作ったときの設定）のもの。UAC の確認が閉じるまで戻らないので、借用の外で呼ぶ。
+/// 起動できなければ、警告を見せるよう返す。
 ///
-/// 一覧を開いている間に設定が読み直されて `index` が並びの外になったら、何もしない。選んでいないプロファイルで
-/// UAC の確認を出さないため。UAC の確認で断られたときも、利用者が自分で断ったので何も見せない。
-pub(super) fn open_elevated(hwnd: HWND, index: usize, with_app: &WithApp) -> Option<Deferred> {
-    let mut name = None;
-    with_app(&mut |app| name = app.config.profiles.get(index).map(|p| p.name.clone()));
-    let Some(name) = name else {
-        tracing::debug!("the profile {index} to open as administrator is gone");
+/// 一覧を開いている間に設定が読み直されて、その名前のプロファイルがいまの設定になければ、何もしない。選んでいない
+/// プロファイルで UAC の確認を出さないため。UAC の確認で断られたときも、利用者が自分で断ったので何も見せない。
+pub(super) fn open_elevated(hwnd: HWND, name: &str, with_app: &WithApp) -> Option<Deferred> {
+    let mut configured = false;
+    with_app(&mut |app| configured = app.config.profiles.iter().any(|p| p.name == name));
+    if !configured {
+        tracing::debug!(
+            "not opening {name:?} as administrator: the profile is gone or the window is unavailable"
+        );
         return None;
-    };
+    }
     let options = Options {
         tab: TabRequest {
-            profile: Some(name),
+            profile: Some(name.to_owned()),
             command: None,
         },
         ..Options::default()
@@ -170,13 +173,11 @@ pub(super) fn open_elevated(hwnd: HWND, index: usize, with_app: &WithApp) -> Opt
     match launched {
         Ok(()) => None,
         Err(LaunchError::Cancelled) => {
-            tracing::debug!(
-                "opening the profile {index} as administrator was cancelled or refused"
-            );
+            tracing::debug!("opening {name:?} as administrator was cancelled or refused");
             None
         }
         Err(LaunchError::Failed(e)) => {
-            tracing::warn!("failed to open the profile {index} as administrator: {e}");
+            tracing::warn!("failed to open {name:?} as administrator: {e}");
             Some(Deferred::Warn {
                 topic: Topic::Elevate,
                 text: elevate::failure_message(&e),

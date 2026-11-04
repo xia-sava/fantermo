@@ -111,9 +111,10 @@ pub(super) fn run_deferred(hwnd: HWND, deferred: Option<Deferred>, with_app: &Wi
                 Some(Chosen::Profile(index)) => {
                     with_app(&mut |app| app.open_session(Launch::Profile(index)))
                 }
-                Some(Chosen::ElevatedProfile(index)) => {
-                    next = open_elevated(hwnd, index, with_app);
-                }
+                Some(Chosen::ElevatedProfile(index)) => match request.profiles.get(index) {
+                    Some(name) => next = open_elevated(hwnd, name, with_app),
+                    None => tracing::warn!("no profile {index} in the menu"),
+                },
                 None => {}
             },
             // DestroyWindow はこの場で WM_DESTROY を送るので、借用を手放してから呼ぶ。
