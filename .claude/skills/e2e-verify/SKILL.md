@@ -64,7 +64,7 @@ OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_fil
 | `POST /e2e/message/<名前>`、`/e2e/message/<名前>/<wParam>` | ウィンドウにメッセージを `SendMessageW` で送り、戻り値を JSON の `result` で返す。名前は `queryendsession`、`endsession`、`capturechanged`（`WM_` を除いた小文字。`lParam` はメッセージごとに決まっている）。`dpichanged/<DPI>` は `<wParam>` の位置に DPI を書く（1〜576。推奨の矩形はウィンドウの側で、Windows と同じく左上を動かさずにクライアント領域を DPI の比で拡大・縮小して作る。枠はいまの大きさのまま）。`getdpiscaledsize/<DPI>` は `WM_GETDPISCALEDSIZE` を送り、答えに `width` `height`（書かれなければ 0）が入る。`close` は `WM_CLOSE` |
 | `POST /e2e/message/<名前>/<wParam>/in-borrow` | 同じメッセージを、App を借りている間の処理の中から送る（ウィンドウプロシージャに入り直し、借用が重なる）。ほかのスレッドから送られて借用の中の同期の呼び出しの間に処理されたときと同じ形になる。名前は `queryendsession`・`endsession`・`close` だけ |
 | `POST /e2e/mouse` | 本文の各行のマウスの操作を、続けて `SendMessageW` で送る。行の形は `<操作> <x> <y> [押しているもの…]`。操作は `move`、`left-down`、`left-up`、`middle-down`、`middle-up`、`right-down`、`right-up`、`wheel:<回転量>`（1 ノッチが 120、奥が正）。座標はクライアント座標（ウィンドウの外を指す負の値も書ける）。押しているものは `left` `middle` `right` `shift` `ctrl` `alt` |
-| `GET /e2e/menu` | JSON: 開いているメニューの `items`（`text`（`&` とキーの組み合わせの前のタブを含む）`separator` `enabled` `checked` `highlighted` `submenu` `icon`）。サブメニューを開いていれば、そのサブメニューの項目で、`highlight`・`select`・`key` もそちらに効く（サブメニューは、その項目を `select` して Enter で開く。テストでは `ui::open_submenu`）。開いていなければ 400 |
+| `GET /e2e/menu` | JSON: 開いているメニューの `items`（`text`（`&` とキーの組み合わせの前のタブを含む）`separator` `enabled` `checked` `highlighted` `submenu` `icon`）。サブメニューを開いていれば、そのサブメニューの項目で、`highlight`・`select`・`key` もそちらに効く（サブメニューは、その項目を `select` すると開く（Enter が送られる）。テストでは `ui::open_submenu`）。開いていなければ 400 |
 | `POST /e2e/menu/highlight/<位置>` | メニューのループへ上下の矢印のキーを送って、その項目へ移る。区切りと並びの外は 400 |
 | `POST /e2e/menu/select/<位置>` | 矢印のキーでその項目へ移り、Enter を送って選ぶ。区切りと並びの外は 400 |
 | `POST /e2e/menu/key/<キー>` | メニューのループへキーを送る。`escape` か、英数字一文字（アクセラレータ） |

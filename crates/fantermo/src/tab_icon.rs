@@ -9,8 +9,8 @@
 //! [`Decoded`]）を作るのは `draw` の [`Generator`]。
 //!
 //! ピクセルは `App` がタブを開いたときと、DPI か UI のフォントの書体が変わったときに作って [`Pixels`] に持ち、
-//! 描くときにはファイルを読まない。管理者として動いているウィンドウでは、作ったピクセルの右下に UAC の盾を
-//! 重ねてから持つ（[`Generator::overlay_shield`]）。
+//! 描くときにはファイルを読まない。管理者として動いているウィンドウでは、`App::update_tab_icons` が作った
+//! ピクセルの右下に [`Generator::overlay_shield`] で UAC の盾を重ねてから [`Pixels`] に入れる。
 
 use std::{
     collections::HashMap,
