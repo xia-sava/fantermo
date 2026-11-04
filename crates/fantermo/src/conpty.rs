@@ -865,7 +865,8 @@ fn program_to_start(options: &SpawnOptions) -> io::Result<Option<PathBuf>> {
 /// `CreateProcessW` はバッチファイルを `cmd.exe /c` にコマンドラインを渡して実行し、cmd は `lpApplicationName`
 /// ではなくコマンドラインの最初の語を探し直すので、名前のままだとタブの作業フォルダに置かれた同じ名前の
 /// バッチファイルを先に見つける（環境変数 `NoDefaultCurrentDirectoryInExePath` がないとき）。パスに空白が
-/// あれば `"` で囲む。ほかはコマンドラインのまま。
+/// あれば `"` で囲み、全体をもう一組の `"` で囲む。cmd の `/c` は、`"` で始まる文字列の最初と最後の `"` を
+/// 外すことがあるため（引数にも `"` があるとき）。ほかはコマンドラインのまま。
 fn command_line_to_start(application: Option<&Path>, command_line: &str) -> OsString {
     const BATCH_EXTENSIONS: [&str; 2] = ["bat", "cmd"];
     let Some(batch) = application.filter(|path| {
@@ -884,7 +885,7 @@ fn command_line_to_start(application: Option<&Path>, command_line: &str) -> OsSt
         .any(|unit| char::from_u32(unit.into()).is_some_and(char::is_whitespace));
     let mut rewritten = OsString::new();
     if needs_quotes {
-        rewritten.push("\"");
+        rewritten.push("\"\"");
         rewritten.push(batch);
         rewritten.push("\"");
     } else {
@@ -893,6 +894,9 @@ fn command_line_to_start(application: Option<&Path>, command_line: &str) -> OsSt
     if !arguments.is_empty() {
         rewritten.push(" ");
         rewritten.push(arguments);
+    }
+    if needs_quotes {
+        rewritten.push("\"");
     }
     rewritten
 }
@@ -1125,7 +1129,7 @@ mod tests {
         let env = [("PATH", path_variable.as_str())];
         let (screen, _) = run_options_until(
             &SpawnOptions {
-                command_line: "tool.bat x",
+                command_line: r#"tool.bat "x y""#,
                 env: &env,
                 size: SIZE,
                 working_folder: Some(working_folder.as_path()),
@@ -1133,7 +1137,7 @@ mod tests {
             "marker-",
         );
         _ = std::fs::remove_dir_all(&root);
-        assert!(screen.contains("marker-a-x-"), "{screen}");
+        assert!(screen.contains(r#"marker-a-"x y"-"#), "{screen}");
         assert!(!screen.contains("marker-b"), "{screen}");
     }
 
@@ -1148,7 +1152,7 @@ mod tests {
         );
         assert_eq!(
             start(Some(r"C:\my tools\tool.cmd"), "tool.cmd"),
-            OsString::from(r#""C:\my tools\tool.cmd""#)
+            OsString::from(r#"""C:\my tools\tool.cmd"""#)
         );
         assert_eq!(
             start(Some(r"C:\tools\tool.exe"), "tool x"),
