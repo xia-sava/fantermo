@@ -184,7 +184,8 @@ pub struct ConPty {
 
 impl ConPty {
     /// `options` のコマンドラインを疑似コンソールに接続して起動する。最初の語が名前だけなら、実行ファイルは
-    /// [`program_to_start`] で決め、`CreateProcessW` に渡すコマンドラインは [`command_line_to_start`] で決める。
+    /// [`program_to_start`] で決める。`CreateProcessW` に渡すコマンドラインは [`command_line_to_start`] で決める
+    /// （名前だけで見つけたものがバッチファイルのときだけ書き換える）。
     pub fn spawn(options: &SpawnOptions, wake: Wake) -> io::Result<Self> {
         let application = program_to_start(options)?;
         let (console_input, input) = create_pipe()?;
@@ -751,7 +752,8 @@ struct Spawned {
 }
 
 /// `console` に接続した子プロセスを起動する。`application` は `CreateProcessW` の `lpApplicationName`
-/// （[`program_to_start`] で決めたもの）、`flags` は `CreateProcessW` に足すフラグ。
+/// （[`program_to_start`] で決めたもの）で、バッチファイルならコマンドラインの書き換え
+/// （[`command_line_to_start`]）にも使う。`flags` は `CreateProcessW` に足すフラグ。
 fn spawn_process(
     console: HPCON,
     application: Option<&Path>,
@@ -864,40 +866,31 @@ fn program_to_start(options: &SpawnOptions) -> io::Result<Option<PathBuf>> {
 /// `application` がバッチファイル（`.bat`、`.cmd`）なら、最初の語を `application` の絶対パスに置き換える。
 /// `CreateProcessW` はバッチファイルを `cmd.exe /c` にコマンドラインを渡して実行し、cmd は `lpApplicationName`
 /// ではなくコマンドラインの最初の語を探し直すので、名前のままだとタブの作業フォルダに置かれた同じ名前の
-/// バッチファイルを先に見つける（環境変数 `NoDefaultCurrentDirectoryInExePath` がないとき）。パスに空白が
-/// あれば `"` で囲み、全体をもう一組の `"` で囲む。cmd の `/c` は、`"` で始まる文字列の最初と最後の `"` を
-/// 外すことがあるため（引数にも `"` があるとき）。ほかはコマンドラインのまま。
+/// バッチファイルを先に見つける（環境変数 `NoDefaultCurrentDirectoryInExePath` がないとき）。
+///
+/// パスは `"` で囲み（`& ^ , ; = (` や空白を cmd が区切りとして読まないように）、全体をもう一組の `"` で囲む
+/// （cmd の `/c` は、`"` で始まる文字列の最初と最後の `"` を外すことがあるため。`cmd /?` の説明）。パスに
+/// `%NAME%` の形があると cmd が先に展開するので、囲んでも起動できない。ほかはコマンドラインのまま。
 fn command_line_to_start(application: Option<&Path>, command_line: &str) -> OsString {
     const BATCH_EXTENSIONS: [&str; 2] = ["bat", "cmd"];
     let Some(batch) = application.filter(|path| {
         path.extension().is_some_and(|extension| {
             BATCH_EXTENSIONS
                 .iter()
-                .any(|batch| extension.eq_ignore_ascii_case(batch))
+                .any(|batch_extension| extension.eq_ignore_ascii_case(batch_extension))
         })
     }) else {
         return OsString::from(command_line);
     };
     let (_, arguments) = config::split_program(command_line);
-    let needs_quotes = batch
-        .as_os_str()
-        .encode_wide()
-        .any(|unit| char::from_u32(unit.into()).is_some_and(char::is_whitespace));
-    let mut rewritten = OsString::new();
-    if needs_quotes {
-        rewritten.push("\"\"");
-        rewritten.push(batch);
-        rewritten.push("\"");
-    } else {
-        rewritten.push(batch);
-    }
+    let mut rewritten = OsString::from("\"\"");
+    rewritten.push(batch);
+    rewritten.push("\"");
     if !arguments.is_empty() {
         rewritten.push(" ");
         rewritten.push(arguments);
     }
-    if needs_quotes {
-        rewritten.push("\"");
-    }
+    rewritten.push("\"");
     rewritten
 }
 
@@ -1148,11 +1141,19 @@ mod tests {
         };
         assert_eq!(
             start(Some(r"C:\tools\tool.BAT"), r#""tool.bat"  "x y""#),
-            OsString::from(r#"C:\tools\tool.BAT "x y""#)
+            OsString::from(r#"""C:\tools\tool.BAT" "x y"""#)
         );
         assert_eq!(
             start(Some(r"C:\my tools\tool.cmd"), "tool.cmd"),
             OsString::from(r#"""C:\my tools\tool.cmd"""#)
+        );
+        assert_eq!(
+            start(Some(r"C:\my tools\tool.cmd"), r#"tool.cmd "x y""#),
+            OsString::from(r#"""C:\my tools\tool.cmd" "x y"""#)
+        );
+        assert_eq!(
+            start(Some(r"C:\a&b\tool.bat"), "tool.bat x"),
+            OsString::from(r#"""C:\a&b\tool.bat" x""#)
         );
         assert_eq!(
             start(Some(r"C:\tools\tool.exe"), "tool x"),
