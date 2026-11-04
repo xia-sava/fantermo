@@ -44,6 +44,7 @@ use crate::{
     command_line::{Options, TabRequest},
     config_file::{self, Loaded},
     dump::{DUMP_INTERVAL, ScreenDump},
+    elevate,
     font::{self, Font},
     instance::Forwarded,
     keyboard::Utf16Assembler,
@@ -280,7 +281,11 @@ fn create_window(
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
             WINDOW_CLASS,
-            &HSTRING::from(window_title("", &version::display())),
+            &HSTRING::from(window_title(
+                "",
+                &version::display(),
+                elevate::this_process() == Some(true),
+            )),
             MAIN_WINDOW_STYLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -360,6 +365,8 @@ struct App {
     /// 戻す。
     renderer_recreations: u32,
     dump: Option<ScreenDump>,
+    /// 管理者として動いている（タイトルに印を付ける）。
+    elevated: bool,
     /// ウィンドウのタイトルに出している文字列。
     window_title: String,
     /// 最後の端末が終わったときの、その子プロセスの終了コード。ウィンドウを閉じたあとの終了コードにする。
@@ -474,6 +481,7 @@ impl App {
         }
 
         let dump = ScreenDump::from_env();
+        let elevated = elevate::this_process() == Some(true);
         if dump.is_some() {
             // SAFETY: hwnd は有効なウィンドウ。
             unsafe {
@@ -508,7 +516,8 @@ impl App {
             tab_icon_pixels: tab_icon::Pixels::default(),
             renderer_recreations: 0,
             dump,
-            window_title: window_title("", &version::display()),
+            elevated,
+            window_title: window_title("", &version::display(), elevated),
             exit: None,
             text_input: Utf16Assembler::default(),
             wheel_lines_per_notch: wheel_lines_per_notch(),

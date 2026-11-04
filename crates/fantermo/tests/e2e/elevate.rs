@@ -103,6 +103,12 @@ fn the_elevate_option_starts_an_elevated_fantermo_and_ends() {
     let state = elevated.wait_text(CMD_PROMPT);
     assert_eq!(state["tabs"][0]["profile"], "one", "{state:#}");
     assert_ne!(state["pid"], server.state()["pid"], "{state:#}");
+    // 管理者のウィンドウのタイトルだけ、先頭に印が付く。
+    let title = state["window_title"].as_str().expect("no window title");
+    assert!(title.starts_with("管理者: "), "{title}");
+    let normal = server.state();
+    let normal_title = normal["window_title"].as_str().expect("no window title");
+    assert!(!normal_title.starts_with("管理者: "), "{normal_title}");
     assert!(!record.exists());
     assert_eq!(tab_count(&server.state()), 1);
     let log = elevated.log();

@@ -413,7 +413,7 @@ impl App {
     /// ウィンドウのタイトルを、表示している端末のタイトルとバージョンから決める（`window_title`）。
     /// 変わったときだけウィンドウに設定する。
     fn update_window_title(&mut self) {
-        let title = window_title(self.session().title(), &version::display());
+        let title = window_title(self.session().title(), &version::display(), self.elevated);
         if title == self.window_title {
             return;
         }
@@ -454,13 +454,18 @@ pub(super) fn tab_title(session: &Session) -> &str {
     }
 }
 
+/// 管理者として動いているウィンドウのタイトルの先頭に付ける印。
+const ELEVATED_TITLE_PREFIX: &str = "管理者: ";
+
 /// ウィンドウに出すタイトル。アプリが付けたタイトル `tab_title` があれば
-/// `<tab_title> - fantermo <version>`、なければ（空なら）`fantermo <version>`。
-pub(super) fn window_title(tab_title: &str, version: &str) -> String {
+/// `<tab_title> - fantermo <version>`、なければ（空なら）`fantermo <version>`。`elevated` なら
+/// 先頭に [`ELEVATED_TITLE_PREFIX`] を付ける。
+pub(super) fn window_title(tab_title: &str, version: &str, elevated: bool) -> String {
+    let prefix = if elevated { ELEVATED_TITLE_PREFIX } else { "" };
     if tab_title.is_empty() {
-        format!("{WINDOW_TITLE} {version}")
+        format!("{prefix}{WINDOW_TITLE} {version}")
     } else {
-        format!("{tab_title} - {WINDOW_TITLE} {version}")
+        format!("{prefix}{tab_title} - {WINDOW_TITLE} {version}")
     }
 }
 
@@ -506,19 +511,28 @@ mod tests {
     #[test]
     fn window_titles_end_with_the_version() {
         assert_eq!(
-            window_title("vim", "0.0.1 (dev-abc1234)"),
+            window_title("vim", "0.0.1 (dev-abc1234)", false),
             "vim - fantermo 0.0.1 (dev-abc1234)"
         );
-        assert_eq!(window_title("vim", "0.0.1"), "vim - fantermo 0.0.1");
+        assert_eq!(window_title("vim", "0.0.1", false), "vim - fantermo 0.0.1");
     }
 
     #[test]
     fn window_titles_without_a_tab_title_are_only_the_version() {
-        assert_eq!(window_title("", "0.0.1"), "fantermo 0.0.1");
+        assert_eq!(window_title("", "0.0.1", false), "fantermo 0.0.1");
         assert_eq!(
-            window_title("", "0.0.1 (dev-abc1234)"),
+            window_title("", "0.0.1 (dev-abc1234)", false),
             "fantermo 0.0.1 (dev-abc1234)"
         );
+    }
+
+    #[test]
+    fn elevated_window_titles_start_with_the_mark() {
+        assert_eq!(
+            window_title("vim", "0.0.1", true),
+            "管理者: vim - fantermo 0.0.1"
+        );
+        assert_eq!(window_title("", "0.0.1", true), "管理者: fantermo 0.0.1");
     }
 
     #[test]
