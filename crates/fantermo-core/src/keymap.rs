@@ -40,10 +40,14 @@ pub enum Action {
     ScrollLineUp,
     /// 表示している範囲を 1 行、新しい側へ動かす。代替画面では成り立たない。
     ScrollLineDown,
+    /// いちばん古い行を表示する。代替画面では成り立たない。
+    ScrollToTop,
+    /// いちばん新しい行を表示する。代替画面では成り立たない。
+    ScrollToBottom,
 }
 
 /// 動作と名前。
-const ACTION_NAMES: [(Action, &str); 11] = [
+const ACTION_NAMES: [(Action, &str); 13] = [
     (Action::Copy, "copy"),
     (Action::Paste, "paste"),
     (Action::ContextMenu, "context_menu"),
@@ -55,11 +59,13 @@ const ACTION_NAMES: [(Action, &str); 11] = [
     (Action::ScrollPageDown, "scroll_page_down"),
     (Action::ScrollLineUp, "scroll_line_up"),
     (Action::ScrollLineDown, "scroll_line_down"),
+    (Action::ScrollToTop, "scroll_to_top"),
+    (Action::ScrollToBottom, "scroll_to_bottom"),
 ];
 
 impl Action {
     /// すべての動作。設定ファイルの説明と設定ダイアログの一覧の順。
-    pub const ALL: [Action; 11] = [
+    pub const ALL: [Action; 13] = [
         Action::Copy,
         Action::Paste,
         Action::ContextMenu,
@@ -71,6 +77,8 @@ impl Action {
         Action::ScrollPageDown,
         Action::ScrollLineUp,
         Action::ScrollLineDown,
+        Action::ScrollToTop,
+        Action::ScrollToBottom,
     ];
 
     /// 設定ファイルに書く名前。
@@ -335,7 +343,7 @@ impl fmt::Display for KeyCombo {
 }
 
 /// 既定の割り当て。
-const DEFAULT_BINDINGS: [(KeyCombo, Action); 13] = {
+const DEFAULT_BINDINGS: [(KeyCombo, Action); 15] = {
     const CTRL_SHIFT: Mods = Mods::CTRL.union(Mods::SHIFT);
     [
         (KeyCombo::new(Mods::CTRL, Key::C), Action::Copy),
@@ -363,6 +371,8 @@ const DEFAULT_BINDINGS: [(KeyCombo, Action); 13] = {
             KeyCombo::new(Mods::CTRL, Key::ArrowDown),
             Action::ScrollLineDown,
         ),
+        (KeyCombo::new(Mods::CTRL, Key::Home), Action::ScrollToTop),
+        (KeyCombo::new(Mods::CTRL, Key::End), Action::ScrollToBottom),
     ]
 };
 
@@ -554,6 +564,16 @@ mod tests {
         assert_eq!(keymap.lookup(Key::ArrowUp, Mods::empty()), None);
         assert_eq!(keymap.lookup(Key::ArrowUp, CTRL_SHIFT), None);
         assert_eq!(keymap.lookup(Key::PageDown, Mods::CTRL | Mods::ALT), None);
+        assert_eq!(
+            keymap.lookup(Key::Home, Mods::CTRL),
+            Some(Action::ScrollToTop)
+        );
+        assert_eq!(
+            keymap.lookup(Key::End, Mods::CTRL),
+            Some(Action::ScrollToBottom)
+        );
+        assert_eq!(keymap.lookup(Key::Home, Mods::empty()), None);
+        assert_eq!(keymap.lookup(Key::End, CTRL_SHIFT), None);
     }
 
     #[test]
@@ -577,6 +597,8 @@ mod tests {
             ("ctrl+page_down", "scroll_page_down"),
             ("ctrl+arrow_up", "scroll_line_up"),
             ("ctrl+arrow_down", "scroll_line_down"),
+            ("ctrl+home", "scroll_to_top"),
+            ("ctrl+end", "scroll_to_bottom"),
         ];
         assert_eq!(
             written,

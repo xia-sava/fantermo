@@ -137,9 +137,10 @@ fantermo がどう振る舞うかと，その理由をまとめたものです�
 
 ### キー
 
-- fantermo が受け持つキーは，コピー（Ctrl+C，Ctrl+Insert），貼り付け（Shift+Insert），コンテキストメニュー（メニューキー，Shift+F10），タブの操作（Ctrl+Shift+T，Ctrl+Shift+W，Ctrl+Tab，Ctrl+Shift+Tab），スクロール（Ctrl+PageUp，Ctrl+PageDown で 1 画面，Ctrl+↑，Ctrl+↓ で 1 行）だけです（`keymap::DEFAULT_BINDINGS`）．Ctrl+V，Ctrl+T，Ctrl+W はシェルへ送ります．
+- fantermo が受け持つキーは，設定ファイルの `[keys]` と設定ダイアログで変えられます．既定の割り当ては `keymap::DEFAULT_BINDINGS` で，設定ファイルのひな形にも並べています．Ctrl+V，Ctrl+T，Ctrl+W は既定では割り当てず，シェルへ送ります．
 - Ctrl+C と Ctrl+Insert は，選択していればコピーして選択を外し，選択していなければキーをシェルへ送ります．
-- スクロールのキーは，代替画面ではアプリへ送ります．代替画面にはスクロールバックがなく，vim（Ctrl+PageUp・PageDown でタブページの切り替え）や nano・emacs（Ctrl+↑↓ で段落の移動）がこれらのキーを使うためです．スクロールのキーで動かしても，最新の行には戻らず選択も外しません．
+- スクロールの動作（`scroll_` で始まるもの）は，代替画面ではキーをアプリへ送ります．代替画面にはスクロールバックがなく，vim や nano など，既定で割り当てている Ctrl+PageUp などのキーを使うアプリがあるためです．スクロールのキーで動かしても，最新の行には戻らず選択も外しません．
+- 既定の Ctrl+Home・Ctrl+End は，主画面で PowerShell（PSReadLine）の行の頭・末尾まで消すキーとぶつかります．PowerShell で使うなら，`[keys]` で `"none"` にしてシェルへ送ります．
 - キーの割り当ては「このキーはこの動作の候補」までを決め，動作が成り立たなければキーをシェルへ送ります．貼り付け，メニュー，タブを開く・閉じるは押したときだけで，押し続けても繰り返しません（繰り返しのキーはシェルにも送りません）．タブの切り替えとスクロールは繰り返します．動作に使ったキーは，離したこともシェルへ送りません．
 - 割り当てを引くときは Ctrl・Shift・Alt・Win だけを比べ，ロックの状態と左右の別は見ません．
 - Alt を含む F4 と Space（Alt+F4，Alt+Space，Shift や Ctrl が重なったものも），IME が処理中のキーは Windows に任せます．

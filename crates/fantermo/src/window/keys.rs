@@ -2,7 +2,7 @@
 
 use fantermo_core::{
     keymap,
-    vt::{Key, KeyAction, KeyInput, Mods},
+    vt::{Key, KeyAction, KeyInput, Mods, Vt},
 };
 use windows::Win32::{
     Foundation::HWND,
@@ -111,10 +111,18 @@ impl App {
             keymap::Action::NextTab => Some(self.run_tab_command(TabCommand::Next)),
             keymap::Action::PrevTab => Some(self.run_tab_command(TabCommand::Previous)),
             // 代替画面ではアプリへ送る。押し続けたら繰り返す。
-            keymap::Action::ScrollPageUp => self.scroll_by_key(-self.page_rows()),
-            keymap::Action::ScrollPageDown => self.scroll_by_key(self.page_rows()),
-            keymap::Action::ScrollLineUp => self.scroll_by_key(-1),
-            keymap::Action::ScrollLineDown => self.scroll_by_key(1),
+            keymap::Action::ScrollPageUp => {
+                let page = self.page_rows();
+                self.scroll_by_key(|vt| vt.scroll(-page))
+            }
+            keymap::Action::ScrollPageDown => {
+                let page = self.page_rows();
+                self.scroll_by_key(|vt| vt.scroll(page))
+            }
+            keymap::Action::ScrollLineUp => self.scroll_by_key(|vt| vt.scroll(-1)),
+            keymap::Action::ScrollLineDown => self.scroll_by_key(|vt| vt.scroll(1)),
+            keymap::Action::ScrollToTop => self.scroll_by_key(|vt| vt.scroll_to_row(0)),
+            keymap::Action::ScrollToBottom => self.scroll_by_key(Vt::scroll_to_bottom),
         }
     }
 
@@ -123,9 +131,9 @@ impl App {
         self.session().vt.size().rows as isize
     }
 
-    /// 割り当てたキーで、表示している範囲を `lines` 行動かす。負なら古い側、正なら新しい側。代替画面は
-    /// スクロールバックを持たないので、キーをアプリへ送る（`None`）。
-    fn scroll_by_key(&mut self, lines: isize) -> Option<Option<Deferred>> {
+    /// 割り当てたキーで、表示している範囲を `scroll` で動かす。代替画面はスクロールバックを持たないので、
+    /// キーをアプリへ送る（`None`）。
+    fn scroll_by_key(&mut self, scroll: impl FnOnce(&mut Vt)) -> Option<Option<Deferred>> {
         let alternate = self
             .session()
             .vt
@@ -135,7 +143,7 @@ impl App {
         if alternate {
             return None;
         }
-        self.session_mut().vt.scroll(lines);
+        scroll(&mut self.session_mut().vt);
         self.on_viewport_moved();
         Some(None)
     }

@@ -224,11 +224,12 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # home、end、page_up、page_down、arrow_up、arrow_down、arrow_left、arrow_right、context_menu、
 # numpad_0〜numpad_9 など。
 # 動作は copy、paste、context_menu、new_tab、close_tab、next_tab、prev_tab、scroll_page_up、
-# scroll_page_down、scroll_line_up、scroll_line_down。"none" は割り当てを外し、キーをシェルへ送る。
-# 同じ動作に複数の組み合わせを割り当ててもよい。scroll_ で始まる動作は、代替画面ではキーをアプリへ送る。
-# 例: Ctrl+Tab をシェルへ送り、Ctrl+PageDown で次のタブにするなら、次の 2 行を書く。
+# scroll_page_down、scroll_line_up、scroll_line_down、scroll_to_top、scroll_to_bottom。"none" は割り当てを
+# 外し、キーをシェルへ送る。同じ動作に複数の組み合わせを割り当ててもよい。scroll_ で始まる動作は、
+# 代替画面ではキーをアプリへ送る。
+# 例: Ctrl+Tab をシェルへ送り、Alt+PageDown で次のタブにするなら、次の 2 行を書く。
 # 例: "ctrl+tab" = "none"
-# 例: "ctrl+page_down" = "next_tab"
+# 例: "alt+page_down" = "next_tab"
 # 既定の割り当て:
 # "ctrl+c" = "copy"
 # "ctrl+insert" = "copy"
@@ -243,6 +244,8 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # "ctrl+page_down" = "scroll_page_down"
 # "ctrl+arrow_up" = "scroll_line_up"
 # "ctrl+arrow_down" = "scroll_line_down"
+# "ctrl+home" = "scroll_to_top"
+# "ctrl+end" = "scroll_to_bottom"
 "##;
 
 /// 設定の全体。
