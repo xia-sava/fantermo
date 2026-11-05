@@ -32,10 +32,18 @@ pub enum Action {
     NextTab,
     /// 左隣のタブを表示する。
     PrevTab,
+    /// 表示している範囲を 1 画面分、古い側へ動かす。代替画面では成り立たない。
+    ScrollPageUp,
+    /// 表示している範囲を 1 画面分、新しい側へ動かす。代替画面では成り立たない。
+    ScrollPageDown,
+    /// 表示している範囲を 1 行、古い側へ動かす。代替画面では成り立たない。
+    ScrollLineUp,
+    /// 表示している範囲を 1 行、新しい側へ動かす。代替画面では成り立たない。
+    ScrollLineDown,
 }
 
 /// 動作と名前。
-const ACTION_NAMES: [(Action, &str); 7] = [
+const ACTION_NAMES: [(Action, &str); 11] = [
     (Action::Copy, "copy"),
     (Action::Paste, "paste"),
     (Action::ContextMenu, "context_menu"),
@@ -43,11 +51,15 @@ const ACTION_NAMES: [(Action, &str); 7] = [
     (Action::CloseTab, "close_tab"),
     (Action::NextTab, "next_tab"),
     (Action::PrevTab, "prev_tab"),
+    (Action::ScrollPageUp, "scroll_page_up"),
+    (Action::ScrollPageDown, "scroll_page_down"),
+    (Action::ScrollLineUp, "scroll_line_up"),
+    (Action::ScrollLineDown, "scroll_line_down"),
 ];
 
 impl Action {
     /// すべての動作。設定ファイルの説明と設定ダイアログの一覧の順。
-    pub const ALL: [Action; 7] = [
+    pub const ALL: [Action; 11] = [
         Action::Copy,
         Action::Paste,
         Action::ContextMenu,
@@ -55,6 +67,10 @@ impl Action {
         Action::CloseTab,
         Action::NextTab,
         Action::PrevTab,
+        Action::ScrollPageUp,
+        Action::ScrollPageDown,
+        Action::ScrollLineUp,
+        Action::ScrollLineDown,
     ];
 
     /// 設定ファイルに書く名前。
@@ -319,7 +335,7 @@ impl fmt::Display for KeyCombo {
 }
 
 /// 既定の割り当て。
-const DEFAULT_BINDINGS: [(KeyCombo, Action); 9] = {
+const DEFAULT_BINDINGS: [(KeyCombo, Action); 13] = {
     const CTRL_SHIFT: Mods = Mods::CTRL.union(Mods::SHIFT);
     [
         (KeyCombo::new(Mods::CTRL, Key::C), Action::Copy),
@@ -334,6 +350,19 @@ const DEFAULT_BINDINGS: [(KeyCombo, Action); 9] = {
         (KeyCombo::new(CTRL_SHIFT, Key::W), Action::CloseTab),
         (KeyCombo::new(Mods::CTRL, Key::Tab), Action::NextTab),
         (KeyCombo::new(CTRL_SHIFT, Key::Tab), Action::PrevTab),
+        (KeyCombo::new(Mods::CTRL, Key::PageUp), Action::ScrollPageUp),
+        (
+            KeyCombo::new(Mods::CTRL, Key::PageDown),
+            Action::ScrollPageDown,
+        ),
+        (
+            KeyCombo::new(Mods::CTRL, Key::ArrowUp),
+            Action::ScrollLineUp,
+        ),
+        (
+            KeyCombo::new(Mods::CTRL, Key::ArrowDown),
+            Action::ScrollLineDown,
+        ),
     ]
 };
 
@@ -503,6 +532,31 @@ mod tests {
     }
 
     #[test]
+    fn scroll_keys_need_ctrl_alone() {
+        let keymap = Keymap::default();
+        assert_eq!(
+            keymap.lookup(Key::PageUp, Mods::CTRL),
+            Some(Action::ScrollPageUp)
+        );
+        assert_eq!(
+            keymap.lookup(Key::PageDown, Mods::CTRL),
+            Some(Action::ScrollPageDown)
+        );
+        assert_eq!(
+            keymap.lookup(Key::ArrowUp, Mods::CTRL),
+            Some(Action::ScrollLineUp)
+        );
+        assert_eq!(
+            keymap.lookup(Key::ArrowDown, Mods::CTRL | Mods::NUM_LOCK),
+            Some(Action::ScrollLineDown)
+        );
+        assert_eq!(keymap.lookup(Key::PageUp, Mods::empty()), None);
+        assert_eq!(keymap.lookup(Key::ArrowUp, Mods::empty()), None);
+        assert_eq!(keymap.lookup(Key::ArrowUp, CTRL_SHIFT), None);
+        assert_eq!(keymap.lookup(Key::PageDown, Mods::CTRL | Mods::ALT), None);
+    }
+
+    #[test]
     fn default_bindings_are_written_as_listed() {
         let written: Vec<(String, &str)> = Keymap::default()
             .bindings()
@@ -519,6 +573,10 @@ mod tests {
             ("ctrl+shift+w", "close_tab"),
             ("ctrl+tab", "next_tab"),
             ("ctrl+shift+tab", "prev_tab"),
+            ("ctrl+page_up", "scroll_page_up"),
+            ("ctrl+page_down", "scroll_page_down"),
+            ("ctrl+arrow_up", "scroll_line_up"),
+            ("ctrl+arrow_down", "scroll_line_down"),
         ];
         assert_eq!(
             written,
@@ -626,18 +684,18 @@ mod tests {
     fn resetting_an_action_restores_its_default_keys() {
         let mut keymap = Keymap::default();
         let ctrl_tab = KeyCombo::new(Mods::CTRL, Key::Tab);
-        let ctrl_page_down = KeyCombo::new(Mods::CTRL, Key::PageDown);
+        let alt_page_down = KeyCombo::new(Mods::ALT, Key::PageDown);
         keymap.bind(ctrl_tab, Some(Action::NewTab));
-        keymap.bind(ctrl_page_down, Some(Action::NextTab));
-        assert_eq!(keymap.combos_of(Action::NextTab), [ctrl_page_down]);
+        keymap.bind(alt_page_down, Some(Action::NextTab));
+        assert_eq!(keymap.combos_of(Action::NextTab), [alt_page_down]);
         keymap.reset_action(Action::NextTab);
         assert_eq!(keymap.combos_of(Action::NextTab), [ctrl_tab]);
-        assert_eq!(keymap.lookup_combo(ctrl_page_down), None);
+        assert_eq!(keymap.lookup_combo(alt_page_down), None);
         // 既定の組み合わせを取り戻された動作には、ほかの組み合わせが残る。
         keymap.reset_action(Action::NewTab);
         assert_eq!(keymap, Keymap::default());
         assert_eq!(default_action(ctrl_tab), Some(Action::NextTab));
-        assert_eq!(default_action(ctrl_page_down), None);
+        assert_eq!(default_action(alt_page_down), None);
     }
 
     #[test]

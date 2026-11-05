@@ -383,7 +383,7 @@ mod tests {
             keys: {
                 let mut keys = Keymap::default();
                 keys.bind(combo("ctrl+tab"), None);
-                keys.bind(combo("ctrl+page_down"), Some(Action::NextTab));
+                keys.bind(combo("alt+page_down"), Some(Action::NextTab));
                 keys
             },
         }
@@ -442,7 +442,7 @@ mod tests {
                 "\n# \"ctrl+tab\" = \"next_tab\"",
                 "\n\"ctrl+tab\" = \"none\"",
             )
-            + "\"ctrl+page_down\" = \"next_tab\"\n";
+            + "\"alt+page_down\" = \"next_tab\"\n";
         assert_eq!(text, expected);
     }
 
@@ -558,22 +558,22 @@ mod tests {
 
     #[test]
     fn keys_are_found_however_they_are_written() {
-        let text = "[keys]\n\"Shift + Ctrl + T\" = 'close_tab' # mine\n\"ctrl+page_down\" = \"next_tab\"\n'CTRL+PAGE_DOWN' = \"prev_tab\"\n";
+        let text = "[keys]\n\"Shift + Ctrl + T\" = 'close_tab' # mine\n\"alt+page_down\" = \"next_tab\"\n'ALT+PAGE_DOWN' = \"prev_tab\"\n";
         let base = config::parse(text, &Config::default()).config;
         assert_eq!(
-            base.keys.lookup_combo(combo("ctrl+page_down")),
+            base.keys.lookup_combo(combo("alt+page_down")),
             Some(Action::NextTab)
         );
         let mut edited = base.clone();
         edited.keys.bind(combo("ctrl+shift+t"), None);
         edited
             .keys
-            .bind(combo("ctrl+page_down"), Some(Action::PrevTab));
+            .bind(combo("alt+page_down"), Some(Action::PrevTab));
         let updated = update(text, &base, &edited).unwrap();
         // 書いてある行の値だけを替え、同じ組み合わせの二つ目の行は消す。
         assert_eq!(
             updated,
-            "[keys]\n\"Shift + Ctrl + T\" = \"none\" # mine\n\"ctrl+page_down\" = \"prev_tab\"\n"
+            "[keys]\n\"Shift + Ctrl + T\" = \"none\" # mine\n\"alt+page_down\" = \"prev_tab\"\n"
         );
         assert_reads_as(&updated, &edited);
 

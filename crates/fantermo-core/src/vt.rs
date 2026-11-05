@@ -384,10 +384,15 @@ impl Vt {
         self.terminal.is_mouse_tracking()
     }
 
+    /// 代替画面を表示している。代替画面はスクロールバックを持たない。
+    pub fn is_alternate_screen(&self) -> Result<bool, VtError> {
+        Ok(self.terminal.active_screen()? == Screen::Alternate)
+    }
+
     /// ホイールをカーソルキーに変えて送るか。代替画面で、アプリがマウスを求めておらず、Alternate Scroll
     /// （DECSET 1007）を切っていないとき。
     pub fn wheel_sends_cursor_keys(&self) -> Result<bool, VtError> {
-        Ok(self.terminal.active_screen()? == Screen::Alternate
+        Ok(self.is_alternate_screen()?
             && !self.terminal.is_mouse_tracking()?
             && self.terminal.mode(Mode::ALT_SCROLL)?)
     }

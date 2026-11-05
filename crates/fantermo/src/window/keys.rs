@@ -110,7 +110,34 @@ impl App {
             ),
             keymap::Action::NextTab => Some(self.run_tab_command(TabCommand::Next)),
             keymap::Action::PrevTab => Some(self.run_tab_command(TabCommand::Previous)),
+            // 代替画面ではアプリへ送る。押し続けたら繰り返す。
+            keymap::Action::ScrollPageUp => self.scroll_by_key(-self.page_rows()),
+            keymap::Action::ScrollPageDown => self.scroll_by_key(self.page_rows()),
+            keymap::Action::ScrollLineUp => self.scroll_by_key(-1),
+            keymap::Action::ScrollLineDown => self.scroll_by_key(1),
         }
+    }
+
+    /// 表示している行数。キーで 1 画面分動かす量。
+    fn page_rows(&self) -> isize {
+        self.session().vt.size().rows as isize
+    }
+
+    /// 割り当てたキーで、表示している範囲を `lines` 行動かす。負なら古い側、正なら新しい側。代替画面は
+    /// スクロールバックを持たないので、キーをアプリへ送る（`None`）。
+    fn scroll_by_key(&mut self, lines: isize) -> Option<Option<Deferred>> {
+        let alternate = self
+            .session()
+            .vt
+            .is_alternate_screen()
+            .inspect_err(|e| tracing::warn!("failed to read the active screen: {e}"))
+            .ok()?;
+        if alternate {
+            return None;
+        }
+        self.session_mut().vt.scroll(lines);
+        self.on_viewport_moved();
+        Some(None)
     }
 
     /// キーを伴わずに届いた文字の 1 単位（IME の確定など）。

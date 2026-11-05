@@ -223,8 +223,9 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # 位置を表す名前で、a〜z、digit_0〜digit_9、f1〜f24、tab、enter、space、escape、backspace、insert、delete、
 # home、end、page_up、page_down、arrow_up、arrow_down、arrow_left、arrow_right、context_menu、
 # numpad_0〜numpad_9 など。
-# 動作は copy、paste、context_menu、new_tab、close_tab、next_tab、prev_tab。"none" は割り当てを外し、
-# キーをシェルへ送る。同じ動作に複数の組み合わせを割り当ててもよい。
+# 動作は copy、paste、context_menu、new_tab、close_tab、next_tab、prev_tab、scroll_page_up、
+# scroll_page_down、scroll_line_up、scroll_line_down。"none" は割り当てを外し、キーをシェルへ送る。
+# 同じ動作に複数の組み合わせを割り当ててもよい。scroll_ で始まる動作は、代替画面ではキーをアプリへ送る。
 # 例: Ctrl+Tab をシェルへ送り、Ctrl+PageDown で次のタブにするなら、次の 2 行を書く。
 # 例: "ctrl+tab" = "none"
 # 例: "ctrl+page_down" = "next_tab"
@@ -238,6 +239,10 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # "ctrl+shift+w" = "close_tab"
 # "ctrl+tab" = "next_tab"
 # "ctrl+shift+tab" = "prev_tab"
+# "ctrl+page_up" = "scroll_page_up"
+# "ctrl+page_down" = "scroll_page_down"
+# "ctrl+arrow_up" = "scroll_line_up"
+# "ctrl+arrow_down" = "scroll_line_down"
 "##;
 
 /// 設定の全体。

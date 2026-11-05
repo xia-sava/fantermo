@@ -45,6 +45,10 @@ const ACTION_LABELS: [&str; Action::ALL.len()] = [
     "タブを閉じる",
     "次のタブ",
     "前のタブ",
+    "1 画面上へスクロール",
+    "1 画面下へスクロール",
+    "1 行上へスクロール",
+    "1 行下へスクロール",
 ];
 
 fn action_label(action: Action) -> &'static str {
@@ -357,6 +361,10 @@ mod tests {
                 "次のタブ\tCtrl+Tab",
                 "次のタブ\tCtrl+PageDown",
                 "前のタブ\tCtrl+Shift+Tab",
+                "1 画面上へスクロール\tCtrl+PageUp",
+                "1 画面下へスクロール\t（なし）",
+                "1 行上へスクロール\tCtrl+ArrowUp",
+                "1 行下へスクロール\tCtrl+ArrowDown",
             ]
         );
         assert!(!is_default_binding(&keys, Action::NewTab));

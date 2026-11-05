@@ -70,11 +70,14 @@ fn the_alternate_screen_has_no_scrollback() {
     for line in 0..20 {
         vt.feed(format!("line{line:02}\r\n").as_bytes());
     }
+    assert!(!vt.is_alternate_screen().unwrap());
     vt.feed(b"\x1b[?1049h");
+    assert!(vt.is_alternate_screen().unwrap());
     assert_eq!(vt.scroll_position().unwrap(), position(5, 0, 5));
     vt.scroll(-3);
     assert_eq!(vt.scroll_position().unwrap(), position(5, 0, 5));
     // 代替画面を抜ければ、スクロールバックが戻る。
     vt.feed(b"\x1b[?1049l");
+    assert!(!vt.is_alternate_screen().unwrap());
     assert_eq!(vt.scroll_position().unwrap(), position(21, 16, 5));
 }
