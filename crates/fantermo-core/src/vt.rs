@@ -9,7 +9,7 @@ use std::{
 
 use libghostty_vt::{
     Terminal,
-    fmt::{Format, Formatter, FormatterOptions},
+    fmt::{Format, Formatter},
     key,
     kitty::graphics::{self, RustPngDecoder},
     log::{Level as LogLevel, Logger, set_logger},
@@ -18,10 +18,7 @@ use libghostty_vt::{
     render::{CellIterator, ImageIterator, RenderState, RowIterator},
     screen::CellWide,
     screen::Screen,
-    selection::{
-        FormatOptions as SelectionFormatOptions,
-        gesture::{DragEvent, Geometry, Gesture, PressEvent, ReleaseEvent},
-    },
+    selection::gesture::{DragEvent, Geometry, Gesture, PressEvent, ReleaseEvent},
     style::{Palette, PaletteIndex, RgbColor, Style, StyleColor, Underline as StyleUnderline},
     terminal::{
         ClipboardMime, ClipboardWrite, ClipboardWriteError, ConformanceLevel,
@@ -443,7 +440,7 @@ impl Vt {
                 padding_bottom: 0,
                 padding_right: 0,
                 padding_left: 0,
-            })
+            })?
             .set_any_button_pressed(input.any_button_pressed)
             // 同じセルの中での移動は、繰り返して報告しない。
             .set_track_last_cell(true)
@@ -505,14 +502,16 @@ impl Vt {
 
     /// 選択範囲の文字列。折り返した行はつなげ、行末の空白は除く。選んでいなければ `None`。
     pub fn selected_text(&self) -> Result<Option<String>, VtError> {
-        let options = SelectionFormatOptions::new()
-            .with_emit_format(Format::Plain)
-            .with_unwrap(true)
-            .with_trim(true);
-        let text = self.terminal.format_selection_alloc(None, options)?;
-        Ok(text
-            .map(|text| String::from_utf8_lossy(&text).into_owned())
-            .filter(|text| !text.is_empty()))
+        let Some(mut formatter) = Formatter::new_selection(&self.terminal)? else {
+            return Ok(None);
+        };
+        let text = formatter
+            .set_format(Format::Plain)?
+            .set_unwrap(true)?
+            .set_trim(true)?
+            .format_alloc(None)?;
+        let text = String::from_utf8_lossy(&text).into_owned();
+        Ok(Some(text).filter(|text| !text.is_empty()))
     }
 
     /// `text` を貼り付ける。シェルへ送るバイト列は `take_replies` で取り出す。
@@ -521,9 +520,9 @@ impl Vt {
     /// ので、`allow_unsafe` でなければ送らずに [`PasteOutcome::Unsafe`] を返す。
     pub fn paste(&mut self, text: &str, allow_unsafe: bool) -> Result<PasteOutcome, VtError> {
         let text = normalize_paste(text);
-        let mimes = [ClipboardMime::new(PLAIN_TEXT_MIME)];
+        let mimes = [ClipboardMime::new(PLAIN_TEXT_MIME.as_bytes())];
         let options = PasteOptions::new().with_allow_unsafe(allow_unsafe);
-        let read = |_mime: &str, out: &mut dyn std::io::Write| out.write_all(text.as_bytes());
+        let read = |_mime: &[u8], out: &mut dyn std::io::Write| out.write_all(text.as_bytes());
         match self.terminal.paste(options, &mimes, read) {
             Ok(true) => Ok(PasteOutcome::Pasted),
             Ok(false) => Ok(PasteOutcome::Empty),
@@ -796,10 +795,10 @@ impl Vt {
 
     /// 画面の内容をプレーンテキストで返す。行末の空白は除く。
     pub fn plain_text(&self) -> Result<String, VtError> {
-        let options = FormatterOptions::new()
-            .with_format(Format::Plain)
-            .with_trim(true);
-        let text = Formatter::new(&self.terminal, options)?.format_alloc(None)?;
+        let text = Formatter::new(&self.terminal)?
+            .set_format(Format::Plain)?
+            .set_trim(true)?
+            .format_alloc(None)?;
         Ok(String::from_utf8_lossy(&text).into_owned())
     }
 }

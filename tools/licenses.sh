@@ -25,9 +25,9 @@
 #    - リンクされるものは、リンカに --trace を渡して確認した（Cygwin は -C link-arg=-Wl,--trace、
 #      Linux は -C link-arg=--trace）。Rust のツールチェインや Cygwin の gcc を上げたら確認し直す
 #
-#  zig-notices.txt を確認したバージョン（libghostty-rs 9ede35b8ea94a55ed3608408d67e102883129f1e、Zig 0.17.0）:
-#    - Ghostty 521cf2c5d30bd48028ca61546c64e7913764073d（libghostty-vt-sys の build.rs の GHOSTTY_COMMIT）
-#    - uucode 0.2.0、ea62149739404a73c202b48a33bf6dd2af4bd9b0（Ghostty の build.zig.zon）。
+#  zig-notices.txt を確認したバージョン（libghostty-rs 768add93c54ccdba3f5c4d8763789ab6416f3151、Zig 0.17.0）:
+#    - Ghostty 0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec（vt-1.0.0。libghostty-vt-sys の build.rs の GHOSTTY_COMMIT）
+#    - uucode 0.2.0、1fb73433bba5d93366c57f23ff2e9d7939746500（Ghostty の build.zig.zon）。
 #      licenses/ の下の文は tarball に入っていないので、GitHub の同じコミットから取った
 #    - simdutf 9.0.0（Ghostty の pkg/simdutf/vendor/simdutf.h の SIMDUTF_VERSION。pkg/simdutf の
 #      build.zig.zon のバージョンとは違う）。vendor にライセンスの文がないので、GitHub の v9.0.0 の LICENSE-MIT を取った

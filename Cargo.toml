@@ -12,7 +12,7 @@ exclude = ["crates/fantermo-bridge"]
 [workspace.package]
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.90"
+rust-version = "1.96"
 license = "MIT"
 publish = false
 
@@ -21,7 +21,7 @@ embed-resource = "3.0.12"
 fantermo-bridge-protocol = { path = "crates/fantermo-bridge-protocol" }
 fantermo-core = { path = "crates/fantermo-core" }
 # `rev` を書き換えて上げる。そのコミットが求める Zig のバージョンは tools/dev.bat の ZIG_REQUIRED と揃える。
-libghostty-vt = { git = "https://github.com/uzaaft/libghostty-rs", rev = "9ede35b8ea94a55ed3608408d67e102883129f1e", features = ["png"] }
+libghostty-vt = { git = "https://github.com/uzaaft/libghostty-rs", rev = "768add93c54ccdba3f5c4d8763789ab6416f3151", features = ["png"] }
 png = "0.18.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.154"

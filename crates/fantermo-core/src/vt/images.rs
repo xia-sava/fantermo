@@ -22,7 +22,9 @@ impl Vt {
     /// `key` の画像のピクセル。保管にその画像がないか、`key` のあとでピクセルが変わった、または
     /// まだ届いていなければ `None`。
     pub fn image_pixels(&self, key: &ImageKey) -> Result<Option<ImagePixels<'_>>, VtError> {
-        let graphics = self.terminal.kitty_graphics()?;
+        let Some(graphics) = self.terminal.kitty_graphics()? else {
+            return Ok(None);
+        };
         let Some(image) = graphics.image(key.id) else {
             return Ok(None);
         };
@@ -42,7 +44,9 @@ impl Vt {
 
     /// `key` の画像が、同じピクセルのまま表示している画面の保管にある。
     pub fn image_is_stored(&self, key: &ImageKey) -> Result<bool, VtError> {
-        let graphics = self.terminal.kitty_graphics()?;
+        let Some(graphics) = self.terminal.kitty_graphics()? else {
+            return Ok(false);
+        };
         let Some(image) = graphics.image(key.id) else {
             return Ok(false);
         };
