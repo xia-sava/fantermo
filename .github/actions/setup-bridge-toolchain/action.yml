@@ -31,7 +31,7 @@ runs:
     # CYGWIN_ROOT からリンカのパスを組み立て、cargo を実行する間だけその bin を PATH の先頭に置く。
     - name: Install Cygwin
       id: cygwin
-      uses: cygwin/cygwin-install-action@v7
+      uses: cygwin/cygwin-install-action@5a1b0cd107181fa6bb6bf3f90d500f4fb3132f18 # v7.0.0
       with:
         packages: gcc-core
         add-to-path: false

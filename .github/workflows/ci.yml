@@ -32,7 +32,7 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
 
       # 取ってきた crate と target/ を残しておき、依存が変わらなければ libghostty-vt を組み直さない。
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       # tools/dev.bat が vcvars64 を読み、Zig のバージョンを確認してから cargo を呼ぶ（手元と同じ手順）。
       - name: Check formatting
@@ -62,7 +62,7 @@ jobs:
         uses: ./.github/actions/setup-bridge-toolchain
 
       # ブリッジは自分の Cargo.lock を持ち、出力先は tools/bridge.sh が決める target/bridge/。
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: crates/fantermo-bridge -> ../../target/bridge
 
@@ -95,7 +95,7 @@ jobs:
 
       - uses: ./.github/actions/setup-toolchain
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: . -> target/e2e
 
@@ -136,7 +136,7 @@ jobs:
       - id: toolchain
         uses: ./.github/actions/setup-bridge-toolchain
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
             . -> target/e2e
@@ -181,7 +181,7 @@ jobs:
           rustup default stable
           rustup target add x86_64-unknown-linux-musl
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: crates/fantermo-bridge -> ../../target/bridge
 
