@@ -19,6 +19,10 @@ use crate::{
 
 impl App {
     /// キーを押した・離した。`chars` は同じキーから TranslateMessage が作った文字。
+    ///
+    /// 仮想キーから位置を引いたキー（ほかのプログラムがポストしたもの）には、修飾キーを付けない。ポストした
+    /// キーはキーボードの状態を変えないので、いま押されている修飾キーは利用者が別に押しているもので、そのキーの
+    /// ものではない。ATOK の確定アンドゥの Backspace は、利用者が Ctrl+Backspace の Ctrl を押したまま届く。
     pub(super) fn on_key(
         &mut self,
         virtual_key: u16,
@@ -26,9 +30,14 @@ impl App {
         action: KeyAction,
         chars: &[char],
     ) -> Option<Deferred> {
+        let mods = if position.mapped_from_virtual_key {
+            Mods::empty()
+        } else {
+            keyboard::current_mods()
+        };
         self.on_key_input(
             keyboard::key_from_position(position),
-            keyboard::current_mods(),
+            mods,
             keyboard::unshifted_codepoint(virtual_key),
             action,
             chars,

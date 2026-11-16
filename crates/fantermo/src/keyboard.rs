@@ -2,12 +2,15 @@
 
 use fantermo_core::vt::{Key, Mods};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, MAPVK_VK_TO_CHAR, MapVirtualKeyW, VIRTUAL_KEY, VK_CAPITAL, VK_CONTROL, VK_LWIN,
-    VK_MENU, VK_NUMLOCK, VK_RWIN, VK_SHIFT,
+    GetKeyState, MAPVK_VK_TO_CHAR, MAPVK_VK_TO_VSC_EX, MapVirtualKeyW, VIRTUAL_KEY, VK_CAPITAL,
+    VK_CONTROL, VK_LWIN, VK_MENU, VK_NUMLOCK, VK_RWIN, VK_SHIFT,
 };
 
 /// `MapVirtualKeyW(MAPVK_VK_TO_CHAR)` がデッドキーに立てる最上位のビット。
 const DEAD_KEY_FLAG: u32 = 0x8000_0000;
+
+/// `MapVirtualKeyW(MAPVK_VK_TO_VSC_EX)` が拡張キーのスキャンコードの上位のバイトに付ける前置き。
+const EXTENDED_SCAN_PREFIXES: [u32; 2] = [0xe0, 0xe1];
 
 /// WM_KEYDOWN などの `lparam` から読み取ったキーの位置。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,6 +20,8 @@ pub struct KeyPosition {
     pub extended: bool,
     /// 押されたままで繰り返されている。
     pub repeated: bool,
+    /// スキャンコードなしで届いたので、仮想キーから引いた（[`KeyPosition::of_message`]）。
+    pub mapped_from_virtual_key: bool,
 }
 
 impl KeyPosition {
@@ -25,6 +30,34 @@ impl KeyPosition {
             scan_code: ((lparam >> 16) & 0xff) as u16,
             extended: (lparam >> 24) & 1 == 1,
             repeated: (lparam >> 30) & 1 == 1,
+            mapped_from_virtual_key: false,
+        }
+    }
+
+    /// 仮想キー `virtual_key` の WM_KEYDOWN などの `lparam` から読み取ったキーの位置。スキャンコードが 0 なら、
+    /// いまのキーボード配列で仮想キーから引く。
+    ///
+    /// IME やほかのプログラムが仮想キーだけを指定してポストしたキーは、スキャンコードが 0 で届く。ATOK の確定
+    /// アンドゥは、確定した文字を消す Backspace をこの形でポストする。キーは位置で決めるので、引かないと
+    /// どのキーにも当たらずに捨てられる。
+    pub fn of_message(virtual_key: u16, lparam: isize) -> Self {
+        let position = Self::from_lparam(lparam);
+        if position.scan_code != 0 {
+            return position;
+        }
+        // SAFETY: 引数は値だけで、キーボード配列を調べるだけ。
+        let mapped = unsafe { MapVirtualKeyW(u32::from(virtual_key), MAPVK_VK_TO_VSC_EX) };
+        position.with_mapped_scan_code(mapped)
+    }
+
+    /// スキャンコードを、`MapVirtualKeyW(MAPVK_VK_TO_VSC_EX)` が返した `mapped` にする。拡張キーの前置きが
+    /// あれば拡張キーにする。引けなかった（`mapped` が 0）ときは 0 のまま。
+    fn with_mapped_scan_code(self, mapped: u32) -> Self {
+        Self {
+            scan_code: (mapped & 0xff) as u16,
+            extended: self.extended || EXTENDED_SCAN_PREFIXES.contains(&(mapped >> 8)),
+            mapped_from_virtual_key: true,
+            ..self
         }
     }
 }
@@ -258,6 +291,7 @@ mod tests {
             scan_code,
             extended,
             repeated: false,
+            mapped_from_virtual_key: false,
         }
     }
 
@@ -270,8 +304,43 @@ mod tests {
             KeyPosition {
                 scan_code: 0x48,
                 extended: true,
-                repeated: true
+                repeated: true,
+                mapped_from_virtual_key: false,
             }
+        );
+    }
+
+    #[test]
+    fn keys_without_a_scan_code_take_the_mapped_one() {
+        // 仮想キーだけで送られた Backspace（ATOK の確定アンドゥ）。繰り返しの印は lparam のまま。
+        let lparam = 1 << 30;
+        let backspace = KeyPosition::from_lparam(lparam).with_mapped_scan_code(0x0e);
+        assert_eq!(
+            backspace,
+            KeyPosition {
+                scan_code: 0x0e,
+                extended: false,
+                repeated: true,
+                mapped_from_virtual_key: true,
+            }
+        );
+        assert_eq!(key_from_position(backspace), Key::Backspace);
+
+        let left = position(0, false).with_mapped_scan_code(0xe04b);
+        assert_eq!(key_from_position(left), Key::ArrowLeft);
+
+        // 引けなければ位置は決まらない。
+        let unmapped = position(0, false).with_mapped_scan_code(0);
+        assert_eq!(key_from_position(unmapped), Key::Unidentified);
+    }
+
+    #[test]
+    fn keys_with_a_scan_code_keep_it() {
+        // VK_BACK（0x08）でもスキャンコードが届いていれば、そちらを使う。
+        let lparam = 0x1c << 16;
+        assert_eq!(
+            KeyPosition::of_message(0x08, lparam),
+            KeyPosition::from_lparam(lparam)
         );
     }
 

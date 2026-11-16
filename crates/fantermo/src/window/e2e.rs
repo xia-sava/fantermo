@@ -904,6 +904,7 @@ fn position_of_key(key: Key) -> Option<(u16, bool)> {
                 scan_code,
                 extended,
                 repeated: false,
+                mapped_from_virtual_key: false,
             }) == key
         })
 }

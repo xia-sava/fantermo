@@ -516,7 +516,7 @@ pub(super) extern "system" fn window_proc(
                 // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
                 return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
             }
-            let position = KeyPosition::from_lparam(lparam.0);
+            let position = KeyPosition::of_message(virtual_key, lparam.0);
             let Some(chars) = take_translated_chars(hwnd) else {
                 // デッドキー。次のキーと合わせた文字が WM_CHAR で届く。
                 return LRESULT(0);
@@ -537,7 +537,7 @@ pub(super) extern "system" fn window_proc(
                 // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
                 return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
             }
-            let position = KeyPosition::from_lparam(lparam.0);
+            let position = KeyPosition::of_message(virtual_key, lparam.0);
             with_app(&mut |app| {
                 app.on_key(virtual_key, position, KeyAction::Release, &[]);
             });
