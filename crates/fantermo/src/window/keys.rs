@@ -171,11 +171,43 @@ impl App {
 
     /// IME の変換中のウィンドウと候補のウィンドウを出させる、いまのカーソルの位置とフォント。借用を手放して
     /// から [`ime::place_windows`] に渡す。
-    pub(super) fn ime_placement(&self) -> Option<ime::Placement> {
+    fn ime_placement(&self) -> Option<ime::Placement> {
         Some(ime::Placement {
             cursor: self.cursor_cell_rect()?,
             logfont: self.font.logfont(),
         })
+    }
+
+    /// IME が変換を始めた、または変換中の文字列が変わった。変換中のウィンドウを出させる位置とフォントを返し、
+    /// 伝えたカーソルのセルを覚える。
+    pub(super) fn on_ime_composition(&mut self) -> Option<ime::Placement> {
+        self.ime_composing = true;
+        let placement = self.ime_placement()?;
+        self.ime_placed_cursor = Some(placement.cursor);
+        Some(placement)
+    }
+
+    /// IME が変換を終えた。
+    pub(super) fn on_ime_end_composition(&mut self) {
+        self.ime_composing = false;
+        self.ime_placed_cursor = None;
+    }
+
+    /// 変換中に、IME に伝えたあとでカーソルが動いていれば（シェルの出力など）、変換中のウィンドウを出させ直す
+    /// 位置とフォント。動いていなければ `None`。
+    ///
+    /// ATOK の確定アンドゥは、確定した文字を消す Backspace をポストしてすぐに変換を始めるので、変換を始めた
+    /// 時点のカーソルは、シェルが消す前の位置にある。
+    pub(super) fn moved_ime_placement(&mut self) -> Option<ime::Placement> {
+        if !self.ime_composing {
+            return None;
+        }
+        let placement = self.ime_placement()?;
+        if self.ime_placed_cursor == Some(placement.cursor) {
+            return None;
+        }
+        self.ime_placed_cursor = Some(placement.cursor);
+        Some(placement)
     }
 
     /// 利用者の入力を子プロセスへ送る。過去を表示していたら、いちばん新しい行に戻す。

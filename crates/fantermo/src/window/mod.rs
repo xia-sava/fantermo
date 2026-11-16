@@ -46,6 +46,7 @@ use crate::{
     dump::{DUMP_INTERVAL, ScreenDump},
     elevate,
     font::{self, Font},
+    ime::CursorRect,
     instance::Forwarded,
     keyboard::Utf16Assembler,
     notice::{self, Topic},
@@ -370,6 +371,10 @@ struct App {
     exit: Option<ExitCode>,
     /// キーを伴わずに届く文字（IME の確定など）を組み立てる。
     text_input: Utf16Assembler,
+    /// IME が変換中（WM_IME_STARTCOMPOSITION から WM_IME_ENDCOMPOSITION まで）。
+    ime_composing: bool,
+    /// 変換中のウィンドウを出させるために、最後に IME に伝えたカーソルのセル。
+    ime_placed_cursor: Option<CursorRect>,
     /// ホイール 1 ノッチで動かす行数（Windows の設定。起動時と、設定が変わったときに読む）。
     wheel_lines_per_notch: u32,
     /// ダブルクリックの判定と画像のアニメーションに使う時計。
@@ -517,6 +522,8 @@ impl App {
             window_title: window_title("", &version::display(), elevated),
             exit: None,
             text_input: Utf16Assembler::default(),
+            ime_composing: false,
+            ime_placed_cursor: None,
             wheel_lines_per_notch: wheel_lines_per_notch(),
             clock: Instant::now(),
             image_animation_timer_running: false,

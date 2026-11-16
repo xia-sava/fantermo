@@ -19,11 +19,12 @@ use windows::Win32::{
             SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos,
             ShowWindow, WA_INACTIVE, WM_ACTIVATE, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE,
             WM_CONTEXTMENU, WM_COPYDATA, WM_DESTROY, WM_DPICHANGED, WM_ENABLE, WM_ENDSESSION,
-            WM_EXITMENULOOP, WM_IME_COMPOSITION, WM_IME_REQUEST, WM_IME_STARTCOMPOSITION,
-            WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
-            WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_QUERYENDSESSION,
-            WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR,
-            WM_SYSCOLORCHANGE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER,
+            WM_EXITMENULOOP, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_REQUEST,
+            WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN,
+            WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY,
+            WM_PAINT, WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR,
+            WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR, WM_SYSCOLORCHANGE, WM_SYSKEYDOWN, WM_SYSKEYUP,
+            WM_TIMER,
         },
     },
 };
@@ -212,6 +213,16 @@ thread_local! {
     static WARNED_REPOSTS: RefCell<Vec<(HWND, u32, WPARAM)>> = const { RefCell::new(Vec::new()) };
 }
 
+/// 変換中に、出力でカーソルが動いていれば、変換中のウィンドウを出させ直す（[`App::moved_ime_placement`]）。
+/// IME の関数を呼ぶと IME が同期的にメッセージを送ってくるので、借用を手放してから呼ぶ。
+fn follow_ime_cursor(hwnd: HWND, with_app: &WithApp) {
+    let mut placement = None;
+    with_app(&mut |app| placement = app.moved_ime_placement());
+    if let Some(placement) = placement {
+        ime::place_windows(hwnd, &placement);
+    }
+}
+
 /// 借用が重なって飛ばしたら、借用を手放したところで積み直すメッセージ。
 ///
 /// - [`WM_APP_WAKE`]。飛ばした知らせは [`App::on_wake`] を通らないので、端末の印
@@ -375,7 +386,9 @@ pub(super) extern "system" fn window_proc(
             if close {
                 // DestroyWindow はこの場で WM_DESTROY を送るので、借用を手放してから呼ぶ。
                 destroy_window(hwnd, &with_app);
+                return LRESULT(0);
             }
+            follow_ime_cursor(hwnd, &with_app);
             LRESULT(0)
         }
         WM_PAINT => {
@@ -399,7 +412,10 @@ pub(super) extern "system" fn window_proc(
                 SCROLL_BAR_TIMER_ID => with_app(&mut |app| app.on_scroll_bar_timer()),
                 IMAGE_ANIMATION_TIMER_ID => with_app(&mut |app| app.on_image_animation_timer()),
                 RENDERER_RETRY_TIMER_ID => with_app(&mut |app| app.on_renderer_retry_timer()),
-                OUTPUT_TIMER_ID => with_app(&mut |app| app.on_output_timer()),
+                OUTPUT_TIMER_ID => {
+                    with_app(&mut |app| app.on_output_timer());
+                    follow_ime_cursor(hwnd, &with_app);
+                }
                 CONFIG_TIMER_ID => {
                     // SAFETY: hwnd は有効なウィンドウ。
                     if let Err(e) = unsafe { KillTimer(Some(hwnd), CONFIG_TIMER_ID) } {
@@ -618,12 +634,17 @@ pub(super) extern "system" fn window_proc(
         }
         WM_IME_STARTCOMPOSITION | WM_IME_COMPOSITION => {
             let mut placement = None;
-            with_app(&mut |app| placement = app.ime_placement());
+            with_app(&mut |app| placement = app.on_ime_composition());
             // IME の関数を呼ぶと IME が同期的にメッセージを送ってくるので、借用を手放してから呼ぶ。
             if let Some(placement) = placement {
                 ime::place_windows(hwnd, &placement);
             }
             // 変換中の文字列は IME に描かせ、確定した文字列は既定の処理で WM_CHAR にしてもらう。
+            // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+        WM_IME_ENDCOMPOSITION => {
+            with_app(&mut |app| app.on_ime_end_composition());
             // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
