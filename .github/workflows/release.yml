@@ -303,7 +303,7 @@ jobs:
       # バージョンごとのリリース。配布物の実物が残るので、後からどのバージョンで何を配ったかを辿れる。
       # 配布物を書き込む唯一の外部コードなので、可変タグではなくコミットで固定する。
       - name: Publish versioned release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ needs.version.outputs.name }}
@@ -321,7 +321,7 @@ jobs:
       # 更新の取得先。アプリは latest から latest.json と配布物を取得するため、置き場を動かさずに
       # 中身だけ差し替える。
       - name: Update latest release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: latest
           name: "Latest build"
