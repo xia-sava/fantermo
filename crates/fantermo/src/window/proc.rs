@@ -19,11 +19,11 @@ use windows::Win32::{
             SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos,
             ShowWindow, WA_INACTIVE, WM_ACTIVATE, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE,
             WM_CONTEXTMENU, WM_COPYDATA, WM_DESTROY, WM_DPICHANGED, WM_ENABLE, WM_ENDSESSION,
-            WM_EXITMENULOOP, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP,
-            WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
-            WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_QUERYENDSESSION, WM_RBUTTONDOWN,
-            WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR, WM_SYSCOLORCHANGE,
-            WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER,
+            WM_EXITMENULOOP, WM_IME_COMPOSITION, WM_IME_REQUEST, WM_IME_STARTCOMPOSITION,
+            WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+            WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_QUERYENDSESSION,
+            WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCHAR,
+            WM_SYSCOLORCHANGE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER,
         },
     },
 };
@@ -51,7 +51,7 @@ use crate::{
     context_menu::{self, Chosen, MenuRequest},
     elevate,
     font::Font,
-    instance,
+    ime, instance,
     keyboard::KeyPosition,
     notice::{self, Topic},
     paste_editor,
@@ -351,7 +351,15 @@ pub(super) extern "system" fn window_proc(
                 repost_skipped_messages();
             }
             Err(_) => {
-                tracing::debug!("skipped reentrant message {msg:#06x}");
+                // IME の問い合わせは、どの問い合わせか（IMR_*）も残す。
+                if msg == WM_IME_REQUEST {
+                    tracing::debug!(
+                        "skipped reentrant message {msg:#06x} (request {})",
+                        wparam.0
+                    );
+                } else {
+                    tracing::debug!("skipped reentrant message {msg:#06x}");
+                }
                 if is_repostable(msg) {
                     remember_skipped_message(hwnd, msg, wparam);
                 }
@@ -609,7 +617,12 @@ pub(super) extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_IME_STARTCOMPOSITION | WM_IME_COMPOSITION => {
-            with_app(&mut |app| app.place_ime_windows());
+            let mut placement = None;
+            with_app(&mut |app| placement = app.ime_placement());
+            // IME の関数を呼ぶと IME が同期的にメッセージを送ってくるので、借用を手放してから呼ぶ。
+            if let Some(placement) = placement {
+                ime::place_windows(hwnd, &placement);
+            }
             // 変換中の文字列は IME に描かせ、確定した文字列は既定の処理で WM_CHAR にしてもらう。
             // SAFETY: 受け取った引数をそのまま既定の処理に渡す。
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }

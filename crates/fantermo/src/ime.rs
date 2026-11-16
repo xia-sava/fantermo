@@ -4,13 +4,12 @@
 
 use windows::Win32::{
     Foundation::{HWND, POINT, RECT},
+    Graphics::Gdi::LOGFONTW,
     UI::Input::Ime::{
         CANDIDATEFORM, CFS_EXCLUDE, CFS_POINT, COMPOSITIONFORM, ImmGetContext, ImmReleaseContext,
         ImmSetCandidateWindow, ImmSetCompositionFontW, ImmSetCompositionWindow,
     },
 };
-
-use crate::font::Font;
 
 /// カーソルのセルの、ウィンドウのクライアント領域での位置と大きさ（ピクセル）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,16 +20,27 @@ pub struct CursorRect {
     pub height: i32,
 }
 
+/// 変換中のウィンドウと候補のウィンドウを出させる位置とフォント。IME の関数を呼ぶと IME が同期的に
+/// メッセージ（WM_IME_REQUEST など）を送ってくるので、`App` を借りている間に取り出し、借用を手放してから
+/// [`place_windows`] に渡す。
+#[derive(Clone, Copy)]
+pub struct Placement {
+    /// カーソルのセル。
+    pub cursor: CursorRect,
+    /// 端末と同じフォント。
+    pub logfont: LOGFONTW,
+}
+
 /// 変換中のウィンドウをカーソルの位置に、端末と同じフォントで出させる。候補のウィンドウはカーソルの
 /// セルを避けさせる。
-pub fn place_windows(hwnd: HWND, cursor: CursorRect, font: &Font) {
+pub fn place_windows(hwnd: HWND, placement: &Placement) {
+    let Placement { cursor, logfont } = placement;
     // SAFETY: hwnd は有効なウィンドウ。得た入力コンテキストはこの関数の最後で返す。
     let context = unsafe { ImmGetContext(hwnd) };
     if context.is_invalid() {
         return;
     }
 
-    let logfont = font.logfont();
     let composition = COMPOSITIONFORM {
         dwStyle: CFS_POINT,
         ptCurrentPos: POINT {
@@ -55,7 +65,7 @@ pub fn place_windows(hwnd: HWND, cursor: CursorRect, font: &Font) {
     };
     // SAFETY: context は有効な入力コンテキストで、構造体は初期化済み。
     unsafe {
-        if !ImmSetCompositionFontW(context, &logfont).as_bool() {
+        if !ImmSetCompositionFontW(context, logfont).as_bool() {
             tracing::debug!("the IME did not accept the composition font");
         }
         if !ImmSetCompositionWindow(context, &composition).as_bool() {

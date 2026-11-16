@@ -169,12 +169,13 @@ impl App {
         self.send(c.encode_utf8(&mut buf).as_bytes());
     }
 
-    /// IME の変換中のウィンドウと候補のウィンドウを、いまのカーソルの位置に出させる。
-    pub(super) fn place_ime_windows(&self) {
-        let Some(cursor) = self.cursor_cell_rect() else {
-            return;
-        };
-        ime::place_windows(self.hwnd, cursor, &self.font);
+    /// IME の変換中のウィンドウと候補のウィンドウを出させる、いまのカーソルの位置とフォント。借用を手放して
+    /// から [`ime::place_windows`] に渡す。
+    pub(super) fn ime_placement(&self) -> Option<ime::Placement> {
+        Some(ime::Placement {
+            cursor: self.cursor_cell_rect()?,
+            logfont: self.font.logfont(),
+        })
     }
 
     /// 利用者の入力を子プロセスへ送る。過去を表示していたら、いちばん新しい行に戻す。
