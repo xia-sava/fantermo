@@ -616,7 +616,7 @@ impl GlyphAtlas {
             M31: (slot.x + slot.left) as f32 + placement.offset,
             M32: slot.y as f32,
         };
-        let options = draw_text_options(self.emoji);
+        let options = draw_text_options(slot.color);
         self.draw_in_slot(slot, &transform, |context| {
             // SAFETY: 描画中の context と、同じ context が作ったブラシ。layout はこの呼び出しの間は生きている。
             unsafe {
@@ -627,11 +627,13 @@ impl GlyphAtlas {
     }
 }
 
-/// 文字を描くときの指定。[`Emoji::Monochrome`] なら、色付きのフォントも色のない字形で描く。
-fn draw_text_options(emoji: Emoji) -> D2D1_DRAW_TEXT_OPTIONS {
-    match emoji {
-        Emoji::Color => D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-        Emoji::Monochrome => D2D1_DRAW_TEXT_OPTIONS_NONE,
+/// 文字を描くときの指定。色付きの字形を含む場所（[`Slot::color`]）でなければ、色付きのフォントも色のない
+/// 字形で描く。[`Emoji::Monochrome`] のときと、色付きのフォントかを調べられなかったときがこれに当たる。
+fn draw_text_options(color: bool) -> D2D1_DRAW_TEXT_OPTIONS {
+    if color {
+        D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT
+    } else {
+        D2D1_DRAW_TEXT_OPTIONS_NONE
     }
 }
 
