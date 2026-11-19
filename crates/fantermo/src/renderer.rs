@@ -1170,7 +1170,7 @@ mod tests {
         let (device, _context) = create_device_with(D3D_DRIVER_TYPE_WARP).unwrap();
         let dwrite = font::create_factory().unwrap();
         let font = font::find(&dwrite, &["Consolas"], 12.0, 96).unwrap();
-        let ui_font = Rc::new(UiFont::for_dpi(&dwrite, 96).unwrap());
+        let ui_font = Rc::new(UiFont::for_dpi(&dwrite, 96, emoji).unwrap());
         GlyphAtlas::new(
             &device,
             &dwrite,
@@ -1203,6 +1203,30 @@ mod tests {
         assert!(!atlas.icon_slot(Icon::Plus, 10, 10).unwrap().color);
         // タブのタイトルは、色付きの絵文字を含むものとして描く。
         assert!(atlas.label_slot("title").unwrap().color);
+    }
+
+    #[test]
+    fn unicode_draws_only_emoji_presentations_as_color_glyphs() {
+        let mut atlas = warp_atlas(Emoji::Unicode);
+        let black = Rgb { r: 0, g: 0, b: 0 };
+        let is_color = |atlas: &mut GlyphAtlas, text: &str, cells: u8| {
+            let slot = atlas.slot(text, false, false, cells).unwrap();
+            let kind = glyph([0.0; 4], slot, black).kind;
+            assert_eq!(
+                kind == InstanceKind::ColorGlyph,
+                slot.color,
+                "{text:?}: {kind:?}"
+            );
+            slot.color
+        };
+        assert!(is_color(&mut atlas, "\u{1F600}", 2));
+        assert!(!is_color(&mut atlas, "\u{2733}", 1));
+        assert!(is_color(&mut atlas, "\u{2733}\u{FE0F}", 1));
+        assert!(is_color(&mut atlas, "\u{263A}\u{FE0F}", 1));
+        assert!(!is_color(&mut atlas, "\u{263A}", 1));
+        assert!(!is_color(&mut atlas, "A", 1));
+        // タブのタイトルは、色付きの絵文字を含むものとして描く。
+        assert!(atlas.label_slot("\u{2733} title").unwrap().color);
     }
 
     #[test]

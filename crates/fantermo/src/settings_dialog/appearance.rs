@@ -53,7 +53,11 @@ const WIDE_GLYPH_LABELS: [&str; WideGlyph::ALL.len()] = [
 ];
 
 /// `font.emoji` の選択肢の表示。[`Emoji::ALL`] の順。
-const EMOJI_LABELS: [&str; Emoji::ALL.len()] = ["色付きで描く", "文字の色で線画として描く"];
+const EMOJI_LABELS: [&str; Emoji::ALL.len()] = [
+    "Unicode の既定に従う",
+    "色付きで描く",
+    "文字の色で線画として描く",
+];
 
 /// `font.size_pt` の入力欄。
 pub(super) const FONT_SIZE_KIND: NumberKind<f32> = NumberKind {

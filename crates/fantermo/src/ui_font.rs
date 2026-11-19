@@ -1,9 +1,18 @@
 //! タブバーのタイトルに使う、Windows の UI のフォント（メッセージボックスなどのメッセージのフォント）。
 //! 端末のフォントとは別に、ウィンドウの DPI に合わせ、メッセージのフォントより少し小さくした大きさで
 //! DirectWrite の書式を作り、文字列の幅を測る。
+//!
+//! [`Emoji::Unicode`] なら、タイトルを書記素クラスタに区切り、絵文字として表示するクラスタは
+//! [`EMOJI_FAMILY`](crate::color_font::EMOJI_FAMILY) で、文字として表示するクラスタのうち色付きの
+//! フォントに当たり [`SYMBOL_FAMILY`](crate::color_font::SYMBOL_FAMILY) が持つものはその書体で組む
+//! （[`cluster_font`]）。幅を測るのも描くのも [`UiFont::layout`] で組んだもので、同じ書体の指定になる。
+//! タイトルは一つの絵として色付きの字形を有効にして描くので、文字として表示するクラスタでも、
+//! [`SYMBOL_FAMILY`](crate::color_font::SYMBOL_FAMILY) が持たず色付きのフォントに当たるものは色付きで出る
+//! （範囲ごとに色の有無を変えられない）。
 
 use std::{cell::RefCell, collections::HashMap};
 
+use fantermo_core::config::Emoji;
 use windows::Win32::{
     Graphics::DirectWrite::{
         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_NORMAL,
@@ -17,9 +26,10 @@ use windows::Win32::{
 };
 
 use crate::{
+    color_font::{ClusterFont, ColorFonts, cluster_font, family_runs},
     font::{self, POINTS_PER_INCH},
     tab_bar,
-    text_placement::{self, TextExtent},
+    text_placement::{self, FamilyRun, TextExtent},
 };
 
 /// メッセージのフォントを問い合わせられなかったときの書体。
@@ -37,6 +47,9 @@ const LINE_HEIGHT_REFERENCE: &str = "Mg";
 /// 測った幅を覚えておく数の上限。超えたら忘れて測り直す。
 const MAX_CACHED_WIDTHS: usize = 4096;
 
+/// 書記素クラスタごとに決めた書体を覚えておく数の上限。超えたら忘れて決め直す。
+const MAX_CACHED_CLUSTERS: usize = 4096;
+
 /// Windows の UI のフォント。
 pub struct UiFont {
     dwrite: IDWriteFactory,
@@ -49,12 +62,15 @@ pub struct UiFont {
     height_px: u32,
     /// 測った文字列の幅。
     widths: RefCell<HashMap<String, u32>>,
+    /// 書記素クラスタごとに書体を決めるもの。[`Emoji::Unicode`] のときだけ持つ。
+    clusters: Option<TitleClusters>,
 }
 
 impl UiFont {
     /// DPI が `dpi` のウィンドウのメッセージのフォントの書体を、その [`TITLE_SIZE_RATIO`] 倍の大きさで。
     /// 問い合わせられなければ [`FALLBACK_FAMILY`] の [`FALLBACK_SIZE_PT`] ポイントの同じ割合。
-    pub fn for_dpi(dwrite: &IDWriteFactory, dpi: u32) -> windows::core::Result<Self> {
+    /// 色付きのフォントの字形は `emoji` のとおりに組む。
+    pub fn for_dpi(dwrite: &IDWriteFactory, dpi: u32, emoji: Emoji) -> windows::core::Result<Self> {
         let (family, message_size_px, weight) = match message_font(dpi) {
             Ok(found) => found,
             Err(e) => {
@@ -69,6 +85,15 @@ impl UiFont {
         let size_px = message_size_px * TITLE_SIZE_RATIO;
         let format = font::text_format(dwrite, &family, size_px, weight, DWRITE_FONT_STYLE_NORMAL)?;
         let height_px = line_height(dwrite, &format)?;
+        let clusters = (emoji == Emoji::Unicode).then(|| TitleClusters {
+            color_fonts: ColorFonts::new(dwrite, &family)
+                .inspect_err(|e| {
+                    tracing::warn!("failed to prepare finding the color fonts for titles: {e}");
+                })
+                .ok(),
+            weight,
+            fonts: RefCell::new(HashMap::new()),
+        });
         Ok(Self {
             dwrite: dwrite.clone(),
             family,
@@ -76,6 +101,7 @@ impl UiFont {
             format,
             height_px,
             widths: RefCell::new(HashMap::new()),
+            clusters,
         })
     }
 
@@ -84,9 +110,52 @@ impl UiFont {
         self.height_px
     }
 
-    /// `text` を 1 行に組んだものと、その送り幅とインクの範囲。
+    /// `text` を 1 行に組んだものと、その送り幅とインクの範囲。タイトルの幅を測るのも描くのもこれで組む。
     pub fn layout(&self, text: &str) -> windows::core::Result<(IDWriteTextLayout, TextExtent)> {
-        text_placement::text_layout(&self.dwrite, &self.format, text, self.height_px as f32)
+        let runs = match &self.clusters {
+            Some(clusters) => clusters.runs(text),
+            None => Vec::new(),
+        };
+        text_placement::text_layout(
+            &self.dwrite,
+            &self.format,
+            text,
+            self.height_px as f32,
+            &runs,
+        )
+    }
+}
+
+/// タイトルの書記素クラスタを組む書体を決めるもの（[`Emoji::Unicode`]）。
+struct TitleClusters {
+    /// UI のフォントを基準にして引くもの。作れなければ、文字として表示するクラスタは UI のフォントのまま組む。
+    color_fonts: Option<ColorFonts>,
+    /// UI のフォントの太さ。
+    weight: DWRITE_FONT_WEIGHT,
+    /// 書記素クラスタごとに決めた書体。
+    fonts: RefCell<HashMap<String, ClusterFont>>,
+}
+
+impl TitleClusters {
+    /// `text` のうち、UI のフォントとは別の書体で組む範囲。
+    fn runs(&self, text: &str) -> Vec<FamilyRun> {
+        let mut fonts = self.fonts.borrow_mut();
+        family_runs(text, |cluster| {
+            if let Some(font) = fonts.get(cluster) {
+                return *font;
+            }
+            let font = cluster_font(
+                self.color_fonts.as_ref(),
+                cluster,
+                self.weight,
+                DWRITE_FONT_STYLE_NORMAL,
+            );
+            if fonts.len() >= MAX_CACHED_CLUSTERS {
+                fonts.clear();
+            }
+            fonts.insert(cluster.to_owned(), font);
+            font
+        })
     }
 }
 
@@ -179,8 +248,8 @@ mod tests {
     #[test]
     fn the_message_font_follows_the_dpi() {
         let dwrite = font::create_factory().unwrap();
-        let base = UiFont::for_dpi(&dwrite, 96).unwrap();
-        let doubled = UiFont::for_dpi(&dwrite, 192).unwrap();
+        let base = UiFont::for_dpi(&dwrite, 96, Emoji::default()).unwrap();
+        let doubled = UiFont::for_dpi(&dwrite, 192, Emoji::default()).unwrap();
         assert!(!base.family.is_empty());
         assert_eq!(base.family, doubled.family);
         assert!((doubled.size_px - base.size_px * 2.0).abs() <= 1.0);
@@ -191,5 +260,29 @@ mod tests {
         assert!(0 < narrow && narrow < wide);
         // 覚えた幅を返す。
         assert_eq!(base.width("MMMM"), wide);
+    }
+
+    #[test]
+    fn titles_lay_out_emoji_clusters_in_the_emoji_font_only_for_unicode() {
+        let dwrite = font::create_factory().unwrap();
+        let unicode = UiFont::for_dpi(&dwrite, 96, Emoji::Unicode).unwrap();
+        let clusters = unicode.clusters.as_ref().unwrap();
+        assert_eq!(
+            clusters.runs("a\u{1F600}\u{2733}\u{FE0F}b"),
+            [FamilyRun {
+                start: 1,
+                length: 4,
+                family: crate::color_font::EMOJI_FAMILY,
+            }]
+        );
+        assert!(clusters.runs("abc").is_empty());
+        for emoji in [Emoji::Color, Emoji::Monochrome] {
+            assert!(
+                UiFont::for_dpi(&dwrite, 96, emoji)
+                    .unwrap()
+                    .clusters
+                    .is_none()
+            );
+        }
     }
 }

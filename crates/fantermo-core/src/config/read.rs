@@ -1844,8 +1844,13 @@ mod tests {
 
     #[test]
     fn emoji_takes_each_name() {
-        assert_eq!(parse("").config.font.emoji, Emoji::Color);
-        for (name, emoji) in [("color", Emoji::Color), ("monochrome", Emoji::Monochrome)] {
+        assert_eq!(parse("").config.font.emoji, Emoji::Unicode);
+        assert_eq!(Emoji::default(), Emoji::Unicode);
+        for (name, emoji) in [
+            ("unicode", Emoji::Unicode),
+            ("color", Emoji::Color),
+            ("monochrome", Emoji::Monochrome),
+        ] {
             assert_eq!(emoji.name(), name);
             let parsed = parse(&format!("[font]\nemoji = '{name}'\n"));
             assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
@@ -1856,13 +1861,13 @@ mod tests {
     #[test]
     fn unknown_emoji_names_the_accepted_values() {
         let parsed = parse("[font]\nemoji = 'Monochrome'\nsize = 10\n");
-        assert_eq!(parsed.config.font.emoji, Emoji::Color);
+        assert_eq!(parsed.config.font.emoji, Emoji::Unicode);
         assert_eq!(parsed.config.font.size_pt, 10.0);
         assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
         let warning = &parsed.warnings[0];
         assert!(warning.starts_with("ignoring font.emoji:"), "{warning}");
         assert!(
-            ["color", "monochrome"]
+            ["unicode", "color", "monochrome"]
                 .iter()
                 .all(|name| warning.contains(name)),
             "{warning}"

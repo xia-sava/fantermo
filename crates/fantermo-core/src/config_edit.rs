@@ -352,10 +352,18 @@ mod tests {
             let updated = update(text, &base, &edited).unwrap();
             assert_reads_as(&updated, &edited);
         }
-        let mut edited = Config::default();
-        edited.font.emoji = Emoji::Monochrome;
-        let updated = update("", &Config::default(), &edited).unwrap();
-        assert_eq!(updated, "[font]\nemoji = \"monochrome\"\n");
+        for (emoji, name) in [(Emoji::Color, "color"), (Emoji::Monochrome, "monochrome")] {
+            let mut edited = Config::default();
+            edited.font.emoji = emoji;
+            let updated = update("", &Config::default(), &edited).unwrap();
+            assert_eq!(updated, format!("[font]\nemoji = \"{name}\"\n"));
+        }
+        // 既定の値に戻すと、その行を既定の値のコメントの行にする。
+        let text = "[font]\nemoji = 'color'\n";
+        let base = config::parse(text, &Config::default()).config;
+        let updated = update(text, &base, &Config::default()).unwrap();
+        assert_reads_as(&updated, &Config::default());
+        assert!(updated.contains("# emoji = \"unicode\""), "{updated}");
     }
 
     fn families(names: &[&str]) -> Vec<String> {
@@ -443,7 +451,7 @@ mod tests {
             )
             .replace("# size = 12", "size = 10.5")
             .replace(r#"# wide_glyph = "shrink""#, r#"wide_glyph = "overflow""#)
-            .replace(r#"# emoji = "color""#, r#"emoji = "monochrome""#)
+            .replace(r#"# emoji = "unicode""#, r#"emoji = "monochrome""#)
             .replace(r#"# confirm = "unsafe""#, r#"confirm = "never""#)
             .replace("# confirm_size = 8", "confirm_size = 64")
             .replace(r#"# read = "ask""#, r#"read = "deny""#)

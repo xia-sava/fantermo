@@ -127,8 +127,10 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # wide_glyph = "shrink"
 
 # 色付きのフォント（Segoe UI Emoji など）の文字の描き方。端末の文字とタブのタイトルの両方に効く。
-# "color" は色のまま描く、"monochrome" は色付きのフォントが持つ色のない字形を文字の色で描く。
-# emoji = "color"
+# "unicode" は Unicode の既定の表示に従い、絵文字として表示する文字（U+FE0F が付いたものなど）は Segoe UI Emoji で
+# 色のまま描き、文字として表示する文字は色のない字形で描く。"color" は色付きのフォントで描く文字を色のまま描く、
+# "monochrome" は色付きのフォントが持つ色のない字形を文字の色で描く。
+# emoji = "unicode"
 
 [paste]
 # 貼り付ける前に、内容を編集できるダイアログで確認するとき。
@@ -673,8 +675,11 @@ impl WideGlyph {
 /// タイトルの両方に効く。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Emoji {
-    /// 色付きの字形は色のまま描く。
+    /// Unicode の既定の表示に従う。絵文字として表示する書記素クラスタは Segoe UI Emoji で色のまま、
+    /// 文字として表示するものは色のない字形で描く。
     #[default]
+    Unicode,
+    /// 色付きの字形は色のまま描く。
     Color,
     /// 色付きのフォントの、色のない字形で、文字の色で描く。
     Monochrome,
@@ -682,11 +687,14 @@ pub enum Emoji {
 
 impl Emoji {
     /// 値と、設定ファイルに書く名前。設定ファイルの説明と同じ順。
-    const NAMES: [(Emoji, &'static str); 2] =
-        [(Emoji::Color, "color"), (Emoji::Monochrome, "monochrome")];
+    const NAMES: [(Emoji, &'static str); 3] = [
+        (Emoji::Unicode, "unicode"),
+        (Emoji::Color, "color"),
+        (Emoji::Monochrome, "monochrome"),
+    ];
 
     /// 書ける値のすべて。設定ファイルの説明と同じ順。
-    pub const ALL: [Emoji; 2] = named_values(&Self::NAMES);
+    pub const ALL: [Emoji; 3] = named_values(&Self::NAMES);
 
     /// 設定ファイルに書く名前。
     pub fn name(self) -> &'static str {

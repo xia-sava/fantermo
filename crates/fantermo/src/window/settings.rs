@@ -1,6 +1,6 @@
 //! 設定。設定ファイルの読み直し、設定の入れ替え、設定ダイアログ。
 
-use std::path::PathBuf;
+use std::{path::PathBuf, rc::Rc};
 
 use fantermo_core::config::{Config, Emoji, FontConfig, WideGlyph};
 use windows::Win32::Foundation::HWND;
@@ -17,6 +17,7 @@ use crate::{
     renderer,
     settings_dialog::{self, FontChoice},
     tab_bar,
+    ui_font::UiFont,
 };
 
 impl App {
@@ -161,18 +162,26 @@ impl App {
     }
 
     /// セルより広いグリフの描き方と色付きのフォントの字形の描き方を変え、グリフアトラスを作り直す。
-    /// 失敗したら前の描き方のまま。
+    /// 色付きのフォントの字形の描き方が変われば、タイトルを組む UI のフォントも作り直す（作れなければ UI の
+    /// フォントだけ前のまま）。失敗したら前の描き方のまま。
     fn set_glyph_style(&mut self, wide_glyph: WideGlyph, emoji: Emoji) {
+        let ui_font = if emoji == self.config.font.emoji {
+            self.ui_font.clone()
+        } else {
+            match UiFont::for_dpi(&self.dwrite, self.dpi, emoji) {
+                Ok(ui_font) => Rc::new(ui_font),
+                Err(e) => {
+                    tracing::warn!("failed to create the UI font for {emoji:?}: {e}");
+                    self.ui_font.clone()
+                }
+            }
+        };
         // `Renderer` がないとき（作り直しを待つ間と、描画をやめたあと）と、デバイスを失ったときも、描き方は
         // 入れ替え、作り直す `Renderer` に使う。
         let rebuilt = match self.renderer.as_mut() {
-            Some(renderer) => renderer.set_font(
-                &self.dwrite,
-                &self.font,
-                self.ui_font.clone(),
-                wide_glyph,
-                emoji,
-            ),
+            Some(renderer) => {
+                renderer.set_font(&self.dwrite, &self.font, ui_font.clone(), wide_glyph, emoji)
+            }
             None => Ok(()),
         };
         let lost = match rebuilt {
@@ -187,6 +196,7 @@ impl App {
         };
         self.config.font.wide_glyph = wide_glyph;
         self.config.font.emoji = emoji;
+        self.ui_font = ui_font;
         if let Some(e) = lost {
             self.on_device_lost(&e);
         }

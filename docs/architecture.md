@@ -90,10 +90,11 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `renderer` | Direct3D 11 でウィンドウに描く．スワップチェーン，背景画像と端末の中の画像とタブのアイコンのテクスチャ |
 | `pipeline`・`cells.hlsl`・`shader` | 四角形のインスタンスを描くパイプライン，そのシェーダ，実行時のコンパイル（`D3DCompile`） |
 | `atlas` | グリフアトラス（2048×2048）．DirectWrite で組んだ文字を Direct2D で描く |
-| `text_placement` | 組んだ文字の送り幅とインクの範囲（`text_layout`），アトラスの場所への置き方（`place_text`）．`atlas` と `ui_font` が使う |
+| `text_placement` | 文字を 1 行に組み（範囲ごとの書体の指定 `FamilyRun` も），送り幅とインクの範囲を測る（`text_layout`）．アトラスの場所への置き方（`place_text`）．`atlas` と `ui_font` が使う |
 | `d2d_shape` | `boxdraw::Shape` を Direct2D の描画先に描く．`atlas` と `tab_icon` が使う |
-| `font`・`ui_font` | 端末のフォントを探してセルの寸法を測る．タブバーのタイトルに使う Windows の UI のフォント |
-| `color_font` | 端末の文字が色付きのフォントで描かれるかを，DirectWrite のシステムのフォントのフォールバック（`MapCharacters`）で調べる．`atlas` が使う |
+| `font`・`ui_font` | 端末のフォントを探してセルの寸法を測る．タブバーのタイトルに使う Windows の UI のフォントと，タイトルの組み方（幅を測るのも描くのも `UiFont::layout`） |
+| `color_font` | 文字が色付きのフォントで描かれるかを，DirectWrite のシステムのフォントのフォールバック（`MapCharacters`）で調べる．`font.emoji` が `unicode` のとき，書記素クラスタを組む書体（Segoe UI Emoji，Segoe UI Symbol，基準の書体のまま）を決める．`atlas` と `ui_font` が使う |
+| `presentation` | Unicode の既定の表示（絵文字として表示するか）を書記素クラスタごとに決める純粋な関数と，書記素クラスタへの区切り（`unicode-properties`，`unicode-segmentation`） |
 | `boxdraw`・`boxdraw/` | 罫線，ブロック要素，点字，Powerline の記号，レガシーコンピューティング記号の一部を形として組み立てる |
 | `decoration` | 下線・取り消し線・上線をセルの中の形として組み立てる |
 | `paint` | セルの格子によらずピクセルの位置で描くもの（`Paint`）．タブバーとスクロールバーが使う |
@@ -285,7 +286,9 @@ Direct3D 11 にグリフアトラスを載せて描きます．Direct2D + Direct
 
 - グリフは DirectWrite で組み（ロケールは `ja-jp`），Direct2D でアトラス（BGRA，乗算済みアルファ）に白で描き，色はシェーダで付けます．文字の縁はグレースケールです．
 - タブバーのタイトルだけは，縦横どちらにもアンチエイリアスをかけ，ヒンティングでピクセルの格子に合わせずに描きます（`DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC` と `DWRITE_GRID_FIT_MODE_DISABLED`）．既定の描き方では，UI のフォント（Yu Gothic UI など）の漢字やかながヒンティングで格子に強く合わせられ，斜めの線と曲線が階段状になるためです．端末の文字は既定の描き方のままです．
-- 色付きの絵文字を色のまま描くため（`font.emoji` が `color`），色付きの字形を含む文字は，アトラスに白の文字と黒の文字で 2 回描きます（上下に並べた同じ大きさの場所．`Slot::color`）．色付きの字形は文字の色によらず同じ色に描かれるので，シェーダ（`KIND_COLOR_GLYPH`）は二つの差を文字の色で塗り，黒の文字で描いたものに残った色をそのまま重ねます．タブバーのタイトルはどれも 2 回描きます．端末の文字は，描くフォントが色付きのフォント（`IDWriteFont2::IsColorFont`）のときだけ 2 回描き，ほかは 1 回だけ描いて `KIND_GLYPH` で描きます．描くフォントは，端末のフォントを基準の書体にして `IDWriteFontFallback::MapCharacters` で引きます（`color_font.rs`）．`MapCharacters` に渡す `IDWriteTextAnalysisSource` は windows-rs の `#[implement]` で作るので，`fantermo` は `windows-core` にも直接依存します（`#[implement]` が展開するコードが `windows_core` を参照するため）．結果はグリフの場所と一緒に覚え，引くのはグリフを初めて描くときだけです．
+- 色付きの絵文字を色のまま描くため（`font.emoji` が `color` と `unicode`），色付きの字形を含む文字は，アトラスに白の文字と黒の文字で 2 回描きます（上下に並べた同じ大きさの場所．`Slot::color`）．色付きの字形は文字の色によらず同じ色に描かれるので，シェーダ（`KIND_COLOR_GLYPH`）は二つの差を文字の色で塗り，黒の文字で描いたものに残った色をそのまま重ねます．タブバーのタイトルはどれも 2 回描きます．`color` では，端末の文字は，描くフォントが色付きのフォント（`IDWriteFont2::IsColorFont`）のときだけ 2 回描き，ほかは 1 回だけ描いて `KIND_GLYPH` で描きます．描くフォントは，端末のフォントを基準の書体にして `IDWriteFontFallback::MapCharacters` で引きます（`color_font.rs`）．`MapCharacters` に渡す `IDWriteTextAnalysisSource` は windows-rs の `#[implement]` で作るので，`fantermo` は `windows-core` にも直接依存します（`#[implement]` が展開するコードが `windows_core` を参照するため）．結果はグリフの場所と一緒に覚え，引くのはグリフを初めて描くときだけです．
+- `font.emoji` が `unicode`（既定）なら，端末の文字は書記素クラスタ（セルの文字）ごとに組む書体を決めます（`color_font::cluster_font`）．絵文字として表示するもの（`presentation::is_emoji_presentation`）は `IDWriteTextLayout::SetFontFamilyName` で書体を Segoe UI Emoji にして組み，2 回描きます．文字として表示するもので色付きのフォントに当たるものは，Segoe UI Symbol がすべての文字を持っていれば（`IDWriteFont::HasCharacter`）Segoe UI Symbol にして，持っていなければ書体を替えずに組み，どちらも 1 回だけ描きます．決めた書体と描き方は，グリフの場所と一緒に覚えます．
+- タブバーのタイトルは，`unicode` なら書記素クラスタに区切り，UI のフォントを基準にして同じように決めた書体を範囲ごとに `SetFontFamilyName` で指定して組みます（`UiFont::layout`）．タイトルの幅を測る `tab_bar::Measure` の `UiFont::width` も同じ `UiFont::layout` で組むので，測る幅と描く幅はずれません．クラスタごとに決めた書体は `UiFont` が覚え，`UiFont` は `font.emoji` が変わったら作り直します．タイトルは `color` と同じく 2 回描くので，Segoe UI Symbol が持たず色付きのフォントに当たる文字は色付きで出ます．
 - `font.emoji` が `monochrome` なら，端末の文字もタブバーのタイトルも `D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT` を付けずに 1 回だけ描き，色付きのフォントの色のない字形にします．
 - 斜体のようにインクがセルの左右へはみ出すグリフは，縮めずにはみ出す分の余白を持たせた場所に描き，隣のセルへ重ねて描きます．縮めるかどうかは送り幅で，余白はインクの範囲（`GetOverhangMetrics`）で決めます．
 - 罫線などはフォントに頼らず形として組み立てます（`boxdraw.rs` の先頭のコメント）．装飾の位置と太さは DirectWrite のフォントの計測と，組んだ行のベースラインから決めます．

@@ -1,8 +1,12 @@
 //! 組んだ文字の寸法と、グリフアトラスの場所への置き方。DirectWrite で測る部分以外は純粋な計算。
 
 use fantermo_core::config::WideGlyph;
-use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_TEXT_METRICS, IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
+use windows::{
+    Win32::Graphics::DirectWrite::{
+        DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE, IDWriteFactory, IDWriteTextFormat,
+        IDWriteTextLayout,
+    },
+    core::HSTRING,
 };
 
 /// [`WideGlyph::Overflow`] と [`WideGlyph::OverflowCenter`] で、文字に割り当てたセルの何倍の幅まで
@@ -24,17 +28,34 @@ pub struct TextExtent {
     pub ink_right: f32,
 }
 
-/// `text` を `format` で 1 行に組んだものと、その送り幅とインクの範囲。送り幅が 0 の文字
-/// （結合文字だけのものなど）は 1 ピクセルとして扱う。
+/// 文字列の一部（UTF-16 の位置 `start` から `length` 個）を組む書体。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FamilyRun {
+    pub start: u32,
+    pub length: u32,
+    pub family: &'static str,
+}
+
+/// `text` を `format` で 1 行に組んだものと、その送り幅とインクの範囲。`runs` の範囲は、それぞれの書体で
+/// 組む。送り幅が 0 の文字（結合文字だけのものなど）は 1 ピクセルとして扱う。
 pub fn text_layout(
     dwrite: &IDWriteFactory,
     format: &IDWriteTextFormat,
     text: &str,
     height: f32,
+    runs: &[FamilyRun],
 ) -> windows::core::Result<(IDWriteTextLayout, TextExtent)> {
     let text: Vec<u16> = text.encode_utf16().collect();
     // SAFETY: text と format はこの呼び出しの間は生きている。
     let layout = unsafe { dwrite.CreateTextLayout(&text, format, f32::MAX, height)? };
+    for run in runs {
+        let range = DWRITE_TEXT_RANGE {
+            startPosition: run.start,
+            length: run.length,
+        };
+        // SAFETY: layout は有効で、書体の名前はこの呼び出しの間は生きている。
+        unsafe { layout.SetFontFamilyName(&HSTRING::from(run.family), range)? };
+    }
     let mut metrics = DWRITE_TEXT_METRICS::default();
     // SAFETY: metrics は書き込める。
     unsafe { layout.GetMetrics(&mut metrics)? };
@@ -413,6 +434,7 @@ mod tests {
                     &format,
                     &c.to_string(),
                     font.cell_height_px as f32,
+                    &[],
                 )
                 .unwrap();
                 let placed = place_text(extent, 1, cell_width, WideGlyph::Shrink);

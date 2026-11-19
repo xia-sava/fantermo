@@ -6,10 +6,19 @@
 //! 斜体のようにインクがセルの左右へはみ出すグリフは、はみ出す分だけ左右に余白を持たせた場所に描く。
 //! タブバーのタイトルは、Windows の UI のフォント（[`UiFont`]）で文字列を一つの絵として描く。
 //!
-//! [`Emoji::Color`] なら、色付きのフォント（Segoe UI Emoji など）の字形を色のまま描くため、色付きの
-//! 字形を含む文字は白の文字と黒の文字で上下に並べて 2 回描く（[`GlyphAtlas::draw_glyph_text`]）。
-//! 端末の文字は色付きのフォントで描くものだけ（[`ColorFonts`] で調べる）、タブバーのタイトルはすべてを
-//! そう描く。[`Emoji::Monochrome`] なら、色付きのフォントも色のない字形で、1 回だけ描く。
+//! 色付きのフォント（Segoe UI Emoji など）の字形を色のまま描くため、色付きの字形を含む文字は白の文字と
+//! 黒の文字で上下に並べて 2 回描く（[`GlyphAtlas::draw_glyph_text`]）。どの文字をそう描くかは
+//! [`Emoji`] で決まる。
+//!
+//! - [`Emoji::Color`] では、端末の文字は色付きのフォントで描くものだけ（[`ColorFonts`] で調べる）。
+//! - [`Emoji::Unicode`] では、端末の文字は、絵文字として表示する書記素クラスタだけを
+//!   [`EMOJI_FAMILY`](crate::color_font::EMOJI_FAMILY) で組んで 2 回描く。文字として表示するものは、
+//!   色付きのフォントに当たれば [`SYMBOL_FAMILY`](crate::color_font::SYMBOL_FAMILY) か色付きのフォントの
+//!   色のない字形で、1 回だけ描く（[`cluster_font`]）。
+//! - [`Emoji::Monochrome`] では、色付きのフォントも色のない字形で、1 回だけ描く。
+//!
+//! タブバーのタイトルは、[`Emoji::Color`] と [`Emoji::Unicode`] ではどれも 2 回描く。[`Emoji::Unicode`] の
+//! 書記素クラスタごとの書体は [`UiFont::layout`] が指定する。
 
 use std::{collections::HashMap, rc::Rc};
 
@@ -47,12 +56,12 @@ use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::{
     boxdraw::{self, Shape},
-    color_font::ColorFonts,
+    color_font::{ClusterFont, ColorFonts, cluster_font},
     d2d_shape::{PIXEL_DPI, draw_shape},
     decoration::{self, Decoration, Placement},
     font::{self, Font},
     paint::Icon,
-    text_placement::{INK_EPSILON_PX, TextPlacement, place_text, text_layout},
+    text_placement::{FamilyRun, INK_EPSILON_PX, TextPlacement, place_text, text_layout},
     ui_font::UiFont,
 };
 
@@ -189,8 +198,8 @@ pub struct GlyphAtlas {
     wide_glyph: WideGlyph,
     /// 色付きのフォントの字形の描き方。
     emoji: Emoji,
-    /// 端末の文字を描くフォントを引くもの。[`Emoji::Color`] のときだけ作る。作れなければ、端末の文字は
-    /// どれも色付きの字形を含まないものとして描く。
+    /// 端末の文字を描くフォントを引くもの。[`Emoji::Color`] と [`Emoji::Unicode`] のときだけ作る。作れなければ、
+    /// 端末の文字は、[`Emoji::Unicode`] で絵文字として表示するもののほかは、色付きの字形を含まないものとして描く。
     color_fonts: Option<ColorFonts>,
     shelves: Shelves,
     slots: HashMap<GlyphKey, Slot>,
@@ -283,7 +292,7 @@ impl GlyphAtlas {
             font.cell_height_px as f32,
         );
         let color_fonts = match emoji {
-            Emoji::Color => ColorFonts::new(dwrite, &font.family)
+            Emoji::Color | Emoji::Unicode => ColorFonts::new(dwrite, &font.family)
                 .inspect_err(|e| {
                     tracing::warn!("failed to prepare finding the color fonts: {e}");
                 })
@@ -426,8 +435,10 @@ impl GlyphAtlas {
     /// 描く。場所の高さは UI のフォントの 1 行の高さで、インクが送り幅の左右へはみ出せば、その分の
     /// 余白を足す。
     ///
-    /// [`Emoji::Color`] なら、色付きの絵文字を色のまま描けるよう、タイトルはどれも色付きの字形を含む
-    /// ものとして描く（[`GlyphAtlas::draw_glyph_text`]）。
+    /// [`Emoji::Color`] と [`Emoji::Unicode`] なら、色付きの絵文字を色のまま描けるよう、タイトルはどれも
+    /// 色付きの字形を含むものとして描く（[`GlyphAtlas::draw_glyph_text`]）。一つの絵として描くので、
+    /// [`Emoji::Unicode`] で文字として表示するクラスタも、[`UiFont::layout`] が書体を替えずに色付きのフォントに
+    /// 当たるものは色付きで出る。
     pub fn label_slot(&mut self, text: &str) -> Result<Slot, AtlasFull> {
         if let Some(slot) = self.label_slots.get(text) {
             return Ok(*slot);
@@ -452,7 +463,7 @@ impl GlyphAtlas {
             right_margin: margin(extent.ink_right - extent.advance),
         };
         let width = placement.left_margin + extent.advance.ceil() as u32 + placement.right_margin;
-        let color = self.emoji == Emoji::Color;
+        let color = self.emoji != Emoji::Monochrome;
         let slot = Slot {
             left: placement.left_margin,
             ..self.allocate_text(width, height, color)?
@@ -539,17 +550,30 @@ impl GlyphAtlas {
     /// 組めなければ、セルの幅の空の場所を返す。
     fn text_slot(&mut self, key: &GlyphKey) -> Result<Slot, AtlasFull> {
         let cell_width = self.cell_width as f32;
+        let (family, color) = self.glyph_font(key);
+        let runs: Vec<FamilyRun> = family
+            .map(|family| FamilyRun {
+                start: 0,
+                length: key.text.encode_utf16().count() as u32,
+                family,
+            })
+            .into_iter()
+            .collect();
         let format = &self.formats[format_index(key.bold, key.italic)];
-        let (layout, extent) =
-            match text_layout(&self.dwrite, format, &key.text, self.cell_height as f32) {
-                Ok(measured) => measured,
-                Err(e) => {
-                    tracing::warn!("failed to lay out {:?}: {e}", key.text);
-                    return self.allocate(self.cell_width * u32::from(key.cells));
-                }
-            };
+        let (layout, extent) = match text_layout(
+            &self.dwrite,
+            format,
+            &key.text,
+            self.cell_height as f32,
+            &runs,
+        ) {
+            Ok(measured) => measured,
+            Err(e) => {
+                tracing::warn!("failed to lay out {:?}: {e}", key.text);
+                return self.allocate(self.cell_width * u32::from(key.cells));
+            }
+        };
         let placement = place_text(extent, key.cells, cell_width, self.wide_glyph);
-        let color = self.contains_color(key);
         let slot = Slot {
             left: placement.left_margin,
             ..self.allocate_text(
@@ -562,6 +586,20 @@ impl GlyphAtlas {
             tracing::warn!("failed to rasterize {:?}: {e}", key.text);
         }
         Ok(slot)
+    }
+
+    /// 端末の文字 `key` を組む書体（端末のフォントのままなら `None`）と、色付きの字形を含むものとして描くか
+    /// （[`Slot::color`]）。
+    fn glyph_font(&self, key: &GlyphKey) -> (Option<&'static str>, bool) {
+        match self.emoji {
+            Emoji::Color => (None, self.contains_color(key)),
+            Emoji::Monochrome => (None, false),
+            Emoji::Unicode => {
+                let (weight, style) = font_variant(key.bold, key.italic);
+                let font = cluster_font(self.color_fonts.as_ref(), &key.text, weight, style);
+                (font.family(), font == ClusterFont::Emoji)
+            }
+        }
     }
 
     /// 端末の文字 `key` が色付きのフォントで描く文字を含むか。調べられなければ含まないとする。
@@ -628,7 +666,8 @@ impl GlyphAtlas {
 }
 
 /// 文字を描くときの指定。色付きの字形を含む場所（[`Slot::color`]）でなければ、色付きのフォントも色のない
-/// 字形で描く。[`Emoji::Monochrome`] のときと、色付きのフォントかを調べられなかったときがこれに当たる。
+/// 字形で描く。[`Emoji::Monochrome`] のとき、[`Emoji::Unicode`] で文字として表示する書記素クラスタ、
+/// 色付きのフォントかを調べられなかったときがこれに当たる。
 fn draw_text_options(color: bool) -> D2D1_DRAW_TEXT_OPTIONS {
     if color {
         D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT

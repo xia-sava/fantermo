@@ -449,7 +449,7 @@ impl App {
         let scroll_bar_area = scroll_bar_area_in_client(width, terminal_area, insets);
         let backdrop_area = backdrop_area_in_client(width, height, insets);
         let size = grid_size(&font, terminal_area);
-        let ui_font = Rc::new(UiFont::for_dpi(&dwrite, dpi)?);
+        let ui_font = Rc::new(UiFont::for_dpi(&dwrite, dpi, config.font.emoji)?);
         log_ui_font(&ui_font, dpi);
         let renderer = Renderer::new(
             hwnd,

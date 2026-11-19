@@ -118,7 +118,7 @@ impl App {
     /// （UI のフォントだけを作れなければ、UI のフォントだけ前のまま）。
     pub(super) fn apply_font(&mut self, font: Font) {
         let dpi = self.dpi;
-        let ui_font = match UiFont::for_dpi(&self.dwrite, dpi) {
+        let ui_font = match UiFont::for_dpi(&self.dwrite, dpi, self.config.font.emoji) {
             Ok(ui_font) => Rc::new(ui_font),
             Err(e) => {
                 tracing::warn!("failed to create the UI font for {dpi} DPI: {e}");

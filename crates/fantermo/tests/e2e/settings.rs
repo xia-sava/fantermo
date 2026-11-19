@@ -315,7 +315,7 @@ fn every_settings_page_opens_and_shows_the_values_of_the_file() {
     assert_eq!(control(&dialog, ID_FONT)["text"], "Consolas", "{dialog:#}");
     assert_eq!(control(&dialog, ID_SIZE)["text"], "14");
     assert!(radio_checked(&dialog, ID_WIDE_GLYPH + 1), "{dialog:#}");
-    assert!(radio_checked(&dialog, ID_EMOJI + 1), "{dialog:#}");
+    assert!(radio_checked(&dialog, ID_EMOJI + 2), "{dialog:#}");
     assert_eq!(control(&dialog, ID_SCROLL_BAR_WIDTH)["text"], "20");
     assert_eq!(control(&dialog, ID_PADDING)["text"], "8");
 
@@ -529,7 +529,7 @@ fn the_appearance_page_previews_at_once_and_ok_writes_it() {
     assert_eq!(current_window(&padded), window, "{padded:#}");
     assert_layout_fits_the_client(&padded);
     choose_radio(&server, ID_WIDE_GLYPH + 2);
-    choose_radio(&server, ID_EMOJI + 1);
+    choose_radio(&server, ID_EMOJI + 2);
 
     // 一覧の別のフォントを選ぶ。ランナーに一つしかなければ選ばない。
     let fonts = control(&dialog, ID_FONT)["items"]
