@@ -156,8 +156,8 @@ impl IDWriteTextAnalysisSource_Impl for AnalysisSource_Impl {
         textstring: *mut *mut u16,
         textlength: *mut u32,
     ) -> windows::core::Result<()> {
-        let end = (textposition as usize).min(self.text.len());
-        let before = &self.text[..end];
+        // 先頭と、末尾より後ろの位置では、前の文字はない。
+        let before = self.text.get(..textposition as usize).unwrap_or_default();
         // SAFETY: DirectWrite が書き込める場所を渡す。文字列は self が持ち、self が生きている間は動かない。
         unsafe {
             *textstring = if before.is_empty() {
