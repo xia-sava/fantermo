@@ -36,6 +36,33 @@ fn frame_lists_text_cells_with_widths() {
     assert_eq!((frame.cols, frame.rows), (SIZE.cols, SIZE.rows));
 }
 
+/// `text` を書いたときの最初のセルの文字と幅。
+fn first_cell(text: &str) -> (String, u8) {
+    let mut vt = new_vt();
+    vt.feed(text.as_bytes());
+    let cell = vt.frame().unwrap().cells.remove(0);
+    (cell.text, cell.width)
+}
+
+#[test]
+fn presentation_selectors_stay_only_after_pictographs() {
+    // 絵文字の文字の直後の異体字セレクタはセルの文字に残る（絵文字として描くかを決めるのに使う）。
+    assert_eq!(
+        first_cell("\u{263A}\u{FE0F}"),
+        ("\u{263A}\u{FE0F}".to_owned(), 1)
+    );
+    assert_eq!(
+        first_cell("\u{2733}\u{FE0F}"),
+        ("\u{2733}\u{FE0F}".to_owned(), 1)
+    );
+    assert_eq!(
+        first_cell("\u{1F600}\u{FE0E}"),
+        ("\u{1F600}\u{FE0E}".to_owned(), 2)
+    );
+    // mode 2027 が無効なら、絵文字の文字でない # の後ろのセレクタは落ちる。
+    assert_eq!(first_cell("#\u{FE0F}\u{20E3}"), ("#\u{20E3}".to_owned(), 1));
+}
+
 #[test]
 fn frame_resolves_colors_and_inverse() {
     let mut vt = new_vt();
