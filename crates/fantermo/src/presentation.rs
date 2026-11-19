@@ -9,10 +9,15 @@ use unicode_segmentation::UnicodeSegmentation;
 
 /// 書記素クラスタ `cluster` を絵文字として表示するか。
 ///
-/// `U+FE0F`（絵文字の表示を求める異体字セレクタ）を含めば絵文字、`U+FE0E`（文字の表示を求めるもの）を
-/// 含めば文字として表示する。両方を含めば、後に現れたほうに従う。どちらも含まなければ、
-/// Emoji_Presentation が Yes の文字（地域指示記号を含む）を含むときだけ絵文字として表示する。
+/// Emoji が Yes の文字を含むクラスタでは、`U+FE0F`（絵文字の表示を求める異体字セレクタ）を含めば絵文字、
+/// `U+FE0E`（文字の表示を求めるもの）を含めば文字として表示する。両方を含めば、後に現れたほうに従う。
+/// どちらも含まなければ、Emoji_Presentation が Yes の文字（地域指示記号を含む）を含むときだけ絵文字として
+/// 表示する。Emoji が Yes の文字を含まないクラスタ（`A` に `U+FE0F` を付けたものなど）は、セレクタが
+/// 効かないので文字として表示する。
 pub fn is_emoji_presentation(cluster: &str) -> bool {
+    if !cluster.chars().any(|c| c.is_emoji_char()) {
+        return false;
+    }
     let selected = cluster.chars().rev().find_map(|c| {
         if is_emoji_presentation_selector(c) {
             Some(true)
@@ -89,6 +94,15 @@ mod tests {
         assert!(is_emoji_presentation("\u{2733}\u{FE0E}\u{FE0F}"));
         assert!(!is_emoji_presentation("\u{2733}\u{FE0F}\u{FE0E}"));
         assert!(!is_emoji_presentation("\u{1F600}\u{FE0F}\u{FE0E}"));
+    }
+
+    #[test]
+    fn selectors_after_characters_that_are_not_emoji_have_no_effect() {
+        assert!(!is_emoji_presentation("A\u{FE0F}"));
+        assert!(!is_emoji_presentation("\u{2192}\u{FE0F}")); // →
+        // 数字と # は Emoji が Yes なので、セレクタが効く。
+        assert!(is_emoji_presentation("1\u{FE0F}"));
+        assert!(is_emoji_presentation("#\u{FE0F}\u{20E3}"));
     }
 
     #[test]
