@@ -1148,9 +1148,12 @@ fn write_png(
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
     use windows::Win32::Foundation::{E_FAIL, E_OUTOFMEMORY};
 
     use super::*;
+    use crate::{font, paint::Icon};
 
     #[test]
     fn only_errors_from_losing_the_device_count_as_losing_it() {
@@ -1160,6 +1163,53 @@ mod tests {
         assert!(is_device_lost(&D2DERR_RECREATE_TARGET.into()));
         assert!(!is_device_lost(&E_FAIL.into()));
         assert!(!is_device_lost(&E_OUTOFMEMORY.into()));
+    }
+
+    /// WARP のデバイスに、Consolas を端末のフォントにして `emoji` で作ったアトラス。
+    fn warp_atlas(emoji: Emoji) -> GlyphAtlas {
+        let (device, _context) = create_device_with(D3D_DRIVER_TYPE_WARP).unwrap();
+        let dwrite = font::create_factory().unwrap();
+        let font = font::find(&dwrite, &["Consolas"], 12.0, 96).unwrap();
+        let ui_font = Rc::new(UiFont::for_dpi(&dwrite, 96).unwrap());
+        GlyphAtlas::new(
+            &device,
+            &dwrite,
+            &font,
+            ui_font,
+            WideGlyph::default(),
+            emoji,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn color_glyphs_take_two_rows_and_are_drawn_as_color_glyphs() {
+        let mut atlas = warp_atlas(Emoji::Color);
+        let black = Rgb { r: 0, g: 0, b: 0 };
+        let emoji = atlas.slot("\u{1F600}", false, false, 2).unwrap();
+        assert!(emoji.color);
+        assert_eq!(glyph([0.0; 4], emoji, black).kind, InstanceKind::ColorGlyph);
+        let letter = atlas.slot("A", false, false, 1).unwrap();
+        assert!(!letter.color);
+        assert_eq!(glyph([0.0; 4], letter, black).kind, InstanceKind::Glyph);
+        // 罫線、装飾、形は色付きでない。
+        assert!(!atlas.slot("\u{2500}", false, false, 1).unwrap().color);
+        assert!(
+            !atlas
+                .decoration_slot(Decoration::Strikethrough, 1)
+                .unwrap()
+                .color
+        );
+        assert!(!atlas.icon_slot(Icon::Plus, 10, 10).unwrap().color);
+        // タブのタイトルは、色付きの絵文字を含むものとして描く。
+        assert!(atlas.label_slot("title").unwrap().color);
+    }
+
+    #[test]
+    fn monochrome_draws_no_color_glyphs() {
+        let mut atlas = warp_atlas(Emoji::Monochrome);
+        assert!(!atlas.slot("\u{1F600}", false, false, 2).unwrap().color);
+        assert!(!atlas.label_slot("\u{1F600} title").unwrap().color);
     }
 
     #[test]
