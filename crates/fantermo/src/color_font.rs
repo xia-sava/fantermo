@@ -8,7 +8,7 @@ use windows::{
         IDWriteFactory2, IDWriteFont, IDWriteFont2, IDWriteFontCollection, IDWriteFontFallback,
         IDWriteNumberSubstitution, IDWriteTextAnalysisSource, IDWriteTextAnalysisSource_Impl,
     },
-    core::{BOOL, HSTRING, Interface, OutRef, implement},
+    core::{HSTRING, Interface, OutRef, implement},
 };
 
 use crate::font::{self, LOCALE};
@@ -88,17 +88,8 @@ impl ColorFonts {
         weight: DWRITE_FONT_WEIGHT,
         style: DWRITE_FONT_STYLE,
     ) -> windows::core::Result<IDWriteFont> {
-        let mut index = 0u32;
-        let mut exists = BOOL::default();
-        // SAFETY: family はこの呼び出しの間は生きていて、index と exists は書き込める。
-        unsafe {
-            self.collection
-                .FindFamilyName(&self.family, &mut index, &mut exists)?
-        };
-        if !exists.as_bool() {
-            return Err(windows::core::Error::empty());
-        }
-        // SAFETY: index は FindFamilyName が見つけた有効な番号。
+        let index = font::find_family(&self.collection, &self.family.to_string())?;
+        // SAFETY: index は find_family が見つけた有効な番号。
         unsafe {
             self.collection.GetFontFamily(index)?.GetFirstMatchingFont(
                 weight,

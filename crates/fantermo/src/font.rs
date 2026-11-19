@@ -206,7 +206,8 @@ pub fn system_collection(factory: &IDWriteFactory) -> windows::core::Result<IDWr
     collection.ok_or_else(windows::core::Error::empty)
 }
 
-fn find_family(collection: &IDWriteFontCollection, family: &str) -> windows::core::Result<u32> {
+/// `collection` の中の、書体 `family` の番号。なければ名前を添えたエラー。
+pub fn find_family(collection: &IDWriteFontCollection, family: &str) -> windows::core::Result<u32> {
     let mut index = 0u32;
     let mut exists = BOOL::default();
     // SAFETY: index と exists は書き込める。
