@@ -23,6 +23,7 @@ mod boxdraw;
 mod bridge;
 mod clipboard;
 mod clipboard_prompt;
+mod color_font;
 mod command_line;
 mod config_file;
 mod conpty;

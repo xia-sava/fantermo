@@ -212,8 +212,8 @@ mod tests {
     use crate::{
         config::{
             self, BackendKind, BackgroundConfig, BackgroundFit, BackgroundImage, ClipboardConfig,
-            ClipboardRead, ClipboardWrite, ColorScheme, ColorsConfig, FontConfig, PasteConfig,
-            PasteConfirm, Profile, ScrollBarConfig, TEMPLATE, WideGlyph, WindowConfig,
+            ClipboardRead, ClipboardWrite, ColorScheme, ColorsConfig, Emoji, FontConfig,
+            PasteConfig, PasteConfirm, Profile, ScrollBarConfig, TEMPLATE, WideGlyph, WindowConfig,
         },
         frame::Rgb,
         keymap::Keymap,
@@ -342,6 +342,22 @@ mod tests {
         assert_eq!(updated, "[font]\nwide_glyph = \"overflow_center\"\n");
     }
 
+    #[test]
+    fn every_emoji_is_written_by_its_name() {
+        for emoji in Emoji::ALL {
+            let mut edited = Config::default();
+            edited.font.emoji = emoji;
+            let text = "[font]\nemoji = 'monochrome'\n";
+            let base = config::parse(text, &Config::default()).config;
+            let updated = update(text, &base, &edited).unwrap();
+            assert_reads_as(&updated, &edited);
+        }
+        let mut edited = Config::default();
+        edited.font.emoji = Emoji::Monochrome;
+        let updated = update("", &Config::default(), &edited).unwrap();
+        assert_eq!(updated, "[font]\nemoji = \"monochrome\"\n");
+    }
+
     fn families(names: &[&str]) -> Vec<String> {
         names.iter().map(|&name| name.to_owned()).collect()
     }
@@ -357,6 +373,7 @@ mod tests {
                 families: families(&["Cascadia Mono", "Consolas"]),
                 size_pt: 10.5,
                 wide_glyph: WideGlyph::Overflow,
+                emoji: Emoji::Monochrome,
             },
             profiles: vec![Profile::from_shell("zsh -l"), Profile::builtin()],
             default_profile: Some(config::DEFAULT_PROFILE_NAME.to_owned()),
@@ -426,6 +443,7 @@ mod tests {
             )
             .replace("# size = 12", "size = 10.5")
             .replace(r#"# wide_glyph = "shrink""#, r#"wide_glyph = "overflow""#)
+            .replace(r#"# emoji = "color""#, r#"emoji = "monochrome""#)
             .replace(r#"# confirm = "unsafe""#, r#"confirm = "never""#)
             .replace("# confirm_size = 8", "confirm_size = 64")
             .replace(r#"# read = "ask""#, r#"read = "deny""#)

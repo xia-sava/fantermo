@@ -21,6 +21,7 @@ use fantermo_core::config::ClipboardRead;
 use fantermo_core::config::ClipboardWrite;
 use fantermo_core::config::ColorScheme;
 use fantermo_core::config::Config;
+use fantermo_core::config::Emoji;
 use fantermo_core::config::PasteConfirm;
 use fantermo_core::config::WideGlyph;
 use fantermo_core::frame::Rgb;
@@ -39,6 +40,7 @@ const ID_FONT: i32 = 200;
 const ID_SIZE: i32 = 201;
 const ID_SIZE_SPIN: i32 = 202;
 const ID_WIDE_GLYPH: i32 = 210;
+const ID_EMOJI: i32 = 216;
 const ID_SCROLL_BAR_WIDTH: i32 = 220;
 const ID_SCROLL_BAR_WIDTH_SPIN: i32 = 221;
 const ID_PADDING: i32 = 230;
@@ -214,6 +216,7 @@ cygwin_root = 'C:\cygwin-of-the-test'
 family = ["Consolas"]
 size = 14
 wide_glyph = "clip"
+emoji = "monochrome"
 
 [paste]
 confirm = "multiline"
@@ -312,6 +315,7 @@ fn every_settings_page_opens_and_shows_the_values_of_the_file() {
     assert_eq!(control(&dialog, ID_FONT)["text"], "Consolas", "{dialog:#}");
     assert_eq!(control(&dialog, ID_SIZE)["text"], "14");
     assert!(radio_checked(&dialog, ID_WIDE_GLYPH + 1), "{dialog:#}");
+    assert!(radio_checked(&dialog, ID_EMOJI + 1), "{dialog:#}");
     assert_eq!(control(&dialog, ID_SCROLL_BAR_WIDTH)["text"], "20");
     assert_eq!(control(&dialog, ID_PADDING)["text"], "8");
 
@@ -525,6 +529,7 @@ fn the_appearance_page_previews_at_once_and_ok_writes_it() {
     assert_eq!(current_window(&padded), window, "{padded:#}");
     assert_layout_fits_the_client(&padded);
     choose_radio(&server, ID_WIDE_GLYPH + 2);
+    choose_radio(&server, ID_EMOJI + 1);
 
     // 一覧の別のフォントを選ぶ。ランナーに一つしかなければ選ばない。
     let fonts = control(&dialog, ID_FONT)["items"]
@@ -550,6 +555,7 @@ fn the_appearance_page_previews_at_once_and_ok_writes_it() {
     assert_eq!(saved.scroll_bar.width, 30);
     assert_eq!(saved.window.padding, 16);
     assert_eq!(saved.font.wide_glyph, WideGlyph::Overflow);
+    assert_eq!(saved.font.emoji, Emoji::Monochrome);
     if let Some((_, name)) = other_font {
         assert_eq!(saved.font.families[0], name);
     }

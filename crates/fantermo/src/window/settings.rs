@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use fantermo_core::config::{Config, FontConfig, WideGlyph};
+use fantermo_core::config::{Config, Emoji, FontConfig, WideGlyph};
 use windows::Win32::Foundation::HWND;
 
 use super::{
@@ -110,7 +110,7 @@ impl App {
         let same_face =
             font.families == self.config.font.families && font.size_pt == self.config.font.size_pt;
         if same_face {
-            self.set_wide_glyph(font.wide_glyph);
+            self.set_glyph_style(font.wide_glyph, font.emoji);
             return None;
         }
         let measured = match font::find_or_default(&self.dwrite, &font, self.dpi) {
@@ -160,25 +160,33 @@ impl App {
         }
     }
 
-    /// セルより広いグリフの描き方を変え、グリフアトラスを作り直す。失敗したら前の描き方のまま。
-    fn set_wide_glyph(&mut self, wide_glyph: WideGlyph) {
+    /// セルより広いグリフの描き方と色付きのフォントの字形の描き方を変え、グリフアトラスを作り直す。
+    /// 失敗したら前の描き方のまま。
+    fn set_glyph_style(&mut self, wide_glyph: WideGlyph, emoji: Emoji) {
         // `Renderer` がないとき（作り直しを待つ間と、描画をやめたあと）と、デバイスを失ったときも、描き方は
         // 入れ替え、作り直す `Renderer` に使う。
         let rebuilt = match self.renderer.as_mut() {
-            Some(renderer) => {
-                renderer.set_font(&self.dwrite, &self.font, self.ui_font.clone(), wide_glyph)
-            }
+            Some(renderer) => renderer.set_font(
+                &self.dwrite,
+                &self.font,
+                self.ui_font.clone(),
+                wide_glyph,
+                emoji,
+            ),
             None => Ok(()),
         };
         let lost = match rebuilt {
             Ok(()) => None,
             Err(e) if renderer::is_device_lost(&e) => Some(e),
             Err(e) => {
-                tracing::warn!("failed to rebuild the glyph atlas for {wide_glyph:?}: {e}");
+                tracing::warn!(
+                    "failed to rebuild the glyph atlas for {wide_glyph:?} and {emoji:?}: {e}"
+                );
                 return;
             }
         };
         self.config.font.wide_glyph = wide_glyph;
+        self.config.font.emoji = emoji;
         if let Some(e) = lost {
             self.on_device_lost(&e);
         }

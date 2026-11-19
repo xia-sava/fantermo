@@ -5,18 +5,23 @@
 //! 高さはそこに置いたものの高いほう。文字は 1 セルの高さ）、いっぱいになったら全部を捨てて描き直す。
 //! 斜体のようにインクがセルの左右へはみ出すグリフは、はみ出す分だけ左右に余白を持たせた場所に描く。
 //! タブバーのタイトルは、Windows の UI のフォント（[`UiFont`]）で文字列を一つの絵として描く。
-//! タイトルの色付きの絵文字は色のまま描く（[`GlyphAtlas::label_slot`]）。
+//!
+//! [`Emoji::Color`] なら、色付きのフォント（Segoe UI Emoji など）の字形を色のまま描くため、色付きの
+//! 字形を含む文字は白の文字と黒の文字で上下に並べて 2 回描く（[`GlyphAtlas::draw_glyph_text`]）。
+//! 端末の文字は色付きのフォントで描くものだけ（[`ColorFonts`] で調べる）、タブバーのタイトルはすべてを
+//! そう描く。[`Emoji::Monochrome`] なら、色付きのフォントも色のない字形で、1 回だけ描く。
 
 use std::{collections::HashMap, rc::Rc};
 
-use fantermo_core::config::WideGlyph;
+use fantermo_core::config::{Emoji, WideGlyph};
 use windows::{
     Win32::Graphics::{
         Direct2D::{
             Common::{D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT},
             D2D1_ANTIALIAS_MODE_ALIASED, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
             D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
-            D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+            D2D1_DRAW_TEXT_OPTIONS, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+            D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_TYPE_SINGLE_THREADED,
             D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, D2D1CreateFactory, ID2D1DeviceContext,
             ID2D1Factory1, ID2D1SolidColorBrush,
         },
@@ -42,6 +47,7 @@ use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::{
     boxdraw::{self, Shape},
+    color_font::ColorFonts,
     d2d_shape::{PIXEL_DPI, draw_shape},
     decoration::{self, Decoration, Placement},
     font::{self, Font},
@@ -92,6 +98,9 @@ pub struct Slot {
     /// 場所の左端が、文字に割り当てたセルの左端より何ピクセル左にあるか。インクが左のセルへ
     /// はみ出すグリフで正になる。
     pub left: u32,
+    /// 色付きの字形を含む。この場所に白の文字で、すぐ下の同じ大きさの場所に黒の文字で描いてある
+    /// （[`GlyphAtlas::draw_glyph_text`]）。
+    pub color: bool,
 }
 
 /// アトラスに空きがない。
@@ -144,6 +153,7 @@ impl Shelves {
             width,
             height,
             left: 0,
+            color: false,
         })
     }
 }
@@ -164,7 +174,7 @@ pub struct GlyphAtlas {
     context: ID2D1DeviceContext,
     /// 白のブラシ。
     brush: ID2D1SolidColorBrush,
-    /// 黒のブラシ。タブバーのタイトルを描くのに使う（[`GlyphAtlas::label_slot`]）。
+    /// 黒のブラシ。色付きの字形を含む文字を描くのに使う（[`GlyphAtlas::draw_glyph_text`]）。
     black_brush: ID2D1SolidColorBrush,
     dwrite: IDWriteFactory,
     /// 太字・斜体の組み合わせごとの書式。添字は [`format_index`]。
@@ -177,6 +187,11 @@ pub struct GlyphAtlas {
     placement: Placement,
     /// セルより広いグリフの描き方。
     wide_glyph: WideGlyph,
+    /// 色付きのフォントの字形の描き方。
+    emoji: Emoji,
+    /// 端末の文字を描くフォントを引くもの。[`Emoji::Color`] のときだけ作る。作れなければ、端末の文字は
+    /// どれも色付きの字形を含まないものとして描く。
+    color_fonts: Option<ColorFonts>,
     shelves: Shelves,
     slots: HashMap<GlyphKey, Slot>,
     /// 装飾と、それを描いたセルの数ごとの場所。
@@ -198,6 +213,7 @@ impl GlyphAtlas {
         font: &Font,
         ui_font: Rc<UiFont>,
         wide_glyph: WideGlyph,
+        emoji: Emoji,
     ) -> windows::core::Result<Self> {
         let side = atlas_side();
         let desc = D3D11_TEXTURE2D_DESC {
@@ -250,37 +266,30 @@ impl GlyphAtlas {
             )?
         };
 
+        let format = |bold, italic| {
+            let (weight, style) = font_variant(bold, italic);
+            text_format(dwrite, font, weight, style)
+        };
+        // 添字は format_index の順。
         let formats = [
-            text_format(
-                dwrite,
-                font,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-            )?,
-            text_format(
-                dwrite,
-                font,
-                DWRITE_FONT_WEIGHT_BOLD,
-                DWRITE_FONT_STYLE_NORMAL,
-            )?,
-            text_format(
-                dwrite,
-                font,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_ITALIC,
-            )?,
-            text_format(
-                dwrite,
-                font,
-                DWRITE_FONT_WEIGHT_BOLD,
-                DWRITE_FONT_STYLE_ITALIC,
-            )?,
+            format(false, false)?,
+            format(true, false)?,
+            format(false, true)?,
+            format(true, true)?,
         ];
         let placement = Placement::new(
             baseline(dwrite, &formats[0], font.cell_height_px as f32)?,
             &font.lines,
             font.cell_height_px as f32,
         );
+        let color_fonts = match emoji {
+            Emoji::Color => ColorFonts::new(dwrite, &font.family)
+                .inspect_err(|e| {
+                    tracing::warn!("failed to prepare finding the color fonts: {e}");
+                })
+                .ok(),
+            Emoji::Monochrome => None,
+        };
 
         let mut atlas = Self {
             side,
@@ -296,6 +305,8 @@ impl GlyphAtlas {
             line_thickness: line_thickness(font.cell_width_px),
             placement,
             wide_glyph,
+            emoji,
+            color_fonts,
             shelves: Shelves::new(side),
             slots: HashMap::new(),
             decoration_slots: HashMap::new(),
@@ -415,9 +426,8 @@ impl GlyphAtlas {
     /// 描く。場所の高さは UI のフォントの 1 行の高さで、インクが送り幅の左右へはみ出せば、その分の
     /// 余白を足す。
     ///
-    /// 色付きの絵文字を色のまま描けるよう、同じタイトルを、返す場所には白の文字で、そのすぐ下の同じ
-    /// 大きさの場所には黒の文字で描く。色付きの字形は文字の色によらず同じ色に描かれるので、二つの差が
-    /// 文字の色で塗る部分になる（`cells.hlsl` の `KIND_COLOR_GLYPH`）。
+    /// [`Emoji::Color`] なら、色付きの絵文字を色のまま描けるよう、タイトルはどれも色付きの字形を含む
+    /// ものとして描く（[`GlyphAtlas::draw_glyph_text`]）。
     pub fn label_slot(&mut self, text: &str) -> Result<Slot, AtlasFull> {
         if let Some(slot) = self.label_slots.get(text) {
             return Ok(*slot);
@@ -428,7 +438,7 @@ impl GlyphAtlas {
             Err(e) => {
                 // 空の場所も覚えて、次からはそれを返す。
                 tracing::warn!("failed to lay out the title {text:?}: {e}");
-                let slot = self.allocate_label(1, height)?;
+                let slot = self.allocate_text(1, height, false)?;
                 self.label_slots.insert(text.to_owned(), slot);
                 return Ok(slot);
             }
@@ -442,23 +452,17 @@ impl GlyphAtlas {
             right_margin: margin(extent.ink_right - extent.advance),
         };
         let width = placement.left_margin + extent.advance.ceil() as u32 + placement.right_margin;
+        let color = self.emoji == Emoji::Color;
         let slot = Slot {
             left: placement.left_margin,
-            ..self.allocate_label(width, height)?
-        };
-        let below = Slot {
-            y: slot.y + height,
-            ..slot
+            ..self.allocate_text(width, height, color)?
         };
         // SAFETY: context は有効で、描画の設定は self が持っている。
         unsafe {
             self.context
                 .SetTextRenderingParams(self.label_rendering.as_ref())
         };
-        let drawn = self
-            .draw_text(&layout, &placement, slot, &self.brush)
-            .and_then(|()| self.draw_text(&layout, &placement, below, &self.black_brush));
-        if let Err(e) = drawn {
+        if let Err(e) = self.draw_glyph_text(&layout, &placement, slot) {
             tracing::warn!("failed to rasterize the title {text:?}: {e}");
         }
         // SAFETY: context は有効。端末の文字は既定の描き方に戻す。
@@ -467,12 +471,14 @@ impl GlyphAtlas {
         Ok(slot)
     }
 
-    /// タブバーのタイトルを描く、幅 `width`、高さ `height` の場所。すぐ下に同じ大きさの場所も取る
-    /// （[`GlyphAtlas::label_slot`]）。
-    fn allocate_label(&mut self, width: u32, height: u32) -> Result<Slot, AtlasFull> {
+    /// 文字を描く、幅 `width`、高さ `height` の場所。`color` なら色付きの字形を含む文字の場所で、
+    /// すぐ下に同じ大きさの場所も取る（[`GlyphAtlas::draw_glyph_text`]）。
+    fn allocate_text(&mut self, width: u32, height: u32, color: bool) -> Result<Slot, AtlasFull> {
+        let rows = if color { 2 } else { 1 };
         Ok(Slot {
             height,
-            ..self.allocate_area(width, height * 2)?
+            color,
+            ..self.allocate_area(width, height * rows)?
         })
     }
 
@@ -543,14 +549,55 @@ impl GlyphAtlas {
                 }
             };
         let placement = place_text(extent, key.cells, cell_width, self.wide_glyph);
+        let color = self.contains_color(key);
         let slot = Slot {
             left: placement.left_margin,
-            ..self.allocate(placement.slot_width(self.cell_width))?
+            ..self.allocate_text(
+                placement.slot_width(self.cell_width),
+                self.cell_height,
+                color,
+            )?
         };
-        if let Err(e) = self.draw_text(&layout, &placement, slot, &self.brush) {
+        if let Err(e) = self.draw_glyph_text(&layout, &placement, slot) {
             tracing::warn!("failed to rasterize {:?}: {e}", key.text);
         }
         Ok(slot)
+    }
+
+    /// 端末の文字 `key` が色付きのフォントで描く文字を含むか。調べられなければ含まないとする。
+    fn contains_color(&self, key: &GlyphKey) -> bool {
+        let Some(color_fonts) = &self.color_fonts else {
+            return false;
+        };
+        let (weight, style) = font_variant(key.bold, key.italic);
+        color_fonts
+            .contains_color(&key.text, weight, style)
+            .unwrap_or_else(|e| {
+                tracing::warn!("failed to find the font of {:?}: {e}", key.text);
+                false
+            })
+    }
+
+    /// 組んだ文字を `placement` のとおりに `slot` に白の文字で描く。
+    ///
+    /// 色付きの字形を含む場所（[`Slot::color`]）なら、そのすぐ下の同じ大きさの場所にも黒の文字で描く。
+    /// 色付きの字形は文字の色によらず同じ色に描かれるので、二つの差が文字の色で塗る部分になる
+    /// （`cells.hlsl` の `KIND_COLOR_GLYPH`）。
+    fn draw_glyph_text(
+        &self,
+        layout: &IDWriteTextLayout,
+        placement: &TextPlacement,
+        slot: Slot,
+    ) -> windows::core::Result<()> {
+        self.draw_text(layout, placement, slot, &self.brush)?;
+        if !slot.color {
+            return Ok(());
+        }
+        let below = Slot {
+            y: slot.y + slot.height,
+            ..slot
+        };
+        self.draw_text(layout, placement, below, &self.black_brush)
     }
 
     /// 組んだ文字を `placement` のとおりに `slot` に `brush` で描く。
@@ -569,18 +616,22 @@ impl GlyphAtlas {
             M31: (slot.x + slot.left) as f32 + placement.offset,
             M32: slot.y as f32,
         };
+        let options = draw_text_options(self.emoji);
         self.draw_in_slot(slot, &transform, |context| {
             // SAFETY: 描画中の context と、同じ context が作ったブラシ。layout はこの呼び出しの間は生きている。
             unsafe {
-                context.DrawTextLayout(
-                    Vector2 { X: 0.0, Y: 0.0 },
-                    layout,
-                    brush,
-                    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-                );
+                context.DrawTextLayout(Vector2 { X: 0.0, Y: 0.0 }, layout, brush, options);
             }
             Ok(())
         })
+    }
+}
+
+/// 文字を描くときの指定。[`Emoji::Monochrome`] なら、色付きのフォントも色のない字形で描く。
+fn draw_text_options(emoji: Emoji) -> D2D1_DRAW_TEXT_OPTIONS {
+    match emoji {
+        Emoji::Color => D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+        Emoji::Monochrome => D2D1_DRAW_TEXT_OPTIONS_NONE,
     }
 }
 
@@ -634,6 +685,21 @@ fn baseline(
 
 fn format_index(bold: bool, italic: bool) -> usize {
     usize::from(bold) | (usize::from(italic) << 1)
+}
+
+/// 太字・斜体の組み合わせの、フォントの太さと形。
+fn font_variant(bold: bool, italic: bool) -> (DWRITE_FONT_WEIGHT, DWRITE_FONT_STYLE) {
+    let weight = if bold {
+        DWRITE_FONT_WEIGHT_BOLD
+    } else {
+        DWRITE_FONT_WEIGHT_NORMAL
+    };
+    let style = if italic {
+        DWRITE_FONT_STYLE_ITALIC
+    } else {
+        DWRITE_FONT_STYLE_NORMAL
+    };
+    (weight, style)
 }
 
 fn text_format(

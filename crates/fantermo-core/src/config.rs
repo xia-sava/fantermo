@@ -126,6 +126,10 @@ pub const TEMPLATE: &str = r##"# fantermo の設定ファイル。
 # 左右のセルへ同じだけはみ出して描く。
 # wide_glyph = "shrink"
 
+# 色付きのフォント（Segoe UI Emoji など）の文字の描き方。端末の文字とタブのタイトルの両方に効く。
+# "color" は色のまま描く、"monochrome" は色付きのフォントが持つ色のない字形を文字の色で描く。
+# emoji = "color"
+
 [paste]
 # 貼り付ける前に、内容を編集できるダイアログで確認するとき。
 # "unsafe" は改行を含む文字列がコマンドとして実行される可能性があるとき（アプリが bracketed paste を有効にして
@@ -612,6 +616,8 @@ pub struct FontConfig {
     pub size_pt: f32,
     /// セルより広いグリフの描き方。
     pub wide_glyph: WideGlyph,
+    /// 色付きのフォントの字形の描き方。
+    pub emoji: Emoji,
 }
 
 impl Default for FontConfig {
@@ -620,6 +626,7 @@ impl Default for FontConfig {
             families: DEFAULT_FONT_FAMILIES.map(str::to_owned).to_vec(),
             size_pt: DEFAULT_FONT_SIZE_PT,
             wide_glyph: WideGlyph::default(),
+            emoji: Emoji::default(),
         }
     }
 }
@@ -650,6 +657,36 @@ impl WideGlyph {
 
     /// 書ける値のすべて。設定ファイルの説明と同じ順。
     pub const ALL: [WideGlyph; 4] = named_values(&Self::NAMES);
+
+    /// 設定ファイルに書く名前。
+    pub fn name(self) -> &'static str {
+        name_of(&Self::NAMES, self)
+    }
+
+    /// 設定ファイルに書く名前 `name` の値。
+    pub fn from_name(name: &str) -> Option<Self> {
+        value_named(&Self::NAMES, name)
+    }
+}
+
+/// 色付きのフォント（Segoe UI Emoji など）の字形の描き方（`font.emoji`）。端末の文字とタブバーの
+/// タイトルの両方に効く。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Emoji {
+    /// 色付きの字形は色のまま描く。
+    #[default]
+    Color,
+    /// 色付きのフォントの、色のない字形で、文字の色で描く。
+    Monochrome,
+}
+
+impl Emoji {
+    /// 値と、設定ファイルに書く名前。設定ファイルの説明と同じ順。
+    const NAMES: [(Emoji, &'static str); 2] =
+        [(Emoji::Color, "color"), (Emoji::Monochrome, "monochrome")];
+
+    /// 書ける値のすべて。設定ファイルの説明と同じ順。
+    pub const ALL: [Emoji; 2] = named_values(&Self::NAMES);
 
     /// 設定ファイルに書く名前。
     pub fn name(self) -> &'static str {
@@ -756,6 +793,15 @@ pub const SCALARS: &[Scalar] = &[
             names: &names_of(&WideGlyph::NAMES),
             get: |config| config.font.wide_glyph.name(),
             set: |config, name| set_named(&mut config.font.wide_glyph, WideGlyph::from_name(name)),
+        },
+    },
+    Scalar {
+        table: FONT_TABLE,
+        key: "emoji",
+        kind: ScalarKind::Name {
+            names: &names_of(&Emoji::NAMES),
+            get: |config| config.font.emoji.name(),
+            set: |config, name| set_named(&mut config.font.emoji, Emoji::from_name(name)),
         },
     },
     Scalar {

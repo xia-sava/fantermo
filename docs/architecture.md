@@ -93,6 +93,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `text_placement` | 組んだ文字の送り幅とインクの範囲（`text_layout`），アトラスの場所への置き方（`place_text`）．`atlas` と `ui_font` が使う |
 | `d2d_shape` | `boxdraw::Shape` を Direct2D の描画先に描く．`atlas` と `tab_icon` が使う |
 | `font`・`ui_font` | 端末のフォントを探してセルの寸法を測る．タブバーのタイトルに使う Windows の UI のフォント |
+| `color_font` | 端末の文字が色付きのフォントで描かれるかを，DirectWrite のシステムのフォントのフォールバック（`MapCharacters`）で調べる．`atlas` が使う |
 | `boxdraw`・`boxdraw/` | 罫線，ブロック要素，点字，Powerline の記号，レガシーコンピューティング記号の一部を形として組み立てる |
 | `decoration` | 下線・取り消し線・上線をセルの中の形として組み立てる |
 | `paint` | セルの格子によらずピクセルの位置で描くもの（`Paint`）．タブバーとスクロールバーが使う |
@@ -284,7 +285,8 @@ Direct3D 11 にグリフアトラスを載せて描きます．Direct2D + Direct
 
 - グリフは DirectWrite で組み（ロケールは `ja-jp`），Direct2D でアトラス（BGRA，乗算済みアルファ）に白で描き，色はシェーダで付けます．文字の縁はグレースケールです．
 - タブバーのタイトルだけは，縦横どちらにもアンチエイリアスをかけ，ヒンティングでピクセルの格子に合わせずに描きます（`DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC` と `DWRITE_GRID_FIT_MODE_DISABLED`）．既定の描き方では，UI のフォント（Yu Gothic UI など）の漢字やかながヒンティングで格子に強く合わせられ，斜めの線と曲線が階段状になるためです．端末の文字は既定の描き方のままです．
-- タブバーのタイトルは，色付きの絵文字を色のまま描くため，アトラスに白の文字と黒の文字で 2 回描きます（上下に並べた同じ大きさの場所）．色付きの字形は文字の色によらず同じ色に描かれるので，シェーダ（`KIND_COLOR_GLYPH`）は二つの差を文字の色で塗り，黒の文字で描いたものに残った色をそのまま重ねます．
+- 色付きの絵文字を色のまま描くため（`font.emoji` が `color`），色付きの字形を含む文字は，アトラスに白の文字と黒の文字で 2 回描きます（上下に並べた同じ大きさの場所．`Slot::color`）．色付きの字形は文字の色によらず同じ色に描かれるので，シェーダ（`KIND_COLOR_GLYPH`）は二つの差を文字の色で塗り，黒の文字で描いたものに残った色をそのまま重ねます．タブバーのタイトルはどれも 2 回描きます．端末の文字は，描くフォントが色付きのフォント（`IDWriteFont2::IsColorFont`）のときだけ 2 回描き，ほかは 1 回だけ描いて `KIND_GLYPH` で描きます．描くフォントは，端末のフォントを基準の書体にして `IDWriteFontFallback::MapCharacters` で引きます（`color_font.rs`）．`MapCharacters` に渡す `IDWriteTextAnalysisSource` は windows-rs の `#[implement]` で作るので，`fantermo` は `windows-core` にも直接依存します（`#[implement]` が展開するコードが `windows_core` を参照するため）．結果はグリフの場所と一緒に覚え，引くのはグリフを初めて描くときだけです．
+- `font.emoji` が `monochrome` なら，端末の文字もタブバーのタイトルも `D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT` を付けずに 1 回だけ描き，色付きのフォントの色のない字形にします．
 - 斜体のようにインクがセルの左右へはみ出すグリフは，縮めずにはみ出す分の余白を持たせた場所に描き，隣のセルへ重ねて描きます．縮めるかどうかは送り幅で，余白はインクの範囲（`GetOverhangMetrics`）で決めます．
 - 罫線などはフォントに頼らず形として組み立てます（`boxdraw.rs` の先頭のコメント）．装飾の位置と太さは DirectWrite のフォントの計測と，組んだ行のベースラインから決めます．
 - シェーダは実行時に `D3DCompile` でコンパイルし，`cargo test` でコンパイルが通ることを確認します．

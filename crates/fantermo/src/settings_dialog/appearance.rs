@@ -1,8 +1,8 @@
-//! 設定ダイアログの外観のページ。フォント、サイズ、セルより広い文字、スクロールバーの幅、余白。
+//! 設定ダイアログの外観のページ。フォント、サイズ、セルより広い文字、絵文字、スクロールバーの幅、余白。
 
 use std::cell::{Cell, RefCell};
 
-use fantermo_core::config::{self, Config, WideGlyph};
+use fantermo_core::config::{self, Config, Emoji, WideGlyph};
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, WPARAM},
@@ -34,6 +34,8 @@ const ID_SIZE: i32 = 201;
 const ID_SIZE_SPIN: i32 = 202;
 /// `font.wide_glyph` のラジオボタン。[`WideGlyph::ALL`] の順に ID が続く。
 const ID_WIDE_GLYPH: i32 = 210;
+/// `font.emoji` のラジオボタン。[`Emoji::ALL`] の順に ID が続く。
+const ID_EMOJI: i32 = 216;
 const ID_SCROLL_BAR_WIDTH: i32 = 220;
 const ID_SCROLL_BAR_WIDTH_SPIN: i32 = 221;
 const ID_PADDING: i32 = 230;
@@ -49,6 +51,9 @@ const WIDE_GLYPH_LABELS: [&str; WideGlyph::ALL.len()] = [
     "縮めずに、右のセルへはみ出す",
     "縮めずに、中央から左右のセルへはみ出す",
 ];
+
+/// `font.emoji` の選択肢の表示。[`Emoji::ALL`] の順。
+const EMOJI_LABELS: [&str; Emoji::ALL.len()] = ["色付きで描く", "文字の色で線画として描く"];
 
 /// `font.size_pt` の入力欄。
 pub(super) const FONT_SIZE_KIND: NumberKind<f32> = NumberKind {
@@ -77,12 +82,13 @@ pub(super) const PADDING_KIND: NumberKind<u32> = NumberKind {
     message: "余白は、0 から 64 までの整数を入力してください。",
 };
 
-/// 外観のページ。フォント、サイズ、セルより広い文字、スクロールバーの幅、余白。
+/// 外観のページ。フォント、サイズ、セルより広い文字、絵文字、スクロールバーの幅、余白。
 pub(super) struct AppearancePage {
     controls: Vec<HWND>,
     font: HWND,
     size: NumberField<f32>,
     wide_glyph: RadioGroup<WideGlyph>,
+    emoji: RadioGroup<Emoji>,
     scroll_bar_width: NumberField<u32>,
     padding: NumberField<u32>,
     /// フォントの一覧。
@@ -147,7 +153,18 @@ impl AppearancePage {
             },
         )?;
         controls.extend_from_slice(wide_glyph.buttons());
-        let width_row = row(2) + WideGlyph::ALL.len() as i32 * ROW_HEIGHT + MARGIN;
+        let emoji_row = row(2) + WideGlyph::ALL.len() as i32 * ROW_HEIGHT + MARGIN;
+        controls.push(b.label("絵文字(&E):", label_rect(emoji_row))?);
+        let emoji = RadioGroup::create(b, ID_EMOJI, &Emoji::ALL, &EMOJI_LABELS, |index| {
+            [
+                CONTROL_LEFT,
+                emoji_row + index * ROW_HEIGHT,
+                CONTROL_WIDTH,
+                ROW_HEIGHT,
+            ]
+        })?;
+        controls.extend_from_slice(emoji.buttons());
+        let width_row = emoji_row + Emoji::ALL.len() as i32 * ROW_HEIGHT + MARGIN;
         controls.push(b.label("スクロールバーの幅(&B):", label_rect(width_row))?);
         let scroll_bar_width = NumberField::create(
             b,
@@ -190,6 +207,7 @@ impl AppearancePage {
             font,
             size,
             wide_glyph,
+            emoji,
             scroll_bar_width,
             padding,
             fonts,
@@ -255,6 +273,7 @@ impl Page for AppearancePage {
         };
         self.size.fill(config.font.size_pt);
         self.wide_glyph.fill(config.font.wide_glyph);
+        self.emoji.fill(config.font.emoji);
         self.scroll_bar_width.fill(config.scroll_bar.width);
         self.padding.fill(config.window.padding);
     }
@@ -280,6 +299,9 @@ impl Page for AppearancePage {
         if let Some(wide_glyph) = self.wide_glyph.read() {
             config.font.wide_glyph = wide_glyph;
         }
+        if let Some(emoji) = self.emoji.read() {
+            config.font.emoji = emoji;
+        }
         config.scroll_bar.width = self.scroll_bar_width.read()?;
         config.window.padding = self.padding.read()?;
         Ok(())
@@ -289,7 +311,7 @@ impl Page for AppearancePage {
         match (id, code) {
             (ID_FONT, CBN_SELCHANGE) => ctx.preview(),
             // ラジオボタンは、押したらすぐ反映する。
-            (id, BN_CLICKED) if self.wide_glyph.owns(id) => ctx.preview(),
+            (id, BN_CLICKED) if self.wide_glyph.owns(id) || self.emoji.owns(id) => ctx.preview(),
             // 数の入力欄は、打ち終わるのを待って反映する。
             (id, EN_CHANGE) if self.number_fields().iter().any(|field| field.owns(id)) => {
                 ctx.schedule_preview();
@@ -398,12 +420,15 @@ mod tests {
     #[test]
     fn the_ids_are_within_the_range_of_the_page() {
         let last_wide_glyph = ID_WIDE_GLYPH + WideGlyph::ALL.len() as i32 - 1;
+        let last_emoji = ID_EMOJI + Emoji::ALL.len() as i32 - 1;
         for id in [
             ID_FONT,
             ID_SIZE,
             ID_SIZE_SPIN,
             ID_WIDE_GLYPH,
             last_wide_glyph,
+            ID_EMOJI,
+            last_emoji,
             ID_SCROLL_BAR_WIDTH,
             ID_SCROLL_BAR_WIDTH_SPIN,
             ID_PADDING,

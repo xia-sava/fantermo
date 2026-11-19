@@ -10,7 +10,7 @@ use std::{
 
 use fantermo_core::{
     background::{self, Placement},
-    config::{BackgroundFit, WideGlyph},
+    config::{BackgroundFit, Emoji, WideGlyph},
     frame::{Frame, ImageKey, ImageLayer, ImageView, Rgb, Underline},
     vt::Vt,
 };
@@ -187,6 +187,7 @@ impl Renderer {
         font: &Font,
         ui_font: Rc<UiFont>,
         wide_glyph: WideGlyph,
+        emoji: Emoji,
         on_device_removed: DeviceRemovedNotify,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (device, context) = create_device()?;
@@ -219,7 +220,7 @@ impl Renderer {
             tracing::warn!("failed to stop DXGI from handling Alt+Enter: {e}");
         }
 
-        let atlas = GlyphAtlas::new(&device, dwrite, font, ui_font, wide_glyph)?;
+        let atlas = GlyphAtlas::new(&device, dwrite, font, ui_font, wide_glyph, emoji)?;
         let pipeline = CellPipeline::new(&device)?;
         let mut renderer = Self {
             _device_removed_watch: device_removed_watch,
@@ -444,15 +445,17 @@ impl Renderer {
     }
 
     /// 端末を `font` で、タブバーのタイトルを `ui_font` で描き、セルより広いグリフは `wide_glyph` の
-    /// とおりに描くようにする。DPI やフォントの設定が変わったときに使う。グリフアトラスは作り直す。
+    /// とおりに、色付きのフォントの字形は `emoji` のとおりに描くようにする。DPI やフォントの設定が
+    /// 変わったときに使う。グリフアトラスは作り直す。
     pub fn set_font(
         &mut self,
         dwrite: &IDWriteFactory,
         font: &Font,
         ui_font: Rc<UiFont>,
         wide_glyph: WideGlyph,
+        emoji: Emoji,
     ) -> windows::core::Result<()> {
-        self.atlas = GlyphAtlas::new(&self.device, dwrite, font, ui_font, wide_glyph)?;
+        self.atlas = GlyphAtlas::new(&self.device, dwrite, font, ui_font, wide_glyph, emoji)?;
         self.cell_width = font.cell_width_px;
         self.cell_height = font.cell_height_px;
         Ok(())
@@ -732,19 +735,16 @@ impl Renderer {
                 let Some(slot) = fit.place(self.atlas.label_slot(text))? else {
                     return Ok(());
                 };
-                list.push(Instance {
-                    kind: InstanceKind::ColorGlyph,
-                    ..glyph(
-                        [
-                            *x as f32 - slot.left as f32,
-                            *y as f32,
-                            slot.width as f32,
-                            slot.height as f32,
-                        ],
-                        slot,
-                        *color,
-                    )
-                });
+                list.push(glyph(
+                    [
+                        *x as f32 - slot.left as f32,
+                        *y as f32,
+                        slot.width as f32,
+                        slot.height as f32,
+                    ],
+                    slot,
+                    *color,
+                ));
             }
             Paint::TabIcon { icon, area } => self.push_tab_icon(list, icon, *area),
         }
@@ -921,8 +921,14 @@ fn rgba(color: Rgb) -> Rgba {
     ]
 }
 
-/// アトラスの `slot` の形を、`color` で `rect` に描く。
+/// アトラスの `slot` の形を、`color` で `rect` に描く。色付きの字形を含む場所（[`Slot::color`]）は、
+/// 色付きの字形を色のまま描き、ほかの部分を `color` で塗る。
 fn glyph(rect: [f32; 4], slot: Slot, color: Rgb) -> Instance {
+    let kind = if slot.color {
+        InstanceKind::ColorGlyph
+    } else {
+        InstanceKind::Glyph
+    };
     Instance {
         rect,
         uv: [
@@ -932,7 +938,7 @@ fn glyph(rect: [f32; 4], slot: Slot, color: Rgb) -> Instance {
             slot.height as f32,
         ],
         color: rgba(color),
-        kind: InstanceKind::Glyph,
+        kind,
         _padding: [0; 3],
     }
 }

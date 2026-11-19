@@ -168,6 +168,7 @@ impl App {
             &self.font,
             self.ui_font.clone(),
             self.config.font.wide_glyph,
+            self.config.font.emoji,
             device_removed_poster(self.hwnd),
         ) {
             Ok(renderer) => renderer,

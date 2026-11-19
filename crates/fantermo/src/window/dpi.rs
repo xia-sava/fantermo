@@ -133,6 +133,7 @@ impl App {
                 &font,
                 ui_font.clone(),
                 self.config.font.wide_glyph,
+                self.config.font.emoji,
             ),
             None => Ok(()),
         };

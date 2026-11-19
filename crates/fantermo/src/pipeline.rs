@@ -41,7 +41,7 @@ pub enum InstanceKind {
     /// 画像を繰り返す。`uv` は画像の幅と高さを 1 とする。
     ImageRepeat = 3,
     /// アトラスの、色付きの字形を含むグリフ。`uv` の場所に白の文字で、そのすぐ下の同じ大きさの場所に
-    /// 黒の文字で描いたもの（`GlyphAtlas::label_slot`）。
+    /// 黒の文字で描いたもの（`GlyphAtlas::draw_glyph_text`）。
     ColorGlyph = 4,
 }
 

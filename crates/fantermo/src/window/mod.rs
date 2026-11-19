@@ -459,6 +459,7 @@ impl App {
             &font,
             ui_font.clone(),
             config.font.wide_glyph,
+            config.font.emoji,
             device_removed_poster(hwnd),
         )?;
         let tab_icon_generator = tab_icon::Generator::new(&dwrite)

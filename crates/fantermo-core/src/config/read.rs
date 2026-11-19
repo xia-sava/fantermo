@@ -861,6 +861,7 @@ mod tests {
                 families: families(&["Cascadia Mono"]),
                 size_pt: 9.0,
                 wide_glyph: WideGlyph::Clip,
+                emoji: Emoji::Monochrome,
             },
             profiles: vec![Profile::from_shell("zsh -l"), Profile::builtin()],
             default_profile: Some(DEFAULT_PROFILE_NAME.to_owned()),
@@ -1525,7 +1526,7 @@ mod tests {
     fn invalid_items_keep_the_previous_values_and_missing_ones_get_the_defaults() {
         let previous = customized();
         let parsed = super::parse(
-            "shell = ' '\ndefault_profile = 3\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\n[paste]\nconfirm = 1\nconfirm_size = 'big'\n[clipboard]\nread = 1\nwrite = 1\n[scroll_bar]\nwidth = 2\n[window]\npadding = 65\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors]\nscheme = 'sepia'\nforeground = 'blue'\n[colors.tab_bar]\nbar = 'red'\n[background]\nimages = ''\nimage_opacity = 2\nfit = 0\n",
+            "shell = ' '\ndefault_profile = 3\n[font]\nfamily = 3\nsize = 500\nwide_glyph = 'wide'\nemoji = 'gray'\n[paste]\nconfirm = 1\nconfirm_size = 'big'\n[clipboard]\nread = 1\nwrite = 1\n[scroll_bar]\nwidth = 2\n[window]\npadding = 65\n[keys]\n\"ctrl+tab\" = 5\n\"ctrl+page_down\" = 'next'\n[colors]\nscheme = 'sepia'\nforeground = 'blue'\n[colors.tab_bar]\nbar = 'red'\n[background]\nimages = ''\nimage_opacity = 2\nfit = 0\n",
             &previous,
         );
         assert!(!parsed.syntax_error);
@@ -1730,6 +1731,7 @@ mod tests {
             family = ["Cascadia Mono", "Consolas"]
             size = 10.5
             wide_glyph = "overflow"
+            emoji = "monochrome"
             [paste]
             confirm = "never"
             confirm_size = 0
@@ -1747,6 +1749,7 @@ mod tests {
                     families: families(&["Cascadia Mono", "Consolas"]),
                     size_pt: 10.5,
                     wide_glyph: WideGlyph::Overflow,
+                    emoji: Emoji::Monochrome,
                 },
                 profiles: vec![Profile::new(
                     "zsh",
@@ -1833,6 +1836,33 @@ mod tests {
         );
         assert!(
             ["shrink", "clip", "overflow", "overflow_center"]
+                .iter()
+                .all(|name| warning.contains(name)),
+            "{warning}"
+        );
+    }
+
+    #[test]
+    fn emoji_takes_each_name() {
+        assert_eq!(parse("").config.font.emoji, Emoji::Color);
+        for (name, emoji) in [("color", Emoji::Color), ("monochrome", Emoji::Monochrome)] {
+            assert_eq!(emoji.name(), name);
+            let parsed = parse(&format!("[font]\nemoji = '{name}'\n"));
+            assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+            assert_eq!(parsed.config.font.emoji, emoji);
+        }
+    }
+
+    #[test]
+    fn unknown_emoji_names_the_accepted_values() {
+        let parsed = parse("[font]\nemoji = 'Monochrome'\nsize = 10\n");
+        assert_eq!(parsed.config.font.emoji, Emoji::Color);
+        assert_eq!(parsed.config.font.size_pt, 10.0);
+        assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
+        let warning = &parsed.warnings[0];
+        assert!(warning.starts_with("ignoring font.emoji:"), "{warning}");
+        assert!(
+            ["color", "monochrome"]
                 .iter()
                 .all(|name| warning.contains(name)),
             "{warning}"
@@ -1977,6 +2007,10 @@ mod tests {
         for wide_glyph in WideGlyph::ALL {
             let parsed = parse(&format!("[font]\nwide_glyph = '{}'\n", wide_glyph.name()));
             assert_eq!(parsed.config.font.wide_glyph, wide_glyph);
+        }
+        for emoji in Emoji::ALL {
+            let parsed = parse(&format!("[font]\nemoji = '{}'\n", emoji.name()));
+            assert_eq!(parsed.config.font.emoji, emoji);
         }
         for confirm in PasteConfirm::ALL {
             let parsed = parse(&format!("[paste]\nconfirm = '{}'\n", confirm.name()));

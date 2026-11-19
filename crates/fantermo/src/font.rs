@@ -198,7 +198,8 @@ fn display_name(family: &IDWriteFontFamily) -> windows::core::Result<String> {
     Ok(String::from_utf16_lossy(&buffer[..length]))
 }
 
-fn system_collection(factory: &IDWriteFactory) -> windows::core::Result<IDWriteFontCollection> {
+/// システムのフォントの集まり。
+pub fn system_collection(factory: &IDWriteFactory) -> windows::core::Result<IDWriteFontCollection> {
     let mut collection = None;
     // SAFETY: collection は書き込める Option を指す。
     unsafe { factory.GetSystemFontCollection(&mut collection, false)? };
