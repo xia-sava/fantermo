@@ -732,16 +732,19 @@ impl Renderer {
                 let Some(slot) = fit.place(self.atlas.label_slot(text))? else {
                     return Ok(());
                 };
-                list.push(glyph(
-                    [
-                        *x as f32 - slot.left as f32,
-                        *y as f32,
-                        slot.width as f32,
-                        slot.height as f32,
-                    ],
-                    slot,
-                    *color,
-                ));
+                list.push(Instance {
+                    kind: InstanceKind::ColorGlyph,
+                    ..glyph(
+                        [
+                            *x as f32 - slot.left as f32,
+                            *y as f32,
+                            slot.width as f32,
+                            slot.height as f32,
+                        ],
+                        slot,
+                        *color,
+                    )
+                });
             }
             Paint::TabIcon { icon, area } => self.push_tab_icon(list, icon, *area),
         }

@@ -5,6 +5,7 @@
 //! 高さはそこに置いたものの高いほう。文字は 1 セルの高さ）、いっぱいになったら全部を捨てて描き直す。
 //! 斜体のようにインクがセルの左右へはみ出すグリフは、はみ出す分だけ左右に余白を持たせた場所に描く。
 //! タブバーのタイトルは、Windows の UI のフォント（[`UiFont`]）で文字列を一つの絵として描く。
+//! タイトルの色付きの絵文字は色のまま描く（[`GlyphAtlas::label_slot`]）。
 
 use std::{collections::HashMap, rc::Rc};
 
@@ -161,7 +162,10 @@ pub struct GlyphAtlas {
     view: ID3D11ShaderResourceView,
     factory: ID2D1Factory1,
     context: ID2D1DeviceContext,
+    /// 白のブラシ。
     brush: ID2D1SolidColorBrush,
+    /// 黒のブラシ。タブバーのタイトルを描くのに使う（[`GlyphAtlas::label_slot`]）。
+    black_brush: ID2D1SolidColorBrush,
     dwrite: IDWriteFactory,
     /// 太字・斜体の組み合わせごとの書式。添字は [`format_index`]。
     formats: [IDWriteTextFormat; 4],
@@ -233,6 +237,18 @@ impl GlyphAtlas {
                 None,
             )?
         };
+        // SAFETY: context は有効な Direct2D のデバイスコンテキスト。
+        let black_brush = unsafe {
+            context.CreateSolidColorBrush(
+                &D2D1_COLOR_F {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 1.0,
+                },
+                None,
+            )?
+        };
 
         let formats = [
             text_format(
@@ -272,6 +288,7 @@ impl GlyphAtlas {
             factory,
             context,
             brush,
+            black_brush,
             dwrite: dwrite.clone(),
             formats,
             cell_width: font.cell_width_px,
@@ -397,6 +414,10 @@ impl GlyphAtlas {
     /// タブバーのタイトル `text` を UI のフォントで 1 行に組んで描いた場所を返す。まだ描いていなければ
     /// 描く。場所の高さは UI のフォントの 1 行の高さで、インクが送り幅の左右へはみ出せば、その分の
     /// 余白を足す。
+    ///
+    /// 色付きの絵文字を色のまま描けるよう、同じタイトルを、返す場所には白の文字で、そのすぐ下の同じ
+    /// 大きさの場所には黒の文字で描く。色付きの字形は文字の色によらず同じ色に描かれるので、二つの差が
+    /// 文字の色で塗る部分になる（`cells.hlsl` の `KIND_COLOR_GLYPH`）。
     pub fn label_slot(&mut self, text: &str) -> Result<Slot, AtlasFull> {
         if let Some(slot) = self.label_slots.get(text) {
             return Ok(*slot);
@@ -407,7 +428,7 @@ impl GlyphAtlas {
             Err(e) => {
                 // 空の場所も覚えて、次からはそれを返す。
                 tracing::warn!("failed to lay out the title {text:?}: {e}");
-                let slot = self.allocate_area(1, height)?;
+                let slot = self.allocate_label(1, height)?;
                 self.label_slots.insert(text.to_owned(), slot);
                 return Ok(slot);
             }
@@ -423,20 +444,36 @@ impl GlyphAtlas {
         let width = placement.left_margin + extent.advance.ceil() as u32 + placement.right_margin;
         let slot = Slot {
             left: placement.left_margin,
-            ..self.allocate_area(width, height)?
+            ..self.allocate_label(width, height)?
+        };
+        let below = Slot {
+            y: slot.y + height,
+            ..slot
         };
         // SAFETY: context は有効で、描画の設定は self が持っている。
         unsafe {
             self.context
                 .SetTextRenderingParams(self.label_rendering.as_ref())
         };
-        if let Err(e) = self.draw_text(&layout, &placement, slot) {
+        let drawn = self
+            .draw_text(&layout, &placement, slot, &self.brush)
+            .and_then(|()| self.draw_text(&layout, &placement, below, &self.black_brush));
+        if let Err(e) = drawn {
             tracing::warn!("failed to rasterize the title {text:?}: {e}");
         }
         // SAFETY: context は有効。端末の文字は既定の描き方に戻す。
         unsafe { self.context.SetTextRenderingParams(None) };
         self.label_slots.insert(text.to_owned(), slot);
         Ok(slot)
+    }
+
+    /// タブバーのタイトルを描く、幅 `width`、高さ `height` の場所。すぐ下に同じ大きさの場所も取る
+    /// （[`GlyphAtlas::label_slot`]）。
+    fn allocate_label(&mut self, width: u32, height: u32) -> Result<Slot, AtlasFull> {
+        Ok(Slot {
+            height,
+            ..self.allocate_area(width, height * 2)?
+        })
     }
 
     /// 幅 `width`、高さ 1 セルの場所。
@@ -510,18 +547,19 @@ impl GlyphAtlas {
             left: placement.left_margin,
             ..self.allocate(placement.slot_width(self.cell_width))?
         };
-        if let Err(e) = self.draw_text(&layout, &placement, slot) {
+        if let Err(e) = self.draw_text(&layout, &placement, slot, &self.brush) {
             tracing::warn!("failed to rasterize {:?}: {e}", key.text);
         }
         Ok(slot)
     }
 
-    /// 組んだ文字を `placement` のとおりに `slot` に描く。
+    /// 組んだ文字を `placement` のとおりに `slot` に `brush` で描く。
     fn draw_text(
         &self,
         layout: &IDWriteTextLayout,
         placement: &TextPlacement,
         slot: Slot,
+        brush: &ID2D1SolidColorBrush,
     ) -> windows::core::Result<()> {
         let transform = Matrix3x2 {
             M11: placement.scale,
@@ -537,7 +575,7 @@ impl GlyphAtlas {
                 context.DrawTextLayout(
                     Vector2 { X: 0.0, Y: 0.0 },
                     layout,
-                    &self.brush,
+                    brush,
                     D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
                 );
             }

@@ -40,6 +40,9 @@ pub enum InstanceKind {
     Image = 2,
     /// 画像を繰り返す。`uv` は画像の幅と高さを 1 とする。
     ImageRepeat = 3,
+    /// アトラスの、色付きの字形を含むグリフ。`uv` の場所に白の文字で、そのすぐ下の同じ大きさの場所に
+    /// 黒の文字で描いたもの（`GlyphAtlas::label_slot`）。
+    ColorGlyph = 4,
 }
 
 /// シェーダに渡す四角形一つ。`cells.hlsl` の Instance と並びを揃える。

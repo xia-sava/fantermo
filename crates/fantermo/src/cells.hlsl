@@ -21,6 +21,7 @@ static const uint KIND_SOLID = 0;
 static const uint KIND_GLYPH = 1;
 static const uint KIND_IMAGE = 2;
 static const uint KIND_IMAGE_REPEAT = 3;
+static const uint KIND_COLOR_GLYPH = 4;
 
 struct Instance
 {
@@ -36,6 +37,8 @@ struct Fragment
     float2 uv : TEXCOORD0;
     float4 color : COLOR;
     nointerpolation uint kind : KIND;
+    // KIND_COLOR_GLYPH で、黒の文字で描いた場所までの縦の距離（アトラスの高さを 1 とする）。
+    nointerpolation float below : BELOW;
 };
 
 Fragment vs_main(uint vertex : SV_VertexID, Instance instance)
@@ -43,12 +46,14 @@ Fragment vs_main(uint vertex : SV_VertexID, Instance instance)
     float2 corner = float2(vertex & 1, vertex >> 1);
     float2 pixel = instance.rect.xy + corner * instance.rect.zw;
     float2 uv = instance.uv.xy + corner * instance.uv.zw;
+    bool image_kind = instance.kind == KIND_IMAGE || instance.kind == KIND_IMAGE_REPEAT;
 
     Fragment fragment;
     fragment.position = float4(pixel / viewport_size * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
-    fragment.uv = instance.kind >= KIND_IMAGE ? uv : uv / atlas_size;
+    fragment.uv = image_kind ? uv : uv / atlas_size;
     fragment.color = instance.color;
     fragment.kind = instance.kind;
+    fragment.below = instance.uv.w / atlas_size.y;
     return fragment;
 }
 
@@ -65,6 +70,16 @@ float4 ps_main(Fragment fragment) : SV_Target
     if (fragment.kind == KIND_IMAGE_REPEAT)
     {
         return image.SampleGrad(image_wrap, fragment.uv, uv_dx, uv_dy) * fragment.color.a;
+    }
+    if (fragment.kind == KIND_COLOR_GLYPH)
+    {
+        // 白の文字で描いたものと黒の文字で描いたものの差が、文字の色で塗る部分。色付きの字形はどちらにも
+        // 同じ色で描かれているので、黒の文字で描いたものにその色だけが残る。
+        float4 white = atlas.Sample(atlas_sampler, fragment.uv);
+        float4 black = atlas.Sample(atlas_sampler, fragment.uv + float2(0.0, fragment.below));
+        float3 text = saturate(white.rgb - black.rgb);
+        float3 rgb = black.rgb + fragment.color.rgb * text;
+        return float4(rgb, white.a) * fragment.color.a;
     }
     float alpha = fragment.color.a;
     if (fragment.kind == KIND_GLYPH)
