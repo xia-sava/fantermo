@@ -26,7 +26,9 @@ use windows::{
         DirectWrite::{
             DWRITE_FONT_STYLE, DWRITE_FONT_STYLE_ITALIC, DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
-            DWRITE_LINE_METRICS, IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
+            DWRITE_GRID_FIT_MODE_DISABLED, DWRITE_LINE_METRICS,
+            DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, IDWriteFactory, IDWriteFactory2,
+            IDWriteRenderingParams, IDWriteRenderingParams1, IDWriteTextFormat, IDWriteTextLayout,
         },
         Dxgi::{
             Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
@@ -181,6 +183,8 @@ pub struct GlyphAtlas {
     ui_font: Rc<UiFont>,
     /// タブバーのタイトルの文字列ごとの場所。
     label_slots: HashMap<String, Slot>,
+    /// タブバーのタイトルを描く設定（[`label_rendering_params`]）。作れなければ既定の描き方。
+    label_rendering: Option<IDWriteRenderingParams>,
 }
 
 impl GlyphAtlas {
@@ -281,6 +285,9 @@ impl GlyphAtlas {
             icon_slots: HashMap::new(),
             ui_font,
             label_slots: HashMap::new(),
+            label_rendering: label_rendering_params(dwrite)
+                .inspect_err(|e| tracing::warn!("failed to create the title rendering params: {e}"))
+                .ok(),
         };
         atlas.clear()?;
         Ok(atlas)
@@ -418,9 +425,16 @@ impl GlyphAtlas {
             left: placement.left_margin,
             ..self.allocate_area(width, height)?
         };
+        // SAFETY: context は有効で、描画の設定は self が持っている。
+        unsafe {
+            self.context
+                .SetTextRenderingParams(self.label_rendering.as_ref())
+        };
         if let Err(e) = self.draw_text(&layout, &placement, slot) {
             tracing::warn!("failed to rasterize the title {text:?}: {e}");
         }
+        // SAFETY: context は有効。端末の文字は既定の描き方に戻す。
+        unsafe { self.context.SetTextRenderingParams(None) };
         self.label_slots.insert(text.to_owned(), slot);
         Ok(slot)
     }
@@ -529,6 +543,32 @@ impl GlyphAtlas {
             }
             Ok(())
         })
+    }
+}
+
+/// タブバーのタイトルを描く設定。縦横どちらにもアンチエイリアスをかけ、ヒンティングでピクセルの格子に
+/// 合わせない。ガンマやコントラストはシステムの既定のまま。
+///
+/// 既定の描き方では、UI のフォント（Yu Gothic UI など）の漢字やかなはヒンティングで格子に強く合わせられ、
+/// 斜めの線と曲線が階段状になる。端末の文字の描き方は変えず、この設定はタイトルにだけ使う。
+fn label_rendering_params(
+    dwrite: &IDWriteFactory,
+) -> windows::core::Result<IDWriteRenderingParams> {
+    let factory: IDWriteFactory2 = dwrite.cast()?;
+    // SAFETY: factory と既定の設定はこの呼び出しの間は生きている。
+    unsafe {
+        let base: IDWriteRenderingParams1 = dwrite.CreateRenderingParams()?.cast()?;
+        factory
+            .CreateCustomRenderingParams(
+                base.GetGamma(),
+                base.GetEnhancedContrast(),
+                base.GetGrayscaleEnhancedContrast(),
+                base.GetClearTypeLevel(),
+                base.GetPixelGeometry(),
+                DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
+                DWRITE_GRID_FIT_MODE_DISABLED,
+            )?
+            .cast()
     }
 }
 
