@@ -597,6 +597,11 @@ mod tests {
         let unreadable = reload(Some(&folder), &Config::default());
         assert!(unreadable.notice.is_some());
         assert!(!unreadable.whole_file_read);
+
+        // 親がファイルのパスには作れない。
+        let uncreatable = load(Some(&path.join("config.toml")));
+        assert!(uncreatable.notice.is_some());
+        assert!(!uncreatable.whole_file_read);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -20,8 +20,8 @@ use windows::{
         Storage::EnhancedStorage::PKEY_Title,
         System::{
             Com::{
-                CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
-                StructuredStorage::PROPVARIANT,
+                CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+                CoCreateInstance, CoInitializeEx, StructuredStorage::PROPVARIANT,
             },
             Variant::VT_LPWSTR,
         },
@@ -59,26 +59,54 @@ pub fn tasks(profiles: &[Profile]) -> Vec<Task> {
         .collect()
 }
 
+/// 一覧を作り直さないわけ。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Skip {
+    /// 設定ファイルの場所を環境変数で差し替えている。
+    Overridden,
+    /// 設定ファイルの場所が分からない。
+    NoSettingsFile,
+    /// 設定ファイル全体を読めなかった。
+    NotRead,
+}
+
+/// 一覧を作り直さないわけ。作り直すなら `None`。`path_overridden` は設定ファイルの場所を環境変数で差し替えているか、
+/// `has_path` は設定ファイルの場所が分かるか、`whole_file_read` は設定ファイル全体を読めたか。
+fn skip_reason(path_overridden: bool, has_path: bool, whole_file_read: bool) -> Option<Skip> {
+    if path_overridden {
+        return Some(Skip::Overridden);
+    }
+    if !has_path {
+        return Some(Skip::NoSettingsFile);
+    }
+    if !whole_file_read {
+        return Some(Skip::NotRead);
+    }
+    None
+}
+
 /// 設定ファイル `config_path` から読んだプロファイル `profiles` で、一覧を作り直す。待たずに戻る。
 /// `whole_file_read` は設定ファイル全体を読めたか（[`config_file::Loaded::whole_file_read`]）。
 ///
-/// 設定ファイルの場所を環境変数で差し替えているとき、場所が分からないとき、全体を読めなかったときは作り直さない。
-/// 一覧から起動した fantermo には環境変数が渡らないので、別の設定ファイルのプロファイルを並べることになり、
-/// 全体を読めなかったときの設定は既定値か前の値なので、それで一覧を上書きしないため。
+/// 次のときは作り直さない（[`skip_reason`]）。
+/// - 設定ファイルの場所を環境変数で差し替えているとき。一覧から起動した fantermo には環境変数が渡らず、別の
+///   設定ファイルを読むので、並べたプロファイルと開くプロファイルが食い違う。
+/// - 設定ファイルの場所が分からないとき。読む設定ファイルがないので、並べるものが決まらない。
+/// - 設定ファイル全体を読めなかったとき。設定は既定値か前の値で、ファイルに書いたプロファイルではないので、
+///   それで一覧を上書きしない。
 pub fn rebuild(config_path: Option<&Path>, whole_file_read: bool, profiles: &[Profile]) {
-    if config_file::path_overridden() {
-        tracing::debug!("not updating the jump list: the settings file is overridden");
-        return;
+    let skip = skip_reason(
+        config_file::path_overridden(),
+        config_path.is_some(),
+        whole_file_read,
+    );
+    match skip {
+        None => request(tasks(profiles)),
+        Some(Skip::NotRead) => {
+            tracing::info!("not updating the jump list: the settings file was not read");
+        }
+        Some(reason) => tracing::debug!("not updating the jump list: {reason:?}"),
     }
-    if config_path.is_none() {
-        tracing::debug!("not updating the jump list: no settings file");
-        return;
-    }
-    if !whole_file_read {
-        tracing::info!("not updating the jump list: the settings file was not read");
-        return;
-    }
-    request(tasks(profiles));
 }
 
 /// 一覧を作るスレッドへ `tasks` を送る。スレッドがなければ立てる。
@@ -115,7 +143,7 @@ fn start_with(sender: &mut Option<mpsc::Sender<Vec<Task>>>, tasks: Vec<Task>) {
 /// 届いた依頼ごとに一覧を作る。COM を初期化できなければ終わる。
 fn serve(requests: &mpsc::Receiver<Vec<Task>>) {
     // SAFETY: このスレッドで一度だけ初期化する。プロセスが終わるまでこのスレッドで使うので、解放しない。
-    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
     if let Err(e) = com.ok() {
         tracing::warn!("failed to initialize COM for the jump list: {e}");
         return;
@@ -153,7 +181,7 @@ fn failed(call: &'static str) -> impl FnOnce(windows::core::Error) -> Failure {
 /// 一覧の「タスク」の欄を `tasks` にして書き込む。`tasks` が空なら欄を空にする。
 fn commit(tasks: &[Task]) -> Result<(), Failure> {
     let exe = std::env::current_exe().map_err(|e| failed("current_exe")(e.into()))?;
-    let directory = known_folder::profile();
+    let directory = known_folder::user_profile();
     // SAFETY: COM を初期化したこのスレッドで、プロセスの中のオブジェクトを作る。
     let list: ICustomDestinationList =
         unsafe { CoCreateInstance(&DestinationList, None, CLSCTX_INPROC_SERVER) }
@@ -246,6 +274,8 @@ fn string_value(text: &str) -> windows::core::Result<PROPVARIANT> {
 mod tests {
     use fantermo_core::config::BackendKind;
 
+    use windows::Win32::{System::Com::CoUninitialize, UI::Shell::SLGP_RAWPATH};
+
     use super::*;
     use crate::command_line::Options;
 
@@ -305,7 +335,63 @@ mod tests {
         }
     }
 
-    /// 値は文字列の写しを持ち、捨てるときに `PropVariantClear` で解放できる。
+    #[test]
+    fn the_reasons_to_skip_rebuilding_are_checked_in_order() {
+        assert_eq!(skip_reason(false, true, true), None);
+        assert_eq!(skip_reason(true, true, true), Some(Skip::Overridden));
+        assert_eq!(skip_reason(true, false, false), Some(Skip::Overridden));
+        assert_eq!(skip_reason(false, false, true), Some(Skip::NoSettingsFile));
+        assert_eq!(skip_reason(false, false, false), Some(Skip::NoSettingsFile));
+        assert_eq!(skip_reason(false, true, false), Some(Skip::NotRead));
+    }
+
+    /// ショートカットから読み戻す文字列のバッファの大きさ（UTF-16 の単位）。
+    const READ_BACK_UNITS: usize = 1024;
+
+    /// NUL で終わる `buffer` の、NUL の前までの文字列。
+    fn text_of(buffer: &[u16]) -> String {
+        let end = buffer.iter().position(|&unit| unit == 0).unwrap();
+        String::from_utf16(&buffer[..end]).unwrap()
+    }
+
+    /// 作ったショートカットから、渡した実行ファイル・引数・作業フォルダ・アイコン・表示名が読み戻せる。保存はしない。
+    #[test]
+    fn the_shell_link_holds_what_was_given() {
+        // SAFETY: このテストのスレッドで初期化し、最後に解放する。
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) }
+            .ok()
+            .unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let directory = known_folder::user_profile().unwrap();
+        let exe_text = exe.to_str().unwrap();
+        for task in tasks(&profiles(&["a \"quoted\" name", "日本語の名前", "one"])) {
+            let link = shell_link(&exe, Some(&directory), &task).unwrap();
+            let mut buffer = [0u16; READ_BACK_UNITS];
+            let mut icon = -1;
+            // SAFETY: buffer は書き込め、ほかの引数は使わない。
+            unsafe { link.GetPath(&mut buffer, std::ptr::null_mut(), SLGP_RAWPATH.0 as u32) }
+                .unwrap();
+            assert_eq!(text_of(&buffer), exe_text);
+            // SAFETY: buffer は書き込める。
+            unsafe { link.GetArguments(&mut buffer) }.unwrap();
+            assert_eq!(text_of(&buffer), task.arguments);
+            // SAFETY: buffer は書き込める。
+            unsafe { link.GetWorkingDirectory(&mut buffer) }.unwrap();
+            assert_eq!(text_of(&buffer), directory.to_str().unwrap());
+            // SAFETY: buffer と icon は書き込める。
+            unsafe { link.GetIconLocation(&mut buffer, &mut icon) }.unwrap();
+            assert_eq!((text_of(&buffer).as_str(), icon), (exe_text, 0));
+            let store: IPropertyStore = link.cast().unwrap();
+            // SAFETY: 定数の鍵を渡して、値を受け取る。
+            let title = unsafe { store.GetValue(&PKEY_Title) }.unwrap();
+            assert_eq!(title.vt(), VT_LPWSTR);
+            assert_eq!(title.to_string(), task.title);
+        }
+        // SAFETY: 初期化したこのスレッドで、作ったものをすべて捨ててから解放する。
+        unsafe { CoUninitialize() };
+    }
+
+    /// 値の型が `VT_LPWSTR` で、指す文字列が渡したものと同じで、写した値（`PropVariantCopy`）と等しい。
     #[test]
     fn the_title_is_a_copied_wide_string() {
         let value = string_value("名前 a\"b").unwrap();

@@ -15,8 +15,8 @@ pub fn system() -> Option<PathBuf> {
     path(&FOLDERID_System)
 }
 
-/// いまの利用者のホームのフォルダ（`%USERPROFILE%`）。求められなければ `None`。
-pub fn profile() -> Option<PathBuf> {
+/// いまの利用者のホームのフォルダ（`%USERPROFILE%`、既知のフォルダの `FOLDERID_Profile`）。求められなければ `None`。
+pub fn user_profile() -> Option<PathBuf> {
     path(&FOLDERID_Profile)
 }
 
@@ -49,9 +49,9 @@ mod tests {
     }
 
     #[test]
-    fn the_profile_folder_is_an_existing_absolute_path() {
-        let profile = profile().unwrap();
-        assert!(profile.is_absolute());
-        assert!(profile.is_dir());
+    fn the_user_profile_folder_is_an_existing_absolute_path() {
+        let folder = user_profile().unwrap();
+        assert!(folder.is_absolute());
+        assert!(folder.is_dir());
     }
 }
