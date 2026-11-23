@@ -73,7 +73,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `main` | 起動の順番（3 節の「起動」） |
 | `command_line` | コマンドライン（`--elevate`，`--new-window`，`--profile`，`--`）の解釈と，その逆の，一つの語として `"` で囲む `quote_argument` とプロファイルを開く引数 `profile_arguments` |
 | `instance` | 動いている fantermo のウィンドウへ起動の指定を `WM_COPYDATA` で渡す側と受け取る側 |
-| `jump_list` | タスクバーのジャンプリストの「タスク」．プロファイルから項目の並びを作る `tasks`（COM を呼ばない），作り直すかを決めて依頼する `rebuild`，COM を呼ぶ専用のスレッド（`jump-list`） |
+| `jump_list` | タスクバーのジャンプリストの「タスク」．プロファイルから項目の並びを作る `tasks`（COM を呼ばない），作り直すかを決めて依頼する `rebuild`，COM を呼ぶ専用のスレッド（`jump-list`）．項目のアイコンは，そのスレッドが自分の `tab_icon::Generator` でタブと同じアイコンを大きさごとに描き，`ico::encode` で ICO にして `%LOCALAPPDATA%\fantermo\jump-list\` の下に書き出す．置き場所とファイルの名前の決め方，使わなくなった ICO の選び方（`unused_icons`）も持つ |
 | `elevate` | 管理者の権限の fantermo の起動（`ShellExecuteExW` の `runas`）．渡す引数の組み立て，このプロセスが管理者として動いているかの判定（ウィンドウの印・メニュー・更新・`--elevate` に使う `this_process` と，動いているウィンドウへ渡すときに相手と比べる `this_process_for_forwarding`），プロセスのトークンの昇格を読む `is_elevated`．feature `e2e` のときは `elevate/stand_in` で差し替える |
 | `app_files` | `%APPDATA%\fantermo` のファイルの場所（環境変数での差し替え），一時ファイルを経由した置き換え書き込み，パスの比較（`same_path`） |
 | `config_file` | 設定ファイルの場所，読み込み，ひな形の作成，書き戻し（`save`），フォルダの監視 |
@@ -100,11 +100,12 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `decoration` | 下線・取り消し線・上線をセルの中の形として組み立てる |
 | `paint` | セルの格子によらずピクセルの位置で描くもの（`Paint`）．タブバーとスクロールバーが使う |
 | `tab_bar`・`scroll_bar` | 並べ方，当たり判定，色（`Palette`），描くものの組み立て．ウィンドウと描画に依存しない関数にしてある．`tab_bar` は寸法とタイトルの省略を `tab_bar.rs`，並べ方と当たり判定を `tab_bar/layout.rs`，色と描くものの組み立てを `tab_bar/paints.rs` に置く |
-| `tab_icon`・`tab_icon/` | タブのタイトルの左のアイコン．`tab_icon.rs` がプロファイルからアイコンを決め，`tab_icon/draw.rs` の `Generator` がピクセルを作る（画像を読み，読めなければ絵と頭文字を描く．Direct3D のデバイスを使わない）．開いているタブのピクセルは `Pixels` に持ち，`App::update_tab_icons` がタブを開いたとき・閉じたとき，DPI か UI のフォントの書体が変わったときに揃える．管理者のウィンドウでは，作ったピクセルに盾を重ねてから `Pixels` に入れる（`Generator::overlay_shield`） |
+| `tab_icon`・`tab_icon/` | タブのタイトルの左のアイコン．`tab_icon.rs` がプロファイルからアイコンを決め，`tab_icon/draw.rs` の `Generator` がピクセルを作る（画像を読み，読めなければ絵と頭文字を描く．Direct3D のデバイスを使わない）．開いているタブのピクセルは `Pixels` に持ち，`App::update_tab_icons` がタブを開いたとき・閉じたとき，DPI か UI のフォントの書体が変わったときに揃える．管理者のウィンドウでは，作ったピクセルに盾を重ねてから `Pixels` に入れる（`Generator::overlay_shield`）．`jump_list` のスレッドも自分の `Generator` を作って，ジャンプリストの項目のアイコンを描く |
 | `image_decoder` | 画像のファイルと実行ファイルのアイコンと Windows のストックアイコンを WIC で読む（背景画像，タブのアイコン，管理者の印の盾）．読んだ画像 `Decoded` とその重ね合わせ，Direct3D 11 のテクスチャの一辺の上限．アイコンのコマの選び方と正方形への収め方，盾の大きさと置き場所（`overlay_shield`） |
 | `background`・`image_cache` | 背景画像の候補を実際のファイルシステムから探す（`DiskFiles`）．端末の中の画像のテクスチャの入れ物 |
 | `context_menu` | コンテキストメニュー，≡ のメニュー，プロファイルの一覧（`MenuCommand`，`Menu`） |
 | `gdi_image` | 読んだ画像 `Decoded` から GDI のビットマップとアイコンを作る．`context_menu` と `app_icon` が使う |
+| `ico` | 読んだ画像 `Decoded` の並びから ICO のファイルの中身を作る（`encode`．大きさごとに 32 ビットの DIB）．`jump_list` が使う |
 | `settings_dialog`・`key_capture` | 設定ダイアログ．キーの割り当てで押したキーを読み取るダイアログ．`settings_dialog` は，ダイアログ全体（`State`，`dialog_proc`，ページの型が使う `Page` と `DialogContext`）を `settings_dialog/mod.rs`，ページを `appearance.rs`・`background.rs`・`behavior.rs`・`profiles.rs`・`keys.rs`・`colors.rs`，コントロールを作る部品と種類ごとの部品を `widgets.rs` に置く |
 | `text_dialog`・`paste_editor`・`about` | 入力欄のダイアログと，その上に作った貼り付けの編集と「fantermo について」 |
 | `modal` | 自分で作ったダイアログを開いている間のメッセージのループ |
@@ -112,7 +113,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `notice`・`clipboard_prompt` | 警告のメッセージボックス（話題 `Topic` ごとに一つ）．クリップボードの読み取りの確認 |
 | `clipboard`・`link_opener`・`file_dialog`・`known_folder` | Windows のクリップボード，リンクと設定ファイルを開く処理，ファイルを選ぶダイアログ，既知のフォルダ |
 | `update`・`update/` | 更新の確認と適用（3 節の「更新の確認と適用」） |
-| `fnv` | FNV-1a のハッシュ．実行のたびにも Rust のバージョンでも変わらない値が要るところ（タブのアイコンの色）が使う |
+| `fnv` | FNV-1a のハッシュ（32 ビットと 64 ビット）．実行のたびにも Rust のバージョンでも変わらない値が要るところ（タブのアイコンの色，ジャンプリストのアイコンのファイルとフォルダの名前）が使う |
 | `version`・`app_icon`・`logging`・`dump` | バージョンとコミット，アイコン（管理者のときは盾を重ねる），ログの出し先，`FANTERMO_DUMP` での画面の書き出し |
 
 `build.rs` は，メインスレッドのスタックを 8 MB にし，Common Controls 6 のマニフェストとアイコンのリソースを埋め込み，コミットの短い SHA とリリースのビルドか（`FANTERMO_RELEASE=1`）を埋め込みます．
@@ -133,7 +134,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `window/scroll_bar.rs`・`window/tab_bar.rs` | スクロールバーとタブバーの操作と，描くものの組み立て |
 | `window/menu.rs` | メニューを出す要求と，選ばれた項目の働き（`run_menu_command`） |
 | `window/clipboard.rs` | 貼り付けとコピーと選択，アプリからのクリップボードの読み書きの依頼と読み取りの確認 |
-| `window/settings.rs` | 設定（`reload_config`，`apply_config`，`settings_request`），設定ダイアログ（`edit_settings`，`SettingsHost`） |
+| `window/settings.rs` | 設定（`reload_config`，`apply_config`，`settings_request`），ジャンプリストの作り直しの依頼（`rebuild_jump_list`），設定ダイアログ（`edit_settings`，`SettingsHost`） |
 | `window/render.rs` | 描画（`render_to`，`on_device_lost`，`on_device_removed_message`，`recreate_renderer`），背景画像の選び方，点滅と画像のアニメーションのタイマー |
 | `window/update.rs` | 「fantermo について」（`show_about`）と更新の続き（`continue_update`） |
 | `window/e2e.rs` | e2e テストの制御の口のうち，ウィンドウのスレッドで動く側（feature `e2e`） |
@@ -151,8 +152,8 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 1. `main` がログを初期化し（`logging`），コマンドラインを読み（`command_line::Options::of_process`），DPI の対応を Per-Monitor V2 にし，COM を初期化します（WIC，ファイルを選ぶダイアログ，`ShellExecuteExW` に使う）．
 2. `--elevate` があり，管理者として動いていなければ（`elevate::this_process`），`elevate::launch` で管理者の権限の fantermo を起動して終わります．動いているウィンドウへ渡す前に判断します．
 3. `--new-window` がなければ `instance::forward` で動いているウィンドウへ渡します．渡せたらそこで終わります．渡さない条件（応答しない，管理者かどうかが違う，実行ファイルか設定ファイルが違う）は `instance` の先頭のコメントにあります．
-4. `config_file::load` が設定ファイルを読みます．なければ `TEMPLATE` で作ります．古い書き方は `config::migrate` で読み替えて書き戻します．`window_state::load` が `state.toml` を読みます．場所は環境変数 `FANTERMO_CONFIG`・`FANTERMO_STATE` で差し替えられます（テストはこれを使います）．設定ファイルを読んだあと，`jump_list::rebuild` がタスクバーのジャンプリストの作り直しを専用のスレッドに頼みます（作り直さない条件は design.md 2 節の「タスクバーのジャンプリスト」）．
-5. `window::run` がシステムの DPI でフォントを測ってウィンドウを作り，覚えていた位置と大きさを見せる前に戻します（`window_state::restore_hidden`）．`App::new` が最初の端末（`Session::spawn`）を開き，設定ファイルの監視を始めます．
+4. `config_file::load` が設定ファイルを読みます．なければ `TEMPLATE` で作ります．古い書き方は `config::migrate` で読み替えて書き戻します．`window_state::load` が `state.toml` を読みます．場所は環境変数 `FANTERMO_CONFIG`・`FANTERMO_STATE` で差し替えられます（テストはこれを使います）．
+5. `window::run` がシステムの DPI でフォントを測ってウィンドウを作り，覚えていた位置と大きさを見せる前に戻します（`window_state::restore_hidden`）．`App::new` が UI のフォントを決め，最初の端末（`Session::spawn`）を開き，設定ファイルの監視を始めます．`App` を作ったあと，`window::run` が `App::rebuild_jump_list` でタスクバーのジャンプリストの作り直しを専用のスレッドに頼みます（`jump_list::rebuild`．作り直さない条件は design.md 2 節の「タスクバーのジャンプリスト」）．項目のアイコンの頭文字を UI のフォントの書体で描くので，UI のフォントが決まってから頼みます．
 6. ウィンドウのモニターの DPI がシステムの DPI と違えば，DPI の変更と同じ処理で作り直します．そのあと `ShowWindow` し，設定ファイルの警告とコマンドラインの誤りを見せてから，メッセージループに入ります．
 
 最初の端末で何を起動するかは `startup_for` が決めます（名前の合うプロファイル，コマンドライン，既定のプロファイルの順）．
@@ -186,7 +187,7 @@ IME の確定した文字と，キーを伴わない `WM_CHAR` は `on_text_unit
 ### 設定の読み直し
 
 1. `config_file::watch` のスレッドがフォルダの変化を見て `WM_APP_CONFIG_CHANGED` を積みます．ウィンドウは `CONFIG_RELOAD_DELAY` のタイマーで知らせをまとめ，止んでから一度だけ読み直します．
-2. `App::reload_config` が `config_file::reload` で読みます．エラーのある項目は前の値のまま，TOML として読めなければ全体を前の値のままにします．警告は前と同じ中身（`notice_key`）なら続けて見せず，エラーがなくなれば `notice::withdraw` で取り下げます．読んだあと，`jump_list::rebuild` でタスクバーのジャンプリストを作り直します（設定ダイアログの試し表示も通る `apply_config` では作り直しません）．
+2. `App::reload_config` が `config_file::reload` で読みます．エラーのある項目は前の値のまま，TOML として読めなければ全体を前の値のままにします．警告は前と同じ中身（`notice_key`）なら続けて見せず，エラーがなくなれば `notice::withdraw` で取り下げます．`apply_config` で入れ替えたあと，`App::rebuild_jump_list` でタスクバーのジャンプリストを作り直します．入れ替えたあとのプロファイルと UI のフォントの書体を渡します（設定ダイアログの試し表示も通る `apply_config` では作り直しません）．
 3. `App::apply_config` が値を入れ替えます．フォントが変われば，`apply_font_config` で測り直したフォントを `apply_font` に渡してアトラスを作り直し，フォント・スクロールバーの幅・余白が変われば `layout` します．プロファイルは次に開く端末から使います．
 4. 設定ダイアログを開いている間は読まず（`settings_dialog_open`），閉じてから読みます．ダイアログの試し表示（`Host::preview`）も同じ `apply_config` を通ります．
 

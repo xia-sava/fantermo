@@ -27,8 +27,8 @@ impl App {
     /// ときと同じエラーなら見せない。エラーがなければ、設定の警告を取り下げる（開いているメッセージボックス
     /// も閉じさせる）。
     ///
-    /// 設定ダイアログを開いている間は読まず、閉じてから読む。読んだら、タスクバーのジャンプリストを作り直す
-    /// （[`jump_list::rebuild`]）。
+    /// 設定ダイアログを開いている間は読まず、閉じてから読む。読んで入れ替えたら、タスクバーのジャンプリストを
+    /// 作り直す（[`App::rebuild_jump_list`]）。
     fn reload_config(&mut self) -> Option<Deferred> {
         if self.settings_dialog_open {
             self.reload_pending = true;
@@ -40,11 +40,6 @@ impl App {
             notice_key,
             whole_file_read,
         } = config_file::reload(self.config_path.as_deref(), &self.config);
-        jump_list::rebuild(
-            self.config_path.as_deref(),
-            whole_file_read,
-            &config.profiles,
-        );
         let warn = match notice {
             Some(_) if notice_key == self.settings_notice_key => None,
             Some(text) => Some(Deferred::Warn {
@@ -58,7 +53,20 @@ impl App {
         };
         self.settings_notice_key = notice_key;
         self.apply_config(config);
+        self.rebuild_jump_list(whole_file_read);
         warn
+    }
+
+    /// いまの設定のプロファイルで、タスクバーのジャンプリストを作り直す（[`jump_list::rebuild`]）。
+    /// `whole_file_read` は設定ファイル全体を読めたか。項目のアイコンの頭文字は、タブと同じく UI のフォントの書体で
+    /// 描く。
+    pub(super) fn rebuild_jump_list(&self, whole_file_read: bool) {
+        jump_list::rebuild(
+            self.config_path.as_deref(),
+            whole_file_read,
+            &self.config.profiles,
+            &self.ui_font.family,
+        );
     }
 
     /// 読み直した設定、または設定ダイアログで編集中の設定を入れ替える。

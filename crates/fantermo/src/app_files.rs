@@ -1,6 +1,7 @@
 //! fantermo が `%APPDATA%\fantermo` に置くファイルの場所と、ファイルの書き込み。
 //!
 //! 設定ファイル（`config_file`）と状態ファイル（`window_state`）、画面の書き出し（`dump`）が共有する。
+//! 置き換える書き込みとパスの比べ方は、ジャンプリストのアイコンのファイル（`jump_list`）も使う。
 
 use std::{
     ffi::OsString,
@@ -56,16 +57,16 @@ fn temporary_path(path: &Path, process_id: u32) -> PathBuf {
     with_suffix(path, &format!(".{process_id}.{TEMPORARY_EXTENSION}"))
 }
 
-/// `path` に `text` を書く。フォルダが無ければ作る。同じフォルダの一時ファイルに書いてから置き換える
-/// ので、途中で止まっても前のファイルは壊れない。
-pub fn write_replacing(path: &Path, text: &str) -> io::Result<()> {
+/// `path` に `contents`（文字列かバイト列）を書く。フォルダが無ければ作る。同じフォルダの一時ファイルに
+/// 書いてから置き換えるので、途中で止まっても前のファイルは壊れない。
+pub fn write_replacing(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
     if let Some(dir) = path.parent()
         && !dir.as_os_str().is_empty()
     {
         std::fs::create_dir_all(dir)?;
     }
     let temporary = temporary_path(path, std::process::id());
-    std::fs::write(&temporary, text)
+    std::fs::write(&temporary, contents)
         .and_then(|()| std::fs::rename(&temporary, path))
         .inspect_err(|_| remove_temporary(&temporary))
 }
@@ -122,6 +123,9 @@ mod tests {
         write_replacing(&path, "text").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "text");
         assert!(!temporary_path(&path, std::process::id()).exists());
+        // バイト列も書ける。
+        write_replacing(&path, [0x00, 0xff]).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), [0x00, 0xff]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -152,7 +152,8 @@ pub struct Decoder {
 
 impl Decoder {
     pub fn new() -> windows::core::Result<Self> {
-        // SAFETY: このスレッドは COM を初期化している（main）。
+        // SAFETY: 呼び出すスレッドは COM を初期化している（ウィンドウのスレッドは main、ジャンプリストのスレッドは
+        // jump_list::serve）。
         let factory =
             unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)? };
         Ok(Self { factory })

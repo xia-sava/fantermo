@@ -11,6 +11,9 @@
 //! ピクセルは `App` がタブを開いたときと、DPI か UI のフォントの書体が変わったときに作って [`Pixels`] に持ち、
 //! 描くときにはファイルを読まない。管理者として動いているウィンドウでは、`App::update_tab_icons` が作った
 //! ピクセルの右下に [`Generator::overlay_shield`] で UAC の盾を重ねてから [`Pixels`] に入れる。
+//!
+//! タスクバーのジャンプリストの項目のアイコンも、`jump_list` のスレッドが自分の [`Generator`] で
+//! [`TabIcon::for_profiles`] のアイコンを描いて作る（盾は重ねない）。
 
 use std::{
     collections::HashMap,

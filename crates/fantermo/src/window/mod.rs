@@ -154,6 +154,7 @@ const INITIAL_ROWS: u16 = 30;
 /// 子プロセスが終わってウィンドウを閉じたときはその終了コードを、利用者が最後の端末を閉じたときは 0 を
 /// 返す。`options` は fantermo の引数。`config_path` は設定ファイルの
 /// 場所で、`loaded` はそこから読んだ設定。読んだときの警告と引数の指定の誤りは、ウィンドウを出してから見せる。
+/// `App` を作ったら、読んだ設定でタスクバーのジャンプリストを作り直す（[`App::rebuild_jump_list`]）。
 /// `state_path` はウィンドウの状態ファイルの場所で、`state` はそこから読んだ状態。ウィンドウを見せる前に、
 /// 覚えていた位置・大きさ（ピクセル）に戻し、閉じるときに書く。
 pub fn run(
@@ -167,7 +168,7 @@ pub fn run(
         config,
         notice,
         notice_key,
-        whole_file_read: _,
+        whole_file_read,
     } = loaded;
     let options_notice = options.notice(&config.profiles);
     let dwrite = font::create_factory()?;
@@ -197,6 +198,8 @@ pub fn run(
         notice_key,
         options.tab,
     )?;
+    // 項目のアイコンの頭文字に UI のフォントの書体を使うので、`App` が UI のフォントを決めてから頼む。
+    app.rebuild_jump_list(whole_file_read);
     let data = Box::into_raw(Box::new(WindowData {
         state_path,
         app: RefCell::new(app),

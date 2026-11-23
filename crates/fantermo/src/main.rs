@@ -7,7 +7,8 @@
 //! すでに動いているウィンドウがあれば、新しいウィンドウを開かず、そこへタブを足して終わる（`instance`）。
 //! `--new-window` があれば新しいウィンドウを開く。
 //! `--elevate` があれば、管理者として動いていなければ、管理者の権限の fantermo を起動して終わる（`elevate`）。
-//! 設定ファイルを読んだら、タスクバーのジャンプリストの「タスク」にプロファイルを並べた一覧を作り直す（`jump_list`）。
+//! ウィンドウを作るときに、読んだ設定ファイルのプロファイルを、タスクバーのジャンプリストの「タスク」に並べ直す
+//! （`jump_list`）。
 //! ウィンドウの位置・大きさ・最大化は、閉じるときに同じフォルダの `state.toml` に書き、次に起動した
 //! ときに戻す（`window_state`）。
 //!
@@ -40,6 +41,7 @@ mod file_dialog;
 mod fnv;
 mod font;
 mod gdi_image;
+mod ico;
 mod image_cache;
 mod image_decoder;
 mod ime;
@@ -112,11 +114,6 @@ fn main() {
     }
 
     let loaded = config_file::load(config_path.as_deref());
-    jump_list::rebuild(
-        config_path.as_deref(),
-        loaded.whole_file_read,
-        &loaded.config.profiles,
-    );
     let state_path = window_state::path();
     let state = window_state::load(state_path.as_deref());
     match window::run(options, config_path, loaded, state_path, state) {

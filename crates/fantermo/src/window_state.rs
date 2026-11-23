@@ -91,7 +91,7 @@ fn set_aside_broken(path: &Path, bytes: &[u8]) {
 /// 状態を書く。フォルダが無ければ作る。同じフォルダの一時ファイルに書いてから置き換えるので、
 /// 途中で止まっても前の状態ファイルは壊れない。
 pub fn save(path: &Path, state: &State) {
-    match write_replacing(path, &state::to_toml(state)) {
+    match write_replacing(path, state::to_toml(state)) {
         Ok(()) => tracing::info!("saved the window state to {}", path.display()),
         Err(e) => tracing::warn!("cannot save the window state {}: {e}", path.display()),
     }
