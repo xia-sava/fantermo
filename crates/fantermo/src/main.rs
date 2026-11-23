@@ -37,6 +37,7 @@ mod dump;
 mod e2e_server;
 mod elevate;
 mod file_dialog;
+mod fnv;
 mod font;
 mod gdi_image;
 mod image_cache;

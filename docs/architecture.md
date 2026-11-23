@@ -112,6 +112,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `notice`・`clipboard_prompt` | 警告のメッセージボックス（話題 `Topic` ごとに一つ）．クリップボードの読み取りの確認 |
 | `clipboard`・`link_opener`・`file_dialog`・`known_folder` | Windows のクリップボード，リンクと設定ファイルを開く処理，ファイルを選ぶダイアログ，既知のフォルダ |
 | `update`・`update/` | 更新の確認と適用（3 節の「更新の確認と適用」） |
+| `fnv` | FNV-1a のハッシュ．実行のたびにも Rust のバージョンでも変わらない値が要るところ（タブのアイコンの色）が使う |
 | `version`・`app_icon`・`logging`・`dump` | バージョンとコミット，アイコン（管理者のときは盾を重ねる），ログの出し先，`FANTERMO_DUMP` での画面の書き出し |
 
 `build.rs` は，メインスレッドのスタックを 8 MB にし，Common Controls 6 のマニフェストとアイコンのリソースを埋め込み，コミットの短い SHA とリリースのビルドか（`FANTERMO_RELEASE=1`）を埋め込みます．

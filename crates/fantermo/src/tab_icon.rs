@@ -25,7 +25,7 @@ use fantermo_core::{
 };
 use windows::{Win32::UI::Shell::ExtractIconExW, core::HSTRING};
 
-use crate::{app_files::path_key, bridge, image_decoder::Decoded};
+use crate::{app_files::path_key, bridge, fnv, image_decoder::Decoded};
 
 mod draw;
 
@@ -319,13 +319,9 @@ pub fn color_of(name: &str) -> Rgb {
     PALETTE[hash(name) as usize % PALETTE.len()]
 }
 
-/// FNV-1a。実行のたびにも Rust の版でも変わらないようにする。
+/// 色を選ぶ、`text` の 32 ビットの FNV-1a。実行のたびにも Rust の版でも変わらないようにする。
 fn hash(text: &str) -> u32 {
-    const OFFSET_BASIS: u32 = 0x811c_9dc5;
-    const PRIME: u32 = 0x0100_0193;
-    text.bytes().fold(OFFSET_BASIS, |hash, byte| {
-        (hash ^ u32::from(byte)).wrapping_mul(PRIME)
-    })
+    fnv::hash32(text.as_bytes())
 }
 
 /// 開いているタブのアイコンのピクセル。一辺か頭文字の書体が変わったら作り直す。作れなかったものは `None` で
