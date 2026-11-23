@@ -439,18 +439,27 @@ fn unique_sleep_seconds() -> String {
     format!("300.{}{}", std::process::id(), next_unique())
 }
 
-/// コマンドラインに `sleep` と `seconds` を持つプロセスが動いている。
-fn sleep_is_running(seconds: &str) -> bool {
+/// コマンドラインに `sleep` と `seconds` を持つプロセスの番号。`/proc` の番号の項目だけを見て、`/proc/sysvipc`
+/// などの下は開かない。
+fn sleep_pids(seconds: &str) -> Vec<libc::pid_t> {
     let entries = std::fs::read_dir("/proc").expect("cannot read /proc");
-    entries.flatten().any(|entry| {
-        std::fs::read(entry.path().join("cmdline")).is_ok_and(|line| {
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse::<libc::pid_t>().ok()?;
+            let line = std::fs::read(entry.path().join("cmdline")).ok()?;
             let mut args = line.split(|&byte| byte == 0);
             let is_sleep = args
                 .next()
                 .is_some_and(|program| program.ends_with(b"sleep"));
-            is_sleep && args.next() == Some(seconds.as_bytes())
+            (is_sleep && args.next() == Some(seconds.as_bytes())).then_some(pid)
         })
-    })
+        .collect()
+}
+
+/// コマンドラインに `sleep` と `seconds` を持つプロセスが動いている。
+fn sleep_is_running(seconds: &str) -> bool {
+    !sleep_pids(seconds).is_empty()
 }
 
 fn wait_sleep_gone(seconds: &str) {
@@ -534,6 +543,143 @@ fn closing_stdin_and_stderr_together_ends_the_child() {
     bridge.stdin = None;
     assert!(bridge.wait_bridge_exit().success());
     wait_sleep_gone(&seconds);
+}
+
+/// 閉じたあと、シェルが起動した `sleep` が exec を終えて `/proc` に見えるようになるまでの間。
+const HANG_UP_SETTLE: Duration = Duration::from_secs(1);
+/// 閉じ始めたときの背景のジョブとして扱われるよう、閉じる前に背景のジョブを動かしておく時間。ブリッジが背景の
+/// ジョブとみなす 500 ms より長くする。
+const BACKGROUND_SETTLED: Duration = Duration::from_millis(1500);
+/// 起動して間もない背景のジョブとして閉じるときの、ジョブを起動させてから閉じるまでの上限。ブリッジが背景の
+/// ジョブとみなす 500 ms より短くする。
+const YOUNG_BACKGROUND_LIMIT: Duration = Duration::from_millis(400);
+/// 起動して間もない背景のジョブが動き出したかを確認する間隔。
+const YOUNG_BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// 起動して間もない背景のジョブを、上限のうちに閉じられるまで試す回数。
+const YOUNG_BACKGROUND_ATTEMPTS: u32 = 5;
+
+/// fantermo のウィンドウを閉じたときと同じく、標準エラー出力と標準入力を同時に閉じる。
+fn close_like_the_window(bridge: &mut Bridge) {
+    drop(bridge.child.stderr.take());
+    bridge.stdin = None;
+}
+
+/// 標準エラー出力をパイプにして起動し、開始の通知と大きさを交わしたブリッジ。
+fn start_with_piped_stderr(args: &[&str]) -> Bridge {
+    let mut bridge = Bridge::start_with_stderr(args, Stdio::piped());
+    bridge.exchange_hello_and_size();
+    bridge
+}
+
+/// コマンドラインに `sleep` と `seconds` を持つプロセスを止める。
+fn kill_sleep(seconds: &str) {
+    for pid in sleep_pids(seconds) {
+        // SAFETY: 引数は数だけ。
+        if unsafe { libc::kill(pid, libc::SIGKILL) } < 0 {
+            eprintln!(
+                "failed to stop `sleep {seconds}` ({pid}): {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+}
+
+/// シェルが SIGHUP を受けたときに `started` を実行してから終わるスクリプト。`started` は、シェルが SIGHUP を
+/// 受けたときに起動の途中だったコマンドの代わり。
+fn script_starting_on_hang_up(started: &str) -> String {
+    format!("trap '{started}\nexit' HUP; echo hup-ready-$((1+1)); while :; do sleep 0.05; done")
+}
+
+/// 閉じたときに `started` で起動するコマンドが、閉じたあとに残らない。
+fn exercise_command_started_on_hang_up(started: &str, seconds: &str) {
+    let script = script_starting_on_hang_up(started);
+    let mut bridge = start_with_piped_stderr(&["--", "/bin/sh", "-c", &script]);
+    bridge.wait_output("hup-ready-2");
+    close_like_the_window(&mut bridge);
+    assert!(bridge.wait_bridge_exit().success());
+    thread::sleep(HANG_UP_SETTLE);
+    wait_sleep_gone(seconds);
+}
+
+/// シェルが SIGHUP で終わるときに起動の途中だったコマンドが、シェルのプロセスグループに残っても終わる。Cygwin は
+/// セッションのリーダーが終わっても前面のプロセスグループに SIGHUP を送らない。
+#[test]
+fn a_command_left_in_the_shells_group_after_the_hang_up_is_ended() {
+    let seconds = unique_sleep_seconds();
+    exercise_command_started_on_hang_up(&format!("sleep {seconds} &"), &seconds);
+}
+
+/// シェルが SIGHUP で終わるときに起動の途中だったコマンドが、自分のプロセスグループに移ったまま前面になれずに
+/// 残っても終わる。セッションのリーダーが終わったあとは前面のプロセスグループを変えられない。
+#[test]
+fn a_command_left_in_its_own_group_after_the_hang_up_is_ended() {
+    let seconds = unique_sleep_seconds();
+    exercise_command_started_on_hang_up(&format!("set -m; sleep {seconds} &"), &seconds);
+}
+
+/// 閉じ始めたときにしばらく動いていた背景のジョブには、SIGHUP を送らない。
+#[test]
+fn a_background_job_running_before_the_close_is_left() {
+    let seconds = unique_sleep_seconds();
+    let script = format!(
+        "set -m; sleep {seconds} & set +m; echo bg-ready-$((1+1)); while :; do sleep 0.05; done"
+    );
+    let mut bridge = start_with_piped_stderr(&["--", "/bin/sh", "-c", &script]);
+    bridge.wait_output("bg-ready-2");
+    let deadline = Instant::now() + CHILD_GONE_TIMEOUT;
+    while !sleep_is_running(&seconds) {
+        assert!(
+            Instant::now() < deadline,
+            "the background job `sleep {seconds}` did not start"
+        );
+        thread::sleep(CHILD_GONE_POLL_INTERVAL);
+    }
+    thread::sleep(BACKGROUND_SETTLED);
+    close_like_the_window(&mut bridge);
+    assert!(bridge.wait_bridge_exit().success());
+    thread::sleep(HANG_UP_SETTLE);
+    let left = sleep_is_running(&seconds);
+    kill_sleep(&seconds);
+    assert!(left, "the background job `sleep {seconds}` was ended");
+    wait_sleep_gone(&seconds);
+}
+
+/// 閉じる直前に起動した背景のジョブは、前面になる前のコマンドと見分けられないので、SIGHUP を送る。
+#[test]
+fn a_background_job_started_right_before_the_close_is_ended() {
+    for _ in 0..YOUNG_BACKGROUND_ATTEMPTS {
+        let seconds = unique_sleep_seconds();
+        let script = format!(
+            "echo young-ready-$((1+1)); read line; set -m; sleep {seconds} & set +m; while :; do sleep 0.05; done"
+        );
+        let mut bridge = start_with_piped_stderr(&["--", "/bin/sh", "-c", &script]);
+        bridge.wait_output("young-ready-2");
+        bridge.type_line("");
+        // `sleep` は行を送ったあとに起動するので、送ってからの時間が `sleep` の動いている時間の上限になる。
+        let sent = Instant::now();
+        let deadline = sent + CHILD_GONE_TIMEOUT;
+        while !sleep_is_running(&seconds) {
+            assert!(
+                Instant::now() < deadline,
+                "the background job `sleep {seconds}` did not start"
+            );
+            thread::sleep(YOUNG_BACKGROUND_POLL_INTERVAL);
+        }
+        let young = sent.elapsed() < YOUNG_BACKGROUND_LIMIT;
+        close_like_the_window(&mut bridge);
+        assert!(bridge.wait_bridge_exit().success());
+        if !young {
+            kill_sleep(&seconds);
+            wait_sleep_gone(&seconds);
+            continue;
+        }
+        thread::sleep(HANG_UP_SETTLE);
+        wait_sleep_gone(&seconds);
+        return;
+    }
+    panic!(
+        "the background job did not start within {YOUNG_BACKGROUND_LIMIT:?} in {YOUNG_BACKGROUND_ATTEMPTS} attempts"
+    );
 }
 
 /// シェルの行編集に、改行のない長い行を流す。環境変数があるときだけ実行する（`zsh` が要り、重い）。

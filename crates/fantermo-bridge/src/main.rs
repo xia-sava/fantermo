@@ -8,6 +8,8 @@
 //! そのあとは標準入力と pty を `poll` で見て中継し、子プロセスが終わったら終了の単位を送って終わる。
 //! 環境変数（`TERM` など）は fantermo が渡したものをそのまま子プロセスに引き継ぐ。
 
+use std::cell::OnceCell;
+use std::collections::HashSet;
 use std::ffi::{CStr, CString, OsString};
 use std::io::{self, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -39,8 +41,18 @@ const POLL_INTERVAL_MS: c_int = 200;
 const HANGUP_WAIT_MS: u32 = 2000;
 /// 上の待ちの一回の長さ。
 const HANGUP_WAIT_STEP_MS: u32 = 50;
-/// シェルが終わったあと、前面のプロセスグループへ SIGHUP を送り直す間隔。
-const FOREGROUND_HANGUP_INTERVAL_MS: u32 = 200;
+/// シェルが終わったあと、残ったプロセスへ SIGHUP を送り直す間隔。
+const RESEND_HANGUP_INTERVAL_MS: u32 = 200;
+/// 送り直す先がこの回数続けて見つからなければ、送り直すのをやめる。
+const EMPTY_RESENDS_TO_STOP: u32 = 2;
+/// 閉じ始めたときに、起動してからこれを過ぎたプロセスのいるプロセスグループを背景のジョブとみなす。
+/// 起動して間もないプロセスだけのグループは、自分のプロセスグループに移ったが前面になる前のコマンドでありうる。
+const BACKGROUND_JOB_MIN_AGE_MS: u64 = 500;
+/// プロセスの起動の時刻が起動からの時間（`/proc/uptime`）をこれより超えていたら、時計が合わないとみなし、
+/// 起動の時刻が分からないものとして扱う。`/proc/uptime` は 10 ms 単位で切り捨てるので少しは超えうる分に、余裕を
+/// 持たせる。
+const START_TIME_TOLERANCE_MS: u64 = 1000;
+const MILLIS_PER_SECOND: u64 = 1000;
 /// `$SHELL` がないときのシェル。
 const DEFAULT_SHELL: &str = "/bin/sh";
 /// 子プロセスで `exec` できなかったときの終了コード（シェルと同じ）。
@@ -272,6 +284,9 @@ struct Child {
     pid: pid_t,
     /// pty の master。`O_NONBLOCK` を付けて開いておく。
     master: c_int,
+    /// 閉じ始めたときの背景のジョブのプロセスグループ。最初の [`Child::hang_up`] で記録する。`/proc` を読めなければ
+    /// `None`。
+    background: OnceCell<Option<HashSet<pid_t>>>,
 }
 
 impl Child {
@@ -299,7 +314,11 @@ impl Child {
                 libc::_exit(EXIT_CODE_EXEC_FAILED);
             }
         }
-        let child = Self { pid, master };
+        let child = Self {
+            pid,
+            master,
+            background: OnceCell::new(),
+        };
         child.set_nonblocking()?;
         Ok(child)
     }
@@ -326,26 +345,77 @@ impl Child {
     }
 
     /// 子プロセスのプロセスグループに SIGHUP を送る。forkpty の子はセッションのリーダーなので、
-    /// プロセスグループの番号は pid と同じ。
+    /// プロセスグループの番号もセッションの番号も pid と同じ。初めて送る前に、背景のジョブを記録する。
     fn hang_up(&self) {
+        self.background.get_or_init(|| self.record_background());
         // SAFETY: 引数は数だけ。
         if unsafe { libc::kill(-self.pid, libc::SIGHUP) } < 0 {
             log!("SIGHUP を送れません: {}", io::Error::last_os_error());
         }
     }
 
-    /// pty の前面のプロセスグループが子プロセスのものでなければ、SIGHUP を送る。送れたら真。
+    /// SIGHUP を送ったことがある。
+    fn has_hung_up(&self) -> bool {
+        self.background.get().is_some()
+    }
+
+    /// pty の前面のプロセスグループ。分からなければ負の数。
+    fn foreground(&self) -> pid_t {
+        // SAFETY: `master` は pty の master。
+        unsafe { libc::tcgetpgrp(self.master) }
+    }
+
+    /// いま動いている背景のジョブのプロセスグループ（[`background_groups`]）を読む。`/proc` を読めなければ `None`。
+    fn record_background(&self) -> Option<HashSet<pid_t>> {
+        let processes = match read_processes() {
+            Ok(processes) => processes,
+            Err(error) => {
+                log!(
+                    "/proc を読めないので、シェルが終わったあとは前面とシェルのプロセスグループにだけ SIGHUP を送り直します: {error}"
+                );
+                return None;
+            }
+        };
+        let clock = BootClock::read();
+        if clock.is_none() {
+            log!(
+                "プロセスが起動してからの時間が分からないので、前面でもシェルのものでもないプロセスグループをすべて背景のジョブとみなします"
+            );
+        }
+        Some(background_groups(
+            &processes,
+            self.pid,
+            self.foreground(),
+            clock.as_ref(),
+        ))
+    }
+
+    /// シェルが終わったあと、セッションに残ったプロセスのうち、閉じ始めたときの背景のジョブにいないもののプロセス
+    /// グループに SIGHUP を送る。一つでも送れたら真。
     ///
     /// シェルが SIGHUP を受け取ったときに起動の途中だったコマンドには、Cygwin ではシェルからの SIGHUP が届かないことが
-    /// あり、シェルが終わったあとも前面のまま動き続ける。背景のジョブ（`nohup`、`disown` など）は前面ではないので送らない。
-    fn hang_up_foreground(&self) -> bool {
-        // SAFETY: `master` は pty の master。
-        let foreground = unsafe { libc::tcgetpgrp(self.master) };
-        if foreground <= 0 || foreground == self.pid {
-            return false;
+    /// ある。そのコマンドは、シェルのプロセスグループにいるか、自分のプロセスグループに移ったまま残る。Cygwin は
+    /// セッションのリーダーが終わっても前面のプロセスグループに SIGHUP を送らず、リーダーが終わったあとは
+    /// `tcsetpgrp` が失敗するので、移ったコマンドは前面にもなれない。
+    fn hang_up_remaining(&self) -> bool {
+        let groups = match self.background.get() {
+            Some(Some(background)) => match read_processes() {
+                Ok(processes) => resend_targets(&processes, self.pid, background),
+                Err(error) => {
+                    log!("/proc を読めません: {error}");
+                    fallback_targets(self.pid, self.foreground())
+                }
+            },
+            _ => fallback_targets(self.pid, self.foreground()),
+        };
+        let mut sent = false;
+        for group in groups {
+            // SAFETY: 引数は数だけ。
+            if unsafe { libc::kill(-group, libc::SIGHUP) } == 0 {
+                sent = true;
+            }
         }
-        // SAFETY: 引数は数だけ。
-        unsafe { libc::kill(-foreground, libc::SIGHUP) == 0 }
+        sent
     }
 
     /// 終わっていれば終わり方を返す。`block` なら終わるまで待つ。
@@ -774,7 +844,12 @@ impl Relay {
             },
         };
         log!("子プロセスが終わった: {exit:?}");
-        if let Err(error) = send(&FromBridge::Exit(exit)) {
+        let sent = send(&FromBridge::Exit(exit));
+        // 終了の依頼で SIGHUP を送ったあと、標準入力が閉じる前にシェルが終わったときも、残ったプロセスへ送り直す。
+        if self.child.has_hung_up() {
+            hang_up_remaining_wait(&self.child, HANGUP_WAIT_MS);
+        }
+        if let Err(error) = sent {
             log!("終了の単位を送れません: {error}");
             return EXIT_IO_ERROR;
         }
@@ -782,12 +857,12 @@ impl Relay {
     }
 }
 
-/// SIGHUP を送った子プロセスと、残った前面のプロセスグループが終わるのを、合わせて [`HANGUP_WAIT_MS`] まで待つ。
+/// SIGHUP を送った子プロセスと、そのあとに残ったプロセスが終わるのを、合わせて [`HANGUP_WAIT_MS`] まで待つ。
 fn hang_up_wait(child: &Child) {
     let mut waited = 0;
     while waited < HANGUP_WAIT_MS {
         if child.wait(false).is_some() {
-            hang_up_foreground_wait(child, HANGUP_WAIT_MS - waited);
+            hang_up_remaining_wait(child, HANGUP_WAIT_MS - waited);
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(HANGUP_WAIT_STEP_MS.into()));
@@ -796,16 +871,181 @@ fn hang_up_wait(child: &Child) {
     log!("子プロセスが終わらないまま終わります（pid {}）", child.pid);
 }
 
-/// 前面のプロセスグループがなくなるまで、`limit_ms` を上限に SIGHUP を送り直す。起動の途中のプロセスには届かない
-/// ことがあるので、間を空けて繰り返す。
-fn hang_up_foreground_wait(child: &Child, limit_ms: u32) {
+/// シェルが終わったあとに残ったプロセスへ（[`Child::hang_up_remaining`]）、`limit_ms` を上限に SIGHUP を送り直す。
+/// 起動の途中のプロセスには届かないことがあるので間を空けて繰り返し、[`EMPTY_RESENDS_TO_STOP`] 回続けて送る先が
+/// なければやめる。
+fn hang_up_remaining_wait(child: &Child, limit_ms: u32) {
     let mut waited = 0;
-    while waited < limit_ms && child.hang_up_foreground() {
+    let mut empty = 0;
+    while waited < limit_ms {
+        if child.hang_up_remaining() {
+            empty = 0;
+        } else {
+            empty += 1;
+            if empty >= EMPTY_RESENDS_TO_STOP {
+                return;
+            }
+        }
         std::thread::sleep(std::time::Duration::from_millis(
-            FOREGROUND_HANGUP_INTERVAL_MS.into(),
+            RESEND_HANGUP_INTERVAL_MS.into(),
         ));
-        waited += FOREGROUND_HANGUP_INTERVAL_MS;
+        waited += RESEND_HANGUP_INTERVAL_MS;
     }
+}
+
+/// `/proc/<pid>/stat` から読んだ、SIGHUP を送る先を決めるのに使う値。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProcessStat {
+    pgid: pid_t,
+    sid: pid_t,
+    /// 起動の時刻。OS が起動してからの時間で、単位は `sysconf(_SC_CLK_TCK)`。
+    start_ticks: u64,
+}
+
+/// `/proc/<pid>/stat` の中身を読む。2 つめの項目（コマンドの名前）は括弧で囲まれ、空白や括弧を含みうるので、
+/// 残りは最後の `)` の後ろから数える。
+fn parse_stat(text: &[u8]) -> Option<ProcessStat> {
+    /// `)` の後ろの、空白で区切った項目の位置（3 つめの項目 `state` が 0）。
+    const PGID_FIELD: usize = 2;
+    const SID_FIELD: usize = 3;
+    const START_TIME_FIELD: usize = 19;
+
+    let open = text.iter().position(|&byte| byte == b'(')?;
+    let close = text.iter().rposition(|&byte| byte == b')')?;
+    if close < open {
+        return None;
+    }
+    let rest = std::str::from_utf8(&text[close + 1..]).ok()?;
+    let fields: Vec<&str> = rest.split_ascii_whitespace().collect();
+    Some(ProcessStat {
+        pgid: fields.get(PGID_FIELD)?.parse().ok()?,
+        sid: fields.get(SID_FIELD)?.parse().ok()?,
+        start_ticks: fields.get(START_TIME_FIELD)?.parse().ok()?,
+    })
+}
+
+/// `/proc` のプロセスをすべて読む。読む間に終わったものと、読めない中身のものは飛ばす。
+fn read_processes() -> io::Result<Vec<ProcessStat>> {
+    let mut processes = Vec::new();
+    for entry in std::fs::read_dir("/proc")? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let name = entry.file_name();
+        let name = name.as_bytes();
+        if name.is_empty() || !name.iter().all(u8::is_ascii_digit) {
+            continue;
+        }
+        let Ok(text) = std::fs::read(entry.path().join("stat")) else {
+            continue;
+        };
+        if let Some(stat) = parse_stat(&text) {
+            processes.push(stat);
+        }
+    }
+    Ok(processes)
+}
+
+/// プロセスが起動してからの時間を求めるための時計。`/proc/<pid>/stat` の起動の時刻と `/proc/uptime` は、Cygwin でも
+/// Linux でも OS が起動してからの時間で、前者の単位は `sysconf(_SC_CLK_TCK)`（Cygwin は 1000、Linux は多くが 100）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BootClock {
+    /// OS が起動してからの時間（ミリ秒）。
+    uptime_ms: u64,
+    ticks_per_second: u64,
+}
+
+impl BootClock {
+    /// いまの時計。プロセスを読んだあとに読む（読む間に起動したプロセスが、起動の時刻で時計を超えないように）。
+    /// 読めなければ `None`。
+    fn read() -> Option<Self> {
+        // SAFETY: 引数は数だけ。
+        let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        let ticks_per_second = u64::try_from(ticks).ok().filter(|&ticks| ticks > 0)?;
+        let uptime = std::fs::read("/proc/uptime").ok()?;
+        Some(Self {
+            uptime_ms: parse_uptime(&uptime)?,
+            ticks_per_second,
+        })
+    }
+
+    /// 起動の時刻が `start_ticks` のプロセスが起動してからの時間（ミリ秒）。時計が合わなければ `None`。
+    fn age_ms(&self, start_ticks: u64) -> Option<u64> {
+        let start_ms = start_ticks.checked_mul(MILLIS_PER_SECOND)? / self.ticks_per_second;
+        if start_ms > self.uptime_ms.saturating_add(START_TIME_TOLERANCE_MS) {
+            return None;
+        }
+        Some(self.uptime_ms.saturating_sub(start_ms))
+    }
+}
+
+/// `/proc/uptime` の最初の数（秒、小数あり）をミリ秒にする。
+fn parse_uptime(text: &[u8]) -> Option<u64> {
+    let text = std::str::from_utf8(text).ok()?;
+    let seconds = text.split_ascii_whitespace().next()?;
+    let (whole, fraction) = seconds.split_once('.').unwrap_or((seconds, ""));
+    let whole: u64 = whole.parse().ok()?;
+    if !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let mut millis = 0;
+    let mut scale = MILLIS_PER_SECOND / 10;
+    for digit in fraction.bytes().take(3) {
+        millis += u64::from(digit - b'0') * scale;
+        scale /= 10;
+    }
+    whole.checked_mul(MILLIS_PER_SECOND)?.checked_add(millis)
+}
+
+/// 閉じ始めたときの背景のジョブのプロセスグループ。セッション `shell`（シェルの pid）のプロセスグループのうち、
+/// シェルのものでも前面 `foreground` でもなく、起動して [`BACKGROUND_JOB_MIN_AGE_MS`] を過ぎたプロセスのいるもの。
+/// `clock` がなければ（起動からの時間が分からなければ）、起動の時刻によらず背景のジョブとみなす。
+fn background_groups(
+    processes: &[ProcessStat],
+    shell: pid_t,
+    foreground: pid_t,
+    clock: Option<&BootClock>,
+) -> HashSet<pid_t> {
+    processes
+        .iter()
+        .filter(|process| {
+            process.sid == shell && process.pgid != shell && process.pgid != foreground
+        })
+        .filter(|process| {
+            clock
+                .and_then(|clock| clock.age_ms(process.start_ticks))
+                .is_none_or(|age| age >= BACKGROUND_JOB_MIN_AGE_MS)
+        })
+        .map(|process| process.pgid)
+        .collect()
+}
+
+/// シェルが終わったあとに SIGHUP を送り直すプロセスグループ。セッション `shell` のプロセスのうち、閉じ始めたときの
+/// 背景のジョブ `background` にいないもののグループ。並びは小さい順で、重ならない。
+fn resend_targets(
+    processes: &[ProcessStat],
+    shell: pid_t,
+    background: &HashSet<pid_t>,
+) -> Vec<pid_t> {
+    let mut groups: Vec<pid_t> = processes
+        .iter()
+        .filter(|process| {
+            process.sid == shell && process.pgid > 0 && !background.contains(&process.pgid)
+        })
+        .map(|process| process.pgid)
+        .collect();
+    groups.sort_unstable();
+    groups.dedup();
+    groups
+}
+
+/// `/proc` を読めないときに SIGHUP を送り直すプロセスグループ。シェルのものと、前面 `foreground` のもの。
+fn fallback_targets(shell: pid_t, foreground: pid_t) -> Vec<pid_t> {
+    let mut groups = vec![shell];
+    if foreground > 0 && foreground != shell {
+        groups.push(foreground);
+    }
+    groups
 }
 
 /// 標準入力から単位を一つ受け取るまで待つ。標準入力が単位の切れ目で閉じたら `None`。
@@ -907,5 +1147,164 @@ mod tests {
         );
         assert!(parse(&["--cwd"]).is_err());
         assert!(parse(&["-x"]).is_err());
+    }
+
+    #[test]
+    fn stat_is_read_after_the_last_parenthesis() {
+        // Cygwin の `sleep` の実物。
+        let cygwin = b"1216 (sleep) S 1215 1216 1215 34816 -1 0 2668 2668 0 0 0 0 0 0 20 0 7 0 1074395539 6389760 2562 1413120\n";
+        assert_eq!(
+            parse_stat(cygwin),
+            Some(ProcessStat {
+                pgid: 1216,
+                sid: 1215,
+                start_ticks: 1_074_395_539,
+            })
+        );
+        // コマンドの名前に空白と括弧があっても、最後の `)` の後ろから数える。
+        let odd =
+            b"42 (a b) (c) d) S 1 40 30 34816 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 98765 1000 10 0";
+        assert_eq!(
+            parse_stat(odd),
+            Some(ProcessStat {
+                pgid: 40,
+                sid: 30,
+                start_ticks: 98_765,
+            })
+        );
+        assert_eq!(parse_stat(b"42 (sleep) S 1 40 30"), None);
+        assert_eq!(parse_stat(b"42 sleep S 1 40 30"), None);
+        assert_eq!(
+            parse_stat(b"42 (sleep) S 1 x 30 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 5"),
+            None
+        );
+        assert_eq!(parse_stat(b") 42 ("), None);
+    }
+
+    #[test]
+    fn uptime_is_read_in_milliseconds() {
+        assert_eq!(
+            parse_uptime(b"1075391.28 1014023.69\n"),
+            Some(1_075_391_280)
+        );
+        assert_eq!(parse_uptime(b"12 3"), Some(12_000));
+        assert_eq!(parse_uptime(b"1.2345 0"), Some(1_234));
+        assert_eq!(parse_uptime(b"1.5"), Some(1_500));
+        assert_eq!(parse_uptime(b"x.5"), None);
+        assert_eq!(parse_uptime(b"1.x"), None);
+        assert_eq!(parse_uptime(b""), None);
+    }
+
+    #[test]
+    fn age_follows_the_ticks_per_second() {
+        let cygwin = BootClock {
+            uptime_ms: 10_000,
+            ticks_per_second: 1000,
+        };
+        let linux = BootClock {
+            uptime_ms: 10_000,
+            ticks_per_second: 100,
+        };
+        assert_eq!(cygwin.age_ms(9_600), Some(400));
+        assert_eq!(linux.age_ms(960), Some(400));
+        // 時計の刻みより後に起動したものは 0。
+        assert_eq!(cygwin.age_ms(10_005), Some(0));
+        // 時計より大きく後なら、時計が合わないので分からない。
+        assert_eq!(cygwin.age_ms(10_000 + START_TIME_TOLERANCE_MS + 1), None);
+        assert_eq!(linux.age_ms(u64::MAX), None);
+    }
+
+    const SHELL: pid_t = 100;
+    const FOREGROUND: pid_t = 200;
+
+    /// 起動して `age_ms` のプロセス。時計は [`clock`]。
+    fn process(pgid: pid_t, sid: pid_t, age_ms: u64) -> ProcessStat {
+        ProcessStat {
+            pgid,
+            sid,
+            start_ticks: clock().uptime_ms - age_ms,
+        }
+    }
+
+    fn clock() -> BootClock {
+        BootClock {
+            uptime_ms: 1_000_000,
+            ticks_per_second: 1000,
+        }
+    }
+
+    fn groups(groups: &[pid_t]) -> HashSet<pid_t> {
+        groups.iter().copied().collect()
+    }
+
+    #[test]
+    fn background_jobs_are_groups_with_a_settled_process() {
+        let old = BACKGROUND_JOB_MIN_AGE_MS;
+        let processes = [
+            process(SHELL, SHELL, 10_000),
+            process(SHELL, SHELL, 10_000),
+            process(FOREGROUND, SHELL, 10_000),
+            // しばらく動いている背景のジョブ。境目ちょうども含める。
+            process(300, SHELL, old),
+            process(310, SHELL, 60_000),
+            // 自分のグループに移ったが前面になる前のコマンドでありうる。
+            process(400, SHELL, old - 1),
+            // 起動して間もないプロセスがいても、しばらく動いているプロセスのいるグループは背景のジョブ。
+            process(500, SHELL, old - 1),
+            process(500, SHELL, old + 1),
+            // 別のセッション。
+            process(600, 600, 60_000),
+        ];
+        assert_eq!(
+            background_groups(&processes, SHELL, FOREGROUND, Some(&clock())),
+            groups(&[300, 310, 500])
+        );
+        // 起動からの時間が分からなければ、起動の時刻によらない。
+        assert_eq!(
+            background_groups(&processes, SHELL, FOREGROUND, None),
+            groups(&[300, 310, 400, 500])
+        );
+        // 前面が分からなくても、シェルのグループは含めない。
+        assert_eq!(
+            background_groups(&processes, SHELL, -1, Some(&clock())),
+            groups(&[FOREGROUND, 300, 310, 500])
+        );
+        // 時計が合わないプロセスは、起動の時刻が分からないものとして背景のジョブにする。
+        let future = ProcessStat {
+            start_ticks: clock().uptime_ms + START_TIME_TOLERANCE_MS + 1,
+            ..process(700, SHELL, 0)
+        };
+        assert_eq!(
+            background_groups(&[future], SHELL, FOREGROUND, Some(&clock())),
+            groups(&[700])
+        );
+    }
+
+    #[test]
+    fn resent_groups_are_the_session_outside_the_background_jobs() {
+        let processes = [
+            process(SHELL, SHELL, 0),
+            process(SHELL, SHELL, 0),
+            process(FOREGROUND, SHELL, 0),
+            process(300, SHELL, 10_000),
+            process(400, SHELL, 0),
+            process(600, 600, 0),
+        ];
+        assert_eq!(
+            resend_targets(&processes, SHELL, &groups(&[300])),
+            [SHELL, FOREGROUND, 400]
+        );
+        assert_eq!(
+            resend_targets(&processes, SHELL, &groups(&[SHELL, FOREGROUND, 300, 400])),
+            []
+        );
+        assert_eq!(resend_targets(&[], SHELL, &groups(&[])), []);
+    }
+
+    #[test]
+    fn without_proc_the_shell_and_the_foreground_are_resent() {
+        assert_eq!(fallback_targets(SHELL, FOREGROUND), [SHELL, FOREGROUND]);
+        assert_eq!(fallback_targets(SHELL, SHELL), [SHELL]);
+        assert_eq!(fallback_targets(SHELL, -1), [SHELL]);
     }
 }
