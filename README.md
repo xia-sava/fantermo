@@ -30,7 +30,7 @@ libghostty-vt は [libghostty-rs](https://github.com/uzaaft/libghostty-rs) の�
 
 アプリは OSC 52 でクリップボードへ書き込めます（vim や tmux からのコピー）．設定ファイルの `[clipboard]` の `write` を `"deny"` にすると，書き込みを受け付けません（既定は `"allow"`）．読み取りは，設定ファイルの `[clipboard]` の `read` で決めます．既定の `"ask"` は確認のダイアログを出し（「許可」「拒否」「このタブでは今後も許可」），`"allow"` は確認せずに渡し，`"deny"` は何も返しません．読み取りは ConPTY では動作しないので，使うならブリッジで接続します．
 
-設定ファイルとウィンドウの状態は `%APPDATA%\fantermo\` に，ログは `%LOCALAPPDATA%\fantermo\logs\` に置きます．どちらもアンインストールしても消さないので，要らなければ手で消してください．
+設定ファイルとウィンドウの状態は `%APPDATA%\fantermo\` に，ログは `%LOCALAPPDATA%\fantermo\logs\` に，ジャンプリストのアイコンは `%LOCALAPPDATA%\fantermo\jump-list\` に置きます．どれもアンインストールしても消さないので，要らなければ手で消してください．
 
 タブバーのメニューのボタン（≡）の「fantermo について…」で，バージョンとビルドしたコミットを見られます．インストーラでインストールした fantermo は，ここの「更新を確認」で新しいバージョンを確認して更新できます（インストーラがインストールする場所 `%LOCALAPPDATA%\Programs\fantermo\` のほかに置いた fantermo と，管理者として動いている fantermo では，このボタンは押せません）．
 

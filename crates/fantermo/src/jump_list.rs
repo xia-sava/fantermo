@@ -53,7 +53,8 @@ use crate::{
 };
 
 /// 項目のアイコンの ICO に入れる一辺（ピクセル）。ジャンプリストのアイコンは DPI で大きさが変わり、足りない
-/// 大きさはシェルが拡大・縮小してぼやけるので、100% から 300% までの小さいアイコンの大きさを描いて入れる。
+/// 大きさはシェルが拡大・縮小してぼやけるので、100%・125%・150%・200%・250%・300% の小さいアイコンの大きさを
+/// 描いて入れる。
 const ICON_SIDES: [u32; 6] = [16, 20, 24, 32, 40, 48];
 
 /// `%LOCALAPPDATA%` の下の、アイコンのファイルを置くフォルダ。この下に実行ファイルごとのフォルダを作る。
@@ -382,8 +383,11 @@ fn remove_unused_icons(folder: &Path, icon_paths: &[Option<PathBuf>]) {
     }
     for name in unused_icons(&names, &used) {
         let path = folder.join(name);
-        if let Err(e) = std::fs::remove_file(&path) {
-            tracing::warn!("cannot remove {}: {e}", path.display());
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            // 同じ実行ファイルのほかのプロセスが先に消していれば、ファイルはない。
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!("cannot remove {}: {e}", path.display()),
         }
     }
 }

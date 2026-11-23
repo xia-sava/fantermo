@@ -322,7 +322,7 @@ pub fn color_of(name: &str) -> Rgb {
     PALETTE[hash(name) as usize % PALETTE.len()]
 }
 
-/// 色を選ぶ、`text` の 32 ビットの FNV-1a。実行のたびにも Rust の版でも変わらないようにする。
+/// 色を選ぶ、`text` の 32 ビットの FNV-1a。実行のたびにも Rust のバージョンでも変わらないようにする。
 fn hash(text: &str) -> u32 {
     fnv::hash32(text.as_bytes())
 }
