@@ -168,6 +168,37 @@ fn next_word(text: &str) -> (String, &str) {
     (word, "")
 }
 
+/// プロファイル `name` を開く引数（`--profile "<名前>"`）。名前が `--` で始まるなら、[`Options::parse`] が名前の
+/// ない `--profile` として読み、そのプロファイルを開けないので `None`。
+pub fn profile_arguments(name: &str) -> Option<String> {
+    (!name.starts_with(OPTION_PREFIX)).then(|| format!("{PROFILE_OPTION} {}", quote_argument(name)))
+}
+
+/// `text` を一つの語として `"` で囲む。[`next_word`] の語の切り方（`CommandLineToArgvW` の決まり）の逆で、`"` は
+/// `\"` にし、`"` の直前と末尾の `\` は 2 つにする。
+pub fn quote_argument(text: &str) -> String {
+    let mut quoted = String::from('"');
+    let mut backslashes = 0;
+    for c in text.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                quoted.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+                quoted.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                quoted.extend(std::iter::repeat_n('\\', backslashes));
+                quoted.push(c);
+                backslashes = 0;
+            }
+        }
+    }
+    quoted.extend(std::iter::repeat_n('\\', backslashes * 2));
+    quoted.push('"');
+    quoted
+}
+
 #[cfg(test)]
 mod tests {
     use fantermo_core::config::BackendKind;
@@ -318,6 +349,18 @@ mod tests {
         assert_eq!(next_word(r#""a""b" c"#), (r#"a"b"#.to_owned(), " c"));
         assert_eq!(next_word("日本語 x"), ("日本語".to_owned(), " x"));
         assert_eq!(next_word(r"a\"), (r"a\".to_owned(), ""));
+    }
+
+    #[test]
+    fn arguments_are_quoted_as_one_word() {
+        assert_eq!(quote_argument("one"), r#""one""#);
+        assert_eq!(quote_argument("a b"), r#""a b""#);
+        assert_eq!(quote_argument("R&D"), r#""R&D""#);
+        assert_eq!(quote_argument(r#"a"b"#), r#""a\"b""#);
+        assert_eq!(quote_argument(r"a\"), r#""a\\""#);
+        assert_eq!(quote_argument(r#"a\"b"#), r#""a\\\"b""#);
+        assert_eq!(quote_argument(r"a\b"), r#""a\b""#);
+        assert_eq!(quote_argument(""), r#""""#);
     }
 
     #[test]

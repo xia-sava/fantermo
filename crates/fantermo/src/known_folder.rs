@@ -5,7 +5,7 @@ use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
 use windows::{
     Win32::{
         System::Com::CoTaskMemFree,
-        UI::Shell::{FOLDERID_System, KF_FLAG_DEFAULT, SHGetKnownFolderPath},
+        UI::Shell::{FOLDERID_Profile, FOLDERID_System, KF_FLAG_DEFAULT, SHGetKnownFolderPath},
     },
     core::GUID,
 };
@@ -13,6 +13,11 @@ use windows::{
 /// システムのフォルダ（`C:\Windows\System32`）。求められなければ `None`。
 pub fn system() -> Option<PathBuf> {
     path(&FOLDERID_System)
+}
+
+/// いまの利用者のホームのフォルダ（`%USERPROFILE%`）。求められなければ `None`。
+pub fn profile() -> Option<PathBuf> {
+    path(&FOLDERID_Profile)
 }
 
 /// いまの利用者の、`id` が指す既知のフォルダ。求められなければ `None`。
@@ -41,5 +46,12 @@ mod tests {
         let system = system().unwrap();
         assert!(system.is_absolute());
         assert!(system.join("kernel32.dll").is_file());
+    }
+
+    #[test]
+    fn the_profile_folder_is_an_existing_absolute_path() {
+        let profile = profile().unwrap();
+        assert!(profile.is_absolute());
+        assert!(profile.is_dir());
     }
 }

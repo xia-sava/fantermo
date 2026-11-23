@@ -52,8 +52,13 @@ pub fn path() -> Option<PathBuf> {
     app_data_file(CONFIG_PATH_ENV, CONFIG_FILE_NAME)
 }
 
+/// 設定ファイルの場所を [`CONFIG_PATH_ENV`] で差し替えているか。
+pub fn path_overridden() -> bool {
+    std::env::var_os(CONFIG_PATH_ENV).is_some()
+}
+
 /// 読んだ設定と、利用者に見せる警告の文。
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Loaded {
     pub config: Config,
     /// 作れなかった・読めなかった・エラーがあったときに、利用者に見せる文。何もなければ `None`。
@@ -61,6 +66,21 @@ pub struct Loaded {
     /// 警告の中身を比べるための文。いつ読んだかと行番号を含めないので、起動時の警告と読み直したときの
     /// 警告、項目が足されて行がずれただけの警告は同じになる。何もなければ `None`。
     pub notice_key: Option<String>,
+    /// 設定ファイル全体を読めた。作れなかった・読めなかった・TOML として読めなかったときは `false` で、
+    /// `config` は既定値か前の値。ファイルが無くて既定値にしたときと、エラーのある項目だけを飛ばしたときは `true`。
+    pub whole_file_read: bool,
+}
+
+impl Loaded {
+    /// ファイルが無い（場所が分からない）ので、既定値にしたもの。
+    fn defaults() -> Self {
+        Self {
+            config: Config::default(),
+            notice: None,
+            notice_key: None,
+            whole_file_read: true,
+        }
+    }
 }
 
 /// いつ読んだか。エラーがあったときに、どの設定で動いているかの言い方を決める。
@@ -108,6 +128,7 @@ pub fn load(path: Option<&Path>) -> Loaded {
                 path.display()
             )),
             notice_key: Some(e.to_string()),
+            whole_file_read: false,
         };
     }
     read(path, &Config::default(), Occasion::Startup)
@@ -147,13 +168,13 @@ pub fn reload(path: Option<&Path>, previous: &Config) -> Loaded {
 
 fn read(path: Option<&Path>, previous: &Config, occasion: Occasion) -> Loaded {
     let Some(path) = path else {
-        return Loaded::default();
+        return Loaded::defaults();
     };
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             tracing::info!("no settings file at {}; using the defaults", path.display());
-            return Loaded::default();
+            return Loaded::defaults();
         }
         Err(e) => {
             tracing::warn!("cannot read the settings file {}: {e}", path.display());
@@ -165,6 +186,7 @@ fn read(path: Option<&Path>, previous: &Config, occasion: Occasion) -> Loaded {
                     path.display()
                 )),
                 notice_key: Some(e.to_string()),
+                whole_file_read: false,
             };
         }
     };
@@ -182,6 +204,7 @@ fn read(path: Option<&Path>, previous: &Config, occasion: Occasion) -> Loaded {
     Loaded {
         notice: notice_text(path, &parsed, occasion),
         notice_key: notice_key(&parsed),
+        whole_file_read: !parsed.syntax_error,
         config: parsed.config,
     }
 }
@@ -547,6 +570,33 @@ mod tests {
 
         std::fs::write(&path, "").unwrap();
         assert_eq!(reload(Some(&path), &startup.config).notice_key, None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ファイル全体を読めたかは、読めない・TOML として読めないときだけ `false`。
+    #[test]
+    fn the_whole_file_is_read_unless_it_cannot_be_read_or_parsed() {
+        let dir = scratch_dir("whole-file");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        assert!(load(None).whole_file_read);
+        assert!(reload(Some(&path), &Config::default()).whole_file_read);
+
+        std::fs::write(&path, "unknown_one = 1\n").unwrap();
+        let skipped = load(Some(&path));
+        assert!(skipped.notice.is_some());
+        assert!(skipped.whole_file_read);
+
+        std::fs::write(&path, "[font\n").unwrap();
+        assert!(!load(Some(&path)).whole_file_read);
+        assert!(!reload(Some(&path), &Config::default()).whole_file_read);
+
+        // フォルダはファイルとして読めない。
+        let folder = dir.join("folder.toml");
+        std::fs::create_dir_all(&folder).unwrap();
+        let unreadable = reload(Some(&folder), &Config::default());
+        assert!(unreadable.notice.is_some());
+        assert!(!unreadable.whole_file_read);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

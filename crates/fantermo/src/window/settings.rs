@@ -13,6 +13,7 @@ use super::{
 use crate::{
     config_file::{self, Loaded},
     font::{self, Font},
+    jump_list,
     notice::{self, Topic},
     renderer,
     settings_dialog::{self, FontChoice},
@@ -26,7 +27,8 @@ impl App {
     /// ときと同じエラーなら見せない。エラーがなければ、設定の警告を取り下げる（開いているメッセージボックス
     /// も閉じさせる）。
     ///
-    /// 設定ダイアログを開いている間は読まず、閉じてから読む。
+    /// 設定ダイアログを開いている間は読まず、閉じてから読む。読んだら、タスクバーのジャンプリストを作り直す
+    /// （[`jump_list::rebuild`]）。
     fn reload_config(&mut self) -> Option<Deferred> {
         if self.settings_dialog_open {
             self.reload_pending = true;
@@ -36,7 +38,13 @@ impl App {
             config,
             notice,
             notice_key,
+            whole_file_read,
         } = config_file::reload(self.config_path.as_deref(), &self.config);
+        jump_list::rebuild(
+            self.config_path.as_deref(),
+            whole_file_read,
+            &config.profiles,
+        );
         let warn = match notice {
             Some(_) if notice_key == self.settings_notice_key => None,
             Some(text) => Some(Deferred::Warn {

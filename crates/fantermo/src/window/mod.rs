@@ -167,6 +167,7 @@ pub fn run(
         config,
         notice,
         notice_key,
+        whole_file_read: _,
     } = loaded;
     let options_notice = options.notice(&config.profiles);
     let dwrite = font::create_factory()?;

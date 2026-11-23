@@ -28,7 +28,9 @@ use windows::Win32::{
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
 
-use crate::command_line::{END_OF_OPTIONS, NEW_WINDOW_OPTION, Options, PROFILE_OPTION};
+use crate::command_line::{
+    END_OF_OPTIONS, NEW_WINDOW_OPTION, Options, PROFILE_OPTION, quote_argument,
+};
 
 /// 管理者として起動するもの。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -183,31 +185,6 @@ fn parameters(options: &Options) -> String {
     words.join(" ")
 }
 
-/// `text` を一つの語として `"` で囲む。`CommandLineToArgvW` の決まり（`command_line` の語の切り方）の逆で、`"` は
-/// `\"` にし、`"` の直前と末尾の `\` は 2 つにする。
-fn quote_argument(text: &str) -> String {
-    let mut quoted = String::from('"');
-    let mut backslashes = 0;
-    for c in text.chars() {
-        match c {
-            '\\' => backslashes += 1,
-            '"' => {
-                quoted.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
-                quoted.push('"');
-                backslashes = 0;
-            }
-            _ => {
-                quoted.extend(std::iter::repeat_n('\\', backslashes));
-                quoted.push(c);
-                backslashes = 0;
-            }
-        }
-    }
-    quoted.extend(std::iter::repeat_n('\\', backslashes * 2));
-    quoted.push('"');
-    quoted
-}
-
 /// `request` を管理者として起動する。UAC の確認が閉じるまで戻らない。`owner` は UAC の確認の持ち主のウィンドウ。
 #[cfg(not(feature = "e2e"))]
 pub fn launch(owner: Option<HWND>, request: &Launch) -> Result<(), LaunchError> {
@@ -270,18 +247,6 @@ mod tests {
             },
             ..Options::default()
         }
-    }
-
-    #[test]
-    fn arguments_are_quoted_as_one_word() {
-        assert_eq!(quote_argument("one"), r#""one""#);
-        assert_eq!(quote_argument("a b"), r#""a b""#);
-        assert_eq!(quote_argument("R&D"), r#""R&D""#);
-        assert_eq!(quote_argument(r#"a"b"#), r#""a\"b""#);
-        assert_eq!(quote_argument(r"a\"), r#""a\\""#);
-        assert_eq!(quote_argument(r#"a\"b"#), r#""a\\\"b""#);
-        assert_eq!(quote_argument(r"a\b"), r#""a\b""#);
-        assert_eq!(quote_argument(""), r#""""#);
     }
 
     #[test]

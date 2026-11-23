@@ -71,8 +71,9 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | モジュール | 受け持つこと |
 |---|---|
 | `main` | 起動の順番（3 節の「起動」） |
-| `command_line` | コマンドライン（`--elevate`，`--new-window`，`--profile`，`--`）の解釈 |
+| `command_line` | コマンドライン（`--elevate`，`--new-window`，`--profile`，`--`）の解釈と，その逆の，一つの語として `"` で囲む `quote_argument` とプロファイルを開く引数 `profile_arguments` |
 | `instance` | 動いている fantermo のウィンドウへ起動の指定を `WM_COPYDATA` で渡す側と受け取る側 |
+| `jump_list` | タスクバーのジャンプリストの「タスク」．プロファイルから項目の並びを作る `tasks`（COM を呼ばない），作り直すかを決めて依頼する `rebuild`，COM を呼ぶ専用のスレッド（`jump-list`） |
 | `elevate` | 管理者の権限の fantermo の起動（`ShellExecuteExW` の `runas`）．渡す引数の組み立て，このプロセスが管理者として動いているかの判定（ウィンドウの印・メニュー・更新・`--elevate` に使う `this_process` と，動いているウィンドウへ渡すときに相手と比べる `this_process_for_forwarding`），プロセスのトークンの昇格を読む `is_elevated`．feature `e2e` のときは `elevate/stand_in` で差し替える |
 | `app_files` | `%APPDATA%\fantermo` のファイルの場所（環境変数での差し替え），一時ファイルを経由した置き換え書き込み，パスの比較（`same_path`） |
 | `config_file` | 設定ファイルの場所，読み込み，ひな形の作成，書き戻し（`save`），フォルダの監視 |
@@ -149,7 +150,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 1. `main` がログを初期化し（`logging`），コマンドラインを読み（`command_line::Options::of_process`），DPI の対応を Per-Monitor V2 にし，COM を初期化します（WIC，ファイルを選ぶダイアログ，`ShellExecuteExW` に使う）．
 2. `--elevate` があり，管理者として動いていなければ（`elevate::this_process`），`elevate::launch` で管理者の権限の fantermo を起動して終わります．動いているウィンドウへ渡す前に判断します．
 3. `--new-window` がなければ `instance::forward` で動いているウィンドウへ渡します．渡せたらそこで終わります．渡さない条件（応答しない，管理者かどうかが違う，実行ファイルか設定ファイルが違う）は `instance` の先頭のコメントにあります．
-4. `config_file::load` が設定ファイルを読みます．なければ `TEMPLATE` で作ります．古い書き方は `config::migrate` で読み替えて書き戻します．`window_state::load` が `state.toml` を読みます．場所は環境変数 `FANTERMO_CONFIG`・`FANTERMO_STATE` で差し替えられます（テストはこれを使います）．
+4. `config_file::load` が設定ファイルを読みます．なければ `TEMPLATE` で作ります．古い書き方は `config::migrate` で読み替えて書き戻します．`window_state::load` が `state.toml` を読みます．場所は環境変数 `FANTERMO_CONFIG`・`FANTERMO_STATE` で差し替えられます（テストはこれを使います）．設定ファイルを読んだあと，`jump_list::rebuild` がタスクバーのジャンプリストの作り直しを専用のスレッドに頼みます（作り直さない条件は design.md 2 節の「タスクバーのジャンプリスト」）．
 5. `window::run` がシステムの DPI でフォントを測ってウィンドウを作り，覚えていた位置と大きさを見せる前に戻します（`window_state::restore_hidden`）．`App::new` が最初の端末（`Session::spawn`）を開き，設定ファイルの監視を始めます．
 6. ウィンドウのモニターの DPI がシステムの DPI と違えば，DPI の変更と同じ処理で作り直します．そのあと `ShowWindow` し，設定ファイルの警告とコマンドラインの誤りを見せてから，メッセージループに入ります．
 
@@ -184,7 +185,7 @@ IME の確定した文字と，キーを伴わない `WM_CHAR` は `on_text_unit
 ### 設定の読み直し
 
 1. `config_file::watch` のスレッドがフォルダの変化を見て `WM_APP_CONFIG_CHANGED` を積みます．ウィンドウは `CONFIG_RELOAD_DELAY` のタイマーで知らせをまとめ，止んでから一度だけ読み直します．
-2. `App::reload_config` が `config_file::reload` で読みます．エラーのある項目は前の値のまま，TOML として読めなければ全体を前の値のままにします．警告は前と同じ中身（`notice_key`）なら続けて見せず，エラーがなくなれば `notice::withdraw` で取り下げます．
+2. `App::reload_config` が `config_file::reload` で読みます．エラーのある項目は前の値のまま，TOML として読めなければ全体を前の値のままにします．警告は前と同じ中身（`notice_key`）なら続けて見せず，エラーがなくなれば `notice::withdraw` で取り下げます．読んだあと，`jump_list::rebuild` でタスクバーのジャンプリストを作り直します（設定ダイアログの試し表示も通る `apply_config` では作り直しません）．
 3. `App::apply_config` が値を入れ替えます．フォントが変われば，`apply_font_config` で測り直したフォントを `apply_font` に渡してアトラスを作り直し，フォント・スクロールバーの幅・余白が変われば `layout` します．プロファイルは次に開く端末から使います．
 4. 設定ダイアログを開いている間は読まず（`settings_dialog_open`），閉じてから読みます．ダイアログの試し表示（`Host::preview`）も同じ `apply_config` を通ります．
 
