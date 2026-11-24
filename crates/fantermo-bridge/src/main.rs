@@ -5,7 +5,8 @@
 //! プロトコル（`fantermo-bridge-protocol`）、標準エラー出力はログ。
 //!
 //! 開始の通知を交換し、最初のリサイズを受け取ってから、その大きさの pty で子プロセスを起動する。
-//! そのあとは標準入力と pty を `poll` で見て中継し、子プロセスが終わったら終了の単位を送って終わる。
+//! そのあとは標準入力と pty を `poll` で見て中継し（Cygwin では時間切れ 0 で覗き、自分で待つ。[`PollWait`]）、
+//! 子プロセスが終わったら終了の単位を送って終わる。
 //! 環境変数（`TERM` など）は fantermo が渡したものをそのまま子プロセスに引き継ぐ。
 
 use std::cell::OnceCell;
@@ -35,7 +36,8 @@ const PTY_NAME_LEN: usize = 64;
 /// pty へまだ書き終えていない入力がこれを超えたら、標準入力を読むのを止める。読むのを止めると
 /// その後ろの終了の依頼やリサイズも届かないので、ふつうの貼り付けでは届かない大きさにする。
 const MAX_PENDING_INPUT: usize = 64 << 20;
-/// 子プロセスが終わったかを確認する間隔。
+/// `poll` で待つ上限。子プロセスが終わったかを確認する間隔でもある。Cygwin では使わない（[`PollWait`]）。
+#[cfg(not(target_os = "cygwin"))]
 const POLL_INTERVAL_MS: c_int = 200;
 /// SIGHUP を送ったあと、子プロセスと残ったプロセスが終わるのを待つ上限。標準入力が閉じたときなどは SIGHUP を
 /// 送ってからの時間で、シェルを待つ時間と送り直す時間を合わせてこれまで（[`hang_up_wait`]）。終了の依頼で送った
@@ -628,6 +630,7 @@ impl InputPacer {
 
 /// pty の master へすべて書く。`O_NONBLOCK` で書けなければ、書けるようになるまで待つ。
 fn write_all_pty(master: c_int, mut bytes: &[u8]) -> io::Result<()> {
+    let mut wait = PollWait::new();
     while !bytes.is_empty() {
         // SAFETY: `bytes` は有効な読み取り元、`master` は開いている fd。
         let n = unsafe { libc::write(master, bytes.as_ptr().cast(), bytes.len()) };
@@ -644,13 +647,103 @@ fn write_all_pty(master: c_int, mut bytes: &[u8]) -> io::Result<()> {
                     events: libc::POLLOUT,
                     revents: 0,
                 }];
-                // SAFETY: `fds` は要素の数だけの有効な pollfd。
-                unsafe { libc::poll(fds.as_mut_ptr(), 1, POLL_INTERVAL_MS) };
+                // 待てなくても、次の write で書けるかが分かる。
+                _ = poll(&mut fds, &mut wait);
             }
             _ => return Err(error),
         }
     }
     Ok(())
+}
+
+/// `fds` を `poll` で見る。待ち方は `wait` が決める。準備のできた fd の数を返す。
+///
+/// Cygwin では時間切れ 0 で覗き、何もなければ自分で待つ（[`PollWait`]）。Cygwin の時間待ちのある `poll`・`select` は、
+/// fd を覗く内部のスレッド（cygthread）を立てて待つ。そのスレッドは、他のプロセスにこのプロセスの `cmdline` などを
+/// 読まれたときに Cygwin が立てる答えのためのスレッドと同じ枠を使い、その競合で `poll` が戻らなくなることがある。
+/// 時間切れ 0 の `poll` はスレッドを立てずに覗くだけなので、この競合が起きない。止まる `read` を読むスレッドで使う形は
+/// 取らない。Cygwin の止まる `read` は、Cygwin のものでないパイプ（fantermo から継いだ標準入力）や pty の master では
+/// 中で覗き続けて CPU を使い、応答も遅くなる。
+#[expect(
+    clippy::disallowed_methods,
+    reason = "poll を呼ぶのはここだけにし、Cygwin では時間切れ 0 にする"
+)]
+fn poll(fds: &mut [libc::pollfd], wait: &mut PollWait) -> io::Result<c_int> {
+    // SAFETY: `fds` は要素の数だけの有効な pollfd。
+    let ready = unsafe {
+        libc::poll(
+            fds.as_mut_ptr(),
+            fds.len() as libc::nfds_t,
+            wait.timeout_ms(),
+        )
+    };
+    if ready < 0 {
+        // 待つ前に読む（待つと errno が変わりうる）。
+        return Err(io::Error::last_os_error());
+    }
+    wait.after_poll(ready);
+    Ok(ready)
+}
+
+/// [`poll`] の待ち方。Cygwin では時間切れ 0 で覗き、何も起きなければ自分で待つ。待ちは、何も起きない回が
+/// [`POLLS_PER_STEP`](Self::POLLS_PER_STEP) 回続くたびに 1 ms ずつ延ばし、[`MAX_WAIT_MS`](Self::MAX_WAIT_MS) で
+/// 止める。何か起きたら 0 に戻す。刻みは、Cygwin の時間待ちのある `select` が中の覗くスレッド（`thread_pipe`）で
+/// 使うものと同じにし、覗く間隔を時間待ちのある `poll` と揃える。
+#[cfg(target_os = "cygwin")]
+struct PollWait {
+    /// 続けて何も起きなかった回数。待ちが上限に届いたら増やさない。
+    idle_polls: u32,
+}
+
+#[cfg(target_os = "cygwin")]
+impl PollWait {
+    /// 待ちを 1 ms 延ばすまでの、何も起きない回数。
+    const POLLS_PER_STEP: u32 = 8;
+    /// 待ちの上限。何もしていないときは、この間隔で覗く。
+    const MAX_WAIT_MS: u32 = 10;
+
+    fn new() -> Self {
+        Self { idle_polls: 0 }
+    }
+
+    fn timeout_ms(&self) -> c_int {
+        0
+    }
+
+    /// `poll` が `ready` を返したあとに待つ。
+    fn after_poll(&mut self, ready: c_int) {
+        if ready > 0 {
+            self.idle_polls = 0;
+            return;
+        }
+        let wait_ms = (self.idle_polls / Self::POLLS_PER_STEP).min(Self::MAX_WAIT_MS);
+        if wait_ms == 0 {
+            std::thread::yield_now();
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(wait_ms.into()));
+            if wait_ms == Self::MAX_WAIT_MS {
+                return;
+            }
+        }
+        self.idle_polls += 1;
+    }
+}
+
+/// [`poll`] の待ち方。Cygwin のほかでは `poll` で [`POLL_INTERVAL_MS`] まで待つ。
+#[cfg(not(target_os = "cygwin"))]
+struct PollWait;
+
+#[cfg(not(target_os = "cygwin"))]
+impl PollWait {
+    fn new() -> Self {
+        Self
+    }
+
+    fn timeout_ms(&self) -> c_int {
+        POLL_INTERVAL_MS
+    }
+
+    fn after_poll(&mut self, _ready: c_int) {}
 }
 
 /// 標準入力と pty の間の中継。
@@ -661,6 +754,7 @@ struct Relay {
     buf: Vec<u8>,
     exit: Option<ChildExit>,
     master_closed: bool,
+    poll_wait: PollWait,
 }
 
 /// 中継を続けるか、終わるか。
@@ -680,6 +774,7 @@ impl Relay {
             buf: vec![0; READ_BUF_LEN],
             exit: None,
             master_closed: false,
+            poll_wait: PollWait::new(),
         })
     }
 
@@ -712,16 +807,7 @@ impl Relay {
                 revents: 0,
             },
         ];
-        // SAFETY: `fds` は要素の数だけの有効な pollfd。
-        let ready = unsafe {
-            libc::poll(
-                fds.as_mut_ptr(),
-                fds.len() as libc::nfds_t,
-                POLL_INTERVAL_MS,
-            )
-        };
-        if ready < 0 {
-            let error = io::Error::last_os_error();
+        if let Err(error) = poll(&mut fds, &mut self.poll_wait) {
             if error.kind() == io::ErrorKind::Interrupted {
                 return Flow::Continue;
             }

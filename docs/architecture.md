@@ -238,7 +238,7 @@ fantermo は `std::process::Command` でブリッジを起動し（`CREATE_NO_WI
 - **ブリッジの探し方**: fantermo の exe と同じフォルダ，なければ，開発中のビルド（`debug_assertions` が有効なビルド）では `<exe のフォルダ>\..\bridge\<ターゲット>\debug\`（`target/bridge/…`）．リリースのビルドは exe と同じフォルダだけを探します．
 - **起動できないとき**: ブリッジや Cygwin が見つからない，起動できない，エラーで終わったときは，理由を `fantermo: …` の赤い文字で端末に出し，タブは開いたままにします．
 
-ブリッジ（`crates/fantermo-bridge/src/main.rs`）は開始の通知を交換し，最初のリサイズの大きさで `forkpty` し，標準入力と pty の master を `poll` で見て中継します．pty への書き込みは別のスレッドで行い，書き終えていない入力が 64 MiB を超えたら標準入力を読むのを止めます．Cygwin の pty は大きな入力で詰まるので，Cygwin 向けだけ `InputPacer`（`cfg(target_os = "cygwin")`）で 4 KiB ずつ，pipe が空になってから書きます（理由は `InputPacer` のコメント）．終了コードは 0 正常，2 引数の誤り，3 プロトコルのエラー，4 子を起動できない，5 入出力のエラーです．
+ブリッジ（`crates/fantermo-bridge/src/main.rs`）は開始の通知を交換し，最初のリサイズの大きさで `forkpty` し，標準入力と pty の master を `poll` で見て中継します．Cygwin では時間切れ 0 の `poll` で覗き，何もなければ自分で待ちます（下の「Cygwin の時間待ちのある poll」）．pty への書き込みは別のスレッドで行い，書き終えていない入力が 64 MiB を超えたら標準入力を読むのを止めます．Cygwin の pty は大きな入力で詰まるので，Cygwin 向けだけ `InputPacer`（`cfg(target_os = "cygwin")`）で 4 KiB ずつ，pipe が空になってから書きます（理由は `InputPacer` のコメント）．終了コードは 0 正常，2 引数の誤り，3 プロトコルのエラー，4 子を起動できない，5 入出力のエラーです．
 
 ### プロトコル（`fantermo-bridge-protocol`）
 
@@ -333,6 +333,14 @@ ConPTY の利点は，補助のプログラムが要らないことです．そ�
 ### Cygwin の pty の大きな入力
 
 Cygwin の pty は，master から子プロセスへの入力を一度に大きく書くと，中身が崩れたり，書き込みが返らなくなったりします．間を空けるだけでは足りず，pipe が空になるのを待つ必要があります．pipe の中身を知る手がかりは slave の `FIONREAD` だけです．速さの上限（50 KB/s ほど）は Cygwin の pty の処理の重さで決まり，外からは速くできません．書き方は `InputPacer` のコメントにあります．fantermo の側で分けて送る必要はなく，タブを閉じれば書き終えていない入力を捨てて終わります．
+
+### Cygwin の時間待ちのある poll
+
+Cygwin の時間待ちのある `poll` と `select` は，fd を覗く内部のスレッド（cygthread）を立てて待ちます．このスレッドは，ほかのプロセスに `/proc/<pid>/cmdline`・`status`・`environ` などを読まれたときに Cygwin が答えのために立てるスレッドと同じ枠を使い，その競合で `poll` が戻らなくなることがあります（標準エラー出力に `cygthread::stub: erroneous thread activation, name is NULL` が出ることがあります）．戻らなくなったプロセスは SIGHUP でも終わりません．そのためブリッジは，Cygwin では `poll` の時間切れを 0 にして（スレッドを立てずに覗くだけになります），何もなければ自分で待ちます．待ちは Cygwin の覗くスレッドと同じ刻み（何も起きない回が 8 回続くたびに 1 ms 延ばし，10 ms で止め，何か起きたら 0 に戻す）です（`PollWait`）．`poll` を呼ぶのは `main.rs` の `poll` だけで，ほかからは `clippy.toml` の `disallowed-methods` で呼べなくしています．Linux（WSL）では時間待ちのある `poll` のままです．
+
+標準入力と pty の master を止まる `read` で読むスレッドにする形は取りません．Cygwin の止まる `read` は，Cygwin のものでないパイプ（fantermo から継いだ標準入力）や pty の master では中で覗き続けるので，キーを打つたびに CPU を使い，エコーも遅くなります．
+
+シェルやアプリも同じ理由で戻らなくなることがあり，これはブリッジの側では防げません．e2e のテストが動いている Cygwin のプロセスの `cmdline` や `status` を読まないのはこのためです（`.claude/skills/e2e-verify` の落とし穴）．
 
 ### 起動直後に閉じると残るプロセス
 

@@ -1,0 +1,7 @@
+# Cygwin の時間待ちのある poll・select は内部のスレッドを立て、戻らなくなることがある。poll は main.rs の poll から呼ぶ。
+disallowed-methods = [
+    { path = "libc::poll", reason = "main.rs の poll を使う（Cygwin では時間切れ 0 で覗く）" },
+    { path = "libc::ppoll", reason = "main.rs の poll を使う（Cygwin では時間切れ 0 で覗く）" },
+    { path = "libc::select", reason = "main.rs の poll を使う（Cygwin では時間切れ 0 で覗く）" },
+    { path = "libc::pselect", reason = "main.rs の poll を使う（Cygwin では時間切れ 0 で覗く）" },
+]
