@@ -2,7 +2,8 @@
 //!
 //! [`Server`] は起動ごとにユニークな一時フォルダを作り、設定・ウィンドウの状態・ログ・ポートの番号をそこに置く。
 //! ポートは OS の割り当てなので、テストを並列に実行しても衝突しない。破棄すると子プロセスを止めて一時フォルダを
-//! 消す。テストが失敗したときは、破棄のときに fantermo のログを出す。
+//! 消す。テストが失敗したときは、破棄のときに fantermo のログを出し、環境変数 `FANTERMO_E2E_KEEP_FAILED` があれば
+//! 消す前に一時フォルダをそのフォルダの下へ写す（CI が成果物として残す）。
 //!
 //! テストの実行は `./tools/dev.sh test --features e2e`（出力先は `target/e2e`）。run-hidden は別の crate なので、
 //! `-p fantermo` で絞るときは先に `./tools/dev.sh build --features e2e` で作っておく。
@@ -110,6 +111,14 @@ const TOKEN_HEADER: &str = "X-Fantermo-Token";
 
 /// 一時フォルダの中の、ウィンドウの状態のファイルの名前。
 pub const STATE_FILE: &str = "state.toml";
+
+/// 失敗したテストの一時フォルダを写す先のフォルダを指す環境変数。CI が成果物として残す。なければ写さない。
+const KEEP_FAILED_ENV: &str = "FANTERMO_E2E_KEEP_FAILED";
+/// 失敗したテストの一時フォルダを写すとき、これより大きなファイルは写さない（写した実行ファイル、更新の確認で
+/// 取得したものなど）。写さなかったものは [`NOT_KEPT_FILE`] に書く。
+const KEPT_FILE_MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// 写した先のフォルダに置く、写さなかったファイルの一覧。
+const NOT_KEPT_FILE: &str = "not-kept.txt";
 
 /// 隔離して起動した fantermo。
 pub struct Server {
@@ -710,8 +719,82 @@ impl Drop for Server {
             }
             Err(e) => eprintln!("failed to check run-hidden: {e}"),
         }
+        if thread::panicking() {
+            keep_failed_folder(&self.dir);
+        }
         remove_folder(&self.dir);
     }
+}
+
+/// 環境変数 [`KEEP_FAILED_ENV`] があれば、失敗したテストの一時フォルダ `dir` を、そのフォルダの下の
+/// `<テストの名前>/<一時フォルダの名前>` へ写す。破棄の中から呼ぶので、失敗しても panic せずに知らせるだけにする。
+fn keep_failed_folder(dir: &Path) {
+    let Some(destination) = std::env::var_os(KEEP_FAILED_ENV) else {
+        return;
+    };
+    let Some(folder_name) = dir.file_name() else {
+        return;
+    };
+    // テストのスレッドの名前はテストの名前（`mouse::dragging_…`）。フォルダの名前に使えない文字を置き換える。
+    let test: String = thread::current()
+        .name()
+        .unwrap_or("unnamed")
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c => c,
+        })
+        .collect();
+    let target = Path::new(&destination).join(test).join(folder_name);
+    let mut not_kept = Vec::new();
+    if let Err(e) = copy_folder(dir, &target, &mut not_kept) {
+        eprintln!(
+            "failed to keep {} in {}: {e}",
+            dir.display(),
+            target.display()
+        );
+        return;
+    }
+    if !not_kept.is_empty() {
+        let list = not_kept.join("\n") + "\n";
+        if let Err(e) = std::fs::write(target.join(NOT_KEPT_FILE), list) {
+            eprintln!(
+                "failed to write {NOT_KEPT_FILE} in {}: {e}",
+                target.display()
+            );
+        }
+    }
+    eprintln!("kept {} in {}", dir.display(), target.display());
+}
+
+/// フォルダ `from` の中身を `to` へ写す。[`KEPT_FILE_MAX_BYTES`] より大きなファイル、写せなかったファイル、ファイルでも
+/// フォルダでもないものは写さずに `not_kept` へ足す。
+fn copy_folder(from: &Path, to: &Path, not_kept: &mut Vec<String>) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let source = entry.path();
+        let destination = to.join(entry.file_name());
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                not_kept.push(format!("{}: {e}", source.display()));
+                continue;
+            }
+        };
+        if metadata.is_dir() {
+            if let Err(e) = copy_folder(&source, &destination, not_kept) {
+                not_kept.push(format!("{}: {e}", source.display()));
+            }
+        } else if !metadata.is_file() {
+            not_kept.push(format!("{}: not a file", source.display()));
+        } else if metadata.len() > KEPT_FILE_MAX_BYTES {
+            not_kept.push(format!("{}: {} bytes", source.display(), metadata.len()));
+        } else if let Err(e) = std::fs::copy(&source, &destination) {
+            not_kept.push(format!("{}: {e}", source.display()));
+        }
+    }
+    Ok(())
 }
 
 /// OS のクリップボードを使うテストのあいだ持つもの。テストを直列にし、終わると文字列を元に戻す。文字列のほかの

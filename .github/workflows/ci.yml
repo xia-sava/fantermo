@@ -108,8 +108,12 @@ jobs:
         shell: cmd
         run: call tools\dev.bat clippy --locked --features e2e --all-targets -- -D warnings
 
+      # 失敗したテストの一時フォルダ（fantermo のログ、config.toml、state.toml など）は FANTERMO_E2E_KEEP_FAILED の
+      # 下へ写り、最後のステップが成果物として残す。
       - name: Smoke
         shell: cmd
+        env:
+          FANTERMO_E2E_KEEP_FAILED: ${{ runner.temp }}/e2e-failed
         run: call tools\dev.bat test --locked --features e2e --test e2e smoke -- --nocapture
 
       # OS のクリップボードを実際に変えるテストと、OS のファイルを選ぶダイアログで選ぶテストも実行する（ランナーの
@@ -119,7 +123,18 @@ jobs:
         env:
           FANTERMO_E2E_OS_CLIPBOARD: "1"
           FANTERMO_E2E_FILE_DIALOG: "1"
+          FANTERMO_E2E_KEEP_FAILED: ${{ runner.temp }}/e2e-failed
         run: call tools\dev.bat test --locked --features e2e --test e2e
+
+      # 失敗を調べ終わるまで残ればよい。名前にやり直しの回を付ける（同じ実行の中で名前は重ねられない）。
+      - name: Keep the folders of the failed tests
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-conpty-failed-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/e2e-failed
+          if-no-files-found: ignore
+          retention-days: 7
 
   # Cygwin のブリッジの単体のテストと e2e。
   e2e-cygwin:
@@ -163,7 +178,18 @@ jobs:
         env:
           FANTERMO_E2E_CYGWIN_ROOT: ${{ steps.toolchain.outputs.cygwin-root }}
           FANTERMO_E2E_OS_CLIPBOARD: "1"
+          FANTERMO_E2E_KEEP_FAILED: ${{ runner.temp }}/e2e-failed
         run: call tools\dev.bat test --locked --features e2e --test e2e cygwin
+
+      # e2e-conpty の同じ名前のステップと同じ。
+      - name: Keep the folders of the failed tests
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-cygwin-failed-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/e2e-failed
+          if-no-files-found: ignore
+          retention-days: 7
 
   # Linux 向けのブリッジの単体のテスト。パイプで接続して開始の通知・リサイズ・データ・終了をやり取りする。
   bridge-linux:

@@ -423,3 +423,5 @@ run-hidden は利用者のセッションのウィンドウステーション（
 | `bridge-linux` | Ubuntu | Linux 向けのブリッジの単体のテスト |
 
 WSL の e2e は CI では実行しません．手元で `FANTERMO_E2E_WSL` を付けて実行します．
+
+`e2e-conpty` と `e2e-cygwin` は，失敗したテストの一時フォルダ（fantermo のログ，`config.toml`，`state.toml` など．4 MiB を超えるファイルは写さず，`not-kept.txt` に名前を書く）を成果物 `e2e-<conpty|cygwin>-failed-<やり直しの回>` として 7 日残します．テストの土台が，環境変数 `FANTERMO_E2E_KEEP_FAILED` のフォルダの下の `<テストの名前>/<一時フォルダの名前>` へ写します．

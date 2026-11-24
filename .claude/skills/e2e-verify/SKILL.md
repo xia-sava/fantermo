@@ -31,6 +31,8 @@ FANTERMO_E2E_CYGWIN_ROOT='C:\app\cygwin' FANTERMO_E2E_WSL=Ubuntu ./tools/dev.sh 
 
 大きなものは手元でだけ流す。`FANTERMO_BRIDGE_BULK_BYTES=2000000`（大きな入力。既定 200 KB）、`FANTERMO_BRIDGE_LINE_EDITOR_BYTES=100000`（zsh の行編集に流す改行のない行。指定したときだけ実行する）。WSL の中で実行するものへ渡すには `WSLENV` に名前を足す。
 
+`FANTERMO_E2E_KEEP_FAILED=<フォルダ>` を付けると、失敗したテストの一時フォルダを消す前に `<フォルダ>/<テストの名前>/<一時フォルダの名前>` へ写す（4 MiB を超えるファイルは写さず、`not-kept.txt` に名前を書く）。CI はこれを成果物として残す。手元では付けなくてよい（失敗した時点のログは出力に出る）。
+
 OS のクリップボードを実際に変えるテスト（`os_clipboard` を含む名前）は `FANTERMO_E2E_OS_CLIPBOARD=1` があるときだけ実行する。CI では付ける。手元では付けない（利用者のクリップボードの文字列のほかの形式が消える）。
 
 OS のファイルを選ぶダイアログで実際に選ぶテスト（`the_file_dialogs_add_a_background_image_and_a_profile_icon`）は `FANTERMO_E2E_FILE_DIALOG=1` があるときだけ実行する。CI では付ける。手元では付けない（OS がダイアログの履歴 `LastVisitedPidlMRU` に一時フォルダを残す）。
