@@ -38,8 +38,10 @@ fn wheel(delta: i32, at: Point) -> String {
 }
 
 /// 画面を空にしてから、打った行には出ない 2 行を出す（[`echo_lines`]）。続けて操作する段が、下の空きの行を使える。
-/// `cls` が終わって画面がプロンプトだけになってから次の行を打つ。`cls` の途中で打つと、行は画面に出てもコマンドが
-/// 実行されないことがある。
+/// 次の行は、`cls` が終わって次のプロンプトが出てから打つ（CI では、`cls` のすぐあとに打った行が画面に出たまま
+/// 実行されなかったことがある）。終わったことは状態の `text` がプロンプトだけになることで見る。`text` は
+/// スクロールバックを含むので、`cls` がスクロールバックも消すこと（ConPTY ではそうなる）を前提にしている。
+#[track_caller]
 fn fresh_lines(server: &Server, first: &str, second: &str) -> Value {
     server.type_line("cls");
     server.wait_until("only the prompt after cls", |state| {
