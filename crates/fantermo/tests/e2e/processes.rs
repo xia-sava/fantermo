@@ -274,7 +274,7 @@ fn cygwin_closing_a_tab_ends_its_child_processes_only() {
     assert!(cygwin_sleep_is_running(&first));
 }
 
-/// シェルが応えないときに出す材料に、画面の文字と、Cygwin のプロセスの一覧と、シェルとブリッジの `/proc` が入る。
+/// シェルが応えないときに出す手がかりに、画面の文字と、Cygwin のプロセスの一覧と、シェルとブリッジの `/proc` が入る。
 #[test]
 fn cygwin_the_shell_diagnostics_show_the_processes_of_the_tab() {
     run_with_cygwin(
@@ -286,7 +286,7 @@ fn cygwin_the_shell_diagnostics_show_the_processes_of_the_tab() {
                 "ready-2",
                 "ps -al",
                 "WINPID",
-                "/stat ---",
+                "{ppid,stat,status} ---",
                 "(sh)",
                 "(fantermo-bridge)",
                 "PPid:",

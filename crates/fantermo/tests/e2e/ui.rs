@@ -132,17 +132,21 @@ fn wait_sh_text(server: &Server, needle: &str) {
     }
 }
 
-/// Cygwin のコマンドの終わりを待つ上限。応えなくなった Cygwin を調べるときも、テストを止めたままにしない。
+/// Cygwin のコマンド一つの終わりを待つ上限。
 const CYGWIN_DIAGNOSTIC_TIMEOUT: Duration = Duration::from_secs(10);
+/// [`sh_diagnostics`] の全体にかける時間の上限。応えなくなった Cygwin を調べるあいだも、同時に起動する数の枠を
+/// 持ち続けるので、長く止めない。
+const SH_DIAGNOSTICS_TIMEOUT: Duration = Duration::from_secs(20);
 /// Cygwin のコマンドが終わったかを確認する間隔。
 const CYGWIN_DIAGNOSTIC_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// ブリッジが子プロセスを起動したときにログへ出す行（`crates/fantermo-bridge/src/main.rs`）の、pid の前まで。
 const BRIDGE_STARTED_MARKER: &str = "を起動した（pid ";
 
-/// `/bin/sh` のタブが応えなかったときの材料。表示しているタブの画面の文字と、そのタブが Cygwin のものなら Cygwin の
-/// プロセスの一覧（`ps -al`）と、ブリッジが起動したシェルとそのブリッジの `/proc/<pid>/stat`・`/proc/<pid>/status`。
-/// シェルの pid は fantermo のログにあるブリッジの行から読むので、ほかのタブのものも含む。
+/// `/bin/sh` のタブが応えなかったときの手がかり。表示しているタブの画面の文字と、そのタブが Cygwin のものなら
+/// Cygwin のプロセスの一覧（`ps -al`）と、ブリッジが起動したシェルとそのブリッジの `/proc/<pid>/ppid`・
+/// `/proc/<pid>/stat`・`/proc/<pid>/status`。シェルの pid は fantermo のログにあるブリッジの行から読むので、ほかのタブの
+/// ものも含む。Cygwin のコマンドが時間切れになったら、そこで打ち切る。全体で [`SH_DIAGNOSTICS_TIMEOUT`] まで。
 pub fn sh_diagnostics(server: &Server, state: &Value) -> String {
     let mut report = format!(
         "--- the text of the screen ---\n{}\n",
@@ -159,20 +163,41 @@ pub fn sh_diagnostics(server: &Server, state: &Value) -> String {
         return report;
     };
     let bin = Path::new(&root).join("bin");
+    let deadline = Instant::now() + SH_DIAGNOSTICS_TIMEOUT;
     report.push_str("--- Cygwin: ps -al ---\n");
-    report.push_str(&run_cygwin(&bin, "ps.exe", &["-al"]));
+    let ps = run_cygwin(&bin, "ps.exe", &["-al"], deadline);
+    report.push_str(&ps.text());
+    if !ps.ended {
+        report.push_str("(did not read /proc because ps did not end)\n");
+        return report;
+    }
     for shell in started_pids(&server.log()) {
-        report.push_str(&proc_files(&bin, "the shell", shell));
-        let ppid_file = format!("/proc/{shell}/ppid");
-        let ppid = run_cygwin(&bin, "cat.exe", &[&ppid_file]);
-        match ppid.trim().parse::<u32>() {
-            Ok(bridge) => report.push_str(&proc_files(&bin, "the bridge", bridge)),
-            Err(_) => report.push_str(&format!(
-                "--- the bridge of {shell}: cannot read {ppid_file} ---\n{ppid}"
-            )),
+        let files = proc_files(&bin, "the shell", shell, deadline);
+        report.push_str(&files.text);
+        if !files.ended {
+            return report;
+        }
+        let Some(bridge) = files.ppid else {
+            report.push_str(&format!("(no parent of {shell} in /proc/{shell}/ppid)\n"));
+            continue;
+        };
+        let files = proc_files(&bin, "the bridge", bridge, deadline);
+        report.push_str(&files.text);
+        if !files.ended {
+            return report;
         }
     }
     report
+}
+
+/// [`proc_files`] で読んだもの。
+struct ProcFiles {
+    /// 見出しを付けた中身。
+    text: String,
+    /// `cat` が期限の前に終わった。
+    ended: bool,
+    /// `/proc/<pid>/ppid` の親の pid。読めなければ `None`。
+    ppid: Option<u32>,
 }
 
 /// ログのブリッジの行から、ブリッジが起動した子プロセスの pid を読む。
@@ -189,18 +214,24 @@ fn started_pids(log: &str) -> Vec<u32> {
         .collect()
 }
 
-/// Cygwin のプロセス `pid` の `/proc/<pid>/stat` と `/proc/<pid>/status`。`role` は見出しに付ける、プロセスの役割。
-fn proc_files(bin: &Path, role: &str, pid: u32) -> String {
-    ["stat", "status"]
-        .iter()
-        .map(|name| {
-            let file = format!("/proc/{pid}/{name}");
-            format!(
-                "--- {role} ({pid}): {file} ---\n{}",
-                run_cygwin(bin, "cat.exe", &[&file])
-            )
-        })
-        .collect()
+/// Cygwin のプロセス `pid` の `/proc/<pid>/ppid`・`/proc/<pid>/stat`・`/proc/<pid>/status` を、一つの `cat` で続けて
+/// 読む。`ppid` を先頭にして、標準出力の 1 行目から親の pid を読む。`role` は見出しに付ける、プロセスの役割。
+fn proc_files(bin: &Path, role: &str, pid: u32, deadline: Instant) -> ProcFiles {
+    let files = ["ppid", "stat", "status"].map(|name| format!("/proc/{pid}/{name}"));
+    let arguments = files.each_ref().map(String::as_str);
+    let output = run_cygwin(bin, "cat.exe", &arguments, deadline);
+    ProcFiles {
+        text: format!(
+            "--- {role} ({pid}): /proc/{pid}/{{ppid,stat,status}} ---\n{}",
+            output.text()
+        ),
+        ended: output.ended,
+        ppid: output
+            .stdout
+            .lines()
+            .next()
+            .and_then(|line| line.trim().parse().ok()),
+    }
 }
 
 /// Cygwin の `bin` の `program` を起動するコマンド。`bin` を PATH の先頭に置き（git bash のものを拾わない）、git bash の
@@ -215,9 +246,32 @@ fn cygwin_command(bin: &Path, program: &str) -> Command {
     command
 }
 
-/// Cygwin の `program` を `arguments` で実行し、標準出力と標準エラー出力を返す。新しいコンソールの窓を作らない
-/// （`CREATE_NO_WINDOW`）。[`CYGWIN_DIAGNOSTIC_TIMEOUT`] が過ぎたら止めて、その旨を添える。
-fn run_cygwin(bin: &Path, program: &str, arguments: &[&str]) -> String {
+/// [`run_cygwin`] の結果。
+struct CygwinOutput {
+    stdout: String,
+    /// 標準エラー出力と、終わり方の知らせ。
+    rest: String,
+    /// 期限の前に終わった（起動できなかったときは偽）。
+    ended: bool,
+}
+
+impl CygwinOutput {
+    /// 標準出力、標準エラー出力、終わり方の知らせを、行の終わりを揃えてつないだもの。
+    fn text(&self) -> String {
+        let mut text = String::new();
+        for part in [&self.stdout, &self.rest] {
+            text.push_str(part);
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+        }
+        text
+    }
+}
+
+/// Cygwin の `program` を `arguments` で実行し、出力を返す。新しいコンソールのウィンドウを作らない
+/// （`CREATE_NO_WINDOW`）。[`CYGWIN_DIAGNOSTIC_TIMEOUT`] か `deadline` の早いほうが過ぎたら止めて、その旨を添える。
+fn run_cygwin(bin: &Path, program: &str, arguments: &[&str], deadline: Instant) -> CygwinOutput {
     let mut command = cygwin_command(bin, program);
     command
         .args(arguments)
@@ -227,48 +281,59 @@ fn run_cygwin(bin: &Path, program: &str, arguments: &[&str]) -> String {
         .stderr(Stdio::piped());
     let mut child = match command.spawn() {
         Ok(child) => child,
-        Err(e) => return format!("cannot start {program}: {e}\n"),
+        Err(e) => {
+            return CygwinOutput {
+                stdout: String::new(),
+                rest: format!("(cannot start {program}: {e})\n"),
+                ended: false,
+            };
+        }
     };
-    let readers = [
-        child.stdout.take().map(read_in_background),
-        child.stderr.take().map(read_in_background),
-    ];
-    let deadline = Instant::now() + CYGWIN_DIAGNOSTIC_TIMEOUT;
-    let mut report = String::new();
+    let stdout_reader = child.stdout.take().map(read_in_background);
+    let stderr_reader = child.stderr.take().map(read_in_background);
+    let deadline = deadline.min(Instant::now() + CYGWIN_DIAGNOSTIC_TIMEOUT);
+    let mut notes = String::new();
+    let mut ended = false;
     loop {
         match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
             Ok(Some(status)) => {
-                report.push_str(&format!("({program} ended with {status})\n"));
+                ended = true;
+                if !status.success() {
+                    notes.push_str(&format!("({program} ended with {status})\n"));
+                }
                 break;
             }
             Ok(None) if Instant::now() < deadline => thread::sleep(CYGWIN_DIAGNOSTIC_POLL_INTERVAL),
             Ok(None) => {
-                report.push_str(&format!(
-                    "({program} did not end in {CYGWIN_DIAGNOSTIC_TIMEOUT:?}; stopped it)\n"
-                ));
+                notes.push_str(&format!("({program} did not end in time; stopped it)\n"));
                 if let Err(e) = child.kill().and_then(|()| child.wait().map(drop)) {
-                    report.push_str(&format!("(cannot stop {program}: {e})\n"));
+                    notes.push_str(&format!("(cannot stop {program}: {e})\n"));
                 }
                 break;
             }
             Err(e) => {
-                report.push_str(&format!("(cannot wait for {program}: {e})\n"));
+                notes.push_str(&format!("(cannot wait for {program}: {e})\n"));
                 break;
             }
         }
     }
-    let mut output = String::new();
-    for reader in readers.into_iter().flatten() {
-        match reader.join() {
-            Ok(bytes) => output.push_str(&String::from_utf8_lossy(&bytes)),
-            Err(_) => output.push_str("(the reader of the output failed)\n"),
-        }
+    let collect =
+        |reader: Option<thread::JoinHandle<Vec<u8>>>| match reader.map(thread::JoinHandle::join) {
+            Some(Ok(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
+            Some(Err(_)) => "(the reader of the output failed)\n".to_owned(),
+            None => String::new(),
+        };
+    let stdout = collect(stdout_reader);
+    let mut rest = collect(stderr_reader);
+    if !rest.is_empty() && !rest.ends_with('\n') {
+        rest.push('\n');
     }
-    if !output.is_empty() && !output.ends_with('\n') {
-        output.push('\n');
+    rest.push_str(&notes);
+    CygwinOutput {
+        stdout,
+        rest,
+        ended,
     }
-    output + &report
 }
 
 /// `source` を終わりまで読むスレッドを起動する。読めなかったときは、読めたところまでにその旨を添えて返す。
