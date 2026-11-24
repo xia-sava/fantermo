@@ -5,7 +5,7 @@
 //! プロトコル（`fantermo-bridge-protocol`）、標準エラー出力はログ。
 //!
 //! 開始の通知を交換し、最初のリサイズを受け取ってから、その大きさの pty で子プロセスを起動する。
-//! そのあとは標準入力と pty を `poll` で見て中継し（Cygwin では時間切れ 0 で覗き、自分で待つ。[`PollWait`]）、
+//! そのあとは標準入力と pty を `poll` で見て中継し（Cygwin では時間切れ 0 で見て、自分で待つ。[`PollWait`]）、
 //! 子プロセスが終わったら終了の単位を送って終わる。
 //! 環境変数（`TERM` など）は fantermo が渡したものをそのまま子プロセスに引き継ぐ。
 
@@ -656,19 +656,19 @@ fn write_all_pty(master: c_int, mut bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// `fds` を `poll` で見る。待ち方は `wait` が決める。準備のできた fd の数を返す。
+/// `fds` を `poll` で見る。待ち方は `wait` が決める。
 ///
-/// Cygwin では時間切れ 0 で覗き、何もなければ自分で待つ（[`PollWait`]）。Cygwin の時間待ちのある `poll`・`select` は、
-/// fd を覗く内部のスレッド（cygthread）を立てて待つ。そのスレッドは、他のプロセスにこのプロセスの `cmdline` などを
+/// Cygwin では時間切れ 0 で見て、何もなければ自分で待つ（[`PollWait`]）。Cygwin の時間待ちのある `poll`・`select` は、
+/// fd を見る内部のスレッド（cygthread）を立てて待つ。そのスレッドは、ほかのプロセスにこのプロセスの `cmdline` などを
 /// 読まれたときに Cygwin が立てる答えのためのスレッドと同じ枠を使い、その競合で `poll` が戻らなくなることがある。
-/// 時間切れ 0 の `poll` はスレッドを立てずに覗くだけなので、この競合が起きない。止まる `read` を読むスレッドで使う形は
-/// 取らない。Cygwin の止まる `read` は、Cygwin のものでないパイプ（fantermo から継いだ標準入力）や pty の master では
-/// 中で覗き続けて CPU を使い、応答も遅くなる。
+/// 時間切れ 0 の `poll` はスレッドを立てずに見るだけなので、この競合が起きない。Cygwin の止まる `read` は、Cygwin の
+/// ものでないパイプ（fantermo から継いだ標準入力）や pty の master では中で見続けて CPU を使い、応答も遅くなるので、
+/// 読むスレッドには向かない。
 #[expect(
     clippy::disallowed_methods,
     reason = "poll を呼ぶのはここだけにし、Cygwin では時間切れ 0 にする"
 )]
-fn poll(fds: &mut [libc::pollfd], wait: &mut PollWait) -> io::Result<c_int> {
+fn poll(fds: &mut [libc::pollfd], wait: &mut PollWait) -> io::Result<()> {
     // SAFETY: `fds` は要素の数だけの有効な pollfd。
     let ready = unsafe {
         libc::poll(
@@ -678,20 +678,24 @@ fn poll(fds: &mut [libc::pollfd], wait: &mut PollWait) -> io::Result<c_int> {
         )
     };
     if ready < 0 {
-        // 待つ前に読む（待つと errno が変わりうる）。
+        // エラーのときは待たずに返す。
         return Err(io::Error::last_os_error());
     }
     wait.after_poll(ready);
-    Ok(ready)
+    Ok(())
 }
 
-/// [`poll`] の待ち方。Cygwin では時間切れ 0 で覗き、何も起きなければ自分で待つ。待ちは、何も起きない回が
+/// [`poll`] の待ち方。Cygwin では時間切れ 0 で見て、何も起きなければ自分で待つ。待ちは、何も起きない回が
 /// [`POLLS_PER_STEP`](Self::POLLS_PER_STEP) 回続くたびに 1 ms ずつ延ばし、[`MAX_WAIT_MS`](Self::MAX_WAIT_MS) で
-/// 止める。何か起きたら 0 に戻す。刻みは、Cygwin の時間待ちのある `select` が中の覗くスレッド（`thread_pipe`）で
-/// 使うものと同じにし、覗く間隔を時間待ちのある `poll` と揃える。
+/// 止める。何か起きたら 0 に戻す。刻みは、Cygwin の時間待ちのある `select` が中の見るスレッド（`thread_pipe`）で
+/// 使うものと同じにする。
+///
+/// 待ちの長さは下限で、実際には Windows のタイマーの刻み（既定 15.6 ms）に切り上がる（Cygwin の sleep は待機可能
+/// タイマーで待つ）。そのため 1 ms 以上の待ちはどれも刻み一つ分になり、待たない最初の `POLLS_PER_STEP` 回が、刻みより
+/// 短い間隔で次の出力や入力を拾う窓になる。
 #[cfg(target_os = "cygwin")]
 struct PollWait {
-    /// 続けて何も起きなかった回数。待ちが上限に届いたら増やさない。
+    /// 続けて何も起きなかった回数。待ちが上限に届く回数で止める。
     idle_polls: u32,
 }
 
@@ -699,8 +703,10 @@ struct PollWait {
 impl PollWait {
     /// 待ちを 1 ms 延ばすまでの、何も起きない回数。
     const POLLS_PER_STEP: u32 = 8;
-    /// 待ちの上限。何もしていないときは、この間隔で覗く。
+    /// 待ちの上限。何もしていないときは、この間隔（の切り上がったもの）で見る。
     const MAX_WAIT_MS: u32 = 10;
+    /// 待ちが上限に届く `idle_polls`。
+    const MAX_IDLE_POLLS: u32 = Self::POLLS_PER_STEP * Self::MAX_WAIT_MS;
 
     fn new() -> Self {
         Self { idle_polls: 0 }
@@ -712,20 +718,22 @@ impl PollWait {
 
     /// `poll` が `ready` を返したあとに待つ。
     fn after_poll(&mut self, ready: c_int) {
+        match self.next_wait_ms(ready) {
+            None => {}
+            Some(0) => std::thread::yield_now(),
+            Some(wait_ms) => std::thread::sleep(std::time::Duration::from_millis(wait_ms.into())),
+        }
+    }
+
+    /// `poll` が `ready` を返したあとに待つ長さ（ms）。何か起きたら待たない（`None`）。次の回のために数を進める。
+    fn next_wait_ms(&mut self, ready: c_int) -> Option<u32> {
         if ready > 0 {
             self.idle_polls = 0;
-            return;
+            return None;
         }
-        let wait_ms = (self.idle_polls / Self::POLLS_PER_STEP).min(Self::MAX_WAIT_MS);
-        if wait_ms == 0 {
-            std::thread::yield_now();
-        } else {
-            std::thread::sleep(std::time::Duration::from_millis(wait_ms.into()));
-            if wait_ms == Self::MAX_WAIT_MS {
-                return;
-            }
-        }
-        self.idle_polls += 1;
+        let wait_ms = self.idle_polls / Self::POLLS_PER_STEP;
+        self.idle_polls = (self.idle_polls + 1).min(Self::MAX_IDLE_POLLS);
+        Some(wait_ms)
     }
 }
 
@@ -1424,5 +1432,38 @@ mod tests {
         assert_eq!(fallback_targets(SHELL, -1), [SHELL]);
         assert_eq!(fallback_targets(SHELL, 0), [SHELL]);
         assert_eq!(fallback_targets(SHELL, 1), [SHELL]);
+    }
+
+    #[cfg(target_os = "cygwin")]
+    #[test]
+    fn the_wait_grows_by_a_millisecond_every_eight_idle_polls() {
+        let mut wait = PollWait::new();
+        for expected in 0..PollWait::MAX_WAIT_MS {
+            for _ in 0..PollWait::POLLS_PER_STEP {
+                assert_eq!(wait.next_wait_ms(0), Some(expected));
+            }
+        }
+        for _ in 0..3 * PollWait::POLLS_PER_STEP {
+            assert_eq!(wait.next_wait_ms(0), Some(PollWait::MAX_WAIT_MS));
+        }
+        // 上限に届いたら数は増えない。
+        assert_eq!(wait.idle_polls, PollWait::MAX_IDLE_POLLS);
+    }
+
+    #[cfg(target_os = "cygwin")]
+    #[test]
+    fn the_wait_restarts_when_something_is_ready() {
+        let mut wait = PollWait::new();
+        for _ in 0..PollWait::MAX_IDLE_POLLS {
+            wait.next_wait_ms(0);
+        }
+        assert_eq!(wait.next_wait_ms(2), None);
+        assert_eq!(wait.next_wait_ms(0), Some(0));
+        for _ in 1..PollWait::POLLS_PER_STEP {
+            assert_eq!(wait.next_wait_ms(0), Some(0));
+        }
+        assert_eq!(wait.next_wait_ms(0), Some(1));
+        assert_eq!(wait.next_wait_ms(1), None);
+        assert_eq!(wait.next_wait_ms(0), Some(0));
     }
 }
