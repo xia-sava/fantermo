@@ -1306,7 +1306,9 @@ fn first_edit_id(server: &Server) -> i32 {
     i32::try_from(edit["id"].as_i64().expect("no ID")).expect("the ID fits")
 }
 
-/// `button` で開くファイルを選ぶダイアログで `path` を選ぶ。
+/// `button` で開くファイルを選ぶダイアログで `path` を選ぶ。ファイルを選ぶダイアログは、見えなくなってから閉じ終わる
+/// までのあいだにも要求を届けることがあり、設定ダイアログが選んだ結果を受け取るのは閉じ終わったあと。結果は
+/// [`wait_settings_controls`] で待つ。
 #[track_caller]
 fn choose_file(server: &Server, button: i32, path: &std::path::Path) {
     click(server, button);
@@ -1320,6 +1322,24 @@ fn choose_file(server: &Server, button: i32, path: &std::path::Path) {
     wait_top_dialog(server, SETTINGS_DIALOG_CLASS);
 }
 
+/// いちばん上のダイアログが設定ダイアログで、そのコントロールが `condition` を満たすまで読み続け、満たしたものを返す。
+/// 設定ダイアログが入力を受けるようになる前の 400 は、まだ満たしていないものとして扱う。
+#[track_caller]
+fn wait_settings_controls(
+    server: &Server,
+    description: &str,
+    condition: impl Fn(&Value) -> bool,
+) -> Value {
+    common::wait_for(description, || {
+        let (status, body) = server.request("GET", "/e2e/dialog/controls", b"");
+        if status != 200 {
+            return None;
+        }
+        let dialog: Value = serde_json::from_slice(&body).expect("the controls are not JSON");
+        (dialog["class"] == SETTINGS_DIALOG_CLASS && condition(&dialog)).then_some(dialog)
+    })
+}
+
 /// ファイルを選ぶダイアログで選んだ画像とアイコンが、絶対パスで入る。同じ画像は足さない。
 #[test]
 fn the_file_dialogs_add_a_background_image_and_a_profile_icon() {
@@ -1331,19 +1351,32 @@ fn the_file_dialogs_add_a_background_image_and_a_profile_icon() {
     let server = start_settings_test_with_images(ONE_PROFILE, &["added.png"]);
     let image = server.dir().join("added.png");
     open_settings(&server);
-    show_page(&server, PAGE_BACKGROUND);
-    choose_file(&server, ID_BACKGROUND_ADD_FILES, &image);
-    assert_eq!(
-        list_state(&server, ID_BACKGROUND_IMAGES),
-        (1, Value::from(0))
-    );
-    choose_file(&server, ID_BACKGROUND_ADD_FILES, &image);
-    assert_eq!(list_state(&server, ID_BACKGROUND_IMAGES).0, 1);
-
     show_page(&server, PAGE_PROFILES);
     choose_file(&server, ID_PROFILE_ICON_CHOOSE, &image);
+    wait_settings_controls(&server, "the chosen icon", |dialog| {
+        control(dialog, ID_PROFILE_ICON)["text"] != ""
+    });
+
+    show_page(&server, PAGE_BACKGROUND);
+    choose_file(&server, ID_BACKGROUND_ADD_FILES, &image);
+    let dialog = wait_settings_controls(&server, "the added background image", |dialog| {
+        control(dialog, ID_BACKGROUND_IMAGES)["items"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    });
+    let list = control(&dialog, ID_BACKGROUND_IMAGES);
+    assert_eq!(list["items"].as_array().map(Vec::len), Some(1), "{list:#}");
+    assert_eq!(list["selected"], 0, "{list:#}");
+    // 同じ画像を選んでも一覧は変わらないので、待てる結果がない。足していないことは保存した設定で見る。
+    choose_file(&server, ID_BACKGROUND_ADD_FILES, &image);
     press_ok(&server);
     let saved = saved_config(&server);
+    assert_eq!(
+        saved.background.images.len(),
+        1,
+        "{:?}",
+        saved.background.images
+    );
     // ダイアログは長い名前のパスを返し、一時フォルダは短い名前（`RUNNER~1` など）のことがあるので、
     // 同じファイルを指すかで比べる。
     let same_file = |path: &str| {
