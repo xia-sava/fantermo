@@ -35,7 +35,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `assets/` | アイコンと，`latest.json` の署名を検証する公開鍵 `manifest-public-key.der` |
 | `.github/workflows/ci.yml` | main への push と PR の検証（7 節）．配布のワークフローからも `workflow_call` で呼ぶ |
 | `.github/workflows/release.yml` | `vMAJOR.MINOR.PATCH` のタグで配布物（zip，MSI，署名した `latest.json`）を作って Release に載せる |
-| `.github/actions/` | 道具を入れる action．`setup-toolchain`（fantermo）と `setup-bridge-toolchain`（ブリッジ） |
+| `.github/actions/` | 道具を入れる action．`setup-toolchain`（fantermo）と `setup-bridge-toolchain`（ブリッジ）．`setup-bridge-toolchain` は，Cygwin のインストーラを cygwin.com から取得できずに失敗したら，間を置いて合わせて 3 回まで入れ直す |
 | `.cargo/config.toml` | git の依存を git コマンドで取得する．libghostty-vt を常に Zig の ReleaseSafe でビルドする（理由はファイルのコメント） |
 | `.claude/skills/` | e2e の実行と書き方（`e2e-verify`），バージョンの上げ方と配布（`release`） |
 

@@ -6,7 +6,7 @@ description: >-
 outputs:
   cygwin-root:
     description: 入れた Cygwin のフォルダ（tools/bridge.sh の CYGWIN_ROOT に渡す）
-    value: ${{ steps.cygwin.outputs.root }}
+    value: ${{ steps.cygwin.outputs.root || steps.cygwin-second.outputs.root || steps.cygwin-third.outputs.root }}
 
 runs:
   using: composite
@@ -29,8 +29,40 @@ runs:
 
     # Cygwin の bin はジョブの PATH に足さない（git bash の MSYS のコマンドとぶつかるため）。tools/bridge.sh は
     # CYGWIN_ROOT からリンカのパスを組み立て、cargo を実行する間だけその bin を PATH の先頭に置く。
+    #
+    # action はインストーラを毎回 https://cygwin.com/ から取得し（1 分ほどのあいだに 5 回試す）、取得先を変える入力も、
+    # 取得したものを使い回す入力も持たない。cygwin.com が数分応えないことがあるので、失敗したら間を置いて action
+    # ごとやり直す（合わせて 3 回）。
     - name: Install Cygwin
       id: cygwin
+      continue-on-error: true
+      uses: cygwin/cygwin-install-action@5a1b0cd107181fa6bb6bf3f90d500f4fb3132f18 # v7.0.0
+      with:
+        packages: gcc-core
+        add-to-path: false
+
+    - name: Wait before installing Cygwin again
+      if: steps.cygwin.outcome == 'failure'
+      shell: bash
+      run: sleep 60
+
+    - name: Install Cygwin (second attempt)
+      id: cygwin-second
+      if: steps.cygwin.outcome == 'failure'
+      continue-on-error: true
+      uses: cygwin/cygwin-install-action@5a1b0cd107181fa6bb6bf3f90d500f4fb3132f18 # v7.0.0
+      with:
+        packages: gcc-core
+        add-to-path: false
+
+    - name: Wait before installing Cygwin for the last time
+      if: steps.cygwin-second.outcome == 'failure'
+      shell: bash
+      run: sleep 120
+
+    - name: Install Cygwin (last attempt)
+      id: cygwin-third
+      if: steps.cygwin-second.outcome == 'failure'
       uses: cygwin/cygwin-install-action@5a1b0cd107181fa6bb6bf3f90d500f4fb3132f18 # v7.0.0
       with:
         packages: gcc-core
