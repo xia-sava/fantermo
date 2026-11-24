@@ -126,7 +126,7 @@ jobs:
           FANTERMO_E2E_KEEP_FAILED: ${{ runner.temp }}/e2e-failed
         run: call tools\dev.bat test --locked --features e2e --test e2e
 
-      # 失敗を調べ終わるまで残ればよい。名前にやり直しの回を付ける（同じ実行の中で名前は重ねられない）。
+      # 失敗を調べ終わるまで残ればよい。名前にやり直しの回を付けて、回ごとに分けて残す。
       - name: Keep the folders of the failed tests
         if: failure()
         uses: actions/upload-artifact@v7

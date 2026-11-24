@@ -112,10 +112,14 @@ const TOKEN_HEADER: &str = "X-Fantermo-Token";
 /// 一時フォルダの中の、ウィンドウの状態のファイルの名前。
 pub const STATE_FILE: &str = "state.toml";
 
-/// 失敗したテストの一時フォルダを写す先のフォルダを指す環境変数。CI が成果物として残す。なければ写さない。
+/// 一時フォルダの中の、fantermo と run-hidden のログのファイルの名前。
+const LOG_FILE: &str = "run.log";
+
+/// 失敗したテストの一時フォルダを写す先のフォルダを指す環境変数。CI が成果物として残す。なければ（空なら）写さない。
 const KEEP_FAILED_ENV: &str = "FANTERMO_E2E_KEEP_FAILED";
 /// 失敗したテストの一時フォルダを写すとき、これより大きなファイルは写さない（写した実行ファイル、更新の確認で
-/// 取得したものなど）。写さなかったものは [`NOT_KEPT_FILE`] に書く。
+/// 取得したものなど）。ログ（[`LOG_FILE`]）はいちばん要るので、大きくても写す。写さなかったものは [`NOT_KEPT_FILE`]
+/// に書く。
 const KEPT_FILE_MAX_BYTES: u64 = 4 * 1024 * 1024;
 /// 写した先のフォルダに置く、写さなかったファイルの一覧。
 const NOT_KEPT_FILE: &str = "not-kept.txt";
@@ -729,7 +733,8 @@ impl Drop for Server {
 /// 環境変数 [`KEEP_FAILED_ENV`] があれば、失敗したテストの一時フォルダ `dir` を、そのフォルダの下の
 /// `<テストの名前>/<一時フォルダの名前>` へ写す。破棄の中から呼ぶので、失敗しても panic せずに知らせるだけにする。
 fn keep_failed_folder(dir: &Path) {
-    let Some(destination) = std::env::var_os(KEEP_FAILED_ENV) else {
+    let Some(destination) = std::env::var_os(KEEP_FAILED_ENV).filter(|value| !value.is_empty())
+    else {
         return;
     };
     let Some(folder_name) = dir.file_name() else {
@@ -767,8 +772,8 @@ fn keep_failed_folder(dir: &Path) {
     eprintln!("kept {} in {}", dir.display(), target.display());
 }
 
-/// フォルダ `from` の中身を `to` へ写す。[`KEPT_FILE_MAX_BYTES`] より大きなファイル、写せなかったファイル、ファイルでも
-/// フォルダでもないものは写さずに `not_kept` へ足す。
+/// フォルダ `from` の中身を `to` へ写す。[`KEPT_FILE_MAX_BYTES`] より大きなファイル（ログを除く）、写せなかったファイル、
+/// ファイルでもフォルダでもないものは写さずに `not_kept` へ足す。
 fn copy_folder(from: &Path, to: &Path, not_kept: &mut Vec<String>) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
@@ -788,7 +793,7 @@ fn copy_folder(from: &Path, to: &Path, not_kept: &mut Vec<String>) -> std::io::R
             }
         } else if !metadata.is_file() {
             not_kept.push(format!("{}: not a file", source.display()));
-        } else if metadata.len() > KEPT_FILE_MAX_BYTES {
+        } else if metadata.len() > KEPT_FILE_MAX_BYTES && entry.file_name() != LOG_FILE {
             not_kept.push(format!("{}: {} bytes", source.display(), metadata.len()));
         } else if let Err(e) = std::fs::copy(&source, &destination) {
             not_kept.push(format!("{}: {e}", source.display()));
@@ -1059,7 +1064,7 @@ fn spawn_fantermo(launch: &Launch) -> Child {
 }
 
 fn log_path(dir: &Path) -> PathBuf {
-    dir.join("run.log")
+    dir.join(LOG_FILE)
 }
 
 fn fantermo_exe() -> PathBuf {

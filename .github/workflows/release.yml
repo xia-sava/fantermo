@@ -220,8 +220,10 @@ jobs:
         with:
           persist-credentials: false
 
+      # 使う成果物だけを名前で取る。e2e のジョブをやり直した実行には、失敗したテストの一時フォルダの成果物も残る。
       - uses: actions/download-artifact@v8
         with:
+          pattern: "{zip,msi}"
           path: artifacts
           merge-multiple: true
 
@@ -275,8 +277,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # manifest のジョブと同じく、使う成果物だけを名前で取る。
       - uses: actions/download-artifact@v8
         with:
+          pattern: "{zip,msi,manifest}"
           path: artifacts
           merge-multiple: true
 

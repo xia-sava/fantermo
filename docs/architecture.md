@@ -35,7 +35,7 @@ fantermo は普通の Win32 アプリで，`cygwin1.dll` を読み込みませ�
 | `assets/` | アイコンと，`latest.json` の署名を検証する公開鍵 `manifest-public-key.der` |
 | `.github/workflows/ci.yml` | main への push と PR の検証（7 節）．配布のワークフローからも `workflow_call` で呼ぶ |
 | `.github/workflows/release.yml` | `vMAJOR.MINOR.PATCH` のタグで配布物（zip，MSI，署名した `latest.json`）を作って Release に載せる |
-| `.github/actions/` | 道具を入れる action．`setup-toolchain`（fantermo）と `setup-bridge-toolchain`（ブリッジ）．`setup-bridge-toolchain` は，Cygwin のインストーラを cygwin.com から取得できずに失敗したら，間を置いて合わせて 3 回まで入れ直す |
+| `.github/actions/` | 道具を入れる action．`setup-toolchain`（fantermo）と `setup-bridge-toolchain`（ブリッジ）．`setup-bridge-toolchain` は，Cygwin を入れる action が失敗したら（cygwin.com がインストーラを数分返さないことがある），間を置いて action ごとやり直す（合わせて 3 回） |
 | `.cargo/config.toml` | git の依存を git コマンドで取得する．libghostty-vt を常に Zig の ReleaseSafe でビルドする（理由はファイルのコメント） |
 | `.claude/skills/` | e2e の実行と書き方（`e2e-verify`），バージョンの上げ方と配布（`release`） |
 
@@ -424,4 +424,4 @@ run-hidden は利用者のセッションのウィンドウステーション（
 
 WSL の e2e は CI では実行しません．手元で `FANTERMO_E2E_WSL` を付けて実行します．
 
-`e2e-conpty` と `e2e-cygwin` は，失敗したテストの一時フォルダ（fantermo のログ，`config.toml`，`state.toml` など．4 MiB を超えるファイルは写さず，`not-kept.txt` に名前を書く）を成果物 `e2e-<conpty|cygwin>-failed-<やり直しの回>` として 7 日残します．テストの土台が，環境変数 `FANTERMO_E2E_KEEP_FAILED` のフォルダの下の `<テストの名前>/<一時フォルダの名前>` へ写します．
+`e2e-conpty` と `e2e-cygwin` は，失敗したテストの一時フォルダ（fantermo のログ，`config.toml`，`state.toml` など．ログ `run.log` のほかの 4 MiB を超えるファイルは写さず，`not-kept.txt` に名前を書く）を成果物 `e2e-<conpty|cygwin>-failed-<やり直しの回>` として 7 日残します．テストの土台が，環境変数 `FANTERMO_E2E_KEEP_FAILED` のフォルダの下の `<テストの名前>/<一時フォルダの名前>` へ写します．
