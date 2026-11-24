@@ -145,8 +145,11 @@ const BRIDGE_STARTED_MARKER: &str = "を起動した（pid ";
 
 /// `/bin/sh` のタブが応えなかったときの手がかり。表示しているタブの画面の文字と、そのタブが Cygwin のものなら
 /// Cygwin のプロセスの一覧（`ps -al`）と、ブリッジが起動したシェルとそのブリッジの `/proc/<pid>/ppid`・
-/// `/proc/<pid>/stat`・`/proc/<pid>/status`。シェルの pid は fantermo のログにあるブリッジの行から読むので、ほかのタブの
-/// ものも含む。Cygwin のコマンドが時間切れになったら、そこで打ち切る。全体で [`SH_DIAGNOSTICS_TIMEOUT`] まで。
+/// `/proc/<pid>/stat`。シェルの pid は fantermo のログにあるブリッジの行から読むので、ほかのタブのものも含む。
+/// Cygwin のコマンドが時間切れになったら、そこで打ち切る。全体で [`SH_DIAGNOSTICS_TIMEOUT`] まで。
+///
+/// 読むのは、読まれる側のプロセスに問い合わせないものだけにする（理由は [`cygwin_sleep_is_running`]）。`status` は
+/// シグナルの状態を、`ps -f` はコマンドラインを問い合わせるので使わない。
 pub fn sh_diagnostics(server: &Server, state: &Value) -> String {
     let mut report = format!(
         "--- the text of the screen ---\n{}\n",
@@ -214,15 +217,15 @@ fn started_pids(log: &str) -> Vec<u32> {
         .collect()
 }
 
-/// Cygwin のプロセス `pid` の `/proc/<pid>/ppid`・`/proc/<pid>/stat`・`/proc/<pid>/status` を、一つの `cat` で続けて
-/// 読む。`ppid` を先頭にして、標準出力の 1 行目から親の pid を読む。`role` は見出しに付ける、プロセスの役割。
+/// Cygwin のプロセス `pid` の `/proc/<pid>/ppid`・`/proc/<pid>/stat` を、一つの `cat` で続けて読む。`ppid` を先頭に
+/// して、標準出力の 1 行目から親の pid を読む。`role` は見出しに付ける、プロセスの役割。
 fn proc_files(bin: &Path, role: &str, pid: u32, deadline: Instant) -> ProcFiles {
-    let files = ["ppid", "stat", "status"].map(|name| format!("/proc/{pid}/{name}"));
+    let files = ["ppid", "stat"].map(|name| format!("/proc/{pid}/{name}"));
     let arguments = files.each_ref().map(String::as_str);
     let output = run_cygwin(bin, "cat.exe", &arguments, deadline);
     ProcFiles {
         text: format!(
-            "--- {role} ({pid}): /proc/{pid}/{{ppid,stat,status}} ---\n{}",
+            "--- {role} ({pid}): /proc/{pid}/{{ppid,stat}} ---\n{}",
             output.text()
         ),
         ended: output.ended,
@@ -445,17 +448,23 @@ pub fn check_sh_responds(server: &Server) {
     wait_sh_text(server, "alive-2");
 }
 
-/// Cygwin のプログラムの親は Windows のプロセスの親子で辿れないので、`/proc` のコマンドラインを見る。
-/// 自分の引数に一致しないよう、`.` を `[.]` と書いて探す。
+/// Cygwin のプログラムの親は Windows のプロセスの親子で辿れないので、`/proc` のコマンドラインを見る。`.` は
+/// `[.]` と書いて、文字どおりに探す。
+///
+/// コマンドラインを読むのは、`/proc/<pid>/stat` でコマンドの名前が `sleep` のものだけにする。Cygwin は、ほかの
+/// プロセスの `cmdline`・`status`・`environ` などを読まれると、読まれた側のプロセスに内部のスレッドを立てて答えさせる。
+/// そのスレッドとの競合で、読まれた側の `select` や `poll` が戻らなくなることがある（ブリッジやシェルが応えなくなる）。
+/// `stat` と `ppid` は問い合わせずに読める。`sleep` は `select` を使わない。
 pub fn cygwin_sleep_is_running(marker: &str) -> bool {
     let root = std::env::var_os(CYGWIN_ROOT_ENV).expect("no Cygwin root");
     let bin = Path::new(&root).join("bin");
     let pattern = marker.replace('.', "[.]");
+    let script = format!(
+        "for f in $(grep -ls '^[0-9]* (sleep) ' /proc/[0-9]*/stat); do \
+         grep -aqs {pattern} ${{f%stat}}cmdline && echo found; done; true"
+    );
     let output = cygwin_command(&bin, "sh.exe")
-        .args([
-            "-c",
-            &format!("grep -aqs {pattern} /proc/[0-9]*/cmdline && echo found; true"),
-        ])
+        .args(["-c", &script])
         .output()
         .expect("cannot start the Cygwin shell");
     String::from_utf8_lossy(&output.stdout).contains("found")

@@ -440,20 +440,35 @@ fn unique_sleep_seconds() -> String {
 }
 
 /// コマンドラインに `sleep` と `seconds` を持つプロセスの番号。`/proc` の番号の項目（プロセス）だけを見る。
+///
+/// コマンドラインを読むのは、`/proc/<pid>/stat` でコマンドの名前が `sleep` のものだけにする。Cygwin は、ほかの
+/// プロセスの `cmdline`・`status`・`environ` などを読まれると、読まれた側のプロセスに内部のスレッドを立てて答えさせる。
+/// そのスレッドとの競合で、読まれた側の `select` や `poll` が戻らなくなることがある（並列に動くほかのテストの
+/// ブリッジやシェルが応えなくなる）。`stat` は問い合わせずに読める。`sleep` は `select` を使わない。
 fn sleep_pids(seconds: &str) -> Vec<libc::pid_t> {
     let entries = std::fs::read_dir("/proc").expect("cannot read /proc");
     entries
         .flatten()
         .filter_map(|entry| {
             let pid = entry.file_name().to_str()?.parse::<libc::pid_t>().ok()?;
+            if process_name(pid)? != b"sleep" {
+                return None;
+            }
             let line = std::fs::read(entry.path().join("cmdline")).ok()?;
             let mut args = line.split(|&byte| byte == 0);
-            let is_sleep = args
-                .next()
-                .is_some_and(|program| program.ends_with(b"sleep"));
-            (is_sleep && args.next() == Some(seconds.as_bytes())).then_some(pid)
+            args.next()?;
+            (args.next() == Some(seconds.as_bytes())).then_some(pid)
         })
         .collect()
+}
+
+/// 番号 `pid` のプロセスのコマンドの名前（`/proc/<pid>/stat` の括弧の中）。読めなければ `None`。名前は空白や括弧を
+/// 含みうるので、最初の `(` から最後の `)` までを取る。
+fn process_name(pid: libc::pid_t) -> Option<Vec<u8>> {
+    let stat = std::fs::read(format!("/proc/{pid}/stat")).ok()?;
+    let open = stat.iter().position(|&byte| byte == b'(')?;
+    let close = stat.iter().rposition(|&byte| byte == b')')?;
+    (open < close).then(|| stat[open + 1..close].to_vec())
 }
 
 /// コマンドラインに `sleep` と `seconds` を持つプロセスが動いている。
@@ -629,16 +644,12 @@ fn wait_process_gone(pid: libc::pid_t, what: &str) {
     }
 }
 
-/// 番号 `pid` のプロセスが、`sleep` を exec し終えるのを待つ。
+/// 番号 `pid` のプロセスが、`sleep` を exec し終えるのを待つ。exec の前はシェルなので、コマンドラインではなく
+/// `stat` のコマンドの名前で見る（[`sleep_pids`]）。
 fn wait_exec_sleep(pid: libc::pid_t) {
     let deadline = Instant::now() + CHILD_GONE_TIMEOUT;
     loop {
-        let line = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        if line
-            .split(|&byte| byte == 0)
-            .next()
-            .is_some_and(|program| program.ends_with(b"sleep"))
-        {
+        if process_name(pid).is_some_and(|name| name == b"sleep") {
             return;
         }
         if Instant::now() >= deadline {
