@@ -5,8 +5,8 @@ use crate::common::processes;
 use crate::common::processes::Process;
 use crate::ui::{
     BackendSetup, CMD_LONG_COMMAND, CMD_LONG_PROCESS, conpty_setup, cygwin_config, cygwin_setup,
-    cygwin_sleep_is_running, open_tabs_with_long_commands, tab_count, unique_sleep_seconds,
-    wait_cygwin_sleep, wait_sh_ready, wsl_setup,
+    cygwin_sleep_is_running, open_tabs_with_long_commands, run_with_cygwin, sh_diagnostics,
+    tab_count, unique_sleep_seconds, wait_cygwin_sleep, wait_sh_ready, wsl_setup,
 };
 use std::thread;
 use std::time::Duration;
@@ -272,6 +272,29 @@ fn cygwin_closing_a_tab_ends_its_child_processes_only() {
     server.wait_until("one tab", |state| tab_count(state) == 1);
     wait_cygwin_sleep(&second, false);
     assert!(cygwin_sleep_is_running(&first));
+}
+
+/// シェルが応えないときに出す材料に、画面の文字と、Cygwin のプロセスの一覧と、シェルとブリッジの `/proc` が入る。
+#[test]
+fn cygwin_the_shell_diagnostics_show_the_processes_of_the_tab() {
+    run_with_cygwin(
+        "cygwin_the_shell_diagnostics_show_the_processes_of_the_tab",
+        |server| {
+            wait_sh_ready(&server);
+            let report = sh_diagnostics(&server, &server.state());
+            for expected in [
+                "ready-2",
+                "ps -al",
+                "WINPID",
+                "/stat ---",
+                "(sh)",
+                "(fantermo-bridge)",
+                "PPid:",
+            ] {
+                assert!(report.contains(expected), "no {expected:?} in:\n{report}");
+            }
+        },
+    );
 }
 
 /// WSL の中のプロセスは見えないので、Windows の側の `wsl.exe` までを見る。

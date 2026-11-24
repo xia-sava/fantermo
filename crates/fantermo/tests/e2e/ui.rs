@@ -7,12 +7,18 @@ use fantermo_core::state;
 use fantermo_core::state::State;
 use fantermo_core::state::WindowState;
 use serde_json::Value;
+use std::io::Read;
+use std::os::windows::process::CommandExt;
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
+use std::process::Stdio;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
 /// Cygwin の `sleep` が動き出す、または終わるのを待つ上限。
 pub const CYGWIN_SLEEP_TIMEOUT: Duration = Duration::from_secs(60);
@@ -27,16 +33,22 @@ pub fn number(value: &Value) -> u64 {
         .unwrap_or_else(|| panic!("not a number: {value}"))
 }
 
+/// Cygwin のフォルダを指す環境変数。なければ Cygwin のテストはスキップする。
+const CYGWIN_ROOT_ENV: &str = "FANTERMO_E2E_CYGWIN_ROOT";
+
+/// [`cygwin_config`] のプロファイルの名前。
+const CYGWIN_PROFILE: &str = "cygwin";
+
 /// Cygwin のブリッジのプロファイルの設定。ブリッジを置く。環境変数がなければスキップしたと知らせて `None`。
 pub fn cygwin_config(test: &str) -> Option<String> {
-    let Some(root) = std::env::var_os("FANTERMO_E2E_CYGWIN_ROOT") else {
-        common::report_skip(test, "FANTERMO_E2E_CYGWIN_ROOT");
+    let Some(root) = std::env::var_os(CYGWIN_ROOT_ENV) else {
+        common::report_skip(test, CYGWIN_ROOT_ENV);
         return None;
     };
     common::install_bridge("x86_64-pc-cygwin", "fantermo-bridge.exe");
     Some(format!(
         r#"[[profiles]]
-name = "cygwin"
+name = "{CYGWIN_PROFILE}"
 backend = "cygwin"
 cygwin_root = '{}'
 command = "/bin/sh"
@@ -91,9 +103,183 @@ pub const CYGWIN_SLEEP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 pub const SH_LONG_COMMAND: &str = "sleep 300";
 
 /// `/bin/sh` が入力を読むのを待つ。プロンプトは環境によって違うので、コマンドの結果で見る。
+#[track_caller]
 pub fn wait_sh_ready(server: &Server) {
     server.type_line("echo ready-$((1+1))");
-    server.wait_text("ready-2");
+    wait_sh_text(server, "ready-2");
+}
+
+/// `/bin/sh` のタブの画面に `needle` が出るまで待つ。時間切れのときは、状態に加えて [`sh_diagnostics`] を出す。
+#[track_caller]
+fn wait_sh_text(server: &Server, needle: &str) {
+    let mut last_state = Value::Null;
+    let reached = common::try_wait_for(|| {
+        let state = server.state();
+        if state["text"]
+            .as_str()
+            .is_some_and(|text| text.contains(needle))
+        {
+            return Some(());
+        }
+        last_state = state;
+        None
+    });
+    if reached.is_none() {
+        panic!(
+            "timed out waiting for the text {needle:?}; state: {last_state:#}\n{}",
+            sh_diagnostics(server, &last_state)
+        );
+    }
+}
+
+/// Cygwin のコマンドの終わりを待つ上限。応えなくなった Cygwin を調べるときも、テストを止めたままにしない。
+const CYGWIN_DIAGNOSTIC_TIMEOUT: Duration = Duration::from_secs(10);
+/// Cygwin のコマンドが終わったかを確認する間隔。
+const CYGWIN_DIAGNOSTIC_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// ブリッジが子プロセスを起動したときにログへ出す行（`crates/fantermo-bridge/src/main.rs`）の、pid の前まで。
+const BRIDGE_STARTED_MARKER: &str = "を起動した（pid ";
+
+/// `/bin/sh` のタブが応えなかったときの材料。表示しているタブの画面の文字と、そのタブが Cygwin のものなら Cygwin の
+/// プロセスの一覧（`ps -al`）と、ブリッジが起動したシェルとそのブリッジの `/proc/<pid>/stat`・`/proc/<pid>/status`。
+/// シェルの pid は fantermo のログにあるブリッジの行から読むので、ほかのタブのものも含む。
+pub fn sh_diagnostics(server: &Server, state: &Value) -> String {
+    let mut report = format!(
+        "--- the text of the screen ---\n{}\n",
+        state["text"].as_str().unwrap_or_default()
+    );
+    let profile = state["active"]
+        .as_u64()
+        .and_then(|active| usize::try_from(active).ok())
+        .and_then(|active| state["tabs"][active]["profile"].as_str());
+    if profile != Some(CYGWIN_PROFILE) {
+        return report;
+    }
+    let Some(root) = std::env::var_os(CYGWIN_ROOT_ENV) else {
+        return report;
+    };
+    let bin = Path::new(&root).join("bin");
+    report.push_str("--- Cygwin: ps -al ---\n");
+    report.push_str(&run_cygwin(&bin, "ps.exe", &["-al"]));
+    for shell in started_pids(&server.log()) {
+        report.push_str(&proc_files(&bin, "the shell", shell));
+        let ppid_file = format!("/proc/{shell}/ppid");
+        let ppid = run_cygwin(&bin, "cat.exe", &[&ppid_file]);
+        match ppid.trim().parse::<u32>() {
+            Ok(bridge) => report.push_str(&proc_files(&bin, "the bridge", bridge)),
+            Err(_) => report.push_str(&format!(
+                "--- the bridge of {shell}: cannot read {ppid_file} ---\n{ppid}"
+            )),
+        }
+    }
+    report
+}
+
+/// ログのブリッジの行から、ブリッジが起動した子プロセスの pid を読む。
+fn started_pids(log: &str) -> Vec<u32> {
+    log.lines()
+        .filter_map(|line| {
+            let start = line.find(BRIDGE_STARTED_MARKER)? + BRIDGE_STARTED_MARKER.len();
+            let digits: String = line[start..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            digits.parse().ok()
+        })
+        .collect()
+}
+
+/// Cygwin のプロセス `pid` の `/proc/<pid>/stat` と `/proc/<pid>/status`。`role` は見出しに付ける、プロセスの役割。
+fn proc_files(bin: &Path, role: &str, pid: u32) -> String {
+    ["stat", "status"]
+        .iter()
+        .map(|name| {
+            let file = format!("/proc/{pid}/{name}");
+            format!(
+                "--- {role} ({pid}): {file} ---\n{}",
+                run_cygwin(bin, "cat.exe", &[&file])
+            )
+        })
+        .collect()
+}
+
+/// Cygwin の `bin` の `program` を起動するコマンド。`bin` を PATH の先頭に置き（git bash のものを拾わない）、git bash の
+/// `HOME` を渡さない。
+fn cygwin_command(bin: &Path, program: &str) -> Command {
+    let path = std::env::join_paths(std::iter::once(bin.to_path_buf()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .expect("cannot make PATH");
+    let mut command = Command::new(bin.join(program));
+    command.env("PATH", path).env_remove("HOME");
+    command
+}
+
+/// Cygwin の `program` を `arguments` で実行し、標準出力と標準エラー出力を返す。新しいコンソールの窓を作らない
+/// （`CREATE_NO_WINDOW`）。[`CYGWIN_DIAGNOSTIC_TIMEOUT`] が過ぎたら止めて、その旨を添える。
+fn run_cygwin(bin: &Path, program: &str, arguments: &[&str]) -> String {
+    let mut command = cygwin_command(bin, program);
+    command
+        .args(arguments)
+        .creation_flags(CREATE_NO_WINDOW.0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => return format!("cannot start {program}: {e}\n"),
+    };
+    let readers = [
+        child.stdout.take().map(read_in_background),
+        child.stderr.take().map(read_in_background),
+    ];
+    let deadline = Instant::now() + CYGWIN_DIAGNOSTIC_TIMEOUT;
+    let mut report = String::new();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(status)) => {
+                report.push_str(&format!("({program} ended with {status})\n"));
+                break;
+            }
+            Ok(None) if Instant::now() < deadline => thread::sleep(CYGWIN_DIAGNOSTIC_POLL_INTERVAL),
+            Ok(None) => {
+                report.push_str(&format!(
+                    "({program} did not end in {CYGWIN_DIAGNOSTIC_TIMEOUT:?}; stopped it)\n"
+                ));
+                if let Err(e) = child.kill().and_then(|()| child.wait().map(drop)) {
+                    report.push_str(&format!("(cannot stop {program}: {e})\n"));
+                }
+                break;
+            }
+            Err(e) => {
+                report.push_str(&format!("(cannot wait for {program}: {e})\n"));
+                break;
+            }
+        }
+    }
+    let mut output = String::new();
+    for reader in readers.into_iter().flatten() {
+        match reader.join() {
+            Ok(bytes) => output.push_str(&String::from_utf8_lossy(&bytes)),
+            Err(_) => output.push_str("(the reader of the output failed)\n"),
+        }
+    }
+    if !output.is_empty() && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output + &report
+}
+
+/// `source` を終わりまで読むスレッドを起動する。読めなかったときは、読めたところまでにその旨を添えて返す。
+fn read_in_background(mut source: impl Read + Send + 'static) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Err(e) = source.read_to_end(&mut bytes) {
+            bytes.extend_from_slice(format!("(cannot read the output: {e})\n").as_bytes());
+        }
+        bytes
+    })
 }
 
 /// 接続方式（ConPTY・Cygwin・WSL）ごとの、起動の準備と動作の確認の手順。
@@ -188,28 +374,23 @@ pub fn check_cmd_responds(server: &Server) {
 }
 
 /// `/bin/sh` が入力に応えることを確認する。
+#[track_caller]
 pub fn check_sh_responds(server: &Server) {
     server.type_line("echo alive-$((1+1))");
-    server.wait_text("alive-2");
+    wait_sh_text(server, "alive-2");
 }
 
 /// Cygwin のプログラムの親は Windows のプロセスの親子で辿れないので、`/proc` のコマンドラインを見る。
 /// 自分の引数に一致しないよう、`.` を `[.]` と書いて探す。
 pub fn cygwin_sleep_is_running(marker: &str) -> bool {
-    let root = std::env::var_os("FANTERMO_E2E_CYGWIN_ROOT").expect("no Cygwin root");
-    let bin = std::path::Path::new(&root).join("bin");
+    let root = std::env::var_os(CYGWIN_ROOT_ENV).expect("no Cygwin root");
+    let bin = Path::new(&root).join("bin");
     let pattern = marker.replace('.', "[.]");
-    let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    )))
-    .expect("cannot make PATH");
-    let output = std::process::Command::new(bin.join("sh.exe"))
+    let output = cygwin_command(&bin, "sh.exe")
         .args([
             "-c",
             &format!("grep -aqs {pattern} /proc/[0-9]*/cmdline && echo found; true"),
         ])
-        .env("PATH", path)
-        .env_remove("HOME")
         .output()
         .expect("cannot start the Cygwin shell");
     String::from_utf8_lossy(&output.stdout).contains("found")
