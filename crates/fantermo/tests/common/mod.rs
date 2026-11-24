@@ -551,6 +551,17 @@ impl Server {
     /// OS のクリップボードの文字列が `expected` になるまで待つ。
     #[track_caller]
     pub fn wait_clipboard(&self, expected: &str) {
+        self.wait_clipboard_matching(&format!("{expected:?}"), |text| text == expected);
+    }
+
+    /// OS のクリップボードの文字列が `condition` を満たすまで待ち、その文字列を返す。`description` は時間切れのときに
+    /// 出す、待っていた文字列の説明。
+    #[track_caller]
+    pub fn wait_clipboard_matching(
+        &self,
+        description: &str,
+        condition: impl Fn(&str) -> bool,
+    ) -> String {
         let mut last_answer = String::new();
         let arrived = try_wait_for(|| {
             let (status, answer) = self.request("GET", "/e2e/clipboard", b"");
@@ -559,12 +570,15 @@ impl Server {
                 return None;
             }
             let value: Value = serde_json::from_str(&last_answer).expect("the answer is not JSON");
-            (value["text"] == expected).then_some(())
+            value["text"]
+                .as_str()
+                .filter(|text| condition(text))
+                .map(str::to_owned)
         });
-        assert!(
-            arrived.is_some(),
-            "the clipboard did not become {expected:?}: {last_answer}"
-        );
+        let Some(text) = arrived else {
+            panic!("the clipboard did not become {description}: {last_answer}");
+        };
+        text
     }
 
     /// `wait_exit` のあとで、fantermo の子孫のプロセスが自分で終わっていたことを確認する。

@@ -218,15 +218,9 @@ fn copy_paste_and_select_all_in_the_menus_work() {
     );
     select_item(&server, &items, 'C');
     server.wait_dialogs(0);
-    let (status, body) = server.request("GET", "/e2e/clipboard", b"");
-    assert_eq!(status, 200);
-    let clipboard: Value = serde_json::from_slice(&body).expect("the answer is not JSON");
-    assert!(
-        clipboard["text"]
-            .as_str()
-            .is_some_and(|text| text.contains("other-0-end")),
-        "{clipboard:#}"
-    );
+    server.wait_clipboard_matching("a text with \"other-0-end\"", |text| {
+        text.contains("other-0-end")
+    });
 
     // コンテキストメニューの「すべて選択」と、≡ の「貼り付け」。
     server.post("/e2e/clipboard", b"echo main-%ERRORLEVEL%-paste");

@@ -38,8 +38,15 @@ fn wheel(delta: i32, at: Point) -> String {
 }
 
 /// 画面を空にしてから、打った行には出ない 2 行を出す（[`echo_lines`]）。続けて操作する段が、下の空きの行を使える。
+/// `cls` が終わって画面がプロンプトだけになってから次の行を打つ。`cls` の途中で打つと、行は画面に出てもコマンドが
+/// 実行されないことがある。
 fn fresh_lines(server: &Server, first: &str, second: &str) -> Value {
     server.type_line("cls");
+    server.wait_until("only the prompt after cls", |state| {
+        state["text"]
+            .as_str()
+            .is_some_and(|text| text.trim() == CMD_PROMPT)
+    });
     echo_lines(server, first, second)
 }
 
