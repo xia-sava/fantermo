@@ -37,7 +37,9 @@ const PTY_NAME_LEN: usize = 64;
 const MAX_PENDING_INPUT: usize = 64 << 20;
 /// 子プロセスが終わったかを確認する間隔。
 const POLL_INTERVAL_MS: c_int = 200;
-/// 標準入力が閉じて子プロセスに SIGHUP を送ったあと、終わるのを待つ上限。
+/// SIGHUP を送ったあと、子プロセスと残ったプロセスが終わるのを待つ上限。標準入力が閉じたときなどは SIGHUP を
+/// 送ってからの時間で、シェルを待つ時間と送り直す時間を合わせてこれまで（[`hang_up_wait`]）。終了の依頼で送った
+/// あとにシェルが終わったのを中継の中で見つけたときは、シェルが終わってから送り直す時間がこれまで（[`Relay::finish`]）。
 const HANGUP_WAIT_MS: u32 = 2000;
 /// 上の待ちの一回の長さ。
 const HANGUP_WAIT_STEP_MS: u32 = 50;
@@ -47,12 +49,15 @@ const RESEND_HANGUP_INTERVAL_MS: u32 = 200;
 const EMPTY_RESENDS_TO_STOP: u32 = 2;
 /// 閉じ始めたときに、起動してからこれを過ぎたプロセスのいるプロセスグループを背景のジョブとみなす。
 /// 起動して間もないプロセスだけのグループは、自分のプロセスグループに移ったが前面になる前のコマンドでありうる。
+/// Cygwin は exec のたびに起動の時刻を付け直すので、Cygwin では最後の exec からの時間になる。
 const BACKGROUND_JOB_MIN_AGE_MS: u64 = 500;
 /// プロセスの起動の時刻が起動からの時間（`/proc/uptime`）をこれより超えていたら、時計が合わないとみなし、
-/// 起動の時刻が分からないものとして扱う。`/proc/uptime` は 10 ms 単位で切り捨てるので少しは超えうる分に、余裕を
-/// 持たせる。
-const START_TIME_TOLERANCE_MS: u64 = 1000;
+/// 起動の時刻が分からないものとして扱う。`/proc/uptime` は 10 ms 単位で切り捨てるので、時計が合っていても
+/// その分は超えうる。
+const START_TIME_TOLERANCE_MS: u64 = 100;
 const MILLIS_PER_SECOND: u64 = 1000;
+/// `/proc/uptime` の小数部のうち読む桁数（ミリ秒まで）。
+const UPTIME_FRACTION_DIGITS: usize = 3;
 /// `$SHELL` がないときのシェル。
 const DEFAULT_SHELL: &str = "/bin/sh";
 /// 子プロセスで `exec` できなかったときの終了コード（シェルと同じ）。
@@ -382,12 +387,12 @@ impl Child {
                 "プロセスが起動してからの時間が分からないので、前面でもシェルのものでもないプロセスグループをすべて背景のジョブとみなします"
             );
         }
-        Some(background_groups(
-            &processes,
-            self.pid,
-            self.foreground(),
-            clock.as_ref(),
-        ))
+        let background = background_groups(&processes, self.pid, self.foreground(), clock.as_ref());
+        let mut listed: Vec<pid_t> = background.iter().copied().collect();
+        listed.sort_unstable();
+        // 書き方はブリッジのテスト（`tests/protocol.rs` の `BACKGROUND_LOG`）が読む。
+        log!("背景のジョブとして送らないプロセスグループ: {listed:?}");
+        Some(background)
     }
 
     /// シェルが終わったあと、セッションに残ったプロセスのうち、閉じ始めたときの背景のジョブにいないもののプロセス
@@ -413,6 +418,12 @@ impl Child {
             // SAFETY: 引数は数だけ。
             if unsafe { libc::kill(-group, libc::SIGHUP) } == 0 {
                 sent = true;
+                continue;
+            }
+            // 読んだあとに終わったグループは ESRCH になる。
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                log!("プロセスグループ {group} に SIGHUP を送れません: {error}");
             }
         }
         sent
@@ -990,7 +1001,7 @@ fn parse_uptime(text: &[u8]) -> Option<u64> {
     }
     let mut millis = 0;
     let mut scale = MILLIS_PER_SECOND / 10;
-    for digit in fraction.bytes().take(3) {
+    for digit in fraction.bytes().take(UPTIME_FRACTION_DIGITS) {
         millis += u64::from(digit - b'0') * scale;
         scale /= 10;
     }
@@ -1030,7 +1041,8 @@ fn resend_targets(
     let mut groups: Vec<pid_t> = processes
         .iter()
         .filter(|process| {
-            process.sid == shell && process.pgid > 0 && !background.contains(&process.pgid)
+            // 0 と 1 は kill(2) に渡すと自分のグループや全プロセスを指すので、送らない。
+            process.sid == shell && process.pgid > 1 && !background.contains(&process.pgid)
         })
         .map(|process| process.pgid)
         .collect();
@@ -1042,7 +1054,7 @@ fn resend_targets(
 /// `/proc` を読めないときに SIGHUP を送り直すプロセスグループ。シェルのものと、前面 `foreground` のもの。
 fn fallback_targets(shell: pid_t, foreground: pid_t) -> Vec<pid_t> {
     let mut groups = vec![shell];
-    if foreground > 0 && foreground != shell {
+    if foreground > 1 && foreground != shell {
         groups.push(foreground);
     }
     groups
@@ -1159,6 +1171,16 @@ mod tests {
                 pgid: 1216,
                 sid: 1215,
                 start_ticks: 1_074_395_539,
+            })
+        );
+        // Linux（WSL）の `cat` の実物。項目は 52 ある。
+        let linux = b"60911 (cat) R 60910 60910 60910 34820 60910 4194304 69 0 1 0 0 0 0 0 20 0 1 0 103930385 4104192 478 18446744073709551615 101504974422016 101504974439601 140734421490192 0 0 0 0 0 0 0 0 0 17 6 0 0 0 0 0 101504974453392 101504974454888 101505217716224 140734421493028 140734421493048 140734421493048 140734421495787 0\n";
+        assert_eq!(
+            parse_stat(linux),
+            Some(ProcessStat {
+                pgid: 60910,
+                sid: 60910,
+                start_ticks: 103_930_385,
             })
         );
         // コマンドの名前に空白と括弧があっても、最後の `)` の後ろから数える。
@@ -1299,6 +1321,14 @@ mod tests {
             []
         );
         assert_eq!(resend_targets(&[], SHELL, &groups(&[])), []);
+        // kill(2) で自分のグループや全プロセスを指す番号と、負の番号には送らない。
+        let odd = [
+            process(0, SHELL, 0),
+            process(1, SHELL, 0),
+            process(-5, SHELL, 0),
+            process(400, SHELL, 0),
+        ];
+        assert_eq!(resend_targets(&odd, SHELL, &groups(&[])), [400]);
     }
 
     #[test]
@@ -1306,5 +1336,7 @@ mod tests {
         assert_eq!(fallback_targets(SHELL, FOREGROUND), [SHELL, FOREGROUND]);
         assert_eq!(fallback_targets(SHELL, SHELL), [SHELL]);
         assert_eq!(fallback_targets(SHELL, -1), [SHELL]);
+        assert_eq!(fallback_targets(SHELL, 0), [SHELL]);
+        assert_eq!(fallback_targets(SHELL, 1), [SHELL]);
     }
 }

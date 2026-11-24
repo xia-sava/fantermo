@@ -439,8 +439,7 @@ fn unique_sleep_seconds() -> String {
     format!("300.{}{}", std::process::id(), next_unique())
 }
 
-/// コマンドラインに `sleep` と `seconds` を持つプロセスの番号。`/proc` の番号の項目だけを見て、`/proc/sysvipc`
-/// などの下は開かない。
+/// コマンドラインに `sleep` と `seconds` を持つプロセスの番号。`/proc` の番号の項目（プロセス）だけを見る。
 fn sleep_pids(seconds: &str) -> Vec<libc::pid_t> {
     let entries = std::fs::read_dir("/proc").expect("cannot read /proc");
     entries
@@ -545,18 +544,15 @@ fn closing_stdin_and_stderr_together_ends_the_child() {
     wait_sleep_gone(&seconds);
 }
 
-/// 閉じたあと、シェルが起動した `sleep` が exec を終えて `/proc` に見えるようになるまでの間。
-const HANG_UP_SETTLE: Duration = Duration::from_secs(1);
-/// 閉じ始めたときの背景のジョブとして扱われるよう、閉じる前に背景のジョブを動かしておく時間。ブリッジが背景の
+/// 送られたとしたら SIGHUP が効くのを待つ時間。プロセスが残ったことを見る前に置く。
+const SIGNAL_SETTLE: Duration = Duration::from_secs(1);
+/// 閉じ始めたときの背景のジョブとして扱われるよう、`sleep` を exec してから閉じるまで待つ時間。ブリッジが背景の
 /// ジョブとみなす 500 ms より長くする。
 const BACKGROUND_SETTLED: Duration = Duration::from_millis(1500);
-/// 起動して間もない背景のジョブとして閉じるときの、ジョブを起動させてから閉じるまでの上限。ブリッジが背景の
-/// ジョブとみなす 500 ms より短くする。
-const YOUNG_BACKGROUND_LIMIT: Duration = Duration::from_millis(400);
-/// 起動して間もない背景のジョブが動き出したかを確認する間隔。
-const YOUNG_BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(10);
-/// 起動して間もない背景のジョブを、上限のうちに閉じられるまで試す回数。
+/// 起動して間もない背景のジョブを、ブリッジがそうみなす回が出るまで試す回数。
 const YOUNG_BACKGROUND_ATTEMPTS: u32 = 5;
+/// ブリッジが、記録した背景のジョブのプロセスグループを書くログの行の頭（`main.rs` の `record_background`）。
+const BACKGROUND_LOG: &str = "fantermo-bridge: 背景のジョブとして送らないプロセスグループ: ";
 
 /// fantermo のウィンドウを閉じたときと同じく、標準エラー出力と標準入力を同時に閉じる。
 fn close_like_the_window(bridge: &mut Bridge) {
@@ -571,50 +567,192 @@ fn start_with_piped_stderr(args: &[&str]) -> Bridge {
     bridge
 }
 
-/// コマンドラインに `sleep` と `seconds` を持つプロセスを止める。
-fn kill_sleep(seconds: &str) {
-    for pid in sleep_pids(seconds) {
-        // SAFETY: 引数は数だけ。
-        if unsafe { libc::kill(pid, libc::SIGKILL) } < 0 {
-            eprintln!(
-                "failed to stop `sleep {seconds}` ({pid}): {}",
-                std::io::Error::last_os_error()
-            );
+/// 標準エラー出力を閉じるまで読むスレッド。ブリッジが終わったあとに join すると、ログの全体を返す。
+fn collect_stderr(bridge: &mut Bridge) -> thread::JoinHandle<String> {
+    let mut stderr = bridge.child.stderr.take().expect("stderr is not piped");
+    thread::spawn(move || {
+        let mut log = String::new();
+        if let Err(e) = std::io::Read::read_to_string(&mut stderr, &mut log) {
+            eprintln!("failed to read the bridge's log: {e}");
         }
+        log
+    })
+}
+
+/// ブリッジのログから、記録した背景のジョブのプロセスグループを読む。
+fn recorded_background(log: &str) -> Vec<libc::pid_t> {
+    let line = log
+        .lines()
+        .find_map(|line| line.strip_prefix(BACKGROUND_LOG))
+        .unwrap_or_else(|| panic!("the bridge did not log the background jobs: {log}"));
+    line.trim_matches(|c| c == '[' || c == ']')
+        .split(", ")
+        .filter(|group| !group.is_empty())
+        .map(|group| group.parse().expect("not a process group"))
+        .collect()
+}
+
+/// 番号 `pid` のプロセスが動いている（終わっていて、親に回収されるのを待っているだけのものは除く）。
+fn process_is_running(pid: libc::pid_t) -> bool {
+    let Ok(stat) = std::fs::read(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    let Some(close) = stat.iter().rposition(|&byte| byte == b')') else {
+        return false;
+    };
+    let state = stat[close + 1..]
+        .iter()
+        .find(|byte| !byte.is_ascii_whitespace());
+    !matches!(state, Some(b'Z' | b'X'))
+}
+
+/// 番号 `pid` のプロセスを止める。
+fn kill_process(pid: libc::pid_t) {
+    // SAFETY: 引数は数だけ。
+    if unsafe { libc::kill(pid, libc::SIGKILL) } < 0 {
+        eprintln!(
+            "failed to stop the process {pid}: {}",
+            std::io::Error::last_os_error()
+        );
     }
 }
 
-/// シェルが SIGHUP を受けたときに `started` を実行してから終わるスクリプト。`started` は、シェルが SIGHUP を
-/// 受けたときに起動の途中だったコマンドの代わり。
-fn script_starting_on_hang_up(started: &str) -> String {
-    format!("trap '{started}\nexit' HUP; echo hup-ready-$((1+1)); while :; do sleep 0.05; done")
+/// 番号 `pid` のプロセスが終わるのを待つ。終わらなければ、止めてから失敗にする。
+fn wait_process_gone(pid: libc::pid_t, what: &str) {
+    let deadline = Instant::now() + CHILD_GONE_TIMEOUT;
+    while process_is_running(pid) {
+        if Instant::now() >= deadline {
+            kill_process(pid);
+            panic!("{what} ({pid}) is still running");
+        }
+        thread::sleep(CHILD_GONE_POLL_INTERVAL);
+    }
 }
 
-/// 閉じたときに `started` で起動するコマンドが、閉じたあとに残らない。
-fn exercise_command_started_on_hang_up(started: &str, seconds: &str) {
-    let script = script_starting_on_hang_up(started);
+/// 番号 `pid` のプロセスが、`sleep` を exec し終えるのを待つ。
+fn wait_exec_sleep(pid: libc::pid_t) {
+    let deadline = Instant::now() + CHILD_GONE_TIMEOUT;
+    loop {
+        let line = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+        if line
+            .split(|&byte| byte == 0)
+            .next()
+            .is_some_and(|program| program.ends_with(b"sleep"))
+        {
+            return;
+        }
+        if Instant::now() >= deadline {
+            kill_process(pid);
+            panic!("the process {pid} did not execute `sleep`");
+        }
+        thread::sleep(CHILD_GONE_POLL_INTERVAL);
+    }
+}
+
+/// 出力の `{tag}-<番号>-{tag}-end` から番号を読む。シェルに `echo {tag}-$!-{tag}-end` と書かせて、起動した背景の
+/// ジョブの番号を受け取る。
+fn reported_pid(bridge: &mut Bridge, tag: &str) -> libc::pid_t {
+    let end = format!("-{tag}-end");
+    bridge.wait_output(&end);
+    let text = bridge.output_text();
+    let before = &text[..text.find(&end).expect("the end of the number is missing")];
+    let start = before
+        .rfind(&format!("{tag}-"))
+        .expect("the number is missing")
+        + tag.len()
+        + 1;
+    before[start..].parse().expect("not a process number")
+}
+
+/// 子プロセスが書いた番号のファイルを読む。
+fn read_pid_file(file: &OutputFile) -> libc::pid_t {
+    let text = std::fs::read_to_string(&file.0).expect("the shell did not write the number");
+    text.trim().parse().expect("not a process number")
+}
+
+/// シェルが SIGHUP を受けたときに `started` で背景のジョブを起動し、その番号を `pid_file` に書いてから終わる
+/// スクリプト。起動するものは、シェルが SIGHUP を受けたときに起動の途中だったコマンドの代わり。
+fn script_starting_on_hang_up(started: &str, pid_file: &str) -> String {
+    format!(
+        "trap '{started} echo $! > {pid_file}\nexit' HUP; echo hup-ready-$((1+1)); while :; do sleep 0.05; done"
+    )
+}
+
+/// 閉じ方。
+#[derive(Clone, Copy)]
+enum Close {
+    /// fantermo のウィンドウを閉じたとき（[`close_like_the_window`]）。
+    Window,
+    /// 終了の依頼だけを送り、標準入力は閉じない。シェルが終わったのを中継の中で見つける。
+    Quit,
+}
+
+/// シェルが SIGHUP を受けたときに `started`（`sleep <秒> &` の形）で起動したコマンドが、`close` で閉じたあとに
+/// 残らない。
+fn exercise_command_started_on_hang_up(started: &str, close: Close) {
+    let file = OutputFile::new();
+    let script = script_starting_on_hang_up(started, &file.0);
     let mut bridge = start_with_piped_stderr(&["--", "/bin/sh", "-c", &script]);
     bridge.wait_output("hup-ready-2");
-    close_like_the_window(&mut bridge);
+    match close {
+        Close::Window => close_like_the_window(&mut bridge),
+        Close::Quit => {
+            bridge.send(&ToBridge::Quit);
+            bridge.wait_child_exit();
+        }
+    }
     assert!(bridge.wait_bridge_exit().success());
-    thread::sleep(HANG_UP_SETTLE);
-    wait_sleep_gone(seconds);
+    // シェルは番号を書いてから終わり、ブリッジはシェルが終わってから終わる。
+    let pid = read_pid_file(&file);
+    wait_process_gone(pid, "the command started on the hang-up");
 }
 
 /// シェルが SIGHUP で終わるときに起動の途中だったコマンドが、シェルのプロセスグループに残っても終わる。Cygwin は
 /// セッションのリーダーが終わっても前面のプロセスグループに SIGHUP を送らない。
 #[test]
 fn a_command_left_in_the_shells_group_after_the_hang_up_is_ended() {
-    let seconds = unique_sleep_seconds();
-    exercise_command_started_on_hang_up(&format!("sleep {seconds} &"), &seconds);
+    let started = format!("sleep {} &", unique_sleep_seconds());
+    exercise_command_started_on_hang_up(&started, Close::Window);
 }
 
 /// シェルが SIGHUP で終わるときに起動の途中だったコマンドが、自分のプロセスグループに移ったまま前面になれずに
 /// 残っても終わる。セッションのリーダーが終わったあとは前面のプロセスグループを変えられない。
 #[test]
 fn a_command_left_in_its_own_group_after_the_hang_up_is_ended() {
+    let started = format!("set -m; sleep {} &", unique_sleep_seconds());
+    exercise_command_started_on_hang_up(&started, Close::Window);
+}
+
+/// 終了の依頼で SIGHUP を送ったあと、標準入力が閉じる前にシェルが終わっても、シェルのプロセスグループに残った
+/// コマンドは終わる。
+#[test]
+fn a_command_left_in_the_shells_group_after_the_quit_request_is_ended() {
+    let started = format!("sleep {} &", unique_sleep_seconds());
+    exercise_command_started_on_hang_up(&started, Close::Quit);
+}
+
+/// 終了の依頼で SIGHUP を送ったあと、標準入力が閉じる前にシェルが終わっても、自分のプロセスグループに残った
+/// コマンドは終わる。
+#[test]
+fn a_command_left_in_its_own_group_after_the_quit_request_is_ended() {
+    let started = format!("set -m; sleep {} &", unique_sleep_seconds());
+    exercise_command_started_on_hang_up(&started, Close::Quit);
+}
+
+/// シェルが自分で終わったときは、起動して間もない背景のジョブにも SIGHUP を送らない。
+#[test]
+fn a_young_background_job_is_left_when_the_shell_exits_by_itself() {
     let seconds = unique_sleep_seconds();
-    exercise_command_started_on_hang_up(&format!("set -m; sleep {seconds} &"), &seconds);
+    let script = format!("set -m; sleep {seconds} & echo self-$!-self-end; set +m; exit 3");
+    let mut bridge = start_with_piped_stderr(&["--", "/bin/sh", "-c", &script]);
+    assert_eq!(bridge.wait_child_exit(), ChildExit::Code(3));
+    let pid = reported_pid(&mut bridge, "self");
+    assert!(bridge.wait_bridge_exit().success());
+    thread::sleep(SIGNAL_SETTLE);
+    let left = process_is_running(pid);
+    kill_process(pid);
+    assert!(left, "the background job ({pid}) was ended");
+    wait_process_gone(pid, "the stopped background job");
 }
 
 /// 閉じ始めたときにしばらく動いていた背景のジョブには、SIGHUP を送らない。
@@ -622,63 +760,51 @@ fn a_command_left_in_its_own_group_after_the_hang_up_is_ended() {
 fn a_background_job_running_before_the_close_is_left() {
     let seconds = unique_sleep_seconds();
     let script = format!(
-        "set -m; sleep {seconds} & set +m; echo bg-ready-$((1+1)); while :; do sleep 0.05; done"
+        "set -m; sleep {seconds} & echo bg-$!-bg-end; set +m; while :; do sleep 0.05; done"
     );
     let mut bridge = start_with_piped_stderr(&["--", "/bin/sh", "-c", &script]);
-    bridge.wait_output("bg-ready-2");
-    let deadline = Instant::now() + CHILD_GONE_TIMEOUT;
-    while !sleep_is_running(&seconds) {
-        assert!(
-            Instant::now() < deadline,
-            "the background job `sleep {seconds}` did not start"
-        );
-        thread::sleep(CHILD_GONE_POLL_INTERVAL);
-    }
+    let pid = reported_pid(&mut bridge, "bg");
+    // Cygwin は exec のたびに起動の時刻を付け直すので、exec してから数える。
+    wait_exec_sleep(pid);
     thread::sleep(BACKGROUND_SETTLED);
     close_like_the_window(&mut bridge);
     assert!(bridge.wait_bridge_exit().success());
-    thread::sleep(HANG_UP_SETTLE);
-    let left = sleep_is_running(&seconds);
-    kill_sleep(&seconds);
-    assert!(left, "the background job `sleep {seconds}` was ended");
-    wait_sleep_gone(&seconds);
+    thread::sleep(SIGNAL_SETTLE);
+    let left = process_is_running(pid);
+    kill_process(pid);
+    assert!(left, "the background job ({pid}) was ended");
+    wait_process_gone(pid, "the stopped background job");
 }
 
 /// 閉じる直前に起動した背景のジョブは、前面になる前のコマンドと見分けられないので、SIGHUP を送る。
+///
+/// 起動して間もないかはブリッジが閉じ始めたときに決めるので、ブリッジがログに書いた背景のジョブで見る。遅い環境で
+/// ブリッジが背景のジョブとみなした回は、止めてやり直す。ログを読むため、標準入力だけを閉じる（タブを閉じたときの形）。
 #[test]
 fn a_background_job_started_right_before_the_close_is_ended() {
     for _ in 0..YOUNG_BACKGROUND_ATTEMPTS {
         let seconds = unique_sleep_seconds();
         let script = format!(
-            "echo young-ready-$((1+1)); read line; set -m; sleep {seconds} & set +m; while :; do sleep 0.05; done"
+            "echo young-ready-$((1+1)); read line; set -m; sleep {seconds} & echo young-$!-young-end; set +m; while :; do sleep 0.05; done"
         );
         let mut bridge = start_with_piped_stderr(&["--", "/bin/sh", "-c", &script]);
+        let log = collect_stderr(&mut bridge);
         bridge.wait_output("young-ready-2");
         bridge.type_line("");
-        // `sleep` は行を送ったあとに起動するので、送ってからの時間が `sleep` の動いている時間の上限になる。
-        let sent = Instant::now();
-        let deadline = sent + CHILD_GONE_TIMEOUT;
-        while !sleep_is_running(&seconds) {
-            assert!(
-                Instant::now() < deadline,
-                "the background job `sleep {seconds}` did not start"
-            );
-            thread::sleep(YOUNG_BACKGROUND_POLL_INTERVAL);
-        }
-        let young = sent.elapsed() < YOUNG_BACKGROUND_LIMIT;
-        close_like_the_window(&mut bridge);
+        let pid = reported_pid(&mut bridge, "young");
+        bridge.stdin = None;
         assert!(bridge.wait_bridge_exit().success());
-        if !young {
-            kill_sleep(&seconds);
-            wait_sleep_gone(&seconds);
+        let log = log.join().expect("the thread reading the log panicked");
+        if recorded_background(&log).contains(&pid) {
+            kill_process(pid);
+            wait_process_gone(pid, "the stopped background job");
             continue;
         }
-        thread::sleep(HANG_UP_SETTLE);
-        wait_sleep_gone(&seconds);
+        wait_process_gone(pid, "the background job started right before the close");
         return;
     }
     panic!(
-        "the background job did not start within {YOUNG_BACKGROUND_LIMIT:?} in {YOUNG_BACKGROUND_ATTEMPTS} attempts"
+        "the bridge took the job started right before the close for a background job in {YOUNG_BACKGROUND_ATTEMPTS} attempts"
     );
 }
 
